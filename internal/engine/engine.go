@@ -41,6 +41,8 @@ type pending struct {
 
 type issueState struct {
 	id           string
+	title        string
+	body         string
 	flowName     string
 	matrix       levers.Matrix
 	priority     int
@@ -79,7 +81,7 @@ func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, prio
 	e.mu.Lock()
 	e.nextID++
 	id := fmt.Sprintf("GH-%d", e.nextID)
-	e.issues[id] = &issueState{id: id, flowName: flowName, matrix: m, priority: priority}
+	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority}
 	e.mu.Unlock()
 	e.emit(core.EvIssueCreated, id, map[string]string{"title": title, "flow": flowName})
 	return id, nil
@@ -139,11 +141,20 @@ func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 }
 
 func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage) error {
-	workdir := filepath.Join(e.cfg.DataDir, is.id, st.Name)
+	// "none" stages share one per-issue dir so artifacts flow between stages
+	// (brainstorm.md -> spec stage, etc.); worktree/readonly stages share the
+	// acquired workspace for the same reason.
+	workdir := filepath.Join(e.cfg.DataDir, is.id)
 	if st.Workspace != "none" && is.wsPath != "" {
 		workdir = is.wsPath
 	}
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		return err
+	}
+	// Materialize the issue for the agents: ISSUE.md is the contract for how
+	// a stage learns what it is working on.
+	issueMD := fmt.Sprintf("# %s: %s\n\n%s\n", is.id, is.title, is.body)
+	if err := os.WriteFile(filepath.Join(workdir, "ISSUE.md"), []byte(issueMD), 0o644); err != nil {
 		return err
 	}
 	e.emit(core.EvStageStarted, is.id, map[string]string{"stage": st.Name})

@@ -68,7 +68,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		return runner.Result{Err: err}
 	}
 
-	task := fmt.Sprintf("Task: %s for issue %s. Work in the current directory.", stage, issueID)
+	task := fmt.Sprintf("Task: run the %s stage for issue %s. Read ISSUE.md in the current directory for the issue description; artifacts from earlier stages are alongside it. Work in the current directory.", stage, issueID)
 	if _, err := stdin.Write(UserMessage(task)); err != nil {
 		cmd.Process.Kill()
 		return runner.Result{Err: err}
