@@ -46,11 +46,14 @@ func main() {
 	case "tower":
 		fs := flag.NewFlagSet("tower", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repo := fs.String("repo", "", "repository path for the architecture map")
 		fs.Parse(args)
 		c := mustDial(*data)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "get_flow", Flow: "default"})
-		if _, err := tea.NewProgram(tui.NewModel(c, r.FlowStages), tea.WithAltScreen()).Run(); err != nil {
+		model := tui.NewModel(c, r.FlowStages)
+		model.Repo = *repo
+		if _, err := tea.NewProgram(model, tea.WithAltScreen()).Run(); err != nil {
 			fatal(err)
 		}
 	case "new":

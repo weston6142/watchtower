@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/wbushyeager/guildhall/internal/archmap"
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/projection"
@@ -28,6 +29,8 @@ type Model struct {
 	Focus  Focus
 	Toast  *projection.DecisionView
 	Detail *proto.IssueDetail
+	Arch   *archmap.Map
+	Repo   string
 	Width  int
 	Height int
 	Err    string
@@ -39,6 +42,8 @@ type Model struct {
 	optionMode    bool
 	pager         pagerState
 	openArtifacts bool
+	archMode      string
+	help          bool
 }
 
 type Msg struct{ Events []core.Event }
@@ -56,6 +61,11 @@ type answerMsg struct {
 	decisionID int64
 	response   proto.Response
 	err        error
+}
+
+type archMsg struct {
+	arch *archmap.Map
+	err  error
 }
 
 func NewModel(client *proto.Client, stages []string) Model {
@@ -117,6 +127,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.optionMode = false
 		}
 		return m, nil
+	case archMsg:
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		m.Arch = msg.arch
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = msg.Width, msg.Height
 		return m, nil
@@ -125,9 +142,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "?":
+			m.help = !m.help
+			return m, nil
+		}
+		if m.archMode != "" {
+			if key == "esc" || key == "a" {
+				m.archMode = ""
+				return m, nil
+			}
+			if key == "A" {
+				m.archMode = "full"
+				return m, m.fetchArch()
+			}
+			return m, nil
 		}
 		if m.pager.Mode != "" {
-			return m, m.updatePagerKey(key)
+			cmd := m.updatePagerKey(key)
+			return m, cmd
 		}
 		if m.Toast != nil {
 			switch {
@@ -145,15 +177,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.dismissToast()
 				return m, nil
 			case key == "o":
-				return m, m.openArtifactsFor(m.Toast.IssueID)
+				cmd := m.openArtifactsFor(m.Toast.IssueID)
+				return m, cmd
 			}
 			return m, nil
 		}
 		if key == "enter" && m.Focus.Issue != "" {
-			return m, m.openArtifactsFor(m.Focus.Issue)
+			cmd := m.openArtifactsFor(m.Focus.Issue)
+			return m, cmd
 		}
 		if key == "o" && m.Focus.Issue != "" {
-			return m, m.openArtifactsFor(m.Focus.Issue)
+			cmd := m.openArtifactsFor(m.Focus.Issue)
+			return m, cmd
+		}
+		if key == "a" || key == "A" {
+			if key == "A" {
+				m.archMode = "full"
+			} else {
+				m.archMode = "pane"
+			}
+			return m, m.fetchArch()
 		}
 		moved := moveFocus(m.Focus, m.State, m.stages, key)
 		if moved != m.Focus {
@@ -246,6 +289,24 @@ func (m Model) fetchDetail(issueID string) tea.Cmd {
 	}
 }
 
+func (m Model) fetchArch() tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	client := m.client
+	repo := m.Repo
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "arch_map", Repo: repo})
+		if err != nil {
+			return archMsg{err: err}
+		}
+		if !r.OK {
+			return archMsg{err: errors.New(r.Error)}
+		}
+		return archMsg{arch: r.Arch}
+	}
+}
+
 func (m Model) applyEvents(evs []core.Event) Model {
 	if m.State == nil {
 		m.State = projection.NewState()
@@ -321,11 +382,24 @@ func (m Model) View() string {
 	} else if m.Toast != nil {
 		tower = renderToast(*m.Toast, m.Ids[m.Toast.IssueID], towerWidth)
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top, tower, renderRail(m.State, m.Ids, m.Detail, railWidth))
+	var body string
+	if m.archMode == "full" {
+		body = renderArch(m.Arch, m.Ids, layoutWidth, m.Height)
+	} else {
+		right := renderRail(m.State, m.Ids, m.Detail, railWidth)
+		if m.archMode == "pane" {
+			right = renderArch(m.Arch, m.Ids, railWidth, m.Height)
+		}
+		body = lipgloss.JoinHorizontal(lipgloss.Top, tower, right)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "◆ GUILD TOWER · %d issues · q quit · ? help\n", issues)
 	b.WriteString(body)
-	b.WriteString("\n\nj/k floors · h/l cards · tab attention · 1-9 jump · enter drill · q quit")
+	if m.help {
+		b.WriteString("\n\nKEYS: j/k floors · h/l cards · 1-9 issue · tab attention · g war room · enter drill · esc back · d decisions · t triage · L levers · a arch pane · A arch full · ? close help · q quit")
+	} else {
+		b.WriteString("\n\nj/k floors · h/l cards · tab attention · 1-9 jump · enter drill · a arch · ? help · q quit")
+	}
 	if m.Err != "" {
 		fmt.Fprintf(&b, "\nerror: %s", m.Err)
 	}

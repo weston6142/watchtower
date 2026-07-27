@@ -32,6 +32,9 @@ func prefix(glob string) string {
 	return strings.TrimSuffix(glob, "/")
 }
 
+// PrefixOf returns the literal leading path of a glob.
+func PrefixOf(glob string) string { return prefix(glob) }
+
 // Overlap is conservative: two globs may touch the same file iff one literal
 // prefix is a path-prefix of the other.
 func Overlap(a, b Set) bool {

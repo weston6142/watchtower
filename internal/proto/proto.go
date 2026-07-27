@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"github.com/wbushyeager/guildhall/internal/archmap"
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/engine"
 	"github.com/wbushyeager/guildhall/internal/store"
@@ -22,6 +23,7 @@ type Command struct {
 	ProposalID int64  `json:"proposal_id,omitempty"`
 	Accept     bool   `json:"accept,omitempty"`
 	SinceSeq   int64  `json:"since_seq,omitempty"`
+	Repo       string `json:"repo,omitempty"`
 }
 
 type Response struct {
@@ -34,6 +36,7 @@ type Response struct {
 	Events     []core.Event             `json:"events,omitempty"`
 	Detail     *IssueDetail             `json:"detail,omitempty"`
 	FlowStages []string                 `json:"flow_stages,omitempty"`
+	Arch       *archmap.Map             `json:"arch,omitempty"`
 }
 
 type IssueDetail struct {

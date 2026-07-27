@@ -58,16 +58,17 @@ type pending struct {
 }
 
 type issueState struct {
-	id           string
-	title        string
-	body         string
-	flowName     string
-	matrix       levers.Matrix
-	priority     int
-	wsPath       string
-	branch       string
-	wsRelease    func() error
-	budgetWaived bool
+	id             string
+	title          string
+	body           string
+	flowName       string
+	matrix         levers.Matrix
+	priority       int
+	wsPath         string
+	branch         string
+	wsRelease      func() error
+	budgetWaived   bool
+	activeTouchset *touchset.Set
 }
 
 type Engine struct {
@@ -80,6 +81,19 @@ type Engine struct {
 
 func New(cfg Config) *Engine {
 	return &Engine{cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{}}
+}
+
+// ActiveTouchsets returns a snapshot of plans that are still in flight.
+func (e *Engine) ActiveTouchsets() map[string][]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := map[string][]string{}
+	for id, issue := range e.issues {
+		if issue.activeTouchset != nil {
+			out[id] = append([]string(nil), issue.activeTouchset.Globs...)
+		}
+	}
+	return out
 }
 
 // emit appends an event best-effort: marshal or store failures are dropped
@@ -397,6 +411,10 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 	// overlapping merges. Absence of the file just means no sequencing.
 	if e.cfg.Marshal != nil && st.Name == "plan" {
 		if ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json")); err == nil {
+			e.mu.Lock()
+			copy := ts
+			is.activeTouchset = &copy
+			e.mu.Unlock()
 			e.cfg.Marshal.PlanApproved(is.id, ts)
 		}
 	}
@@ -414,6 +432,9 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 	f := e.cfg.Flows[is.flowName]
 	aborted := true
 	defer func() {
+		e.mu.Lock()
+		is.activeTouchset = nil
+		e.mu.Unlock()
 		if is.wsRelease != nil {
 			is.wsRelease()
 			is.wsRelease = nil

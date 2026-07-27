@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"sort"
 
+	"github.com/wbushyeager/guildhall/internal/archmap"
 	"github.com/wbushyeager/guildhall/internal/engine"
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/levers"
@@ -66,6 +68,27 @@ func (sv *Server) exec(cmd Command) Response {
 			stages[i] = stage.Name
 		}
 		return Response{OK: true, FlowStages: stages}
+	case "arch_map":
+		result := &archmap.Map{}
+		if cmd.Repo != "" {
+			modules, err := archmap.Scan(cmd.Repo)
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			result.Modules = modules
+		}
+		if sv.eng != nil {
+			active := sv.eng.ActiveTouchsets()
+			ids := make([]string, 0, len(active))
+			for id := range active {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			for _, id := range ids {
+				result.Overlays = append(result.Overlays, archmap.Overlay{IssueID: id, Globs: active[id]})
+			}
+		}
+		return Response{OK: true, Arch: result}
 	case "create_issue":
 		fl, ok := sv.flowFor(cmd.Flow)
 		if !ok {
