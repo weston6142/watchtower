@@ -1,0 +1,24 @@
+name: default
+stages:
+  - name: brainstorm
+    agents: [{package: brainstorm}]
+    gate: decision_queue
+    artifacts: []
+  - name: spec
+    agents: [{package: spec-writer}]
+    gate: approve_artifact
+    artifacts: [spec.md]
+  - name: execute
+    agents: [{package: executor}]
+    workspace: worktree
+    gate: auto
+    heavy_slot: true
+    retries: 1
+    artifacts: [diff]
+  - name: review
+    agents: [{package: clean-code-reviewer}, {package: reviewer}, {package: doc-writer}]
+    parallel: true
+    completion: all
+    workspace: worktree
+    gate: auto
+    artifacts: [review.md, docs]
