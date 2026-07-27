@@ -12,6 +12,12 @@ import (
 	"github.com/wbushyeager/guildhall/internal/runner"
 )
 
+// maxLineBytes bounds a single stream-json line; the CLI can emit large
+// assistant messages that exceed bufio.Scanner's default 64KiB limit.
+const maxLineBytes = 1 << 20
+
+// CodeRunner drives a claude CLI subprocess in stream-json mode, translating
+// its output into runner.Result and decision markers into runner.Ask.
 type CodeRunner struct {
 	Bin      string
 	Packages map[string]pkgs.Package
@@ -70,43 +76,43 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	}
 
 	var res runner.Result
+	// abort kills the subprocess and returns the partial result with err set.
+	abort := func(err error) runner.Result {
+		cmd.Process.Kill()
+		res.Err = err
+		return res
+	}
 	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	sc.Buffer(make([]byte, maxLineBytes), maxLineBytes)
 	gotResult := false
 	for sc.Scan() {
 		ev := ParseLine(sc.Bytes())
 		switch ev.Kind {
-		case "init":
+		case KindInit:
 			res.SessionID = ev.SessionID
-		case "assistant_text":
+		case KindAssistantText:
 			if d, found := ExtractDecision(ev.Text); found {
 				reply := make(chan int, 1)
 				select {
 				case asks <- runner.Ask{Decision: d, Reply: reply}:
 				case <-ctx.Done():
-					cmd.Process.Kill()
-					res.Err = ctx.Err()
-					return res
+					return abort(ctx.Err())
 				}
 				var choice int
 				select {
 				case choice = <-reply:
 				case <-ctx.Done():
-					cmd.Process.Kill()
-					res.Err = ctx.Err()
-					return res
+					return abort(ctx.Err())
 				}
 				opt := ""
 				if choice >= 0 && choice < len(d.Options) {
 					opt = d.Options[choice]
 				}
 				if _, err := stdin.Write(UserMessage("Human decision: " + opt)); err != nil {
-					cmd.Process.Kill()
-					res.Err = err
-					return res
+					return abort(err)
 				}
 			}
-		case "result":
+		case KindResult:
 			res.Tokens = ev.Tokens
 			gotResult = true
 			if ev.IsError {

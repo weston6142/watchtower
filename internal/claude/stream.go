@@ -7,6 +7,15 @@ import (
 	"github.com/wbushyeager/guildhall/internal/levers"
 )
 
+// Kinds of StreamEvent produced by ParseLine.
+const (
+	KindInit          = "init"
+	KindAssistantText = "assistant_text"
+	KindResult        = "result"
+	KindOther         = "other"
+)
+
+// StreamEvent is a simplified view of one stream-json line from the claude CLI.
 type StreamEvent struct {
 	Kind      string
 	SessionID string
@@ -35,14 +44,16 @@ type usage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
+// ParseLine parses one stream-json line. Unrecognized or malformed lines
+// yield a KindOther event rather than an error.
 func ParseLine(line []byte) StreamEvent {
 	var r rawLine
 	if err := json.Unmarshal(line, &r); err != nil {
-		return StreamEvent{Kind: "other"}
+		return StreamEvent{Kind: KindOther}
 	}
 	switch {
 	case r.Type == "system" && r.Subtype == "init":
-		return StreamEvent{Kind: "init", SessionID: r.SessionID}
+		return StreamEvent{Kind: KindInit, SessionID: r.SessionID}
 	case r.Type == "assistant" && r.Message != nil:
 		var parts []string
 		for _, c := range r.Message.Content {
@@ -50,7 +61,7 @@ func ParseLine(line []byte) StreamEvent {
 				parts = append(parts, c.Text)
 			}
 		}
-		return StreamEvent{Kind: "assistant_text", Text: strings.Join(parts, "\n")}
+		return StreamEvent{Kind: KindAssistantText, Text: strings.Join(parts, "\n")}
 	case r.Type == "result":
 		u := r.Usage
 		if u == nil && r.Message != nil {
@@ -60,9 +71,9 @@ func ParseLine(line []byte) StreamEvent {
 		if u != nil {
 			tok = u.InputTokens + u.OutputTokens
 		}
-		return StreamEvent{Kind: "result", Tokens: tok, IsError: r.IsError}
+		return StreamEvent{Kind: KindResult, Tokens: tok, IsError: r.IsError}
 	default:
-		return StreamEvent{Kind: "other"}
+		return StreamEvent{Kind: KindOther}
 	}
 }
 
@@ -76,6 +87,8 @@ type decisionMarker struct {
 	} `json:"guildhall_decision"`
 }
 
+// ExtractDecision scans assistant text for a guildhall_decision marker line
+// and returns the parsed decision if a valid one is found.
 func ExtractDecision(text string) (levers.Decision, bool) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -98,6 +111,8 @@ func ExtractDecision(text string) (levers.Decision, bool) {
 	return levers.Decision{}, false
 }
 
+// UserMessage encodes text as a stream-json user message line (newline-terminated),
+// ready to write to the claude CLI's stdin.
 func UserMessage(text string) []byte {
 	b, _ := json.Marshal(map[string]any{
 		"type": "user",

@@ -8,6 +8,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Package is an agent package: a system prompt plus CLI options,
+// loaded from a directory containing package.yaml and prompt.md.
 type Package struct {
 	Name         string   `yaml:"-"`
 	Prompt       string   `yaml:"-"`
@@ -16,6 +18,7 @@ type Package struct {
 	MaxTurns     int      `yaml:"max_turns"`
 }
 
+// LoadDir loads all agent packages under root, keyed by directory name.
 func LoadDir(root string) (map[string]Package, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -31,6 +34,7 @@ func LoadDir(root string) (map[string]Package, error) {
 		promptPath := filepath.Join(dir, "prompt.md")
 		cfg, err := os.ReadFile(cfgPath)
 		if err != nil {
+			// Directories without a readable package.yaml are not packages; skip them.
 			continue
 		}
 		prompt, err := os.ReadFile(promptPath)

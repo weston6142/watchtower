@@ -8,10 +8,14 @@ import (
 	"strings"
 )
 
+// Provider hands out isolated working copies of a repo, one per issue.
+// Acquire returns the workspace path and a release func that tears it down.
 type Provider interface {
 	Acquire(issueID string) (path string, release func() error, err error)
 }
 
+// GitWorktree provisions workspaces with `git worktree` under .worktrees/,
+// creating a branch named issue/<id> per workspace.
 type GitWorktree struct{ Repo string }
 
 func (g GitWorktree) Acquire(issueID string) (string, func() error, error) {
@@ -31,6 +35,7 @@ func (g GitWorktree) Acquire(issueID string) (string, func() error, error) {
 	return path, release, nil
 }
 
+// Treehouse provisions workspaces via the `treehouse` CLI's lease mechanism.
 type Treehouse struct{ Repo string }
 
 func (t Treehouse) Acquire(issueID string) (string, func() error, error) {
@@ -55,6 +60,8 @@ func (t Treehouse) Acquire(issueID string) (string, func() error, error) {
 	return path, release, nil
 }
 
+// Detect prefers treehouse when its binary is on PATH, falling back to
+// plain git worktrees otherwise.
 func Detect(repo string) Provider {
 	if _, err := exec.LookPath("treehouse"); err == nil {
 		return Treehouse{Repo: repo}
