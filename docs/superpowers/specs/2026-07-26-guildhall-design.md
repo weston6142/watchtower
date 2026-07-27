@@ -61,7 +61,7 @@ The engine knows nothing about "brainstorming" — only stages, gates, artifacts
 
 ## Autonomy levers
 
-- **Per-stage matrix per issue**: rows = stages (plus an issue-creation row), columns = YOLO / Regular / Strict. YOLO ≈ auto-accept recommendations; Strict ≈ every question and artifact gated on the human; Regular between.
+- **Per-stage matrix per issue**: rows = stages, columns = YOLO / Regular / Strict. YOLO ≈ auto-accept recommendations; Strict ≈ every question and artifact gated on the human; Regular between.
 - **Presets** (YOLO / Regular / Strict) fill the whole matrix in one keypress; any cell is individually overridable. A global default matrix applies to new issues.
 - **Escalation** (what still reaches the human in permissive cells) is three-layered:
   1. **Built-in floor** — always escalates regardless of lever: destructive migrations, code deletion beyond thresholds, auth/security changes, spending money, public API breaks.
