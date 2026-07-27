@@ -43,7 +43,6 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
-		"--dangerously-skip-permissions=false",
 		"--append-system-prompt", pkg.Prompt,
 	}
 	if len(pkg.AllowedTools) > 0 {
