@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/wbushyeager/guildhall/internal/evidence"
 	"github.com/wbushyeager/guildhall/internal/projection"
 	"github.com/wbushyeager/guildhall/internal/proto"
 )
@@ -63,20 +64,96 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 }
 
 // renderToast draws the raised decision as a self-contained modal string.
-func renderToast(d projection.DecisionView, id Identity, width int) string {
+func renderToast(d projection.DecisionView, id Identity, streak, width int) string {
 	lines := []string{
 		fmt.Sprintf("DECISION [%d] %s %s", d.ID, id.Tag, d.Stage),
 		d.Question,
+	}
+	if d.Why != "" {
+		lines = append(lines, "why: "+d.Why)
 	}
 	for i, option := range d.Options {
 		mark := "  "
 		if i == d.Recommended {
 			mark = "★ "
 		}
-		lines = append(lines, fmt.Sprintf("%s%s (%d)", mark, option, i))
+		line := fmt.Sprintf("%s%s (%d)", mark, option, i)
+		if i < len(d.Consequences) && d.Consequences[i] != "" {
+			line += " → " + d.Consequences[i]
+		}
+		lines = append(lines, line)
+	}
+	if d.Reversible != "" {
+		lines = append(lines, "reversible: "+d.Reversible)
+	}
+	if streak >= 3 {
+		lines = append(lines, "", fmt.Sprintf("you've accepted %d recommendations in a row without opening evidence", streak))
 	}
 	lines = append(lines, "", "y accept ★ · n choose · o evidence · esc dismiss")
 	content := boundedLines(lines, max(1, width-4))
 	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(id.Color)).Padding(1)
 	return style.Render(content)
+}
+
+func renderEvidence(b evidence.Bundle, title string, width int) string {
+	return renderEvidenceDetails(b, title, "", nil, width)
+}
+
+func renderEvidenceDetails(b evidence.Bundle, title, lastError string, artifacts []string, width int) string {
+	lines := []string{
+		"EVIDENCE · " + title,
+		fmt.Sprintf("%d files · +%d · −%d", len(b.Files), b.Added, b.Removed),
+	}
+	if b.Biggest != "" {
+		lines = append(lines, "biggest: "+b.Biggest)
+	}
+	if len(b.AreaWeight) > 0 {
+		type areaStat struct {
+			name   string
+			weight int
+		}
+		areas := make([]areaStat, 0, len(b.AreaWeight))
+		for name, weight := range b.AreaWeight {
+			areas = append(areas, areaStat{name: name, weight: weight})
+		}
+		sort.Slice(areas, func(i, j int) bool {
+			if areas[i].weight == areas[j].weight {
+				return areas[i].name < areas[j].name
+			}
+			return areas[i].weight > areas[j].weight
+		})
+		lines = append(lines, "areas:")
+		for _, area := range areas[:min(5, len(areas))] {
+			lines = append(lines, fmt.Sprintf("  %s %d", area.name, area.weight))
+		}
+	}
+	if lastError != "" {
+		lines = append(lines, "error: "+lastError)
+	} else if len(artifacts) > 0 {
+		lines = append(lines, "tests: see available review artifacts")
+	} else {
+		lines = append(lines, "tests: no test result artifact available")
+	}
+	lines = append(lines, "enter diff · esc back")
+	return boundedLines(lines, width)
+}
+
+func renderEvidenceFallback(d projection.DecisionView, det *proto.IssueDetail, width int) string {
+	lines := []string{"EVIDENCE · " + d.IssueID, "no evidence bundle yet"}
+	if len(d.Paths) > 0 {
+		lines = append(lines, "paths:")
+		for _, path := range d.Paths {
+			lines = append(lines, "  "+path)
+		}
+	}
+	if det != nil && len(det.Artifacts) > 0 {
+		lines = append(lines, "available artifacts:")
+		for _, artifact := range det.Artifacts {
+			lines = append(lines, "  "+artifact)
+		}
+	} else {
+		lines = append(lines, "available artifacts: none")
+	}
+	lines = append(lines, "esc back")
+	return boundedLines(lines, width)
 }

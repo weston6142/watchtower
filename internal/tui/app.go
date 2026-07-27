@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 
 	"github.com/wbushyeager/guildhall/internal/archmap"
 	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/wbushyeager/guildhall/internal/evidence"
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/projection"
 	"github.com/wbushyeager/guildhall/internal/proto"
@@ -23,31 +27,37 @@ type Focus struct {
 }
 
 type Model struct {
-	State    *projection.State
-	Overview *proto.Overview
-	Flow     flow.Flow
-	Ids      map[string]Identity
-	Focus    Focus
-	Toast    *projection.DecisionView
-	Detail   *proto.IssueDetail
-	Arch     *archmap.Map
-	Repo     string
-	Width    int
-	Height   int
-	Err      string
+	State         *projection.State
+	Overview      *proto.Overview
+	Flow          flow.Flow
+	Ids           map[string]Identity
+	Focus         Focus
+	Toast         *projection.DecisionView
+	Detail        *proto.IssueDetail
+	Evidence      *evidence.Bundle
+	EvidenceTitle string
+	Arch          *archmap.Map
+	Repo          string
+	Width         int
+	Height        int
+	Err           string
 
-	client        *proto.Client
-	stages        []string
-	lastSeq       int64
-	dismissed     map[int64]bool
-	optionMode    bool
-	pager         pagerState
-	openArtifacts bool
-	archMode      string
-	help          bool
-	aliases       map[string]string
-	reducedMotion bool
-	ticks         int
+	client           *proto.Client
+	stages           []string
+	lastSeq          int64
+	dismissed        map[int64]bool
+	optionMode       bool
+	pager            pagerState
+	openArtifacts    bool
+	openEvidence     bool
+	evidenceDecision *projection.DecisionView
+	evidenceOpened   map[int64]bool
+	acceptStreak     int
+	archMode         string
+	help             bool
+	aliases          map[string]string
+	reducedMotion    bool
+	ticks            int
 }
 
 type Msg struct{ Events []core.Event }
@@ -83,13 +93,14 @@ func NewModel(client *proto.Client, stages []string) Model {
 		flowStages[i] = flow.Stage{Name: name}
 	}
 	return Model{
-		State:     projection.NewState(),
-		Flow:      flow.Flow{Name: "default", Stages: flowStages},
-		Ids:       map[string]Identity{},
-		Focus:     Focus{},
-		client:    client,
-		stages:    append([]string(nil), stages...),
-		dismissed: map[int64]bool{},
+		State:          projection.NewState(),
+		Flow:           flow.Flow{Name: "default", Stages: flowStages},
+		Ids:            map[string]Identity{},
+		Focus:          Focus{},
+		client:         client,
+		stages:         append([]string(nil), stages...),
+		dismissed:      map[int64]bool{},
+		evidenceOpened: map[int64]bool{},
 	}
 }
 
@@ -140,6 +151,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.Detail = msg.detail
+		if m.openEvidence && msg.detail != nil {
+			m.EvidenceTitle = msg.detail.Issue.ID + " " + msg.detail.Issue.Title
+			if path := latestEvidencePath(msg.detail.Artifacts); path != "" {
+				bundle, err := readEvidenceBundle(path)
+				if err != nil {
+					m.Err = err.Error()
+					m.Evidence = nil
+				} else {
+					m.Evidence = &bundle
+				}
+			} else {
+				m.Evidence = nil
+			}
+			m.openEvidence = false
+			return m, nil
+		}
 		if m.openArtifacts && msg.detail != nil {
 			m.pager = pagerState{Mode: "artifacts", Files: append([]string(nil), msg.detail.Artifacts...)}
 			m.openArtifacts = false
@@ -193,11 +220,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd := m.updatePagerKey(key)
 			return m, cmd
 		}
+		if m.Evidence != nil || m.evidenceDecision != nil {
+			switch key {
+			case "esc":
+				m.Evidence = nil
+				m.evidenceDecision = nil
+				m.EvidenceTitle = ""
+			case "enter":
+				return m, m.openDiffPager()
+			}
+			return m, nil
+		}
 		if m.Toast != nil {
 			switch {
 			case key == "y":
+				if !m.evidenceOpened[m.Toast.ID] {
+					m.acceptStreak++
+				}
 				return m, m.answerDecision(m.Toast.Recommended)
 			case key == "n":
+				m.acceptStreak = 0
 				m.optionMode = true
 				return m, nil
 			case m.optionMode && len(key) == 1 && key >= "0" && key <= "9":
@@ -209,12 +251,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.dismissToast()
 				return m, nil
 			case key == "o":
-				cmd := m.openArtifactsFor(m.Toast.IssueID)
+				m.acceptStreak = 0
+				cmd := m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
 				return m, cmd
 			}
 			return m, nil
 		}
 		if (key == "enter" || key == "o") && m.Focus.Issue != "" {
+			if key == "o" {
+				m.acceptStreak = 0
+				return m, m.openEvidenceFor(m.Focus.Issue, 0)
+			}
 			cmd := m.openArtifactsFor(m.Focus.Issue)
 			return m, cmd
 		}
@@ -259,6 +306,84 @@ func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
 		m.dismissToast()
 	}
 	return m.fetchDetail(issueID)
+}
+
+func (m *Model) openEvidenceFor(issueID string, decisionID int64) tea.Cmd {
+	m.Focus = focusIssue(m.State, m.stages, issueID)
+	m.Detail = nil
+	m.Evidence = nil
+	m.EvidenceTitle = issueID
+	m.openEvidence = true
+	if m.evidenceOpened == nil {
+		m.evidenceOpened = map[int64]bool{}
+	}
+	if decisionID != 0 {
+		decision := m.State.Decisions[decisionID]
+		m.evidenceDecision = &decision
+		m.evidenceOpened[decisionID] = true
+	} else {
+		for id, decision := range m.State.Decisions {
+			if decision.IssueID == issueID {
+				decisionCopy := decision
+				m.evidenceDecision = &decisionCopy
+				m.evidenceOpened[id] = true
+				break
+			}
+		}
+	}
+	if m.Toast != nil && m.Toast.IssueID == issueID {
+		m.dismissToast()
+	}
+	if m.client == nil {
+		m.openEvidence = false
+		return nil
+	}
+	return m.fetchDetail(issueID)
+}
+
+func latestEvidencePath(paths []string) string {
+	for i := len(paths) - 1; i >= 0; i-- {
+		if filepath.Base(paths[i]) == "evidence.json" {
+			return paths[i]
+		}
+	}
+	return ""
+}
+
+// Evidence files are local daemon artifacts; the current TUI intentionally
+// reads them directly because the daemon and client run on the same machine.
+func readEvidenceBundle(path string) (evidence.Bundle, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return evidence.Bundle{}, err
+	}
+	var bundle evidence.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		return evidence.Bundle{}, err
+	}
+	return bundle, nil
+}
+
+func (m *Model) openDiffPager() tea.Cmd {
+	if m.Detail == nil {
+		return nil
+	}
+	for i := len(m.Detail.Artifacts) - 1; i >= 0; i-- {
+		if filepath.Base(m.Detail.Artifacts[i]) != "diff.patch" {
+			continue
+		}
+		loaded, err := readArtifact(pagerState{Mode: "artifacts", Files: []string{m.Detail.Artifacts[i]}})
+		if err != nil {
+			m.Err = err.Error()
+			return nil
+		}
+		m.Evidence = nil
+		m.evidenceDecision = nil
+		m.pager = loaded
+		return nil
+	}
+	m.Err = "no diff artifact available"
+	return nil
 }
 
 func (m *Model) updatePagerKey(key string) tea.Cmd {
@@ -417,8 +542,18 @@ func (m Model) View() string {
 		tower = renderArtifactList(m.pager, m.Ids[m.Focus.Issue], towerWidth, m.Height)
 	} else if m.pager.Mode == "pager" {
 		tower = renderPager(m.pager, towerWidth, m.Height)
+	} else if m.Evidence != nil {
+		lastError := ""
+		var artifacts []string
+		if m.Detail != nil {
+			lastError = m.Detail.LastError
+			artifacts = m.Detail.Artifacts
+		}
+		tower = renderEvidenceDetails(*m.Evidence, m.EvidenceTitle, lastError, artifacts, towerWidth)
+	} else if m.evidenceDecision != nil {
+		tower = renderEvidenceFallback(*m.evidenceDecision, m.Detail, towerWidth)
 	} else if m.Toast != nil {
-		tower = renderToast(*m.Toast, m.Ids[m.Toast.IssueID], towerWidth)
+		tower = renderToast(*m.Toast, m.Ids[m.Toast.IssueID], m.acceptStreak, towerWidth)
 	}
 	var body string
 	if m.archMode == "full" {
