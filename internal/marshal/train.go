@@ -2,10 +2,18 @@ package marshal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 )
+
+// errMergeConflict tags failures that a conflict resolver may repair;
+// its message is part of the error strings surfaced to humans.
+var errMergeConflict = errors.New("merge conflict")
+
+// maxTestOutputBytes caps failing test output embedded in a Land error.
+const maxTestOutputBytes = 2000
 
 // Train lands issue branches on the repo's default branch, serially.
 type Train struct {
@@ -39,14 +47,14 @@ func (tr *Train) Land(ctx context.Context, issueID, branch string) error {
 	attempt := func() error {
 		if out, err := tr.git("merge", "--no-ff", "--no-edit", branch); err != nil {
 			_, _ = tr.git("merge", "--abort")
-			return fmt.Errorf("merge conflict: %s", out)
+			return fmt.Errorf("%w: %s", errMergeConflict, out)
 		}
 		if len(tr.TestCmd) > 0 {
 			cmd := exec.CommandContext(ctx, tr.TestCmd[0], tr.TestCmd[1:]...)
 			cmd.Dir = tr.Repo
 			if out, err := cmd.CombinedOutput(); err != nil {
 				_, _ = tr.git("reset", "--hard", pre)
-				return fmt.Errorf("tests failed after merge: %v: %s", err, truncate(string(out), 2000))
+				return fmt.Errorf("tests failed after merge: %v: %s", err, truncate(string(out), maxTestOutputBytes))
 			}
 		}
 		return nil
@@ -55,7 +63,7 @@ func (tr *Train) Land(ctx context.Context, issueID, branch string) error {
 	if err == nil {
 		return nil
 	}
-	if tr.Resolve == nil || !strings.Contains(err.Error(), "merge conflict") {
+	if tr.Resolve == nil || !errors.Is(err, errMergeConflict) {
 		return err
 	}
 	if rerr := tr.Resolve(ctx, issueID, branch); rerr != nil {

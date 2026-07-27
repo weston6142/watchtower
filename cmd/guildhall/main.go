@@ -229,25 +229,13 @@ func runDaemon(args []string) {
 			if err != nil {
 				return fmt.Errorf("checkout: %v: %s", err, out)
 			}
-			asks := make(chan runner.Ask)
-			go func() {
-				for a := range asks {
-					a.Reply <- a.Decision.Recommended
-				}
-			}()
-			res := <-run.Run(ctx, issueID, "conflict-repair", "conflict-resolver", wt, asks)
+			res := <-run.Run(ctx, issueID, "conflict-repair", "conflict-resolver", wt, autoAnswerAsks())
 			return res.Err
 		}
 		train = &marshal.Train{Repo: *repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve}
 		lib = &librarian.Librarian{MemoryDir: filepath.Join(*repo, "docs", "guildhall")}
 		reconcile = func(ctx context.Context, issueID string) error {
-			asks := make(chan runner.Ask)
-			go func() {
-				for a := range asks {
-					a.Reply <- a.Decision.Recommended
-				}
-			}()
-			res := <-run.Run(ctx, issueID, "librarian", "librarian", *repo, asks)
+			res := <-run.Run(ctx, issueID, "librarian", "librarian", *repo, autoAnswerAsks())
 			return res.Err
 		}
 	}
@@ -259,15 +247,14 @@ func runDaemon(args []string) {
 		Librarian: lib, Reconcile: reconcile,
 		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
 	})
+	fileProposal := func(issueID string, p runner.Proposal) {
+		eng.FileProposal(issueID, p.Title, p.Body)
+	}
 	switch r := run.(type) {
 	case *claude.CodeRunner:
-		r.OnProposal = func(issueID string, p runner.Proposal) {
-			eng.FileProposal(issueID, p.Title, p.Body)
-		}
+		r.OnProposal = fileProposal
 	case *runner.FakeRunner:
-		r.OnProposal = func(issueID string, p runner.Proposal) {
-			eng.FileProposal(issueID, p.Title, p.Body)
-		}
+		r.OnProposal = fileProposal
 	}
 	sock := filepath.Join(*data, "guildhall.sock")
 	os.Remove(sock)
@@ -279,6 +266,19 @@ func runDaemon(args []string) {
 	srv := proto.NewServer(eng, st)
 	srv.SetFlows(flows)
 	fatal(srv.Serve(l))
+}
+
+// autoAnswerAsks returns an Ask channel whose decisions are answered with the
+// agent's own recommendation — for maintenance runs (conflict repair, doc
+// reconcile) that never escalate to a human.
+func autoAnswerAsks() chan runner.Ask {
+	asks := make(chan runner.Ask)
+	go func() {
+		for a := range asks {
+			a.Reply <- a.Decision.Recommended
+		}
+	}()
+	return asks
 }
 
 func splitTestCmd(s string) []string {

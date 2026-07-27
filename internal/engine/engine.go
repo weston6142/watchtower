@@ -387,6 +387,9 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 			return err
 		}
 	}
+	// A completed "plan" stage may leave a touchset.json declaring which files
+	// the implementation will touch; register it so the marshal can sequence
+	// overlapping merges. Absence of the file just means no sequencing.
 	if e.cfg.Marshal != nil && st.Name == "plan" {
 		if ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json")); err == nil {
 			e.cfg.Marshal.PlanApproved(is.id, ts)
@@ -450,9 +453,6 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 			}
 		}
 		e.emit(core.EvIssueMerged, id, map[string]string{"branch": is.branch})
-		if e.cfg.Marshal != nil {
-			e.cfg.Marshal.Merged(is.id)
-		}
 	}
 	if e.cfg.Marshal != nil {
 		e.cfg.Marshal.Merged(is.id)
