@@ -412,8 +412,8 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 	if e.cfg.Marshal != nil && st.Name == "plan" {
 		if ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json")); err == nil {
 			e.mu.Lock()
-			copy := ts
-			is.activeTouchset = &copy
+			snapshot := ts
+			is.activeTouchset = &snapshot
 			e.mu.Unlock()
 			e.cfg.Marshal.PlanApproved(is.id, ts)
 		}

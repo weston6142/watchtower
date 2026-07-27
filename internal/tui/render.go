@@ -17,20 +17,12 @@ var (
 	themeGood  = lipgloss.NewStyle().Foreground(lipgloss.Color("#98c379"))
 )
 
-func floorStages(stages []string) []string {
-	return append([]string(nil), stages...)
-}
-
 // floorCards returns issue IDs on a rendered stage floor in creation order.
 func floorCards(st *projection.State, stages []string, floor int) []string {
-	if st == nil || floor <= 0 {
+	if st == nil || floor <= 0 || floor > len(stages) {
 		return nil
 	}
-	ordered := floorStages(stages)
-	if floor > len(ordered) {
-		return nil
-	}
-	stage := ordered[floor-1]
+	stage := stages[floor-1]
 	var out []string
 	for _, id := range st.Order {
 		iv := st.Issues[id]
@@ -66,15 +58,18 @@ func issueGlyph(iv *projection.IssueView) string {
 	}
 }
 
+// progressBarWidth is the number of cells in a card's stage-progress bar.
+const progressBarWidth = 5
+
 func progressBar(iv *projection.IssueView, total int) string {
 	if total <= 0 {
-		return "░░░░░"
+		return strings.Repeat("░", progressBarWidth)
 	}
-	filled := len(iv.Completed) * 5 / total
-	if filled > 5 {
-		filled = 5
+	filled := len(iv.Completed) * progressBarWidth / total
+	if filled > progressBarWidth {
+		filled = progressBarWidth
 	}
-	return strings.Repeat("█", filled) + strings.Repeat("░", 5-filled)
+	return strings.Repeat("█", filled) + strings.Repeat("░", progressBarWidth-filled)
 }
 
 func card(iv *projection.IssueView, identity Identity, focused bool, stages int, ids map[string]Identity) string {
@@ -163,9 +158,8 @@ func warRoom(st *projection.State, ids map[string]Identity) string {
 // renderTower draws the war room and stage floors from top to bottom.
 func renderTower(st *projection.State, stages []string, ids map[string]Identity, focus Focus, width int) string {
 	lines := []string{warRoom(st, ids)}
-	for floor, stage := range floorStages(stages) {
-		floorIndex := floor + 1
-		issueIDs := floorCards(st, stages, floorIndex)
+	for floor, stage := range stages {
+		issueIDs := floorCards(st, stages, floor+1)
 		cards := make([]string, 0, len(issueIDs))
 		for _, id := range issueIDs {
 			iv := st.Issues[id]

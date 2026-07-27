@@ -23,7 +23,8 @@ type Map struct {
 }
 
 func skippedDir(name string) bool {
-	return strings.HasPrefix(name, ".") || name == ".worktrees" || name == "node_modules" || name == "vendor"
+	// HasPrefix(".") also covers .git and .worktrees.
+	return strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor"
 }
 
 func countFiles(root string) (int, error) {

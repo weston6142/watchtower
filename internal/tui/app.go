@@ -182,20 +182,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if key == "enter" && m.Focus.Issue != "" {
+		if (key == "enter" || key == "o") && m.Focus.Issue != "" {
 			cmd := m.openArtifactsFor(m.Focus.Issue)
 			return m, cmd
 		}
-		if key == "o" && m.Focus.Issue != "" {
-			cmd := m.openArtifactsFor(m.Focus.Issue)
-			return m, cmd
+		if key == "a" {
+			m.archMode = "pane"
+			return m, m.fetchArch()
 		}
-		if key == "a" || key == "A" {
-			if key == "A" {
-				m.archMode = "full"
-			} else {
-				m.archMode = "pane"
-			}
+		if key == "A" {
+			m.archMode = "full"
 			return m, m.fetchArch()
 		}
 		moved := moveFocus(m.Focus, m.State, m.stages, key)
@@ -336,8 +332,8 @@ func (m Model) applyEvents(evs []core.Event) Model {
 			if m.dismissed[id] || (selected != nil && id >= selected.ID) {
 				continue
 			}
-			copy := decision
-			selected = &copy
+			candidate := decision
+			selected = &candidate
 		}
 		m.Toast = selected
 	}
