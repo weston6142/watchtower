@@ -32,4 +32,12 @@ type Response struct {
 	Proposals []store.ProposalRow      `json:"proposals,omitempty"`
 	Issues    []store.IssueRow         `json:"issues,omitempty"`
 	Events    []core.Event             `json:"events,omitempty"`
+	Detail    *IssueDetail             `json:"detail,omitempty"`
+}
+
+type IssueDetail struct {
+	Issue     store.IssueRow   `json:"issue"`
+	Runs      []store.StageRun `json:"runs"`
+	Tokens    int              `json:"tokens"`
+	Artifacts []string         `json:"artifacts"`
 }

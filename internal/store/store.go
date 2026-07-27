@@ -188,6 +188,41 @@ func (s *Store) IssueTokens(issueID string) (int, error) {
 	return n, err
 }
 
+// ArtifactPaths returns artifact paths emitted for an issue, in event order.
+func (s *Store) ArtifactPaths(issueID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(
+		`SELECT payload FROM events WHERE type=? AND issue_id=? ORDER BY seq`,
+		string(core.EvArtifactProduced), issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	seen := map[string]struct{}{}
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var artifact struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(payload), &artifact); err != nil {
+			return nil, err
+		}
+		if artifact.Path != "" {
+			if _, ok := seen[artifact.Path]; ok {
+				continue
+			}
+			seen[artifact.Path] = struct{}{}
+			out = append(out, artifact.Path)
+		}
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

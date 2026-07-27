@@ -90,6 +90,38 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, Issues: issues}
+	case "issue_detail":
+		issues, err := sv.st.Issues()
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		var issue store.IssueRow
+		found := false
+		for _, candidate := range issues {
+			if candidate.ID == cmd.IssueID {
+				issue = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			return Response{Error: "unknown issue " + cmd.IssueID}
+		}
+		runs, err := sv.st.StageRuns(cmd.IssueID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		tokens, err := sv.st.IssueTokens(cmd.IssueID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		artifacts, err := sv.st.ArtifactPaths(cmd.IssueID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Detail: &IssueDetail{
+			Issue: issue, Runs: runs, Tokens: tokens, Artifacts: artifacts,
+		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)
 		if err != nil {

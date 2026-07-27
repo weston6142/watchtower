@@ -107,6 +107,11 @@ func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, prio
 	id := fmt.Sprintf("GH-%d", e.nextID)
 	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority}
 	e.mu.Unlock()
+	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
+		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Priority: priority,
+	}); err != nil {
+		return "", err
+	}
 	e.emit(core.EvIssueCreated, id, map[string]any{
 		"title": title, "flow": flowName, "body": body, "priority": priority})
 	return id, nil

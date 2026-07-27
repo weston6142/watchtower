@@ -28,7 +28,7 @@ func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 		"execute/executor":           {Artifacts: map[string]string{"diff": ""}},
 		"review/clean-code-reviewer": {Artifacts: map[string]string{"review.md": ""}},
 		"review/reviewer":            {},
-		"review/doc-writer":           {Artifacts: map[string]string{"docs": ""}},
+		"review/doc-writer":          {Artifacts: map[string]string{"docs": ""}},
 	}}
 	e := engine.New(engine.Config{Store: s, Runner: fr, Pool: slots.NewPool(2),
 		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir()})
@@ -92,5 +92,13 @@ func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 			t.Fatalf("only %d stages completed", completed)
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+
+	r, err = c.Do(Command{Op: "issue_detail", IssueID: id})
+	if err != nil || !r.OK || r.Detail == nil || r.Detail.Issue.ID != id {
+		t.Fatalf("issue detail failed: %+v %v", r, err)
+	}
+	if len(r.Detail.Runs) != 6 {
+		t.Fatalf("want 6 stage runs, got %d", len(r.Detail.Runs))
 	}
 }
