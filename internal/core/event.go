@@ -22,6 +22,7 @@ const (
 	EvProposalAccepted     EventType = "proposal_accepted"
 	EvProposalRejected     EventType = "proposal_rejected"
 	EvIssueMerged          EventType = "issue_merged"
+	EvMergeSequenced       EventType = "merge_sequenced"
 	EvArtifactProduced     EventType = "artifact_produced"
 	EvIssueCompleted       EventType = "issue_completed"
 	EvBudgetExceeded       EventType = "budget_exceeded"

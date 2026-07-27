@@ -31,15 +31,16 @@ type AgentRef struct {
 }
 
 type Stage struct {
-	Name       string     `yaml:"name"`
-	Agents     []AgentRef `yaml:"agents"`
-	Parallel   bool       `yaml:"parallel"`
-	Completion string     `yaml:"completion"`
-	Workspace  string     `yaml:"workspace"`
-	Gate       Gate       `yaml:"gate"`
-	Artifacts  []string   `yaml:"artifacts"`
-	Retries    int        `yaml:"retries"`
-	HeavySlot  bool       `yaml:"heavy_slot"`
+	Name         string     `yaml:"name"`
+	Agents       []AgentRef `yaml:"agents"`
+	Parallel     bool       `yaml:"parallel"`
+	Completion   string     `yaml:"completion"`
+	Workspace    string     `yaml:"workspace"`
+	Gate         Gate       `yaml:"gate"`
+	Artifacts    []string   `yaml:"artifacts"`
+	Retries      int        `yaml:"retries"`
+	HeavySlot    bool       `yaml:"heavy_slot"`
+	MergeBarrier bool       `yaml:"merge_barrier"`
 }
 
 type Flow struct {

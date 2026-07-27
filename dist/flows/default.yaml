@@ -30,5 +30,6 @@ stages:
   - name: merge
     agents: [{package: reviewer}]
     workspace: readonly
+    merge_barrier: true
     gate: approve_artifact
     artifacts: [merge-report.md]

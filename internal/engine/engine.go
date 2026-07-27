@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/wbushyeager/guildhall/internal/core"
@@ -13,6 +15,7 @@ import (
 	"github.com/wbushyeager/guildhall/internal/runner"
 	"github.com/wbushyeager/guildhall/internal/slots"
 	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/wbushyeager/guildhall/internal/touchset"
 	"github.com/wbushyeager/guildhall/internal/workspace"
 )
 
@@ -31,6 +34,10 @@ type Config struct {
 
 type Sequencer interface {
 	BlockedBehind(string) int
+	PlanApproved(string, touchset.Set)
+	ReadyToMerge(context.Context, string) error
+	Merged(string)
+	Aborted(string)
 }
 
 type PendingDecision struct {
@@ -53,6 +60,7 @@ type issueState struct {
 	matrix       levers.Matrix
 	priority     int
 	wsPath       string
+	branch       string
 	wsRelease    func() error
 	budgetWaived bool
 }
@@ -232,10 +240,7 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	// "none" stages share one per-issue dir so artifacts flow between stages
 	// (brainstorm.md -> spec stage, etc.); worktree/readonly stages share the
 	// acquired workspace for the same reason.
-	workdir := filepath.Join(e.cfg.DataDir, is.id)
-	if st.Workspace != "none" && is.wsPath != "" {
-		workdir = is.wsPath
-	}
+	workdir := e.stageWorkdir(is, st)
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return err
 	}
@@ -320,7 +325,20 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	return nil
 }
 
+func (e *Engine) stageWorkdir(is *issueState, st flow.Stage) string {
+	workdir := filepath.Join(e.cfg.DataDir, is.id)
+	if st.Workspace != "none" && is.wsPath != "" {
+		workdir = is.wsPath
+	}
+	return workdir
+}
+
 func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) error {
+	if st.MergeBarrier && e.cfg.Marshal != nil {
+		if err := e.cfg.Marshal.ReadyToMerge(ctx, is.id); err != nil {
+			return err
+		}
+	}
 	if st.HeavySlot {
 		e.emit(core.EvSlotQueued, is.id, map[string]string{"stage": st.Name})
 		release, err := e.cfg.Pool.Acquire(ctx, is.id, is.priority)
@@ -359,6 +377,11 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 			return err
 		}
 	}
+	if e.cfg.Marshal != nil {
+		if ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json")); err == nil {
+			e.cfg.Marshal.PlanApproved(is.id, ts)
+		}
+	}
 	e.emit(core.EvStageCompleted, is.id, map[string]string{"stage": st.Name})
 	return nil
 }
@@ -371,10 +394,14 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 		return fmt.Errorf("unknown issue %s", id)
 	}
 	f := e.cfg.Flows[is.flowName]
+	aborted := true
 	defer func() {
 		if is.wsRelease != nil {
 			is.wsRelease()
 			is.wsRelease = nil
+		}
+		if aborted && e.cfg.Marshal != nil {
+			e.cfg.Marshal.Aborted(id)
 		}
 	}()
 	for _, st := range f.Stages {
@@ -385,6 +412,9 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 				return err
 			}
 			is.wsPath, is.wsRelease = path, release
+			if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
+				is.branch = strings.TrimSpace(string(out))
+			}
 		}
 		if err := e.checkBudget(is, st.Name); err != nil {
 			return err
@@ -393,6 +423,7 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	aborted = false
 	e.emit(core.EvIssueCompleted, id, nil)
 	return nil
 }
