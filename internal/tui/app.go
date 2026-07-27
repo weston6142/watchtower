@@ -60,6 +60,8 @@ type Model struct {
 	doorLines        []string
 	events           []core.Event
 	archMode         string
+	archSel          int
+	archFilter       string
 	help             bool
 	modal            *modalState
 	confirm          *confirmState
@@ -355,11 +357,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.archMode != "" {
 			if key == "esc" || key == "a" {
 				m.archMode = ""
+				m.archFilter = ""
 				return m, nil
 			}
 			if key == "A" {
 				m.archMode = "full"
 				return m, m.fetchArch()
+			}
+			switch key {
+			case "j":
+				m.archSel++
+			case "k":
+				m.archSel = max(0, m.archSel-1)
+			default:
+				if len(key) == 1 && key >= "1" && key <= "9" {
+					index := int(key[0] - '1')
+					if m.State != nil && index < len(m.State.Order) {
+						m.archFilter = m.State.Order[index]
+					}
+				}
 			}
 			return m, nil
 		}
@@ -1018,11 +1034,11 @@ func (m Model) View() string {
 	}
 	var body string
 	if m.archMode == "full" {
-		body = renderArch(m.Arch, m.Ids, layoutWidth, m.Height)
+		body = renderArchWithState(m.Arch, m.State, m.Ids, layoutWidth, m.Height, m.archSel, m.archFilter)
 	} else {
 		right := renderRail(m.State, m.Ids, m.Detail, railWidth)
 		if m.archMode == "pane" {
-			right = renderArch(m.Arch, m.Ids, railWidth, m.Height)
+			right = renderArchWithState(m.Arch, m.State, m.Ids, railWidth, m.Height, m.archSel, m.archFilter)
 		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top, tower, right)
 	}

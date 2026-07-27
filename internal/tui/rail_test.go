@@ -9,6 +9,8 @@ import (
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/evidence"
 	"github.com/wbushyeager/guildhall/internal/projection"
+	"github.com/wbushyeager/guildhall/internal/proto"
+	"github.com/wbushyeager/guildhall/internal/store"
 )
 
 func TestRenderToastMarksRecommended(t *testing.T) {
@@ -68,5 +70,30 @@ func TestRenderRailShowsQueueOrder(t *testing.T) {
 	out := renderRail(m.State, m.Ids, nil, 40)
 	if strings.Index(out, "first?") > strings.Index(out, "second?") {
 		t.Fatalf("queue order wrong:\n%s", out)
+	}
+}
+
+func TestRenderRailFocusV2(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	det := &proto.IssueDetail{
+		Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter", State: "failed", Flow: "default"},
+		Tokens:    740,
+		Budget:    1000,
+		Dollars:   2.10,
+		LastError: "tests failed",
+		Attempt:   3,
+		AttemptOf: 4,
+		Levers:    map[string]string{"brainstorm": "yolo", "spec": "strict", "execute": "regular"},
+		Runs:      []store.StageRun{{Worktree: "/tmp/GH-1", SessionID: "sess-7"}},
+	}
+	out := renderRail(nil, map[string]Identity{"GH-1": {Tag: "PA", Color: "#61afef"}}, det, 100)
+	for _, want := range []string{
+		"payment adapter", "failed", "error: tests failed · attempt 3 of 4",
+		"budget", "74%", "$2.10", "levers", "B:auto", "S:you", "E:regular",
+		"/tmp/GH-1", "sess-7",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
 	}
 }

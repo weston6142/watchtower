@@ -239,7 +239,7 @@ func renderTowerConfigured(st *projection.State, stages []string, ids map[string
 	if st == nil {
 		st = projection.NewState()
 	}
-	lines := []string{warRoom(st, ids)}
+	lines := []string{warRoom(st, ids), "MAP · " + mapInsight(st.Issues) + " · a full map"}
 	if len(st.Order) == 0 {
 		for _, stage := range stages {
 			lines = append(lines, themeLabel.Render(strings.ToUpper(stageName(aliases, stage)))+"  "+themeDim.Render("—"))

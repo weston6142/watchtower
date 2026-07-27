@@ -2,11 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/wbushyeager/guildhall/internal/archmap"
+	"github.com/wbushyeager/guildhall/internal/projection"
 	"github.com/wbushyeager/guildhall/internal/touchset"
 )
 
@@ -19,51 +21,159 @@ func moduleMatches(module string, glob string) bool {
 }
 
 func renderArch(am *archmap.Map, ids map[string]Identity, width, height int) string {
+	return renderArchWithState(am, nil, ids, width, height, 0, "")
+}
+
+func renderArchWithState(am *archmap.Map, st *projection.State, ids map[string]Identity, width, height, selected int, filter string) string {
 	if am == nil || len(am.Modules) == 0 {
 		return boundedLines([]string{"ARCHITECTURE MAP", "no repo — arch map available with --repo"}, width)
 	}
 	lines := []string{"ARCHITECTURE MAP · a/esc back"}
-	for _, module := range am.Modules {
-		ghosts := make([]string, 0)
-		for _, overlay := range am.Overlays {
-			matched := false
-			for _, glob := range overlay.Globs {
-				if moduleMatches(module.Name, glob) {
-					matched = true
-					break
-				}
-			}
-			if matched {
-				tag := overlay.IssueID
-				identity, ok := ids[overlay.IssueID]
-				if ok {
-					tag = identity.Tag
-					ghosts = append(ghosts, lipgloss.NewStyle().Foreground(lipgloss.Color(identity.Color)).Render("◈"+tag))
-				} else {
-					ghosts = append(ghosts, "◈"+tag)
-				}
-			}
-		}
-		line := fmt.Sprintf("▣ %s (%d)", module.Name, module.Files)
-		if len(ghosts) > 0 {
-			line += " " + strings.Join(ghosts, " ")
-		}
-		lines = append(lines, line)
+	if st != nil {
+		lines = append(lines, "MAP · "+mapInsight(st.Issues))
 	}
-	if len(am.Overlays) > 0 {
-		lines = append(lines, "", "GHOSTS")
-		for _, overlay := range am.Overlays {
-			identity := ids[overlay.IssueID]
-			label := overlay.IssueID
-			if identity.Tag != "" {
-				label = identity.Tag
-			}
-			style := lipgloss.NewStyle().Foreground(lipgloss.Color(identity.Color))
-			lines = append(lines, style.Render("◈ "+label+" "+strings.Join(overlay.Globs, ", ")))
+	builders := map[string]map[string]bool{}
+	if st != nil {
+		builders = buildersByArea(st.Issues)
+	}
+	active := 0
+	firstActive := ""
+	quiet := 0
+	for _, module := range am.Modules {
+		marks := areaMarks(module.Name, builders, am.Overlays, ids, filter)
+		if len(marks) == 0 {
+			quiet++
+			continue
 		}
+		if firstActive == "" {
+			firstActive = module.Name
+		}
+		marker := "  "
+		if active == selected {
+			marker = "▸ "
+		}
+		lines = append(lines, marker+"▣ "+module.Name+" "+strings.Join(marks, " "))
+		active++
+	}
+	if quiet > 0 {
+		lines = append(lines, fmt.Sprintf("▸ %d quiet areas", quiet))
+	}
+	if firstActive != "" {
+		lines = append(lines, themeDim.Render("selection: "+firstActive+" · active areas show builders and brushers"))
 	}
 	if height > 0 && len(lines) > height {
 		lines = lines[:height]
 	}
 	return boundedLines(lines, width)
+}
+
+func areaMarks(area string, builders map[string]map[string]bool, overlays []archmap.Overlay, ids map[string]Identity, filter string) []string {
+	byIssue := builders[area]
+	if len(byIssue) == 0 {
+		for _, overlay := range overlays {
+			if filter != "" && overlay.IssueID != filter {
+				continue
+			}
+			for _, glob := range overlay.Globs {
+				if moduleMatches(area, glob) {
+					byIssue = map[string]bool{overlay.IssueID: true}
+					break
+				}
+			}
+		}
+	}
+	issueIDs := make([]string, 0, len(byIssue))
+	for issueID := range byIssue {
+		if filter == "" || filter == issueID {
+			issueIDs = append(issueIDs, issueID)
+		}
+	}
+	sort.Strings(issueIDs)
+	marks := make([]string, 0, len(issueIDs))
+	for _, issueID := range issueIDs {
+		mark := "◌"
+		if byIssue[issueID] {
+			mark = "◈"
+		}
+		identity := ids[issueID]
+		if identity.Color != "" {
+			marks = append(marks, lipgloss.NewStyle().Foreground(lipgloss.Color(identity.Color)).Render(mark+identity.Tag))
+		} else {
+			marks = append(marks, mark+issueID)
+		}
+	}
+	return marks
+}
+
+func buildersByArea(issues map[string]*projection.IssueView) map[string]map[string]bool {
+	builders := map[string]map[string]bool{}
+	for issueID, issue := range issues {
+		if issue == nil {
+			continue
+		}
+		total := 0
+		for _, weight := range issue.AreaWeights {
+			if weight > 0 {
+				total += weight
+			}
+		}
+		if total == 0 {
+			continue
+		}
+		for area, weight := range issue.AreaWeights {
+			if weight <= 0 {
+				continue
+			}
+			if builders[area] == nil {
+				builders[area] = map[string]bool{}
+			}
+			builders[area][issueID] = weight*4 >= total
+		}
+	}
+	return builders
+}
+
+func mapInsight(issues map[string]*projection.IssueView) string {
+	builders := buildersByArea(issues)
+	areas := make([]string, 0, len(builders))
+	for area, byIssue := range builders {
+		count := 0
+		for _, isBuilder := range byIssue {
+			if isBuilder {
+				count++
+			}
+		}
+		if count >= 2 {
+			areas = append(areas, area)
+		}
+	}
+	if len(areas) > 0 {
+		sort.Strings(areas)
+		area := areas[0]
+		count := 0
+		for _, isBuilder := range builders[area] {
+			if isBuilder {
+				count++
+			}
+		}
+		return fmt.Sprintf("%s/ has %d builders (sequenced)", area, count)
+	}
+	bestID := ""
+	bestAreas := 0
+	for issueID, issue := range issues {
+		if issue == nil || len(issue.AreaWeights) <= bestAreas {
+			continue
+		}
+		bestID, bestAreas = issueID, len(issue.AreaWeights)
+	}
+	if bestAreas > 0 {
+		return fmt.Sprintf("%s spans %d areas", bestID, bestAreas)
+	}
+	return "quiet"
+
+	/*
+		The architecture map used to render file counts and a separate GHOSTS
+		section. Activity now lives in the single mark column above, so quiet
+		areas stay collapsed and no churn/count detail can reflow the tree.
+	*/
 }

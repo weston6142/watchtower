@@ -23,22 +23,42 @@ func boundedLines(lines []string, width int) string {
 	return strings.Join(bounded, "\n")
 }
 
-// renderRail draws focused issue detail above the pending decision queue.
+// renderRail draws the focused issue's plain-language FOCUS panel above the
+// pending decision queue. Paths and session IDs intentionally stay here: they
+// are diagnostic details, not grid copy.
 func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueDetail, width int) string {
-	lines := []string{"RIGHT RAIL"}
+	lines := []string{"FOCUS"}
 	if det != nil {
 		identity := ids[det.Issue.ID]
 		lines = append(lines,
-			fmt.Sprintf("%s %s", identity.Tag, det.Issue.ID),
-			"state: "+det.Issue.State,
-			"flow: "+det.Issue.Flow,
+			fmt.Sprintf("%s %s · %s", identity.Tag, det.Issue.ID, det.Issue.Title),
+			fmt.Sprintf("%s · %s", det.Issue.Flow, focusStatus(det.Issue.State)),
 		)
-		for _, run := range det.Runs {
-			lines = append(lines, fmt.Sprintf("%s/%s %s %dt", run.Stage, run.Agent, run.Status, run.Tokens))
+		if strings.HasPrefix(det.Issue.State, "failed") {
+			lines = append(lines, fmt.Sprintf("error: %s · attempt %d of %d", det.LastError, det.Attempt, det.AttemptOf))
 		}
-		lines = append(lines, fmt.Sprintf("tokens: %d", det.Tokens))
-		if len(det.Artifacts) > 0 {
-			lines = append(lines, fmt.Sprintf("artifacts: %d", len(det.Artifacts)))
+		if det.Budget > 0 {
+			percent := det.Tokens * 100 / det.Budget
+			percent = max(0, min(100, percent))
+			filled := (percent*4 + 50) / 100
+			bar := strings.Repeat("▰", filled) + strings.Repeat("▱", 4-filled)
+			cost := ""
+			if det.Dollars > 0 {
+				cost = fmt.Sprintf(" ($%.2f)", det.Dollars)
+			}
+			lines = append(lines, fmt.Sprintf("budget %s %d%%%s", bar, percent, cost))
+		} else {
+			lines = append(lines, "spent "+compactTokens(det.Tokens)+" tokens")
+		}
+		if leverLine := renderLeverLine(det.Levers); leverLine != "" {
+			lines = append(lines, leverLine)
+		}
+		for i := len(det.Runs) - 1; i >= 0; i-- {
+			run := det.Runs[i]
+			if run.Worktree != "" || run.SessionID != "" {
+				lines = append(lines, themeDim.Render(fmt.Sprintf("%s · session %s", run.Worktree, run.SessionID)))
+				break
+			}
 		}
 	}
 	lines = append(lines, "", "DECISION QUEUE")
@@ -61,6 +81,53 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 		}
 	}
 	return boundedLines(lines, width)
+}
+
+func focusStatus(state string) string {
+	switch {
+	case strings.HasPrefix(state, "running"):
+		return "building"
+	case strings.HasPrefix(state, "queued"):
+		return "queued"
+	case strings.HasPrefix(state, "waiting"):
+		return "needs you"
+	case strings.HasPrefix(state, "failed"):
+		return "failed"
+	case strings.HasPrefix(state, "paused"):
+		return "paused"
+	case state == "done":
+		return "shipped"
+	default:
+		return state
+	}
+}
+
+func renderLeverLine(levers map[string]string) string {
+	if len(levers) == 0 {
+		return ""
+	}
+	stages := make([]string, 0, len(levers))
+	for stage := range levers {
+		stages = append(stages, stage)
+	}
+	sort.Strings(stages)
+	parts := make([]string, 0, len(stages))
+	for _, stage := range stages {
+		value := levers[stage]
+		label := value
+		switch value {
+		case "yolo":
+			label = "auto"
+		case "strict":
+			label = "you"
+		}
+		letter := "?"
+		if stage != "" {
+			letter = strings.ToUpper(string([]rune(stage)[0]))
+		}
+		parts = append(parts, letter+":"+label)
+	}
+	return "levers " + strings.Join(parts, " ")
 }
 
 // renderToast draws the raised decision as a self-contained modal string.
