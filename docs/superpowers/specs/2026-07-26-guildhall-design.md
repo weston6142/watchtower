@@ -2,7 +2,7 @@
 
 *2026-07-26 · working title "Guildhall" (name subject to change)*
 
-A terminal-native orchestrator for running many AI coding agents on real software projects, rendered as a pixel-art guild tower. The engine runs issues through a configurable pipeline (brainstorm → spec → plan → execute → review → merge) with per-stage autonomy levers; the TUI makes 10 parallel flows legible at a glance and funnels every human call into one decision queue.
+A terminal-native orchestrator for running many AI coding agents on real software projects, rendered as a pixel-art guild tower. Visual reference for the target look and feel: the Guild Tower concept mockup at https://claude.ai/code/artifact/b736348a-1393-4d49-9d97-85942a298bc7 (stage-floors variant; v2 sprite styling), fused with the Forge Line's stage-pipeline separation (https://claude.ai/code/artifact/6bc478b0-209d-4b46-938d-56856bbc76b5). The engine runs issues through a configurable pipeline (brainstorm → spec → plan → execute → review → merge) with per-stage autonomy levers; the TUI makes 10 parallel flows legible at a glance and funnels every human call into one decision queue.
 
 ## Goals
 
@@ -41,7 +41,7 @@ A pure client: renders the tower from events, sends commands. v1 is cell-based (
 
 A flow definition (`~/.config/guildhall/flows/*.yaml`, `default.yaml` shipped) is an ordered list of stages. Each stage declares:
 
-- **`agent`** — the prompt package that runs it: a directory containing a system-prompt/skill markdown, allowed tools, and model/effort settings. The shipped defaults wrap the superpowers skills (brainstorming, writing-plans, executing-plans) and the clean-code-reviewer / general reviewer / documentation agents.
+- **`agents`** — one or more prompt packages that run it (a stage can fan out to several agents, sequentially or in parallel — e.g. the review stage runs clean-code-reviewer + general reviewer + documentation agent concurrently in the same worktree). Each package is a directory containing a system-prompt/skill markdown, allowed tools, and model/effort settings. The shipped defaults wrap the superpowers skills (brainstorming, writing-plans, executing-plans) and the reviewer/doc agents. The stage completes when all its agents complete (or per an `all`/`any` completion rule).
 - **`workspace`** — `none` (Q&A stages), `worktree` (execution; acquired via treehouse), or `readonly`.
 - **`gate`** — completion behavior: `approve_artifact` (human reviews spec/plan/diff), `decision_queue` (escalated questions), or `auto`.
 - **`lever_row`** — which lever governs the stage and what YOLO / Regular / Strict mean for it.
@@ -56,7 +56,7 @@ The engine knows nothing about "brainstorming" — only stages, gates, artifacts
 2. **Spec** — writes the design doc; gate `approve_artifact`.
 3. **Plan** — implementation plan; gate `approve_artifact`.
 4. **Execute** — subagent executes the plan on a treehouse worktree; heaviest slot consumer.
-5. **Review & docs** — clean-code-reviewer + generalized reviewer (both fix what they find) + documentation agent drafting into the worktree.
+5. **Review & docs** — three agents in parallel: clean-code-reviewer + generalized reviewer (both fix what they find) + documentation agent drafting into the worktree.
 6. **Merge** — Merge Marshal sequences and lands it; gate per lever.
 
 ## Autonomy levers
@@ -89,7 +89,7 @@ SQLite core tables:
 | Table | Contents |
 |---|---|
 | `issues` | id, title, body, state, flow name, lever matrix, priority, links |
-| `stage_runs` | issue, stage, runner session id, worktree path, artifact refs, status, tokens |
+| `stage_runs` | issue, stage, agent package, runner session id, worktree path, artifact refs, status, tokens (one row per agent — a multi-agent stage has several concurrent rows) |
 | `decisions` | question, options, recommendation, evidence refs, lever context, status, answer, answered_by |
 | `events` | append-only log (the UI's food) |
 | `proposals` | triage tray items from the Issue Steward |
@@ -100,7 +100,9 @@ Artifacts (specs, plans, transcripts, diffs) live on disk in per-issue directori
 
 ## TUI
 
-**Layout — the tower.** Floors = stages of the default flow; war room on top. Issue cards sit on their current floor showing id, title, agent state glyph, derived progress (tests/artifacts only — never self-reported), token spend, and red/gold edging for failing/blocked. Floor pile-ups read as bottlenecks.
+**Layout — the tower.** Floors = stages of the default flow; war room on top. Issue cards sit on their current floor showing id, title, agent state glyphs, derived progress (tests/artifacts only — never self-reported), token spend, and red/gold edging for failing/blocked. Floor pile-ups read as bottlenecks.
+
+**Issue identity.** Every issue is assigned a stable identity at kickoff: a color from a distinguishable palette plus a two-letter tag (e.g. `#7 PA` for "payments," rendered in that issue's color). Every agent working the issue wears the identity — card edging, agent glyphs, arch-map ghosts, decision toasts, merge-train entries all share it — so "which issue does this agent belong to" is answerable at a glance anywhere in the UI. A stage running multiple agents shows one glyph per agent inside the issue card (e.g. `◆◆◆` for the three review agents), each with its own state; in v2 these become individual sprites clustered at the issue's desk in the issue's colors.
 
 **War room floor**: merge-order lane (the sequenced train approaching merge), overlord status, triage tray count, slot pool gauge.
 
