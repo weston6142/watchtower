@@ -112,6 +112,8 @@ func (s *Store) Append(ev core.Event) (core.Event, error) {
 }
 
 func (s *Store) EventsSince(seq int64) ([]core.Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	rows, err := s.db.Query(
 		`SELECT id,seq,type,issue_id,payload,at FROM events WHERE seq > ? ORDER BY seq`, seq)
 	if err != nil {
@@ -134,6 +136,8 @@ func (s *Store) EventsSince(seq int64) ([]core.Event, error) {
 }
 
 func (s *Store) InsertStageRun(r StageRun) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	res, err := s.db.Exec(
 		`INSERT INTO stage_runs(issue_id,stage,agent,session_id,worktree,status,tokens)
 		 VALUES(?,?,?,?,?,?,?)`,
@@ -145,6 +149,8 @@ func (s *Store) InsertStageRun(r StageRun) (int64, error) {
 }
 
 func (s *Store) FinishStageRun(id int64, status, sessionID string, tokens int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, err := s.db.Exec(
 		`UPDATE stage_runs SET status=?, session_id=?, tokens=? WHERE id=?`,
 		status, sessionID, tokens, id)
@@ -152,6 +158,8 @@ func (s *Store) FinishStageRun(id int64, status, sessionID string, tokens int) e
 }
 
 func (s *Store) StageRuns(issueID string) ([]StageRun, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	rows, err := s.db.Query(
 		`SELECT id,issue_id,stage,agent,session_id,worktree,status,tokens
 		 FROM stage_runs WHERE issue_id=? ORDER BY id`, issueID)
@@ -172,6 +180,8 @@ func (s *Store) StageRuns(issueID string) ([]StageRun, error) {
 }
 
 func (s *Store) IssueTokens(issueID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var n int
 	err := s.db.QueryRow(
 		`SELECT COALESCE(SUM(tokens),0) FROM stage_runs WHERE issue_id=?`, issueID).Scan(&n)
@@ -179,6 +189,8 @@ func (s *Store) IssueTokens(issueID string) (int, error) {
 }
 
 func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	opts, err := json.Marshal(d.Options)
 	if err != nil {
 		return 0, err
@@ -201,11 +213,15 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 }
 
 func (s *Store) AnswerDecision(id int64, answer int, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, err := s.db.Exec(`UPDATE decisions SET status=?, answer=? WHERE id=?`, status, answer, id)
 	return err
 }
 
 func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	rows, err := s.db.Query(
 		`SELECT id,issue_id,lever,question,options,recommended,status,answer,blocking_cost,created_at
 		 FROM decisions ` + where + ` ORDER BY blocking_cost DESC, created_at ASC`)
@@ -244,6 +260,8 @@ func (s *Store) AllDecisionRows() ([]DecisionRow, error) {
 }
 
 func (s *Store) InsertProposal(issueID, title, body string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	res, err := s.db.Exec(
 		`INSERT INTO proposals(issue_id,title,body,status) VALUES(?,?,?,'pending')`,
 		issueID, title, body)
@@ -254,11 +272,15 @@ func (s *Store) InsertProposal(issueID, title, body string) (int64, error) {
 }
 
 func (s *Store) SetProposalStatus(id int64, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, err := s.db.Exec(`UPDATE proposals SET status=? WHERE id=?`, status, id)
 	return err
 }
 
 func (s *Store) PendingProposals() ([]ProposalRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	rows, err := s.db.Query(
 		`SELECT id,issue_id,title,body,status FROM proposals WHERE status='pending' ORDER BY id`)
 	if err != nil {
@@ -277,6 +299,8 @@ func (s *Store) PendingProposals() ([]ProposalRow, error) {
 }
 
 func (s *Store) UpsertIssue(r IssueRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
 		INSERT INTO issues(id,title,body,state,flow,priority)
 		VALUES(?,?,?,?,?,?)
@@ -288,6 +312,8 @@ func (s *Store) UpsertIssue(r IssueRow) error {
 }
 
 func (s *Store) Issues() ([]IssueRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	rows, err := s.db.Query(`SELECT id,title,body,state,flow,priority FROM issues ORDER BY id`)
 	if err != nil {
 		return nil, err

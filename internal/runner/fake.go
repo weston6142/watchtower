@@ -56,9 +56,9 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			return
 		}
 		out := map[string]string{}
-		for name := range sc.Artifacts {
+		for name, content := range sc.Artifacts {
 			p := filepath.Join(workdir, name)
-			if err := os.WriteFile(p, []byte("fake"), 0o644); err != nil {
+			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 				done <- Result{Err: err}
 				return
 			}

@@ -206,17 +206,16 @@ func runDaemon(args []string) {
 	default:
 		fatal(fmt.Errorf("unknown runner %q", *runnerKind))
 	}
-	var seq *marshal.Marshal
+	seq := marshal.New(func(typ core.EventType, issueID string, payload any) {
+		ev, err := core.NewEvent(typ, issueID, payload)
+		if err == nil {
+			_, _ = st.Append(ev)
+		}
+	})
 	var train *marshal.Train
 	var lib *librarian.Librarian
 	var reconcile func(context.Context, string) error
 	if *runnerKind == "claude" {
-		seq = marshal.New(func(typ core.EventType, issueID string, payload any) {
-			ev, err := core.NewEvent(typ, issueID, payload)
-			if err == nil {
-				_, _ = st.Append(ev)
-			}
-		})
 		resolve := func(ctx context.Context, issueID, branch string) error {
 			if ws == nil {
 				return fmt.Errorf("no workspace provider for conflict repair")
@@ -297,7 +296,11 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 		for _, st := range f.Stages {
 			arts := map[string]string{}
 			for _, a := range st.Artifacts {
-				arts[a] = ""
+				content := ""
+				if a == "touchset.json" {
+					content = `{"globs":["src/**"]}`
+				}
+				arts[a] = content
 			}
 			for _, ag := range st.Agents {
 				scripts[st.Name+"/"+ag.Package] = runner.Script{Artifacts: arts, Tokens: 10}

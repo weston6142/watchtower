@@ -12,6 +12,7 @@ import (
 	"github.com/wbushyeager/guildhall/internal/runner"
 	"github.com/wbushyeager/guildhall/internal/slots"
 	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/wbushyeager/guildhall/internal/touchset"
 )
 
 func testFlow() flow.Flow {
@@ -274,6 +275,60 @@ func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
 	}
 	if auto != 1 || answered != 1 {
 		t.Fatalf("auto=%d answered=%d rows=%+v", auto, answered, rows)
+	}
+}
+
+type recordingSequencer struct {
+	planned int
+	merged  int
+}
+
+func (s *recordingSequencer) BlockedBehind(string) int { return 0 }
+func (s *recordingSequencer) PlanApproved(string, touchset.Set) {
+	s.planned++
+}
+func (s *recordingSequencer) ReadyToMerge(context.Context, string) error { return nil }
+func (s *recordingSequencer) Merged(string)                              { s.merged++ }
+func (s *recordingSequencer) Aborted(string)                             {}
+
+func TestMarshalReleasedAfterSuccessfulCompletionWithoutTrain(t *testing.T) {
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{
+		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Gate: flow.GateApproveArtifact, Artifacts: []string{"touchset.json"}},
+		{Name: "merge", Agents: []flow.AgentRef{{Package: "reviewer"}}, Gate: flow.GateAuto, MergeBarrier: true},
+	}}
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seq := &recordingSequencer{}
+	e := New(Config{
+		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"plan/planner":   {Artifacts: map[string]string{"touchset.json": `{"globs":["src/**"]}`}},
+			"merge/reviewer": {},
+		}},
+		Marshal: seq, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),
+	})
+	id, err := e.CreateIssue("marshal", "", "default", levers.Preset(f, flow.LeverYolo), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+	for {
+		if ds := e.PendingDecisions(); len(ds) == 1 {
+			if err := e.Answer(ds[0].ID, 0); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-errC; err != nil {
+		t.Fatal(err)
+	}
+	if seq.planned != 1 || seq.merged != 1 {
+		t.Fatalf("marshal lifecycle planned=%d merged=%d", seq.planned, seq.merged)
 	}
 }
 

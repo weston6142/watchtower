@@ -68,3 +68,18 @@ func TestAbortReleasesWaiters(t *testing.T) {
 		t.Fatal("abort did not release waiter")
 	}
 }
+
+func TestPlanApprovedIgnoresDuplicateRegistration(t *testing.T) {
+	var events []string
+	m := New(func(typ core.EventType, issueID string, payload any) {
+		if typ == core.EvMergeSequenced {
+			events = append(events, issueID)
+		}
+	})
+	m.PlanApproved("GH-1", touchset.Set{Globs: []string{"src/**"}})
+	m.PlanApproved("GH-2", touchset.Set{Globs: []string{"src/**"}})
+	m.PlanApproved("GH-2", touchset.Set{Globs: []string{"src/**"}})
+	if len(events) != 1 || events[0] != "GH-2" {
+		t.Fatalf("duplicate registration emitted events: %v", events)
+	}
+}

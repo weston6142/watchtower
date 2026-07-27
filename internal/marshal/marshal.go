@@ -30,6 +30,10 @@ func New(emit Emit) *Marshal {
 
 func (m *Marshal) PlanApproved(issueID string, ts touchset.Set) {
 	m.mu.Lock()
+	if _, exists := m.inFly[issueID]; exists {
+		m.mu.Unlock()
+		return
+	}
 	e := &entry{ts: ts, gone: make(chan struct{})}
 	for _, prior := range m.order {
 		pe, ok := m.inFly[prior]

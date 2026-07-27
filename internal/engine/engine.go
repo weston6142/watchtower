@@ -387,7 +387,7 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 			return err
 		}
 	}
-	if e.cfg.Marshal != nil {
+	if e.cfg.Marshal != nil && st.Name == "plan" {
 		if ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json")); err == nil {
 			e.cfg.Marshal.PlanApproved(is.id, ts)
 		}
@@ -453,6 +453,9 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 		if e.cfg.Marshal != nil {
 			e.cfg.Marshal.Merged(is.id)
 		}
+	}
+	if e.cfg.Marshal != nil {
+		e.cfg.Marshal.Merged(is.id)
 	}
 	aborted = false
 	e.emit(core.EvIssueCompleted, id, nil)

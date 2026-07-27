@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -70,6 +71,53 @@ func TestProposalLifecycle(t *testing.T) {
 	s.SetProposalStatus(id, "accepted")
 	if ps, _ = s.PendingProposals(); len(ps) != 0 {
 		t.Fatalf("still pending: %+v", ps)
+	}
+}
+
+func TestConcurrentDecisionAndEventWrites(t *testing.T) {
+	s, _ := Open("file:t5?mode=memory&cache=shared")
+	defer s.Close()
+	_, _ = s.db.Exec("PRAGMA busy_timeout = 0")
+	s.db.SetMaxOpenConns(8)
+	var wg sync.WaitGroup
+	errs := make(chan error, 512)
+	start := make(chan struct{})
+	for i := 0; i < 256; i++ {
+		i := i
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := s.InsertDecision(DecisionRow{IssueID: "GH-1", Question: "q", BlockingCost: i})
+			if err != nil {
+				errs <- err
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			ev, err := core.NewEvent(core.EvStageStarted, "GH-1", map[string]int{"n": i})
+			if err == nil {
+				_, err = s.Append(ev)
+			}
+			if err != nil {
+				errs <- err
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	rows, err := s.PendingDecisionRows()
+	if err != nil || len(rows) != 256 {
+		t.Fatalf("decisions=%d err=%v", len(rows), err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil || len(events) != 256 {
+		t.Fatalf("events=%d err=%v", len(events), err)
 	}
 }
 
