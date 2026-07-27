@@ -23,17 +23,18 @@ type Focus struct {
 }
 
 type Model struct {
-	State  *projection.State
-	Flow   flow.Flow
-	Ids    map[string]Identity
-	Focus  Focus
-	Toast  *projection.DecisionView
-	Detail *proto.IssueDetail
-	Arch   *archmap.Map
-	Repo   string
-	Width  int
-	Height int
-	Err    string
+	State    *projection.State
+	Overview *proto.Overview
+	Flow     flow.Flow
+	Ids      map[string]Identity
+	Focus    Focus
+	Toast    *projection.DecisionView
+	Detail   *proto.IssueDetail
+	Arch     *archmap.Map
+	Repo     string
+	Width    int
+	Height   int
+	Err      string
 
 	client        *proto.Client
 	stages        []string
@@ -51,6 +52,11 @@ type Msg struct{ Events []core.Event }
 type tickMsg struct{}
 
 type pollErrorMsg struct{ err error }
+
+type overviewMsg struct {
+	overview *proto.Overview
+	err      error
+}
 
 type detailMsg struct {
 	detail *proto.IssueDetail
@@ -94,13 +100,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.client == nil {
 			return m, m.tick()
 		}
-		return m, m.poll()
+		return m, tea.Batch(m.poll(), m.pollOverview())
 	case Msg:
 		m = m.applyEvents(msg.Events)
 		return m, m.tick()
 	case pollErrorMsg:
 		m.Err = msg.err.Error()
 		return m, m.tick()
+	case overviewMsg:
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		m.Overview = msg.overview
+		return m, nil
 	case detailMsg:
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -359,11 +372,21 @@ func (m Model) poll() tea.Cmd {
 	}
 }
 
-func (m Model) View() string {
-	issues := 0
-	if m.State != nil {
-		issues = len(m.State.Issues)
+func (m Model) pollOverview() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "overview"})
+		if err != nil {
+			return overviewMsg{err: err}
+		}
+		if !r.OK {
+			return overviewMsg{err: errors.New(r.Error)}
+		}
+		return overviewMsg{overview: r.Overview}
 	}
+}
+
+func (m Model) View() string {
 	layoutWidth := m.Width
 	if layoutWidth <= 0 {
 		layoutWidth = 120
@@ -389,7 +412,10 @@ func (m Model) View() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, tower, right)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "◆ GUILD TOWER · %d issues · q quit · ? help\n", issues)
+	b.WriteString(renderHeader(m.Overview, layoutWidth))
+	b.WriteByte('\n')
+	b.WriteString(renderNoticeRow(m.State, layoutWidth))
+	b.WriteByte('\n')
 	b.WriteString(body)
 	if m.help {
 		b.WriteString("\n\nKEYS: j/k floors · h/l cards · 1-9 issue · tab attention · g war room · enter drill · esc back · d decisions · t triage · L levers · a arch pane · A arch full · ? close help · q quit")

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/wbushyeager/guildhall/internal/projection"
+	"github.com/wbushyeager/guildhall/internal/proto"
 )
 
 var (
@@ -18,9 +19,78 @@ var (
 	statusOk   = "#98c379"
 )
 
-func styleStatusBad() lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(statusBad)) }
-func styleStatusWarn() lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(statusWarn)) }
+func styleStatusBad() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(statusBad))
+}
+func styleStatusWarn() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(statusWarn))
+}
 func styleStatusOk() lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(statusOk)) }
+
+func renderHeader(ov *proto.Overview, width int) string {
+	if ov == nil {
+		ov = &proto.Overview{}
+	}
+	var attention []string
+	if ov.Failing > 0 {
+		attention = append(attention, fmt.Sprintf("%d build%s failing", ov.Failing, pluralSuffix(ov.Failing)))
+	}
+	if ov.NeedYou > 0 {
+		attention = append(attention, fmt.Sprintf("%d question%s for you", ov.NeedYou, pluralSuffix(ov.NeedYou)))
+	}
+	if len(attention) == 0 {
+		attention = append(attention, "all clear")
+	}
+	var details []string
+	if ov.Building > 0 {
+		details = append(details, fmt.Sprintf("%d building", ov.Building))
+	}
+	if ov.ShippedToday > 0 {
+		details = append(details, fmt.Sprintf("%d shipped today", ov.ShippedToday))
+	}
+	if ov.TokensTotal > 0 {
+		details = append(details, fmt.Sprintf("%s tokens", compactTokens(ov.TokensTotal)))
+	}
+	if ov.DollarsTotal > 0 {
+		details = append(details, fmt.Sprintf("~$%.2f", ov.DollarsTotal))
+	}
+	text := strings.Join(attention, ", ")
+	if len(details) > 0 {
+		text += " — " + strings.Join(details, ", ")
+	}
+	style := styleStatusOk()
+	if ov.Failing > 0 {
+		style = styleStatusBad()
+	} else if ov.NeedYou > 0 {
+		style = styleStatusWarn()
+	}
+	return truncate(style.Render("●")+" "+text, width)
+}
+
+func pluralSuffix(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func compactTokens(tokens int) string {
+	if tokens >= 1000 {
+		return fmt.Sprintf("%.0fk", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%d", tokens)
+}
+
+func renderNoticeRow(st *projection.State, width int) string {
+	if st == nil || len(st.Notices) == 0 {
+		if width > 0 {
+			return strings.Repeat(" ", width)
+		}
+		return " "
+	}
+	text := strings.ReplaceAll(st.Notices[len(st.Notices)-1].Text, "\n", " ")
+	return truncate(text, width)
+}
 
 // floorCards returns issue IDs on a rendered stage floor in creation order.
 func floorCards(st *projection.State, stages []string, floor int) []string {
@@ -126,7 +196,7 @@ func truncate(s string, width int) string {
 
 func warRoom(st *projection.State, ids map[string]Identity) string {
 	if st == nil {
-		return "⚖ MERGE LANE: —  ·  SLOTS busy:0  ·  TRAY 0  ·  DECISIONS 0"
+		return "shipping order: — · builders 0/4 busy · ideas 0 · questions 0"
 	}
 	var lane []string
 	for _, id := range st.Order {
@@ -147,15 +217,17 @@ func warRoom(st *projection.State, ids map[string]Identity) string {
 	}
 	if len(lane) == 0 {
 		lane = []string{"—"}
+	} else if len(lane) > 3 {
+		lane = append(lane[:3], fmt.Sprintf("+%d", len(lane)-3))
 	}
 	busy := 0
 	for _, iv := range st.Issues {
-		if iv.State == "queued_for_slot" {
+		if iv.State == "running" && iv.CurrentStage != "" {
 			busy++
 		}
 	}
-	return fmt.Sprintf("⚖ MERGE LANE: %s  ·  SLOTS busy:%d  ·  TRAY %d  ·  DECISIONS %d",
-		strings.Join(lane, " ⇢ "), busy, st.ProposalCount, len(st.Decisions))
+	return fmt.Sprintf("shipping order: %s · builders %d/4 busy · ideas %d · questions %d",
+		strings.Join(lane, "→"), busy, st.ProposalCount, len(st.Decisions))
 }
 
 // renderTower draws the war room and stage floors from top to bottom.
