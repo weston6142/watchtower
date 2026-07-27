@@ -84,6 +84,8 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, maxLineBytes), maxLineBytes)
 	gotResult := false
+	repliedThisTurn := false
+	sessionDone := false
 	for sc.Scan() {
 		ev := ParseLine(sc.Bytes())
 		switch ev.Kind {
@@ -91,6 +93,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			res.SessionID = ev.SessionID
 		case KindAssistantText:
 			if d, found := ExtractDecision(ev.Text); found {
+				repliedThisTurn = true
 				reply := make(chan int, 1)
 				select {
 				case asks <- runner.Ask{Decision: d, Reply: reply}:
@@ -112,11 +115,22 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				}
 			}
 		case KindResult:
-			res.Tokens = ev.Tokens
+			res.Tokens += ev.Tokens
 			gotResult = true
 			if ev.IsError {
 				res.Err = fmt.Errorf("claude session %s ended with error", res.SessionID)
 			}
+			// In stream-json input mode the CLI emits one result per turn and
+			// then waits for more input. A turn that asked a decision continues
+			// (we already sent the reply); any other completed turn is the
+			// agent's final turn — close stdin so the process exits.
+			if !repliedThisTurn || res.Err != nil {
+				sessionDone = true
+			}
+			repliedThisTurn = false
+		}
+		if sessionDone {
+			break
 		}
 	}
 	stdin.Close()
