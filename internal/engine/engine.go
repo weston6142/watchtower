@@ -208,13 +208,21 @@ func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, prio
 	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority}
 	e.mu.Unlock()
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
-		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Priority: priority,
+		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Levers: matrixStrings(m), Priority: priority,
 	}); err != nil {
 		return "", err
 	}
 	e.emit(core.EvIssueCreated, id, map[string]any{
 		"title": title, "flow": flowName, "body": body, "priority": priority})
 	return id, nil
+}
+
+func matrixStrings(m levers.Matrix) map[string]string {
+	values := make(map[string]string, len(m))
+	for stage, lever := range m {
+		values[stage] = string(lever)
+	}
+	return values
 }
 
 func (e *Engine) PendingDecisions() []PendingDecision {
@@ -715,6 +723,12 @@ func (e *Engine) SetLever(issueID, stage string, l flow.Lever) error {
 		is.matrix = levers.Matrix{}
 	}
 	is.matrix[stage] = l
+	if e.cfg.Store != nil {
+		if err := e.cfg.Store.SetIssueLever(issueID, stage, string(l)); err != nil {
+			e.mu.Unlock()
+			return err
+		}
+	}
 	e.mu.Unlock()
 	e.emit(core.EvLeverChanged, issueID, map[string]string{"stage": stage, "lever": string(l)})
 	return nil

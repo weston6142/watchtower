@@ -198,7 +198,7 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		return Response{OK: true, Detail: &IssueDetail{
 			Issue: issue, Runs: runs, Tokens: tokens, Artifacts: artifacts,
-			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf, Budget: sv.budget,
+			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf, Budget: sv.budget, Levers: issue.Levers,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

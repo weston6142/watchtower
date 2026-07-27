@@ -55,12 +55,13 @@ type Overview struct {
 }
 
 type IssueDetail struct {
-	Issue     store.IssueRow   `json:"issue"`
-	Runs      []store.StageRun `json:"runs"`
-	Tokens    int              `json:"tokens"`
-	Artifacts []string         `json:"artifacts"`
-	LastError string           `json:"last_error,omitempty"`
-	Attempt   int              `json:"attempt,omitempty"`
-	AttemptOf int              `json:"attempt_of,omitempty"`
-	Budget    int              `json:"budget,omitempty"`
+	Issue     store.IssueRow    `json:"issue"`
+	Runs      []store.StageRun  `json:"runs"`
+	Tokens    int               `json:"tokens"`
+	Artifacts []string          `json:"artifacts"`
+	LastError string            `json:"last_error,omitempty"`
+	Attempt   int               `json:"attempt,omitempty"`
+	AttemptOf int               `json:"attempt_of,omitempty"`
+	Budget    int               `json:"budget,omitempty"`
+	Levers    map[string]string `json:"levers,omitempty"`
 }

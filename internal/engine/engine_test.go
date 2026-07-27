@@ -414,6 +414,10 @@ func TestSetLeverEmitsEvent(t *testing.T) {
 	if !found {
 		t.Fatal("no lever_changed event")
 	}
+	issues, err := s.Issues()
+	if err != nil || len(issues) != 1 || issues[0].Levers["execute"] != string(flow.LeverYolo) {
+		t.Fatalf("lever was not persisted: issues=%+v err=%v", issues, err)
+	}
 }
 
 func TestTokenBudgetEscalates(t *testing.T) {

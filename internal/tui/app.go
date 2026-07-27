@@ -61,6 +61,10 @@ type Model struct {
 	events           []core.Event
 	archMode         string
 	help             bool
+	modal            *modalState
+	confirm          *confirmState
+	leverEditor      *leverEditorState
+	wantLeverEditor  bool
 	aliases          map[string]string
 	reducedMotion    bool
 	ticks            int
@@ -101,6 +105,28 @@ type proposalsMsg struct {
 type transcriptMsg struct {
 	lines []string
 	err   error
+}
+
+type confirmState struct {
+	IssueID string
+	Prompt  string
+}
+
+type commandMsg struct {
+	op       string
+	response proto.Response
+	err      error
+}
+
+type leverApplyMsg struct {
+	response proto.Response
+	values   map[string]string
+	err      error
+}
+
+type createIssueMsg struct {
+	response proto.Response
+	err      error
 }
 
 func NewModel(client *proto.Client, stages []string) Model {
@@ -189,6 +215,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.Detail = msg.detail
+		if m.wantLeverEditor && msg.detail != nil {
+			m.leverEditor = newLeverEditor(msg.detail.Issue.ID, m.stages, msg.detail.Levers)
+			m.wantLeverEditor = false
+		}
 		if m.openEvidence && msg.detail != nil {
 			m.EvidenceTitle = msg.detail.Issue.ID + " " + msg.detail.Issue.Title
 			if path := latestEvidencePath(msg.detail.Artifacts); path != "" {
@@ -224,6 +254,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.optionMode = false
 		}
 		return m, nil
+	case commandMsg:
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		if !msg.response.OK {
+			m.Err = msg.response.Error
+		}
+		return m, nil
+	case leverApplyMsg:
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		if !msg.response.OK {
+			m.Err = msg.response.Error
+			return m, nil
+		}
+		if m.Detail != nil {
+			m.Detail.Levers = cloneStringMap(msg.values)
+			m.Detail.Issue.Levers = cloneStringMap(msg.values)
+		}
+		m.leverEditor = nil
+		return m, nil
+	case createIssueMsg:
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		if !msg.response.OK {
+			m.Err = msg.response.Error
+			return m, nil
+		}
+		m.modal = nil
+		return m, nil
 	case archMsg:
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -241,6 +306,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "?":
 			m.help = !m.help
+			return m, nil
+		}
+		if m.modal != nil {
+			switch key {
+			case "esc":
+				m.modal = nil
+			case "enter":
+				if strings.TrimSpace(m.modal.Title) == "" {
+					m.Err = "title is required"
+					return m, nil
+				}
+				return m, m.createIssue(*m.modal)
+			default:
+				updated := m.modal.input(key)
+				m.modal = &updated
+			}
+			return m, nil
+		}
+		if m.confirm != nil {
+			switch key {
+			case "y":
+				issueID := m.confirm.IssueID
+				m.confirm = nil
+				return m, m.issueCommand(issueID, "kill_stage")
+			case "n", "esc":
+				m.confirm = nil
+			}
+			return m, nil
+		}
+		if m.leverEditor != nil {
+			switch key {
+			case "esc":
+				m.leverEditor = nil
+			case "j":
+				m.leverEditor.Sel = min(m.leverEditor.Sel+1, max(0, len(m.leverEditor.Stages)-1))
+			case "k":
+				m.leverEditor.Sel = max(m.leverEditor.Sel-1, 0)
+			case "h":
+				m.cycleSelectedLever(-1)
+			case "l":
+				m.cycleSelectedLever(1)
+			case "enter":
+				return m, m.applyLevers()
+			}
 			return m, nil
 		}
 		if m.archMode != "" {
@@ -315,6 +424,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if key == "n" {
+			m.Err = ""
+			m.modal = &modalState{FlowName: "default", Preset: "regular"}
+			return m, nil
+		}
+		if m.Focus.Issue != "" {
+			switch key {
+			case "p":
+				if iv := m.State.Issues[m.Focus.Issue]; iv != nil {
+					op := "pause_issue"
+					if iv.Paused || iv.Killed || iv.State == "paused" {
+						op = "resume_issue"
+					}
+					return m, m.issueCommand(m.Focus.Issue, op)
+				}
+			case "x":
+				if iv := m.State.Issues[m.Focus.Issue]; iv != nil {
+					stage := iv.CurrentStage
+					if stage == "" {
+						stage = "current"
+					}
+					m.confirm = &confirmState{IssueID: iv.ID, Prompt: fmt.Sprintf("kill the running %s stage of %s? y/n", stage, iv.Title)}
+					return m, nil
+				}
+			case "R":
+				if iv := m.State.Issues[m.Focus.Issue]; iv != nil && (iv.State == "failed" || iv.Killed || (iv.State == "paused" && iv.Killed)) {
+					return m, m.issueCommand(m.Focus.Issue, "retry_stage")
+				}
+			case "L":
+				return m, m.openLeverEditor(m.Focus.Issue)
+			}
+		}
 		if (key == "enter" || key == "o") && m.Focus.Issue != "" {
 			if key == "o" {
 				m.acceptStreak = 0
@@ -354,6 +495,121 @@ func (m *Model) dismissToast() {
 	m.dismissed[m.Toast.ID] = true
 	m.Toast = nil
 	m.optionMode = false
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	copyValues := make(map[string]string, len(values))
+	for key, value := range values {
+		copyValues[key] = value
+	}
+	return copyValues
+}
+
+func (m Model) issueCommand(issueID, op string) tea.Cmd {
+	if m.client == nil || issueID == "" {
+		return nil
+	}
+	client := m.client
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: op, IssueID: issueID})
+		return commandMsg{op: op, response: r, err: err}
+	}
+}
+
+func (m *Model) openLeverEditor(issueID string) tea.Cmd {
+	if m.Detail != nil && m.Detail.Issue.ID == issueID {
+		m.leverEditor = newLeverEditor(issueID, m.stages, m.Detail.Levers)
+		return nil
+	}
+	m.wantLeverEditor = true
+	if m.client == nil {
+		m.leverEditor = newLeverEditor(issueID, m.stages, nil)
+		m.wantLeverEditor = false
+		return nil
+	}
+	return m.fetchDetail(issueID)
+}
+
+func (m *Model) cycleSelectedLever(delta int) {
+	if m.leverEditor == nil || len(m.leverEditor.Stages) == 0 {
+		return
+	}
+	stage := m.leverEditor.Stages[m.leverEditor.Sel]
+	m.leverEditor.Matrix[stage] = cycleLever(m.leverEditor.Matrix[stage], delta)
+}
+
+func (m Model) applyLevers() tea.Cmd {
+	if m.leverEditor == nil {
+		return nil
+	}
+	values := cloneStringMap(m.leverEditor.Matrix)
+	changed := false
+	for _, stage := range m.leverEditor.Stages {
+		if m.leverEditor.Original[stage] != m.leverEditor.Matrix[stage] {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return func() tea.Msg { return leverApplyMsg{response: proto.Response{OK: true}, values: values} }
+	}
+	if m.client == nil {
+		return func() tea.Msg { return leverApplyMsg{response: proto.Response{OK: true}, values: values} }
+	}
+	client := m.client
+	issueID := m.leverEditor.IssueID
+	stages := append([]string(nil), m.leverEditor.Stages...)
+	original := cloneStringMap(m.leverEditor.Original)
+	return func() tea.Msg {
+		for _, stage := range stages {
+			if original[stage] == values[stage] {
+				continue
+			}
+			r, err := client.Do(proto.Command{Op: "set_lever", IssueID: issueID, Stage: stage, Lever: values[stage]})
+			if err != nil {
+				return leverApplyMsg{err: err}
+			}
+			if !r.OK {
+				return leverApplyMsg{response: r}
+			}
+		}
+		return leverApplyMsg{response: proto.Response{OK: true}, values: values}
+	}
+}
+
+func (m Model) createIssue(modal modalState) tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	flowName := strings.TrimSpace(modal.FlowName)
+	if flowName == "" {
+		flowName = "default"
+	}
+	preset := strings.TrimSpace(modal.Preset)
+	if preset == "" {
+		preset = "regular"
+	}
+	client := m.client
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title, Body: modal.Body, Flow: flowName, Preset: preset})
+		if err != nil {
+			return createIssueMsg{err: err}
+		}
+		if !r.OK {
+			return createIssueMsg{response: r}
+		}
+		started, err := client.Do(proto.Command{Op: "start_issue", IssueID: r.IssueID})
+		if err != nil {
+			return createIssueMsg{err: err}
+		}
+		if !started.OK {
+			return createIssueMsg{response: started}
+		}
+		return createIssueMsg{response: r}
+	}
 }
 
 func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
@@ -737,7 +993,13 @@ func (m Model) View() string {
 		b.WriteString("j/k select · enter open · esc back · q quit")
 		return b.String()
 	}
-	if m.pager.Mode == "artifacts" {
+	if m.modal != nil {
+		tower = renderModal(*m.modal, layoutWidth)
+	} else if m.confirm != nil {
+		tower = renderConfirm(m.confirm.Prompt, layoutWidth)
+	} else if m.leverEditor != nil {
+		tower = renderLeverEditor(m.leverEditor.Stages, m.leverEditor.Matrix, m.leverEditor.Sel)
+	} else if m.pager.Mode == "artifacts" {
 		tower = renderArtifactList(m.pager, m.Ids[m.Focus.Issue], towerWidth, m.Height)
 	} else if m.pager.Mode == "pager" {
 		tower = renderPager(m.pager, towerWidth, m.Height)

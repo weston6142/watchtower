@@ -76,6 +76,7 @@ type IssueRow struct {
 	Body     string
 	State    string
 	Flow     string
+	Levers   map[string]string
 	Priority int
 }
 
@@ -429,20 +430,47 @@ func (s *Store) PendingProposals() ([]ProposalRow, error) {
 func (s *Store) UpsertIssue(r IssueRow) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
-		INSERT INTO issues(id,title,body,state,flow,priority)
-		VALUES(?,?,?,?,?,?)
+	levers, err := json.Marshal(r.Levers)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO issues(id,title,body,state,flow,levers,priority)
+		VALUES(?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title, body=excluded.body, state=excluded.state,
-			flow=excluded.flow, priority=excluded.priority`,
-		r.ID, r.Title, r.Body, r.State, r.Flow, r.Priority)
+			flow=excluded.flow, levers=excluded.levers, priority=excluded.priority`,
+		r.ID, r.Title, r.Body, r.State, r.Flow, string(levers), r.Priority)
+	return err
+}
+
+// SetIssueLever persists one stage lever without replacing the other stages.
+func (s *Store) SetIssueLever(issueID, stage, lever string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var raw string
+	if err := s.db.QueryRow(`SELECT levers FROM issues WHERE id=?`, issueID).Scan(&raw); err != nil {
+		return err
+	}
+	values := map[string]string{}
+	if raw != "" && raw != "null" {
+		if err := json.Unmarshal([]byte(raw), &values); err != nil {
+			return err
+		}
+	}
+	values[stage] = lever
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE issues SET levers=? WHERE id=?`, string(encoded), issueID)
 	return err
 }
 
 func (s *Store) Issues() ([]IssueRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT id,title,body,state,flow,priority FROM issues ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id,title,body,state,flow,levers,priority FROM issues ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -450,8 +478,14 @@ func (s *Store) Issues() ([]IssueRow, error) {
 	var out []IssueRow
 	for rows.Next() {
 		var r IssueRow
-		if err := rows.Scan(&r.ID, &r.Title, &r.Body, &r.State, &r.Flow, &r.Priority); err != nil {
+		var raw string
+		if err := rows.Scan(&r.ID, &r.Title, &r.Body, &r.State, &r.Flow, &raw, &r.Priority); err != nil {
 			return nil, err
+		}
+		if raw != "" && raw != "null" {
+			if err := json.Unmarshal([]byte(raw), &r.Levers); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, r)
 	}

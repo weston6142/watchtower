@@ -147,3 +147,28 @@ func TestStageRunLifecycle(t *testing.T) {
 		t.Fatalf("tokens: %d", tok)
 	}
 }
+
+func TestIssueLeversPersistWithIssue(t *testing.T) {
+	s, err := Open("file:t6?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.UpsertIssue(IssueRow{
+		ID: "GH-1", Title: "lever test", Flow: "default", State: "running",
+		Levers: map[string]string{"spec": "strict"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetIssueLever("GH-1", "execute", "yolo"); err != nil {
+		t.Fatal(err)
+	}
+	issues, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 1 || issues[0].Levers["spec"] != "strict" || issues[0].Levers["execute"] != "yolo" {
+		t.Fatalf("levers were not persisted: %+v", issues)
+	}
+}
