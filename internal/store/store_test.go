@@ -31,3 +31,30 @@ func TestAppendAssignsSeqAndReplays(t *testing.T) {
 		t.Fatalf("replay wrong: %+v", got)
 	}
 }
+
+func TestStageRunLifecycle(t *testing.T) {
+	s, err := Open("file:t2?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	id, err := s.InsertStageRun(StageRun{IssueID: "GH-1", Stage: "execute", Agent: "executor", Status: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishStageRun(id, "succeeded", "sess-abc", 1234); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.StageRuns("GH-1")
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs: %v %v", runs, err)
+	}
+	r := runs[0]
+	if r.Status != "succeeded" || r.SessionID != "sess-abc" || r.Tokens != 1234 {
+		t.Fatalf("bad run: %+v", r)
+	}
+	tok, _ := s.IssueTokens("GH-1")
+	if tok != 1234 {
+		t.Fatalf("tokens: %d", tok)
+	}
+}

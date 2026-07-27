@@ -145,6 +145,9 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	}
 	dones := make(chan agentDone, len(st.Agents))
 	runAgent := func(a flow.AgentRef) {
+		runID, insErr := e.cfg.Store.InsertStageRun(store.StageRun{
+			IssueID: is.id, Stage: st.Name, Agent: a.Package,
+			Worktree: workdir, Status: "running"})
 		asks := make(chan runner.Ask)
 		resc := e.cfg.Runner.Run(ctx, is.id, st.Name, a.Package, workdir, asks)
 		for {
@@ -152,6 +155,13 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 			case ask := <-asks:
 				e.handleAsk(is, st.Name, ask)
 			case res := <-resc:
+				if insErr == nil {
+					status := "succeeded"
+					if res.Err != nil {
+						status = "failed"
+					}
+					e.cfg.Store.FinishStageRun(runID, status, res.SessionID, res.Tokens)
+				}
 				dones <- agentDone{a.Package, res}
 				return
 			}

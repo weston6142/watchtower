@@ -136,3 +136,33 @@ func TestFailedAgentRetriesThenFails(t *testing.T) {
 		t.Fatalf("started=%d failed=%d", started, failed)
 	}
 }
+
+func TestEngineRecordsStageRuns(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, _ := e.CreateIssue("t", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+	for {
+		if ds := e.PendingDecisions(); len(ds) == 1 {
+			e.Answer(ds[0].ID, 0)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-errC; err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// brainstorm(1) + spec(1) + execute(1) + review(3 agents) = 6 rows
+	if len(runs) != 6 {
+		t.Fatalf("want 6 stage runs, got %d: %+v", len(runs), runs)
+	}
+	for _, r := range runs {
+		if r.Status != "succeeded" {
+			t.Fatalf("unfinished run: %+v", r)
+		}
+	}
+}

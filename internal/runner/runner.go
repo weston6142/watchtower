@@ -13,6 +13,7 @@ type Ask struct {
 
 type Result struct {
 	Artifacts map[string]string
+	SessionID string
 	Tokens    int
 	Err       error
 }

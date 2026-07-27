@@ -35,6 +35,17 @@ type Store struct {
 	seq int64
 }
 
+type StageRun struct {
+	ID        int64
+	IssueID   string
+	Stage     string
+	Agent     string
+	SessionID string
+	Worktree  string
+	Status    string
+	Tokens    int
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -85,6 +96,51 @@ func (s *Store) EventsSince(seq int64) ([]core.Event, error) {
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) InsertStageRun(r StageRun) (int64, error) {
+	res, err := s.db.Exec(
+		`INSERT INTO stage_runs(issue_id,stage,agent,session_id,worktree,status,tokens)
+		 VALUES(?,?,?,?,?,?,?)`,
+		r.IssueID, r.Stage, r.Agent, r.SessionID, r.Worktree, r.Status, r.Tokens)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) FinishStageRun(id int64, status, sessionID string, tokens int) error {
+	_, err := s.db.Exec(
+		`UPDATE stage_runs SET status=?, session_id=?, tokens=? WHERE id=?`,
+		status, sessionID, tokens, id)
+	return err
+}
+
+func (s *Store) StageRuns(issueID string) ([]StageRun, error) {
+	rows, err := s.db.Query(
+		`SELECT id,issue_id,stage,agent,session_id,worktree,status,tokens
+		 FROM stage_runs WHERE issue_id=? ORDER BY id`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StageRun
+	for rows.Next() {
+		var r StageRun
+		if err := rows.Scan(&r.ID, &r.IssueID, &r.Stage, &r.Agent,
+			&r.SessionID, &r.Worktree, &r.Status, &r.Tokens); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) IssueTokens(issueID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COALESCE(SUM(tokens),0) FROM stage_runs WHERE issue_id=?`, issueID).Scan(&n)
+	return n, err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
