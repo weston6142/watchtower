@@ -145,20 +145,15 @@ func (m Model) poll() tea.Cmd {
 }
 
 func (m Model) View() string {
-	var b strings.Builder
 	issues := 0
 	if m.State != nil {
 		issues = len(m.State.Issues)
 	}
+	var b strings.Builder
 	fmt.Fprintf(&b, "◆ GUILD TOWER · %d issues · q quit · ? help\n", issues)
-	if m.State != nil {
-		for _, id := range m.State.Order {
-			iv := m.State.Issues[id]
-			fmt.Fprintf(&b, "%s  %s  %s\n", id, iv.State, iv.Title)
-		}
-	}
+	b.WriteString(renderTower(m.State, m.stages, m.Ids, m.Focus, m.Width))
 	if m.Err != "" {
-		fmt.Fprintf(&b, "error: %s\n", m.Err)
+		fmt.Fprintf(&b, "\nerror: %s", m.Err)
 	}
-	return strings.TrimSuffix(b.String(), "\n")
+	return b.String()
 }
