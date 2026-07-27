@@ -18,6 +18,7 @@ import (
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/projection"
 	"github.com/wbushyeager/guildhall/internal/proto"
+	"github.com/wbushyeager/guildhall/internal/store"
 )
 
 type Focus struct {
@@ -53,6 +54,11 @@ type Model struct {
 	evidenceDecision *projection.DecisionView
 	evidenceOpened   map[int64]bool
 	acceptStreak     int
+	modes            []string
+	proposals        []store.ProposalRow
+	doorSel          int
+	doorLines        []string
+	events           []core.Event
 	archMode         string
 	help             bool
 	aliases          map[string]string
@@ -85,6 +91,16 @@ type answerMsg struct {
 type archMsg struct {
 	arch *archmap.Map
 	err  error
+}
+
+type proposalsMsg struct {
+	proposals []store.ProposalRow
+	err       error
+}
+
+type transcriptMsg struct {
+	lines []string
+	err   error
 }
 
 func NewModel(client *proto.Client, stages []string) Model {
@@ -130,9 +146,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.client == nil {
 			return m, m.tick()
 		}
-		return m, tea.Batch(m.poll(), m.pollOverview())
+		cmds := []tea.Cmd{m.poll(), m.pollOverview()}
+		if m.currentMode() == "transcript" {
+			cmds = append(cmds, m.fetchTranscript())
+		}
+		return m, tea.Batch(cmds...)
 	case Msg:
 		m = m.applyEvents(msg.Events)
+		if m.currentMode() == "transcript" {
+			return m, tea.Batch(m.tick(), m.fetchTranscript())
+		}
 		return m, m.tick()
 	case pollErrorMsg:
 		m.Err = msg.err.Error()
@@ -143,6 +166,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.Overview = msg.overview
+		return m, nil
+	case proposalsMsg:
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		m.proposals = msg.proposals
+		m.doorSel = min(m.doorSel, max(0, len(m.proposals)-1))
+		return m, nil
+	case transcriptMsg:
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		m.doorLines = msg.lines
 		return m, nil
 	case detailMsg:
 		if msg.err != nil {
@@ -219,6 +257,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pager.Mode != "" {
 			cmd := m.updatePagerKey(key)
 			return m, cmd
+		}
+		if len(m.modes) > 0 {
+			return m, m.updateDoorKey(key)
+		}
+		switch key {
+		case "d":
+			m.modes = append(m.modes, "decisions")
+			m.doorSel = 0
+			return m, nil
+		case "t":
+			m.modes = append(m.modes, "tray")
+			m.doorSel = 0
+			return m, m.fetchProposals()
+		case "e":
+			m.modes = append(m.modes, "timeline")
+			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
+			return m, nil
+		case "T":
+			m.modes = append(m.modes, "transcript")
+			return m, m.fetchTranscript()
 		}
 		if m.Evidence != nil || m.evidenceDecision != nil {
 			switch key {
@@ -465,6 +523,7 @@ func (m Model) applyEvents(evs []core.Event) Model {
 		m.State = projection.NewState()
 	}
 	for _, ev := range evs {
+		m.events = append(m.events, ev)
 		m.State.Apply(ev)
 		if ev.Seq > m.lastSeq {
 			m.lastSeq = ev.Seq
@@ -530,6 +589,123 @@ func (m Model) pollOverview() tea.Cmd {
 	}
 }
 
+func (m Model) currentMode() string {
+	if len(m.modes) == 0 {
+		return ""
+	}
+	return m.modes[len(m.modes)-1]
+}
+
+func (m *Model) popMode() {
+	if len(m.modes) == 0 {
+		return
+	}
+	m.modes = m.modes[:len(m.modes)-1]
+	m.doorLines = nil
+	m.proposals = nil
+	m.doorSel = 0
+}
+
+func (m *Model) updateDoorKey(key string) tea.Cmd {
+	if key == "esc" {
+		m.popMode()
+		return nil
+	}
+	switch m.currentMode() {
+	case "decisions":
+		ds := decisionViews(m.State)
+		switch key {
+		case "j":
+			m.doorSel = min(m.doorSel+1, max(0, len(ds)-1))
+		case "k":
+			m.doorSel = max(m.doorSel-1, 0)
+		case "enter":
+			if len(ds) > 0 {
+				decision := ds[min(m.doorSel, len(ds)-1)]
+				m.Toast = &decision
+				m.popMode()
+			}
+		default:
+			if len(key) == 1 && key >= "1" && key <= "9" {
+				index := int(key[0] - '1')
+				if index < len(ds) {
+					decision := ds[index]
+					m.Toast = &decision
+					m.popMode()
+				}
+			}
+		}
+	case "tray":
+		switch key {
+		case "j":
+			m.doorSel = min(m.doorSel+1, max(0, len(m.proposals)-1))
+		case "k":
+			m.doorSel = max(m.doorSel-1, 0)
+		case "enter", "a":
+			return m.resolveProposal(true)
+		case "r":
+			return m.resolveProposal(false)
+		}
+	}
+	return nil
+}
+
+func (m Model) fetchProposals() tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	client := m.client
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "list_proposals"})
+		if err != nil {
+			return proposalsMsg{err: err}
+		}
+		if !r.OK {
+			return proposalsMsg{err: errors.New(r.Error)}
+		}
+		return proposalsMsg{proposals: r.Proposals}
+	}
+}
+
+func (m Model) resolveProposal(accept bool) tea.Cmd {
+	if m.client == nil || len(m.proposals) == 0 || m.doorSel >= len(m.proposals) {
+		return nil
+	}
+	client := m.client
+	proposalID := m.proposals[m.doorSel].ID
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "resolve_proposal", ProposalID: proposalID, Accept: accept, Flow: "default", Preset: "regular"})
+		if err == nil && r.OK && accept && r.IssueID != "" {
+			_, err = client.Do(proto.Command{Op: "start_issue", IssueID: r.IssueID})
+		}
+		if err != nil {
+			return proposalsMsg{err: err}
+		}
+		if !r.OK {
+			return proposalsMsg{err: errors.New(r.Error)}
+		}
+		return proposalsMsg{}
+	}
+}
+
+func (m Model) fetchTranscript() tea.Cmd {
+	if m.client == nil || m.Focus.Issue == "" {
+		return nil
+	}
+	client := m.client
+	issueID := m.Focus.Issue
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "transcript_tail", IssueID: issueID, N: 200})
+		if err != nil {
+			return transcriptMsg{err: err}
+		}
+		if !r.OK {
+			return transcriptMsg{err: errors.New(r.Error)}
+		}
+		return transcriptMsg{lines: r.Lines}
+	}
+}
+
 func (m Model) View() string {
 	layoutWidth := m.Width
 	if layoutWidth <= 0 {
@@ -538,6 +714,29 @@ func (m Model) View() string {
 	railWidth := max(24, min(40, layoutWidth/3))
 	towerWidth := max(1, layoutWidth-railWidth-1)
 	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth)
+	switch m.currentMode() {
+	case "decisions":
+		tower = renderDecisionsDoor(decisionViews(m.State), m.Ids, m.doorSel, layoutWidth)
+	case "tray":
+		tower = renderProposalsDoor(m.proposals, m.doorSel, layoutWidth)
+	case "timeline":
+		tower = renderTextDoor("TIMELINE", m.doorLines, layoutWidth)
+	case "transcript":
+		tower = renderTextDoor("TRANSCRIPT", m.doorLines, layoutWidth)
+	}
+	if m.currentMode() != "" {
+		// Doors replace the grid and rail but retain the header and footer.
+		body := tower
+		var b strings.Builder
+		b.WriteString(renderHeader(m.Overview, layoutWidth))
+		b.WriteByte('\n')
+		b.WriteString(renderNoticeRow(m.State, layoutWidth))
+		b.WriteByte('\n')
+		b.WriteString(body)
+		b.WriteString("\n\n")
+		b.WriteString("j/k select · enter open · esc back · q quit")
+		return b.String()
+	}
 	if m.pager.Mode == "artifacts" {
 		tower = renderArtifactList(m.pager, m.Ids[m.Focus.Issue], towerWidth, m.Height)
 	} else if m.pager.Mode == "pager" {
