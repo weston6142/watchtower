@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/wbushyeager/guildhall/internal/projection"
 )
@@ -114,11 +115,9 @@ func truncate(s string, width int) string {
 	if width <= 0 || lipgloss.Width(s) <= width {
 		return s
 	}
-	runes := []rune(s)
-	if len(runes) <= width {
-		return s[:width]
-	}
-	return string(runes[:max(0, width-1)]) + "…"
+	// ansi.Truncate is display-width-aware and never splits escape
+	// sequences or wide runes (emoji flags would break a byte slice).
+	return ansi.Truncate(s, width, "…")
 }
 
 func warRoom(st *projection.State, ids map[string]Identity) string {
