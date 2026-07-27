@@ -63,6 +63,10 @@ type Model struct {
 	archSel          int
 	archFilter       string
 	help             bool
+	rows             bool
+	retireAfter      time.Duration
+	retired          map[string]bool
+	shelfSel         int
 	modal            *modalState
 	confirm          *confirmState
 	leverEditor      *leverEditorState
@@ -145,12 +149,20 @@ func NewModel(client *proto.Client, stages []string) Model {
 		stages:         append([]string(nil), stages...),
 		dismissed:      map[int64]bool{},
 		evidenceOpened: map[int64]bool{},
+		retireAfter:    5 * time.Minute,
+		retired:        map[string]bool{},
 	}
 }
 
 func (m *Model) SetStageAliases(aliases map[string]string) { m.aliases = aliases }
 
 func (m *Model) SetReducedMotion(reduced bool) { m.reducedMotion = reduced }
+
+func (m *Model) SetRetireAfter(after time.Duration) {
+	if after > 0 {
+		m.retireAfter = after
+	}
+}
 
 func ParseStageAliases(raw string) map[string]string {
 	aliases := map[string]string{}
@@ -171,6 +183,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		m.ticks++
+		m.autoRetire(time.Now())
 		if m.client == nil {
 			return m, m.tick()
 		}
@@ -319,6 +332,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.Err = "title is required"
 					return m, nil
 				}
+				if m.client == nil {
+					m.modal = nil
+					return m, nil
+				}
 				return m, m.createIssue(*m.modal)
 			default:
 				updated := m.modal.input(key)
@@ -402,6 +419,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "T":
 			m.modes = append(m.modes, "transcript")
 			return m, m.fetchTranscript()
+		case "u":
+			m.modes = append(m.modes, "shelf")
+			m.shelfSel = 0
+			return m, nil
+		case "z":
+			m.rows = !m.rows
+			return m, nil
 		}
 		if m.Evidence != nil || m.evidenceDecision != nil {
 			switch key {
@@ -447,6 +471,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.Focus.Issue != "" {
 			switch key {
+			case "c":
+				m.retireFocused()
+				return m, nil
 			case "p":
 				if iv := m.State.Issues[m.Focus.Issue]; iv != nil {
 					op := "pause_issue"
@@ -876,6 +903,7 @@ func (m *Model) popMode() {
 	m.doorLines = nil
 	m.proposals = nil
 	m.doorSel = 0
+	m.shelfSel = 0
 }
 
 func (m *Model) updateDoorKey(key string) tea.Cmd {
@@ -918,8 +946,76 @@ func (m *Model) updateDoorKey(key string) tea.Cmd {
 		case "r":
 			return m.resolveProposal(false)
 		}
+	case "shelf":
+		items := m.shelfItems()
+		switch key {
+		case "j":
+			m.shelfSel = min(m.shelfSel+1, max(0, len(items)-1))
+		case "k":
+			m.shelfSel = max(m.shelfSel-1, 0)
+		case "enter":
+			if m.shelfSel < len(items) && !items[m.shelfSel].Parked {
+				delete(m.retired, items[m.shelfSel].ID)
+				m.popMode()
+			}
+		}
 	}
 	return nil
+}
+
+func (m *Model) autoRetire(now time.Time) {
+	if m.State == nil || m.retireAfter <= 0 {
+		return
+	}
+	if m.retired == nil {
+		m.retired = map[string]bool{}
+	}
+	for _, issueID := range m.State.ShippedToday {
+		iv := m.State.Issues[issueID]
+		if iv != nil && !iv.MergedAt.IsZero() && !now.Before(iv.MergedAt.Add(m.retireAfter)) {
+			m.retired[issueID] = true
+		}
+	}
+}
+
+func (m *Model) retireFocused() {
+	if m.State == nil || m.Focus.Issue == "" {
+		return
+	}
+	iv := m.State.Issues[m.Focus.Issue]
+	if iv != nil && iv.Merged {
+		if m.retired == nil {
+			m.retired = map[string]bool{}
+		}
+		m.retired[iv.ID] = true
+	}
+}
+
+func (m Model) shelfItems() []shelfItem {
+	if m.State == nil {
+		return nil
+	}
+	items := make([]shelfItem, 0)
+	seen := map[string]bool{}
+	for _, issueID := range m.State.ShippedToday {
+		if !m.retired[issueID] || seen[issueID] {
+			continue
+		}
+		if iv := m.State.Issues[issueID]; iv != nil {
+			items = append(items, shelfItem{ID: issueID, Title: iv.Title})
+			seen[issueID] = true
+		}
+	}
+	for _, issueID := range m.State.Parked {
+		if seen[issueID] {
+			continue
+		}
+		if iv := m.State.Issues[issueID]; iv != nil {
+			items = append(items, shelfItem{ID: issueID, Title: iv.Title, Parked: true})
+			seen[issueID] = true
+		}
+	}
+	return items
 }
 
 func (m Model) fetchProposals() tea.Cmd {
@@ -986,6 +1082,9 @@ func (m Model) View() string {
 	railWidth := max(24, min(40, layoutWidth/3))
 	towerWidth := max(1, layoutWidth-railWidth-1)
 	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth)
+	if m.rows {
+		tower = renderRowsConfigured(m.State, m.stages, m.Ids, m.Focus, m.reducedMotion, m.ticks, towerWidth)
+	}
 	switch m.currentMode() {
 	case "decisions":
 		tower = renderDecisionsDoor(decisionViews(m.State), m.Ids, m.doorSel, layoutWidth)
@@ -995,8 +1094,10 @@ func (m Model) View() string {
 		tower = renderTextDoor("TIMELINE", m.doorLines, layoutWidth)
 	case "transcript":
 		tower = renderTextDoor("TRANSCRIPT", m.doorLines, layoutWidth)
+	case "shelf":
+		tower = renderShelf(m.shelfItems(), m.Ids, layoutWidth)
 	}
-	if m.currentMode() != "" {
+	if m.currentMode() != "" && !m.help {
 		// Doors replace the grid and rail but retain the header and footer.
 		body := tower
 		var b strings.Builder
@@ -1007,6 +1108,16 @@ func (m Model) View() string {
 		b.WriteString(body)
 		b.WriteString("\n\n")
 		b.WriteString("j/k select · enter open · esc back · q quit")
+		return b.String()
+	}
+	if m.help {
+		var b strings.Builder
+		b.WriteString(renderHeader(m.Overview, layoutWidth))
+		b.WriteByte('\n')
+		b.WriteString(renderNoticeRow(m.State, layoutWidth))
+		b.WriteByte('\n')
+		b.WriteString(renderHelp(layoutWidth))
+		b.WriteString("\n\n? close help · q quit")
 		return b.String()
 	}
 	if m.modal != nil {
@@ -1048,11 +1159,11 @@ func (m Model) View() string {
 	b.WriteString(renderNoticeRow(m.State, layoutWidth))
 	b.WriteByte('\n')
 	b.WriteString(body)
-	if m.help {
-		b.WriteString("\n\nKEYS: j/k floors · h/l cards · 1-9 issue · tab attention · g war room · enter drill · esc back · d decisions · t triage · L levers · a arch pane · A arch full · ? close help · q quit")
-	} else {
-		b.WriteString("\n\nj/k floors · h/l cards · tab attention · 1-9 jump · enter drill · a arch · ? help · q quit")
+	if shelf := renderShelf(m.shelfItems(), m.Ids, layoutWidth); shelf != "" {
+		b.WriteString("\n\n")
+		b.WriteString(shelf)
 	}
+	b.WriteString("\n\nj/k floors · tab attention · p pause · x kill · R retry · L levers · ? help · q quit")
 	if m.Err != "" {
 		fmt.Fprintf(&b, "\nerror: %s", m.Err)
 	}

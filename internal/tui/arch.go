@@ -158,9 +158,15 @@ func mapInsight(issues map[string]*projection.IssueView) string {
 		}
 		return fmt.Sprintf("%s/ has %d builders (sequenced)", area, count)
 	}
+	issueIDs := make([]string, 0, len(issues))
+	for issueID := range issues {
+		issueIDs = append(issueIDs, issueID)
+	}
+	sort.Strings(issueIDs)
 	bestID := ""
 	bestAreas := 0
-	for issueID, issue := range issues {
+	for _, issueID := range issueIDs {
+		issue := issues[issueID]
 		if issue == nil || len(issue.AreaWeights) <= bestAreas {
 			continue
 		}
@@ -170,10 +176,4 @@ func mapInsight(issues map[string]*projection.IssueView) string {
 		return fmt.Sprintf("%s spans %d areas", bestID, bestAreas)
 	}
 	return "quiet"
-
-	/*
-		The architecture map used to render file counts and a separate GHOSTS
-		section. Activity now lives in the single mark column above, so quiet
-		areas stay collapsed and no churn/count detail can reflow the tree.
-	*/
 }

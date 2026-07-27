@@ -106,11 +106,7 @@ func renderLeverLine(levers map[string]string) string {
 	if len(levers) == 0 {
 		return ""
 	}
-	stages := make([]string, 0, len(levers))
-	for stage := range levers {
-		stages = append(stages, stage)
-	}
-	sort.Strings(stages)
+	stages := orderedLeverStages(levers)
 	parts := make([]string, 0, len(stages))
 	for _, stage := range stages {
 		value := levers[stage]
@@ -128,6 +124,26 @@ func renderLeverLine(levers map[string]string) string {
 		parts = append(parts, letter+":"+label)
 	}
 	return "levers " + strings.Join(parts, " ")
+}
+
+func orderedLeverStages(levers map[string]string) []string {
+	preferred := []string{"brainstorm", "spec", "plan", "execute", "review", "merge"}
+	seen := map[string]bool{}
+	stages := make([]string, 0, len(levers))
+	for _, stage := range preferred {
+		if _, ok := levers[stage]; ok {
+			stages = append(stages, stage)
+			seen[stage] = true
+		}
+	}
+	remaining := make([]string, 0, len(levers)-len(stages))
+	for stage := range levers {
+		if !seen[stage] {
+			remaining = append(remaining, stage)
+		}
+	}
+	sort.Strings(remaining)
+	return append(stages, remaining...)
 }
 
 // renderToast draws the raised decision as a self-contained modal string.

@@ -101,3 +101,53 @@ func TestStageAliases(t *testing.T) {
 		t.Fatalf("aliases not applied:\n%s", out)
 	}
 }
+
+func TestVisibleLanesCompaction(t *testing.T) {
+	order := []string{"A", "B", "C", "D", "E", "F", "G", "H"}
+	full, left, right := visibleLanes(order, 4 /* focused=E */, 100)
+	if len(left)+len(full)+len(right) != 8 {
+		t.Fatalf("lanes lost: %v %v %v", left, full, right)
+	}
+	found := false
+	for _, lane := range full {
+		if lane == "E" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("focused lane not full-width")
+	}
+	if len(left) == 0 && len(right) == 0 {
+		t.Fatal("no compaction at 8 lanes/100 cols")
+	}
+}
+
+func TestShelfRendersShippedAndParked(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	out := renderShelf([]shelfItem{{ID: "GH-1", Title: "payment adapter", Parked: false},
+		{ID: "GH-3", Title: "auth patch", Parked: true}},
+		map[string]Identity{"GH-1": {Tag: "PA"}, "GH-3": {Tag: "AP"}}, 100)
+	if !strings.Contains(out, "SHIPPED") || !strings.Contains(out, "PARKED") || !strings.Contains(out, "auth patch") {
+		t.Fatalf("shelf:\n%s", out)
+	}
+}
+
+func TestRowsReuseStateWords(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	st := projection.NewState()
+	st.Issues["GH-1"] = &projection.IssueView{ID: "GH-1", Title: "broken", CurrentStage: "execute", State: "failed"}
+	st.Order = []string{"GH-1"}
+	out := renderRows(st, []string{"spec", "execute"}, map[string]Identity{"GH-1": {Tag: "BR", Color: "#61afef"}}, Focus{Issue: "GH-1"}, 1, 100)
+	if !strings.Contains(out, "FAILED") {
+		t.Fatalf("rows did not reuse failed cell:\n%s", out)
+	}
+}
+
+func TestHelpListsControlKeys(t *testing.T) {
+	out := renderHelp(100)
+	for _, key := range []string{"p", "x", "R", "L", "n", "z", "c", "u", "?", "q"} {
+		if !strings.Contains(out, key) {
+			t.Fatalf("help missing %q:\n%s", key, out)
+		}
+	}
+}

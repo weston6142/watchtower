@@ -2,8 +2,10 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/wbushyeager/guildhall/internal/projection"
 )
 
 func mkev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -36,5 +38,20 @@ func TestApplyEventsBuildsStateAndToast(t *testing.T) {
 	}
 	if m.lastSeq != 3 {
 		t.Fatalf("lastSeq: %d", m.lastSeq)
+	}
+}
+
+func TestShelfAutoRetiresAndUnretiresMergedIssue(t *testing.T) {
+	m := NewModel(nil, []string{"spec", "merge"})
+	m.State.Issues["GH-1"] = &projection.IssueView{ID: "GH-1", Title: "shipped", Merged: true, MergedAt: time.Now().Add(-2 * time.Minute)}
+	m.State.ShippedToday = []string{"GH-1"}
+	m.SetRetireAfter(time.Minute)
+	m.autoRetire(time.Now())
+	if items := m.shelfItems(); len(items) != 1 || items[0].ID != "GH-1" {
+		t.Fatalf("merged issue was not retired: %+v", items)
+	}
+	delete(m.retired, "GH-1")
+	if items := m.shelfItems(); len(items) != 0 {
+		t.Fatalf("unretire did not remove shelf item: %+v", items)
 	}
 }

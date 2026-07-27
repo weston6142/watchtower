@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -50,6 +51,7 @@ func main() {
 		repo := fs.String("repo", "", "repository path for the architecture map")
 		stageAliases := fs.String("stage-aliases", "", "display aliases, e.g. spec=AGREE,execute=BUILD")
 		reducedMotion := fs.Bool("reduced-motion", false, "disable spinner and failure motion")
+		retireAfter := fs.Duration("retire-after", 5*time.Minute, "auto-retire shipped lanes after this duration")
 		fs.Parse(args)
 		c := mustDial(*data)
 		defer c.Close()
@@ -58,6 +60,7 @@ func main() {
 		model.Repo = *repo
 		model.SetStageAliases(tui.ParseStageAliases(*stageAliases))
 		model.SetReducedMotion(*reducedMotion)
+		model.SetRetireAfter(*retireAfter)
 		if _, err := tea.NewProgram(model, tea.WithAltScreen()).Run(); err != nil {
 			fatal(err)
 		}
