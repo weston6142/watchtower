@@ -9,12 +9,14 @@ import (
 	"strconv"
 
 	"github.com/wbushyeager/guildhall/internal/claude"
+	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/engine"
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/pkgs"
 	"github.com/wbushyeager/guildhall/internal/proto"
 	"github.com/wbushyeager/guildhall/internal/runner"
 	"github.com/wbushyeager/guildhall/internal/slots"
+	"github.com/wbushyeager/guildhall/internal/steward"
 	"github.com/wbushyeager/guildhall/internal/store"
 	"github.com/wbushyeager/guildhall/internal/workspace"
 )
@@ -26,7 +28,7 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|new|decisions|answer|proposals|accept-proposal|reject-proposal|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -116,6 +118,16 @@ func main() {
 		} else {
 			fmt.Println("rejected")
 		}
+	case "issues":
+		fs := flag.NewFlagSet("issues", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		c := mustDial(*data)
+		defer c.Close()
+		r := mustDo(c, proto.Command{Op: "list_issues"})
+		for _, issue := range r.Issues {
+			fmt.Printf("%s  %s  %s\n", issue.ID, issue.State, issue.Title)
+		}
 	case "tail":
 		fs := flag.NewFlagSet("tail", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
@@ -192,6 +204,7 @@ func runDaemon(args []string) {
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(*data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
+		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
 	})
 	switch r := run.(type) {
 	case *claude.CodeRunner:

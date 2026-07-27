@@ -67,6 +67,15 @@ type ProposalRow struct {
 	Status  string
 }
 
+type IssueRow struct {
+	ID       string
+	Title    string
+	Body     string
+	State    string
+	Flow     string
+	Priority int
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -263,6 +272,34 @@ func (s *Store) PendingProposals() ([]ProposalRow, error) {
 			return nil, err
 		}
 		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertIssue(r IssueRow) error {
+	_, err := s.db.Exec(`
+		INSERT INTO issues(id,title,body,state,flow,priority)
+		VALUES(?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET
+			title=excluded.title, body=excluded.body, state=excluded.state,
+			flow=excluded.flow, priority=excluded.priority`,
+		r.ID, r.Title, r.Body, r.State, r.Flow, r.Priority)
+	return err
+}
+
+func (s *Store) Issues() ([]IssueRow, error) {
+	rows, err := s.db.Query(`SELECT id,title,body,state,flow,priority FROM issues ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IssueRow
+	for rows.Next() {
+		var r IssueRow
+		if err := rows.Scan(&r.ID, &r.Title, &r.Body, &r.State, &r.Flow, &r.Priority); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

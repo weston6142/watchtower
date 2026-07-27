@@ -84,6 +84,12 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, Proposals: ps}
+	case "list_issues":
+		issues, err := sv.st.Issues()
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Issues: issues}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)
 		if err != nil {

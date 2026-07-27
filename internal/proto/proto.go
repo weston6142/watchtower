@@ -30,5 +30,6 @@ type Response struct {
 	IssueID   string                   `json:"issue_id,omitempty"`
 	Decisions []engine.PendingDecision `json:"decisions,omitempty"`
 	Proposals []store.ProposalRow      `json:"proposals,omitempty"`
+	Issues    []store.IssueRow         `json:"issues,omitempty"`
 	Events    []core.Event             `json:"events,omitempty"`
 }

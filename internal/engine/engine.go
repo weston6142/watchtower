@@ -20,6 +20,7 @@ type Config struct {
 	Store       *store.Store
 	Runner      runner.Runner
 	Marshal     Sequencer
+	Observers   []func(core.Event)
 	Pool        *slots.Pool
 	Flows       map[string]flow.Flow
 	Rules       levers.Rules
@@ -75,7 +76,13 @@ func (e *Engine) emit(t core.EventType, issueID string, payload any) {
 	if err != nil {
 		return
 	}
-	_, _ = e.cfg.Store.Append(ev)
+	ev, err = e.cfg.Store.Append(ev)
+	if err != nil {
+		return
+	}
+	for _, observer := range e.cfg.Observers {
+		observer(ev)
+	}
 }
 
 func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, priority int) (string, error) {
@@ -87,7 +94,8 @@ func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, prio
 	id := fmt.Sprintf("GH-%d", e.nextID)
 	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority}
 	e.mu.Unlock()
-	e.emit(core.EvIssueCreated, id, map[string]string{"title": title, "flow": flowName})
+	e.emit(core.EvIssueCreated, id, map[string]any{
+		"title": title, "flow": flowName, "body": body, "priority": priority})
 	return id, nil
 }
 
