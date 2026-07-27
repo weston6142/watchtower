@@ -24,6 +24,7 @@ type Server struct {
 	flows        map[string]flow.Flow
 	transcript   *transcript.Buffer
 	pricePerMTok float64
+	budget       int
 }
 
 func NewServer(e *engine.Engine, s *store.Store) *Server {
@@ -36,6 +37,8 @@ func (sv *Server) SetFlows(f map[string]flow.Flow) { sv.flows = f }
 func (sv *Server) SetTranscript(b *transcript.Buffer) { sv.transcript = b }
 
 func (sv *Server) SetPricePerMTok(price float64) { sv.pricePerMTok = price }
+
+func (sv *Server) SetBudget(budget int) { sv.budget = budget }
 
 func (sv *Server) Serve(l net.Listener) error {
 	for {
@@ -195,7 +198,7 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		return Response{OK: true, Detail: &IssueDetail{
 			Issue: issue, Runs: runs, Tokens: tokens, Artifacts: artifacts,
-			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf,
+			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf, Budget: sv.budget,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

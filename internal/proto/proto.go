@@ -62,4 +62,5 @@ type IssueDetail struct {
 	LastError string           `json:"last_error,omitempty"`
 	Attempt   int              `json:"attempt,omitempty"`
 	AttemptOf int              `json:"attempt_of,omitempty"`
+	Budget    int              `json:"budget,omitempty"`
 }

@@ -347,6 +347,7 @@ func runDaemon(args []string) {
 	srv.SetFlows(flows)
 	srv.SetTranscript(transcriptBuffer)
 	srv.SetPricePerMTok(*pricePerMTok)
+	srv.SetBudget(*budget)
 	fatal(srv.Serve(l))
 }
 
