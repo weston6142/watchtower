@@ -1,0 +1,3 @@
+allowed_tools: ["Read", "Glob", "Grep"]
+model: ""
+max_turns: 0

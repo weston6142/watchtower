@@ -8,12 +8,15 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/wbushyeager/guildhall/internal/claude"
 	"github.com/wbushyeager/guildhall/internal/engine"
 	"github.com/wbushyeager/guildhall/internal/flow"
+	"github.com/wbushyeager/guildhall/internal/pkgs"
 	"github.com/wbushyeager/guildhall/internal/proto"
 	"github.com/wbushyeager/guildhall/internal/runner"
 	"github.com/wbushyeager/guildhall/internal/slots"
 	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/wbushyeager/guildhall/internal/workspace"
 )
 
 func defaultData() string {
@@ -103,14 +106,15 @@ func runDaemon(args []string) {
 	data := fs.String("data", defaultData(), "data dir")
 	flowsDir := fs.String("flows", "", "flows dir (required)")
 	slotN := fs.Int("slots", 4, "heavy slots")
+	runnerKind := fs.String("runner", "claude", "claude|fake")
+	repo := fs.String("repo", "", "target repo (required for --runner claude)")
+	pkgDir := fs.String("packages", "dist/packages", "agent packages dir")
+	budget := fs.Int("budget", 0, "per-issue token budget (0=off)")
+	claudeBin := fs.String("claude-bin", "claude", "claude binary")
 	fs.Parse(args)
 	if *flowsDir == "" {
 		fmt.Fprintln(os.Stderr, "daemon: --flows is required")
 		os.Exit(2)
-	}
-	if os.Getenv("GUILDHALL_FAKE") != "1" {
-		fmt.Fprintln(os.Stderr, "no real runner available yet — set GUILDHALL_FAKE=1")
-		os.Exit(1)
 	}
 	if err := os.MkdirAll(*data, 0o755); err != nil {
 		fatal(err)
@@ -131,9 +135,31 @@ func runDaemon(args []string) {
 	if len(flows) == 0 {
 		fatal(fmt.Errorf("no flows found in %s", *flowsDir))
 	}
+	if os.Getenv("GUILDHALL_FAKE") == "1" {
+		*runnerKind = "fake"
+	}
+	var run runner.Runner
+	var ws workspace.Provider
+	switch *runnerKind {
+	case "fake":
+		run = fakeForFlows(flows)
+	case "claude":
+		if *repo == "" {
+			fatal(fmt.Errorf("--repo is required with --runner claude"))
+		}
+		packages, err := pkgs.LoadDir(*pkgDir)
+		if err != nil {
+			fatal(err)
+		}
+		run = &claude.CodeRunner{Bin: *claudeBin, Packages: packages}
+		ws = workspace.Detect(*repo)
+	default:
+		fatal(fmt.Errorf("unknown runner %q", *runnerKind))
+	}
 	eng := engine.New(engine.Config{
-		Store: st, Runner: fakeForFlows(flows), Pool: slots.NewPool(*slotN),
+		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(*data, "issues"),
+		Workspace: ws, TokenBudget: *budget,
 	})
 	sock := filepath.Join(*data, "guildhall.sock")
 	os.Remove(sock)
