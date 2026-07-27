@@ -23,7 +23,7 @@ type CodeRunner struct {
 	Packages   map[string]pkgs.Package
 	ExtraEnv   []string
 	OnProposal func(string, runner.Proposal)
-	OnLine     func(string, string, string)
+	OnLine     func(issueID, stage, line string)
 }
 
 const coachMsg = `Your guildhall_decision is missing required fields. Re-emit the SAME decision

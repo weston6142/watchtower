@@ -171,7 +171,7 @@ func (s *Store) LastStageEvents(issueID string) (attempt, of int, lastErr string
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(
 		`SELECT type,payload FROM events
-		 WHERE issue_id=? AND type IN (?,?) ORDER BY seq DESC LIMIT 20`,
+		 WHERE issue_id=? AND type IN (?,?) ORDER BY seq DESC LIMIT 1`,
 		issueID, string(core.EvStageStarted), string(core.EvStageFailed))
 	if err != nil {
 		return 0, 0, "", err
@@ -296,6 +296,14 @@ func (s *Store) ArtifactPaths(issueID string) ([]string, error) {
 	return out, rows.Err()
 }
 
+// decisionContext is the v2 rationale metadata persisted in the decisions
+// table's evidence column.
+type decisionContext struct {
+	Why          string   `json:"why"`
+	Consequences []string `json:"consequences"`
+	Reversible   string   `json:"reversible"`
+}
+
 func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,11 +313,7 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	}
 	// Reuse the existing evidence column for v2 decision context; this avoids
 	// a schema migration while keeping rationale metadata with the decision.
-	evidence, err := json.Marshal(struct {
-		Why          string   `json:"why"`
-		Consequences []string `json:"consequences"`
-		Reversible   string   `json:"reversible"`
-	}{d.Why, d.Consequences, d.Reversible})
+	evidence, err := json.Marshal(decisionContext{d.Why, d.Consequences, d.Reversible})
 	if err != nil {
 		return 0, err
 	}
@@ -361,11 +365,7 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 			return nil, err
 		}
 		if evidence != "" {
-			var context struct {
-				Why          string   `json:"why"`
-				Consequences []string `json:"consequences"`
-				Reversible   string   `json:"reversible"`
-			}
+			var context decisionContext
 			if json.Unmarshal([]byte(evidence), &context) == nil {
 				d.Why, d.Consequences, d.Reversible = context.Why, context.Consequences, context.Reversible
 			}

@@ -40,6 +40,7 @@ func Collect(worktree, baseRef, outDir string) (Bundle, error) {
 	}
 
 	b := Bundle{AreaWeight: map[string]int{}}
+	biggestTotal := -1
 	for _, line := range strings.Split(strings.TrimSpace(string(numstat)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -62,7 +63,8 @@ func Collect(worktree, baseRef, outDir string) (Bundle, error) {
 		b.Removed += removed
 		area := archmap.AreaOf(stat.Path)
 		b.AreaWeight[area] += added + removed
-		if b.Biggest == "" || added+removed > biggestChange(b.Files, b.Biggest) {
+		if added+removed > biggestTotal {
+			biggestTotal = added + removed
 			b.Biggest = stat.Path
 		}
 	}
@@ -82,15 +84,6 @@ func Collect(worktree, baseRef, outDir string) (Bundle, error) {
 		return Bundle{}, err
 	}
 	return b, nil
-}
-
-func biggestChange(files []FileStat, path string) int {
-	for _, f := range files {
-		if f.Path == path {
-			return f.Added + f.Removed
-		}
-	}
-	return -1
 }
 
 func gitOutput(worktree string, args ...string) ([]byte, error) {

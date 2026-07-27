@@ -158,7 +158,7 @@ func main() {
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "overview"})
 		fmt.Println(statusSentence(r.Overview))
-	case "pause", "resume", "kill":
+	case "pause", "resume", "kill", "retry":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		fs.Parse(args)
@@ -168,21 +168,12 @@ func main() {
 		}
 		c := mustDial(*data)
 		defer c.Close()
-		ops := map[string]string{"pause": "pause_issue", "resume": "resume_issue", "kill": "kill_stage"}
+		ops := map[string]string{
+			"pause": "pause_issue", "resume": "resume_issue",
+			"kill": "kill_stage", "retry": "retry_stage",
+		}
 		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0]})
 		fmt.Println(cmd, fs.Args()[0])
-	case "retry":
-		fs := flag.NewFlagSet("retry", flag.ExitOnError)
-		data := fs.String("data", defaultData(), "data dir")
-		fs.Parse(args)
-		if len(fs.Args()) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: guildhall retry <issue-id>")
-			os.Exit(2)
-		}
-		c := mustDial(*data)
-		defer c.Close()
-		mustDo(c, proto.Command{Op: "retry_stage", IssueID: fs.Args()[0]})
-		fmt.Println("retry", fs.Args()[0])
 	case "lever":
 		fs := flag.NewFlagSet("lever", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")

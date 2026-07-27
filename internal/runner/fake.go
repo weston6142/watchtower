@@ -21,7 +21,7 @@ type Script struct {
 type FakeRunner struct {
 	Scripts    map[string]Script
 	OnProposal func(string, Proposal)
-	OnLine     func(string, string, string)
+	OnLine     func(issueID, stage, line string)
 }
 
 func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
