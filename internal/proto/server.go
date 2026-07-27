@@ -38,7 +38,7 @@ func (sv *Server) Serve(l net.Listener) error {
 func (sv *Server) handle(conn net.Conn) {
 	defer conn.Close()
 	sc := bufio.NewScanner(conn)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	sc.Buffer(make([]byte, maxMessageBytes), maxMessageBytes)
 	enc := json.NewEncoder(conn)
 	for sc.Scan() {
 		var cmd Command
@@ -67,6 +67,8 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		return Response{OK: true, IssueID: id}
 	case "start_issue":
+		// Runs asynchronously; failures surface as stage_failed events
+		// in the log rather than in this response.
 		go sv.eng.StartIssue(context.Background(), cmd.IssueID)
 		return Response{OK: true, IssueID: cmd.IssueID}
 	case "list_decisions":

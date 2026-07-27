@@ -56,11 +56,14 @@ func New(cfg Config) *Engine {
 	return &Engine{cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{}}
 }
 
+// emit appends an event best-effort: marshal or store failures are dropped
+// rather than aborting the stage, since events are observability, not state.
 func (e *Engine) emit(t core.EventType, issueID string, payload any) {
 	ev, err := core.NewEvent(t, issueID, payload)
-	if err == nil {
-		e.cfg.Store.Append(ev)
+	if err != nil {
+		return
 	}
+	_, _ = e.cfg.Store.Append(ev)
 }
 
 func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, priority int) (string, error) {
@@ -178,14 +181,14 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 			continue
 		}
 		succeeded++
-		if st.Completion == "any" {
+		if st.Completion == flow.CompletionAny {
 			break
 		}
 	}
-	if st.Completion == "all" && firstErr != nil {
+	if st.Completion == flow.CompletionAll && firstErr != nil {
 		return firstErr
 	}
-	if st.Completion == "any" && succeeded == 0 {
+	if st.Completion == flow.CompletionAny && succeeded == 0 {
 		return firstErr
 	}
 	// validate artifacts
@@ -200,14 +203,12 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 }
 
 func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) error {
-	var release func()
 	if st.HeavySlot {
 		e.emit(core.EvSlotQueued, is.id, map[string]string{"stage": st.Name})
-		rel, err := e.cfg.Pool.Acquire(ctx, is.id, is.priority)
+		release, err := e.cfg.Pool.Acquire(ctx, is.id, is.priority)
 		if err != nil {
 			return err
 		}
-		release = rel
 		e.emit(core.EvSlotAcquired, is.id, map[string]string{"stage": st.Name})
 		defer func() {
 			release()

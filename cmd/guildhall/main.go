@@ -69,8 +69,14 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: guildhall answer <decision-id> <option>")
 			os.Exit(2)
 		}
-		id, _ := strconv.ParseInt(rest[0], 10, 64)
-		opt, _ := strconv.Atoi(rest[1])
+		id, err := strconv.ParseInt(rest[0], 10, 64)
+		if err != nil {
+			fatal(fmt.Errorf("bad decision-id %q: %w", rest[0], err))
+		}
+		opt, err := strconv.Atoi(rest[1])
+		if err != nil {
+			fatal(fmt.Errorf("bad option %q: %w", rest[1], err))
+		}
 		c := mustDial(*data)
 		defer c.Close()
 		mustDo(c, proto.Command{Op: "answer_decision", DecisionID: id, Option: opt})

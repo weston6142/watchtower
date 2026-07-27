@@ -29,6 +29,17 @@ type Rules struct {
 	AlwaysEscalate []string
 }
 
+// Importance thresholds for routing decisions to a human.
+const (
+	// escalationFloor: decisions at or above this always escalate,
+	// regardless of lever.
+	escalationFloor = 1.0
+	// regularThreshold: minimum importance escalated under the regular lever.
+	regularThreshold = 0.5
+	// yoloThreshold: minimum importance escalated under the yolo lever.
+	yoloThreshold = 0.9
+)
+
 func matches(pattern, p string) bool {
 	if strings.HasSuffix(pattern, "/**") {
 		return strings.HasPrefix(p, strings.TrimSuffix(pattern, "**"))
@@ -38,8 +49,8 @@ func matches(pattern, p string) bool {
 }
 
 func Route(d Decision, lever flow.Lever, rules Rules) bool {
-	if d.Importance >= 1.0 {
-		return true // built-in floor
+	if d.Importance >= escalationFloor {
+		return true
 	}
 	for _, pat := range rules.AlwaysEscalate {
 		for _, p := range d.Paths {
@@ -52,8 +63,8 @@ func Route(d Decision, lever flow.Lever, rules Rules) bool {
 	case flow.LeverStrict:
 		return true
 	case flow.LeverRegular:
-		return d.Importance >= 0.5
+		return d.Importance >= regularThreshold
 	default: // yolo
-		return d.Importance >= 0.9
+		return d.Importance >= yoloThreshold
 	}
 }

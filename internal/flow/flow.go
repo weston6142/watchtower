@@ -18,6 +18,11 @@ const (
 	GateApproveArtifact Gate = "approve_artifact"
 	GateDecisionQueue   Gate = "decision_queue"
 	GateAuto            Gate = "auto"
+
+	// CompletionAll requires every agent in the stage to succeed;
+	// CompletionAny requires at least one.
+	CompletionAll = "all"
+	CompletionAny = "any"
 )
 
 type AgentRef struct {
@@ -69,9 +74,9 @@ func loadBytes(b []byte) (Flow, error) {
 			return Flow{}, fmt.Errorf("stage %q has no agents", st.Name)
 		}
 		if st.Completion == "" {
-			st.Completion = "all"
+			st.Completion = CompletionAll
 		}
-		if st.Completion != "all" && st.Completion != "any" {
+		if st.Completion != CompletionAll && st.Completion != CompletionAny {
 			return Flow{}, fmt.Errorf("stage %q bad completion %q", st.Name, st.Completion)
 		}
 		if st.Workspace == "" {

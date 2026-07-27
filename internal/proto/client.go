@@ -18,7 +18,7 @@ func Dial(sockPath string) (*Client, error) {
 		return nil, err
 	}
 	sc := bufio.NewScanner(conn)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	sc.Buffer(make([]byte, maxMessageBytes), maxMessageBytes)
 	return &Client{conn: conn, sc: sc, enc: json.NewEncoder(conn)}, nil
 }
 

@@ -35,7 +35,9 @@ func NewState() *State {
 
 func (s *State) Apply(ev core.Event) {
 	var p map[string]any
-	json.Unmarshal(ev.Payload, &p)
+	// Best-effort decode: a malformed payload leaves p nil and the
+	// accessors below return zero values.
+	_ = json.Unmarshal(ev.Payload, &p)
 	str := func(k string) string { v, _ := p[k].(string); return v }
 	num := func(k string) float64 { v, _ := p[k].(float64); return v }
 

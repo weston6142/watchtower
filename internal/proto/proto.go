@@ -5,6 +5,9 @@ import (
 	"github.com/wbushyeager/guildhall/internal/engine"
 )
 
+// maxMessageBytes bounds a single newline-delimited JSON message on the wire.
+const maxMessageBytes = 1 << 20
+
 type Command struct {
 	Op         string `json:"op"`
 	Title      string `json:"title,omitempty"`
