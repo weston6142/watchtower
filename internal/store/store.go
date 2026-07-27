@@ -138,6 +138,32 @@ func (s *Store) EventsSince(seq int64) ([]core.Event, error) {
 	return out, rows.Err()
 }
 
+// EventsSinceTime returns events at or after t in sequence order.
+func (s *Store) EventsSinceTime(t time.Time) ([]core.Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(
+		`SELECT id,seq,type,issue_id,payload,at FROM events WHERE at >= ? ORDER BY seq`,
+		t.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.Event
+	for rows.Next() {
+		var ev core.Event
+		var typ, payload, at string
+		if err := rows.Scan(&ev.ID, &ev.Seq, &typ, &ev.IssueID, &payload, &at); err != nil {
+			return nil, err
+		}
+		ev.Type = core.EventType(typ)
+		ev.Payload = json.RawMessage(payload)
+		ev.At, _ = time.Parse(time.RFC3339Nano, at)
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
 // LastStageEvents returns the attempt metadata and error state represented by
 // the newest stage_started/stage_failed event for an issue.
 func (s *Store) LastStageEvents(issueID string) (attempt, of int, lastErr string, err error) {
@@ -224,6 +250,14 @@ func (s *Store) IssueTokens(issueID string) (int, error) {
 	var n int
 	err := s.db.QueryRow(
 		`SELECT COALESCE(SUM(tokens),0) FROM stage_runs WHERE issue_id=?`, issueID).Scan(&n)
+	return n, err
+}
+
+func (s *Store) TotalTokens() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(tokens),0) FROM stage_runs`).Scan(&n)
 	return n, err
 }
 

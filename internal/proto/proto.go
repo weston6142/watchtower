@@ -38,9 +38,20 @@ type Response struct {
 	Issues     []store.IssueRow         `json:"issues,omitempty"`
 	Events     []core.Event             `json:"events,omitempty"`
 	Lines      []string                 `json:"lines,omitempty"`
+	Overview   *Overview                `json:"overview,omitempty"`
 	Detail     *IssueDetail             `json:"detail,omitempty"`
 	FlowStages []string                 `json:"flow_stages,omitempty"`
 	Arch       *archmap.Map             `json:"arch,omitempty"`
+}
+
+type Overview struct {
+	Building     int     `json:"building"`
+	NeedYou      int     `json:"need_you"`
+	Failing      int     `json:"failing"`
+	Queued       int     `json:"queued"`
+	ShippedToday int     `json:"shipped_today"`
+	TokensTotal  int     `json:"tokens_total"`
+	DollarsTotal float64 `json:"dollars_total"`
 }
 
 type IssueDetail struct {

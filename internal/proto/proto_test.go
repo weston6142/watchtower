@@ -25,7 +25,7 @@ func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 	fr := &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"brainstorm/brainstorm":      {},
 		"spec/spec-writer":           {Artifacts: map[string]string{"spec.md": ""}},
-		"execute/executor":           {Artifacts: map[string]string{"diff": ""}},
+		"execute/executor":           {Artifacts: map[string]string{"diff": ""}, Tokens: 10},
 		"review/clean-code-reviewer": {Artifacts: map[string]string{"review.md": ""}},
 		"review/reviewer":            {},
 		"review/doc-writer":          {Artifacts: map[string]string{"docs": ""}},
@@ -100,5 +100,33 @@ func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 	}
 	if len(r.Detail.Runs) != 6 {
 		t.Fatalf("want 6 stage runs, got %d", len(r.Detail.Runs))
+	}
+	r, _ = c.Do(Command{Op: "overview"})
+	if !r.OK || r.Overview == nil {
+		t.Fatalf("overview: %+v", r)
+	}
+	if r.Overview.ShippedToday != 0 || r.Overview.Building != 0 || r.Overview.NeedYou != 0 || r.Overview.TokensTotal <= 0 {
+		t.Fatalf("overview values: %+v", r.Overview)
+	}
+
+	r, _ = c.Do(Command{Op: "create_issue", Title: "pending", Flow: "default", Preset: "yolo"})
+	if !r.OK {
+		t.Fatalf("second create failed: %+v", r)
+	}
+	second := r.IssueID
+	if r, _ = c.Do(Command{Op: "start_issue", IssueID: second}); !r.OK {
+		t.Fatalf("second start failed: %+v", r)
+	}
+	deadline = time.After(5 * time.Second)
+	for {
+		r, _ = c.Do(Command{Op: "overview"})
+		if r.Overview != nil && r.Overview.NeedYou == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("second decision never appeared: %+v", r.Overview)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }

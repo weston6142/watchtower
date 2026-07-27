@@ -37,7 +37,7 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|pause|resume|kill|retry|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -150,6 +150,14 @@ func main() {
 		for _, issue := range r.Issues {
 			fmt.Printf("%s  %s  %s\n", issue.ID, issue.State, issue.Title)
 		}
+	case "status":
+		fs := flag.NewFlagSet("status", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		c := mustDial(*data)
+		defer c.Close()
+		r := mustDo(c, proto.Command{Op: "overview"})
+		fmt.Println(statusSentence(r.Overview))
 	case "pause", "resume", "kill":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
@@ -192,13 +200,22 @@ func main() {
 		data := fs.String("data", defaultData(), "data dir")
 		n := fs.Int("n", 50, "number of lines")
 		fs.Parse(args)
-		if len(fs.Args()) != 1 {
+		rest := fs.Args()
+		if len(rest) == 3 && (rest[1] == "-n" || rest[1] == "--n") {
+			parsed, err := strconv.Atoi(rest[2])
+			if err != nil {
+				fatal(fmt.Errorf("bad line count %q: %w", rest[2], err))
+			}
+			*n = parsed
+			rest = rest[:1]
+		}
+		if len(rest) != 1 {
 			fmt.Fprintln(os.Stderr, "usage: guildhall transcript <issue-id> [-n 50]")
 			os.Exit(2)
 		}
 		c := mustDial(*data)
 		defer c.Close()
-		r := mustDo(c, proto.Command{Op: "transcript_tail", IssueID: fs.Args()[0], N: *n})
+		r := mustDo(c, proto.Command{Op: "transcript_tail", IssueID: rest[0], N: *n})
 		for _, line := range r.Lines {
 			fmt.Println(line)
 		}
@@ -228,6 +245,7 @@ func runDaemon(args []string) {
 	repo := fs.String("repo", "", "target repo (required for --runner claude)")
 	pkgDir := fs.String("packages", "dist/packages", "agent packages dir")
 	budget := fs.Int("budget", 0, "per-issue token budget (0=off)")
+	pricePerMTok := fs.Float64("price-per-mtok", 0, "estimated dollars per million tokens (0=hide)")
 	claudeBin := fs.String("claude-bin", "claude", "claude binary")
 	testCmd := fs.String("test-cmd", "", "merge-train test command")
 	fs.Parse(args)
@@ -337,6 +355,7 @@ func runDaemon(args []string) {
 	srv := proto.NewServer(eng, st)
 	srv.SetFlows(flows)
 	srv.SetTranscript(transcriptBuffer)
+	srv.SetPricePerMTok(*pricePerMTok)
 	fatal(srv.Serve(l))
 }
 
@@ -360,6 +379,47 @@ func splitTestCmd(s string) []string {
 	return strings.Fields(s)
 }
 
+func statusSentence(o *proto.Overview) string {
+	if o == nil {
+		return ""
+	}
+	color := "\033[32m"
+	if o.Failing > 0 {
+		color = "\033[31m"
+	} else if o.NeedYou > 0 {
+		color = "\033[33m"
+	}
+	reset := "\033[0m"
+	var attention []string
+	if o.Failing > 0 {
+		attention = append(attention, fmt.Sprintf("%d failing", o.Failing))
+	}
+	if o.NeedYou > 0 {
+		word := "question"
+		if o.NeedYou != 1 {
+			word = "questions"
+		}
+		attention = append(attention, fmt.Sprintf("%d %s for you", o.NeedYou, word))
+	}
+	if len(attention) == 0 {
+		attention = append(attention, "all clear")
+	}
+	cost := ""
+	if o.DollarsTotal > 0 {
+		cost = fmt.Sprintf(" (~$%.2f)", o.DollarsTotal)
+	}
+	return fmt.Sprintf("%s●%s %s — %d building, %d shipped today · %s tokens%s",
+		color, reset, strings.Join(attention, ", "), o.Building, o.ShippedToday,
+		formatTokens(o.TokensTotal), cost)
+}
+
+func formatTokens(tokens int) string {
+	if tokens >= 1000 {
+		return fmt.Sprintf("%.0fk", float64(tokens)/1000)
+	}
+	return strconv.Itoa(tokens)
+}
+
 // fakeForFlows builds a FakeRunner that succeeds every stage and writes
 // every declared artifact — enough to exercise the pipeline end to end.
 func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
@@ -375,7 +435,10 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 				arts[a] = content
 			}
 			for _, ag := range st.Agents {
-				scripts[st.Name+"/"+ag.Package] = runner.Script{Artifacts: arts, Tokens: 10}
+				scripts[st.Name+"/"+ag.Package] = runner.Script{
+					Artifacts: arts, Tokens: 10,
+					Lines: []string{fmt.Sprintf("fake %s/%s complete", st.Name, ag.Package)},
+				}
 			}
 		}
 	}

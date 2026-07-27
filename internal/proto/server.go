@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"net"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/wbushyeager/guildhall/internal/archmap"
+	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/engine"
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/levers"
@@ -16,10 +19,11 @@ import (
 )
 
 type Server struct {
-	eng        *engine.Engine
-	st         *store.Store
-	flows      map[string]flow.Flow
-	transcript *transcript.Buffer
+	eng          *engine.Engine
+	st           *store.Store
+	flows        map[string]flow.Flow
+	transcript   *transcript.Buffer
+	pricePerMTok float64
 }
 
 func NewServer(e *engine.Engine, s *store.Store) *Server {
@@ -30,6 +34,8 @@ func NewServer(e *engine.Engine, s *store.Store) *Server {
 func (sv *Server) SetFlows(f map[string]flow.Flow) { sv.flows = f }
 
 func (sv *Server) SetTranscript(b *transcript.Buffer) { sv.transcript = b }
+
+func (sv *Server) SetPricePerMTok(price float64) { sv.pricePerMTok = price }
 
 func (sv *Server) Serve(l net.Listener) error {
 	for {
@@ -212,9 +218,75 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{OK: true, Lines: []string{}}
 		}
 		return Response{OK: true, Lines: sv.transcript.Tail(cmd.IssueID, n)}
+	case "overview":
+		overview, err := sv.overview()
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Overview: &overview}
 	default:
 		return Response{Error: "unknown op " + cmd.Op}
 	}
+}
+
+func (sv *Server) overview() (Overview, error) {
+	issues, err := sv.st.Issues()
+	if err != nil {
+		return Overview{}, err
+	}
+	pending, err := sv.st.PendingDecisionRows()
+	if err != nil {
+		return Overview{}, err
+	}
+	allEvents, err := sv.st.EventsSince(0)
+	if err != nil {
+		return Overview{}, err
+	}
+	latest := map[string]core.Event{}
+	for _, ev := range allEvents {
+		latest[ev.IssueID] = ev
+	}
+	var out Overview
+	out.NeedYou = len(pending)
+	for _, issue := range issues {
+		state := issue.State
+		if ev, ok := latest[issue.ID]; ok {
+			switch ev.Type {
+			case core.EvStageFailed:
+				out.Failing++
+				continue
+			case core.EvDecisionRequired, core.EvIssueCompleted, core.EvIssueMerged:
+				continue
+			}
+		}
+		switch {
+		case strings.HasPrefix(state, "failed"):
+			out.Failing++
+		case strings.HasPrefix(state, "queued"):
+			out.Queued++
+		case strings.HasPrefix(state, "running"):
+			out.Building++
+		}
+	}
+	now := time.Now()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	today, err := sv.st.EventsSinceTime(midnight)
+	if err != nil {
+		return Overview{}, err
+	}
+	for _, ev := range today {
+		if ev.Type == core.EvIssueMerged {
+			out.ShippedToday++
+		}
+	}
+	out.TokensTotal, err = sv.st.TotalTokens()
+	if err != nil {
+		return Overview{}, err
+	}
+	if sv.pricePerMTok > 0 {
+		out.DollarsTotal = float64(out.TokensTotal) / 1_000_000 * sv.pricePerMTok
+	}
+	return out, nil
 }
 
 func (sv *Server) flowFor(name string) (flow.Flow, bool) {
