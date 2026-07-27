@@ -2,6 +2,10 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -180,9 +184,30 @@ func (f *fakeWS) Acquire(issueID string) (string, func() error, error) {
 	return f.dir, func() error { f.released++; return nil }, nil
 }
 
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	runGit := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	runGit("init", "-q", "-b", "main")
+	runGit("config", "user.email", "t@t")
+	runGit("config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(dir, "diff"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-qm", "base")
+}
+
 func TestWorktreeAcquiredOnceAndReleased(t *testing.T) {
 	ws := &fakeWS{dir: t.TempDir()}
-	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	initGitRepo(t, ws.dir)
+	sc := scripts()
+	sc["execute/executor"] = runner.Script{Artifacts: map[string]string{"diff": "changed\n"}}
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: sc})
 	e.cfg.Workspace = ws
 	id, _ := e.CreateIssue("w", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
 	errC := make(chan error, 1)
@@ -200,6 +225,23 @@ func TestWorktreeAcquiredOnceAndReleased(t *testing.T) {
 	// default.yaml has two worktree stages (execute, review) — one acquire, one release
 	if ws.acquired != 1 || ws.released != 1 {
 		t.Fatalf("acquired=%d released=%d", ws.acquired, ws.released)
+	}
+	evs, _ := s.EventsSince(0)
+	artifacts := map[string]bool{}
+	for _, ev := range evs {
+		if ev.Type != core.EvArtifactProduced {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if artifact, ok := payload["artifact"].(string); ok {
+			artifacts[artifact] = true
+		}
+	}
+	if !artifacts["evidence.json"] || !artifacts["diff.patch"] {
+		t.Fatalf("evidence artifacts missing: %v", artifacts)
 	}
 }
 

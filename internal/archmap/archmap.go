@@ -22,6 +22,22 @@ type Map struct {
 	Overlays []Overlay `json:"overlays"`
 }
 
+// AreaOf returns the top-level architecture area for a repository-relative path.
+// Go-style roots use their first two path segments so internal/foo remains one
+// navigable area rather than being grouped with every other internal package.
+func AreaOf(rel string) string {
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	parts := strings.Split(rel, "/")
+	if len(parts) == 0 || parts[0] == "." || parts[0] == "" {
+		return ""
+	}
+	depthTwo := map[string]bool{"cmd": true, "internal": true, "pkg": true, "src": true}
+	if depthTwo[parts[0]] && len(parts) > 1 {
+		return strings.Join(parts[:2], "/")
+	}
+	return parts[0]
+}
+
 func skippedDir(name string) bool {
 	// HasPrefix(".") also covers .git and .worktrees.
 	return strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor"

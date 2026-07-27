@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/wbushyeager/guildhall/internal/evidence"
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/levers"
 	"github.com/wbushyeager/guildhall/internal/librarian"
@@ -66,6 +67,7 @@ type issueState struct {
 	priority       int
 	wsPath         string
 	branch         string
+	baseRef        string
 	wsRelease      func() error
 	budgetWaived   bool
 	activeTouchset *touchset.Set
@@ -394,6 +396,16 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 		e.emit(core.EvStageFailed, is.id, map[string]string{"stage": st.Name, "error": err.Error()})
 		return err
 	}
+	if st.Workspace == "worktree" && is.branch != "" && is.baseRef != "" {
+		evDir := filepath.Join(e.cfg.DataDir, is.id, "evidence", st.Name)
+		if b, err := evidence.Collect(is.wsPath, is.baseRef, evDir); err == nil {
+			e.emit(core.EvArtifactProduced, is.id, map[string]any{
+				"stage": st.Name, "artifact": "evidence.json",
+				"path": filepath.Join(evDir, "evidence.json"), "area_weight": b.AreaWeight})
+			e.emit(core.EvArtifactProduced, is.id, map[string]any{
+				"stage": st.Name, "artifact": "diff.patch", "path": filepath.Join(evDir, "diff.patch")})
+		}
+	}
 
 	if st.Gate == flow.GateApproveArtifact {
 		d := levers.Decision{
@@ -455,6 +467,9 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 			is.wsPath, is.wsRelease = path, release
 			if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
 				is.branch = strings.TrimSpace(string(out))
+			}
+			if out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output(); err == nil {
+				is.baseRef = strings.TrimSpace(string(out))
 			}
 		}
 		if err := e.checkBudget(is, st.Name); err != nil {
