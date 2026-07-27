@@ -51,6 +51,24 @@ func TestIssueCompletedSetsDone(t *testing.T) {
 	}
 }
 
+func TestAttemptAndErrorSurfacing(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "x", "flow": "default"}))
+	s.Apply(ev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "execute", "attempt": float64(2), "of": float64(3)}))
+	iv := s.Issues["GH-1"]
+	if iv.Attempt != 2 || iv.AttemptOf != 3 {
+		t.Fatalf("attempts: %+v", iv)
+	}
+	s.Apply(ev(t, core.EvStageFailed, "GH-1", map[string]any{"stage": "execute", "error": "2 tests failing", "attempt": float64(3), "of": float64(3), "final": true}))
+	if iv.LastError != "2 tests failing" || iv.State != "failed" {
+		t.Fatalf("error: %+v", iv)
+	}
+	s.Apply(ev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "execute", "attempt": float64(1), "of": float64(3)}))
+	if iv.LastError != "" {
+		t.Fatalf("new attempt did not clear error: %+v", iv)
+	}
+}
+
 func TestMergeSequencingProjection(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "a", "flow": "default"}))

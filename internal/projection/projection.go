@@ -12,6 +12,9 @@ type IssueView struct {
 	Flow         string
 	CurrentStage string
 	State        string
+	Attempt      int
+	AttemptOf    int
+	LastError    string
 	Completed    []string
 	Tokens       int
 	Behind       string
@@ -56,6 +59,9 @@ func (s *State) Apply(ev core.Event) {
 		if iv != nil {
 			iv.CurrentStage = str("stage")
 			iv.State = "running"
+			iv.Attempt = int(num("attempt"))
+			iv.AttemptOf = int(num("of"))
+			iv.LastError = ""
 		}
 	case core.EvSlotQueued:
 		if iv != nil {
@@ -88,6 +94,7 @@ func (s *State) Apply(ev core.Event) {
 	case core.EvStageCompleted:
 		if iv != nil {
 			iv.Completed = append(iv.Completed, str("stage"))
+			iv.LastError = ""
 		}
 	case core.EvIssueCompleted:
 		if iv != nil {
@@ -98,6 +105,9 @@ func (s *State) Apply(ev core.Event) {
 		if iv != nil {
 			iv.CurrentStage = str("stage")
 			iv.State = "failed"
+			iv.Attempt = int(num("attempt"))
+			iv.AttemptOf = int(num("of"))
+			iv.LastError = str("error")
 		}
 	case core.EvMergeSequenced:
 		if iv != nil {

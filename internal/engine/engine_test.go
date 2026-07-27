@@ -128,18 +128,35 @@ func TestFailedAgentRetriesThenFails(t *testing.T) {
 		t.Fatal("expected issue failure")
 	}
 	evs, _ := s.EventsSince(0)
-	var started, failed int
+	var started, finalFailed int
+	var attempts []int
 	for _, ev := range evs {
 		if ev.Type == core.EvStageStarted {
 			started++
+			var p map[string]any
+			if err := json.Unmarshal(ev.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["stage"] == "execute" {
+				attempts = append(attempts, int(p["attempt"].(float64)))
+			}
 		}
 		if ev.Type == core.EvStageFailed {
-			failed++
+			var p map[string]any
+			if err := json.Unmarshal(ev.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["final"] == true {
+				finalFailed++
+				if p["attempt"] != float64(2) || p["of"] != float64(2) {
+					t.Fatalf("terminal failure payload: %v", p)
+				}
+			}
 		}
 	}
 	// brainstorm + spec + execute attempt1 + execute retry = 4 starts, 1 terminal fail
-	if started != 4 || failed != 1 {
-		t.Fatalf("started=%d failed=%d", started, failed)
+	if started != 4 || finalFailed != 1 || len(attempts) != 2 || attempts[0] != 1 || attempts[1] != 2 {
+		t.Fatalf("started=%d finalFailed=%d attempts=%v", started, finalFailed, attempts)
 	}
 }
 

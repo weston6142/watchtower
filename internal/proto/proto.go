@@ -44,4 +44,7 @@ type IssueDetail struct {
 	Runs      []store.StageRun `json:"runs"`
 	Tokens    int              `json:"tokens"`
 	Artifacts []string         `json:"artifacts"`
+	LastError string           `json:"last_error,omitempty"`
+	Attempt   int              `json:"attempt,omitempty"`
+	AttemptOf int              `json:"attempt_of,omitempty"`
 }

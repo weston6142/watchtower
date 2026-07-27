@@ -138,6 +138,42 @@ func (s *Store) EventsSince(seq int64) ([]core.Event, error) {
 	return out, rows.Err()
 }
 
+// LastStageEvents returns the attempt metadata and error state represented by
+// the newest stage_started/stage_failed event for an issue.
+func (s *Store) LastStageEvents(issueID string) (attempt, of int, lastErr string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(
+		`SELECT type,payload FROM events
+		 WHERE issue_id=? AND type IN (?,?) ORDER BY seq DESC LIMIT 20`,
+		issueID, string(core.EvStageStarted), string(core.EvStageFailed))
+	if err != nil {
+		return 0, 0, "", err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, 0, "", rows.Err()
+	}
+	var typ, payload string
+	if err := rows.Scan(&typ, &payload); err != nil {
+		return 0, 0, "", err
+	}
+	var p map[string]any
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return 0, 0, "", err
+	}
+	if v, ok := p["attempt"].(float64); ok {
+		attempt = int(v)
+	}
+	if v, ok := p["of"].(float64); ok {
+		of = int(v)
+	}
+	if typ == string(core.EvStageFailed) {
+		lastErr, _ = p["error"].(string)
+	}
+	return attempt, of, lastErr, nil
+}
+
 func (s *Store) InsertStageRun(r StageRun) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

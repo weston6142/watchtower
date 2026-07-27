@@ -264,7 +264,7 @@ func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 	a.Reply <- a.Decision.Recommended
 }
 
-func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage) error {
+func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage, attempt, of int) error {
 	// "none" stages share one per-issue dir so artifacts flow between stages
 	// (brainstorm.md -> spec stage, etc.); worktree/readonly stages share the
 	// acquired workspace for the same reason.
@@ -283,7 +283,8 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	if err := os.WriteFile(filepath.Join(workdir, "ISSUE.md"), []byte(issueMD), 0o644); err != nil {
 		return err
 	}
-	e.emit(core.EvStageStarted, is.id, map[string]string{"stage": st.Name})
+	e.emit(core.EvStageStarted, is.id, map[string]any{
+		"stage": st.Name, "attempt": attempt, "of": of})
 
 	type agentDone struct {
 		pkg string
@@ -386,14 +387,17 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 	}
 
 	var err error
+	of := st.Retries + 1
 	for attempt := 0; attempt <= st.Retries; attempt++ {
-		err = e.runStageOnce(ctx, is, st)
+		err = e.runStageOnce(ctx, is, st, attempt+1, of)
 		if err == nil {
 			break
 		}
+		e.emit(core.EvStageFailed, is.id, map[string]any{
+			"stage": st.Name, "error": err.Error(),
+			"attempt": attempt + 1, "of": of, "final": attempt == st.Retries})
 	}
 	if err != nil {
-		e.emit(core.EvStageFailed, is.id, map[string]string{"stage": st.Name, "error": err.Error()})
 		return err
 	}
 	if st.Workspace == "worktree" && is.branch != "" && is.baseRef != "" {
@@ -416,7 +420,8 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 		}
 		if e.escalate(is.id, st.Name, d) != 0 {
 			err := fmt.Errorf("stage %s artifacts rejected", st.Name)
-			e.emit(core.EvStageFailed, is.id, map[string]string{"stage": st.Name, "error": err.Error()})
+			e.emit(core.EvStageFailed, is.id, map[string]any{
+				"stage": st.Name, "error": err.Error(), "attempt": of, "of": of, "final": true})
 			return err
 		}
 	}
