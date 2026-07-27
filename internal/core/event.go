@@ -20,6 +20,8 @@ const (
 	EvSlotReleased         EventType = "slot_released"
 	EvProposalFiled        EventType = "proposal_filed"
 	EvArtifactProduced     EventType = "artifact_produced"
+	EvIssueCompleted       EventType = "issue_completed"
+	EvBudgetExceeded       EventType = "budget_exceeded"
 )
 
 type Event struct {

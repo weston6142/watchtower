@@ -81,9 +81,10 @@ func (s *State) Apply(ev core.Event) {
 	case core.EvStageCompleted:
 		if iv != nil {
 			iv.Completed = append(iv.Completed, str("stage"))
-			if str("stage") == "review" {
-				iv.State = "done"
-			}
+		}
+	case core.EvIssueCompleted:
+		if iv != nil {
+			iv.State = "done"
 		}
 	case core.EvStageFailed:
 		if iv != nil {

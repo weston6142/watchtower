@@ -258,5 +258,6 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	e.emit(core.EvIssueCompleted, id, nil)
 	return nil
 }

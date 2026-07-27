@@ -84,7 +84,7 @@ func TestYoloRunEscalatesOnlyGate(t *testing.T) {
 	}
 
 	evs, _ := s.EventsSince(0)
-	var auto, required, completed int
+	var auto, required, completed, issueDone int
 	for _, ev := range evs {
 		switch ev.Type {
 		case core.EvDecisionAutoResolved:
@@ -93,10 +93,12 @@ func TestYoloRunEscalatesOnlyGate(t *testing.T) {
 			required++
 		case core.EvStageCompleted:
 			completed++
+		case core.EvIssueCompleted:
+			issueDone++
 		}
 	}
-	if auto != 1 || required != 1 || completed != 4 {
-		t.Fatalf("auto=%d required=%d completed=%d", auto, required, completed)
+	if auto != 1 || required != 1 || completed != 4 || issueDone != 1 {
+		t.Fatalf("auto=%d required=%d completed=%d issueDone=%d", auto, required, completed, issueDone)
 	}
 }
 

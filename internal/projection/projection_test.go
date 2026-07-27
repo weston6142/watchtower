@@ -37,3 +37,16 @@ func TestReplayBuildsIssueView(t *testing.T) {
 		t.Fatalf("after answer: %+v decisions=%v", iv, s.Decisions)
 	}
 }
+
+func TestIssueCompletedSetsDone(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "x"}))
+	s.Apply(ev(t, core.EvStageCompleted, "GH-2", map[string]any{"stage": "review"}))
+	if s.Issues["GH-2"].State == "done" {
+		t.Fatal("stage name must no longer imply done")
+	}
+	s.Apply(ev(t, core.EvIssueCompleted, "GH-2", nil))
+	if s.Issues["GH-2"].State != "done" {
+		t.Fatalf("want done, got %q", s.Issues["GH-2"].State)
+	}
+}
