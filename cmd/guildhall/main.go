@@ -48,12 +48,16 @@ func main() {
 		fs := flag.NewFlagSet("tower", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repo := fs.String("repo", "", "repository path for the architecture map")
+		stageAliases := fs.String("stage-aliases", "", "display aliases, e.g. spec=AGREE,execute=BUILD")
+		reducedMotion := fs.Bool("reduced-motion", false, "disable spinner and failure motion")
 		fs.Parse(args)
 		c := mustDial(*data)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "get_flow", Flow: "default"})
 		model := tui.NewModel(c, r.FlowStages)
 		model.Repo = *repo
+		model.SetStageAliases(tui.ParseStageAliases(*stageAliases))
+		model.SetReducedMotion(*reducedMotion)
 		if _, err := tea.NewProgram(model, tea.WithAltScreen()).Run(); err != nil {
 			fatal(err)
 		}

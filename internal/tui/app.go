@@ -45,6 +45,9 @@ type Model struct {
 	openArtifacts bool
 	archMode      string
 	help          bool
+	aliases       map[string]string
+	reducedMotion bool
+	ticks         int
 }
 
 type Msg struct{ Events []core.Event }
@@ -90,6 +93,21 @@ func NewModel(client *proto.Client, stages []string) Model {
 	}
 }
 
+func (m *Model) SetStageAliases(aliases map[string]string) { m.aliases = aliases }
+
+func (m *Model) SetReducedMotion(reduced bool) { m.reducedMotion = reduced }
+
+func ParseStageAliases(raw string) map[string]string {
+	aliases := map[string]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			aliases[parts[0]] = parts[1]
+		}
+	}
+	return aliases
+}
+
 func (m Model) Init() tea.Cmd {
 	return m.tick()
 }
@@ -97,6 +115,7 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
+		m.ticks++
 		if m.client == nil {
 			return m, m.tick()
 		}
@@ -393,7 +412,7 @@ func (m Model) View() string {
 	}
 	railWidth := max(24, min(40, layoutWidth/3))
 	towerWidth := max(1, layoutWidth-railWidth-1)
-	tower := renderTower(m.State, m.stages, m.Ids, m.Focus, towerWidth)
+	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth)
 	if m.pager.Mode == "artifacts" {
 		tower = renderArtifactList(m.pager, m.Ids[m.Focus.Issue], towerWidth, m.Height)
 	} else if m.pager.Mode == "pager" {
