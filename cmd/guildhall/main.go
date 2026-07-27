@@ -1,17 +1,21 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/wbushyeager/guildhall/internal/claude"
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/engine"
 	"github.com/wbushyeager/guildhall/internal/flow"
+	"github.com/wbushyeager/guildhall/internal/marshal"
 	"github.com/wbushyeager/guildhall/internal/pkgs"
 	"github.com/wbushyeager/guildhall/internal/proto"
 	"github.com/wbushyeager/guildhall/internal/runner"
@@ -155,6 +159,7 @@ func runDaemon(args []string) {
 	pkgDir := fs.String("packages", "dist/packages", "agent packages dir")
 	budget := fs.Int("budget", 0, "per-issue token budget (0=off)")
 	claudeBin := fs.String("claude-bin", "claude", "claude binary")
+	testCmd := fs.String("test-cmd", "", "merge-train test command")
 	fs.Parse(args)
 	if *flowsDir == "" {
 		fmt.Fprintln(os.Stderr, "daemon: --flows is required")
@@ -200,10 +205,44 @@ func runDaemon(args []string) {
 	default:
 		fatal(fmt.Errorf("unknown runner %q", *runnerKind))
 	}
+	var seq *marshal.Marshal
+	var train *marshal.Train
+	if *runnerKind == "claude" {
+		seq = marshal.New(func(typ core.EventType, issueID string, payload any) {
+			ev, err := core.NewEvent(typ, issueID, payload)
+			if err == nil {
+				_, _ = st.Append(ev)
+			}
+		})
+		resolve := func(ctx context.Context, issueID, branch string) error {
+			if ws == nil {
+				return fmt.Errorf("no workspace provider for conflict repair")
+			}
+			wt, release, err := ws.Acquire(issueID + "-repair")
+			if err != nil {
+				return err
+			}
+			defer release()
+			out, err := exec.Command("git", "-C", wt, "checkout", branch).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("checkout: %v: %s", err, out)
+			}
+			asks := make(chan runner.Ask)
+			go func() {
+				for a := range asks {
+					a.Reply <- a.Decision.Recommended
+				}
+			}()
+			res := <-run.Run(ctx, issueID, "conflict-repair", "conflict-resolver", wt, asks)
+			return res.Err
+		}
+		train = &marshal.Train{Repo: *repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve}
+	}
 	eng := engine.New(engine.Config{
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(*data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
+		Marshal: seq, Train: train,
 		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
 	})
 	switch r := run.(type) {
@@ -226,6 +265,13 @@ func runDaemon(args []string) {
 	srv := proto.NewServer(eng, st)
 	srv.SetFlows(flows)
 	fatal(srv.Serve(l))
+}
+
+func splitTestCmd(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return strings.Fields(s)
 }
 
 // fakeForFlows builds a FakeRunner that succeeds every stage and writes

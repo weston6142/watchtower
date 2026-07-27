@@ -47,7 +47,11 @@ func (st *Steward) Observe(ev core.Event) {
 	case core.EvStageFailed:
 		setState("failed")
 	case core.EvIssueCompleted:
-		setState("done")
+		if str("merge") == "left-unmerged" {
+			setState("done (unmerged)")
+		} else {
+			setState("done")
+		}
 	case core.EvIssueMerged:
 		setState("merged")
 	}

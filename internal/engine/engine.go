@@ -12,6 +12,7 @@ import (
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/levers"
+	"github.com/wbushyeager/guildhall/internal/marshal"
 	"github.com/wbushyeager/guildhall/internal/runner"
 	"github.com/wbushyeager/guildhall/internal/slots"
 	"github.com/wbushyeager/guildhall/internal/store"
@@ -23,6 +24,7 @@ type Config struct {
 	Store       *store.Store
 	Runner      runner.Runner
 	Marshal     Sequencer
+	Train       *marshal.Train
 	Observers   []func(core.Event)
 	Pool        *slots.Pool
 	Flows       map[string]flow.Flow
@@ -423,8 +425,42 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	if e.cfg.Train != nil && is.branch != "" {
+		e.emit(core.EvMergeStarted, id, map[string]string{"branch": is.branch})
+		if err := e.landWithEscalation(ctx, is); err != nil {
+			e.emit(core.EvIssueCompleted, id, map[string]string{
+				"merge": "left-unmerged", "branch": is.branch})
+			if e.cfg.Marshal != nil {
+				e.cfg.Marshal.Merged(is.id)
+			}
+			aborted = false
+			return nil
+		}
+		e.emit(core.EvIssueMerged, id, map[string]string{"branch": is.branch})
+		if e.cfg.Marshal != nil {
+			e.cfg.Marshal.Merged(is.id)
+		}
+	}
 	aborted = false
 	e.emit(core.EvIssueCompleted, id, nil)
+	return nil
+}
+
+func (e *Engine) landWithEscalation(ctx context.Context, is *issueState) error {
+	err := e.cfg.Train.Land(ctx, is.id, is.branch)
+	for err != nil {
+		e.emit(core.EvMergeConflict, is.id, map[string]string{"error": err.Error()})
+		d := levers.Decision{
+			Question:    fmt.Sprintf("Merge of %s failed: %v. Retry, or leave the branch for manual merge?", is.id, err),
+			Options:     []string{"retry", "leave branch"},
+			Recommended: 1,
+			Importance:  1.0,
+		}
+		if e.escalate(is.id, "merge", d) != 0 {
+			return err
+		}
+		err = e.cfg.Train.Land(ctx, is.id, is.branch)
+	}
 	return nil
 }
 
