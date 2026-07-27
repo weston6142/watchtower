@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 
 	"github.com/wbushyeager/guildhall/internal/core"
 )
@@ -29,6 +30,29 @@ func TestAppendAssignsSeqAndReplays(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Type != core.EvStageStarted {
 		t.Fatalf("replay wrong: %+v", got)
+	}
+}
+
+func TestDecisionOrderingByBlockingCost(t *testing.T) {
+	s, _ := Open("file:t3?mode=memory&cache=shared")
+	defer s.Close()
+	old := time.Now().Add(-time.Hour)
+	id1, _ := s.InsertDecision(DecisionRow{IssueID: "GH-1", Question: "small", BlockingCost: 1, CreatedAt: time.Now()})
+	id2, _ := s.InsertDecision(DecisionRow{IssueID: "GH-2", Question: "big", BlockingCost: 3, CreatedAt: time.Now()})
+	id3, _ := s.InsertDecision(DecisionRow{IssueID: "GH-3", Question: "old-small", BlockingCost: 1, CreatedAt: old})
+	rows, err := s.PendingDecisionRows()
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+	if rows[0].ID != id2 || rows[1].ID != id3 || rows[2].ID != id1 {
+		t.Fatalf("order wrong: %v %v %v", rows[0].ID, rows[1].ID, rows[2].ID)
+	}
+	if err := s.AnswerDecision(id2, 0, "answered"); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.PendingDecisionRows()
+	if len(rows) != 2 {
+		t.Fatalf("answered row still pending: %v", rows)
 	}
 }
 

@@ -243,3 +243,36 @@ func TestTokenBudgetEscalates(t *testing.T) {
 		t.Fatal("budget_exceeded event missing")
 	}
 }
+
+func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, _ := e.CreateIssue("a", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+	for {
+		if ds := e.PendingDecisions(); len(ds) == 1 {
+			e.Answer(ds[0].ID, 0)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-errC; err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var auto, answered int
+	for _, r := range rows {
+		switch r.Status {
+		case "auto":
+			auto++
+		case "answered":
+			answered++
+		}
+	}
+	if auto != 1 || answered != 1 {
+		t.Fatalf("auto=%d answered=%d rows=%+v", auto, answered, rows)
+	}
+}

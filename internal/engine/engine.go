@@ -19,12 +19,17 @@ import (
 type Config struct {
 	Store       *store.Store
 	Runner      runner.Runner
+	Marshal     Sequencer
 	Pool        *slots.Pool
 	Flows       map[string]flow.Flow
 	Rules       levers.Rules
 	DataDir     string
 	Workspace   workspace.Provider
 	TokenBudget int
+}
+
+type Sequencer interface {
+	BlockedBehind(string) int
 }
 
 type PendingDecision struct {
@@ -52,12 +57,11 @@ type issueState struct {
 }
 
 type Engine struct {
-	cfg     Config
-	mu      sync.Mutex
-	nextID  int
-	nextDec int64
-	issues  map[string]*issueState
-	pend    map[int64]*pending
+	cfg    Config
+	mu     sync.Mutex
+	nextID int
+	issues map[string]*issueState
+	pend   map[int64]*pending
 }
 
 func New(cfg Config) *Engine {
@@ -88,11 +92,17 @@ func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, prio
 }
 
 func (e *Engine) PendingDecisions() []PendingDecision {
+	rows, err := e.cfg.Store.PendingDecisionRows()
+	if err != nil {
+		return nil
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var out []PendingDecision
-	for _, p := range e.pend {
-		out = append(out, p.PendingDecision)
+	for _, row := range rows {
+		if p, ok := e.pend[row.ID]; ok {
+			out = append(out, p.PendingDecision)
+		}
 	}
 	return out
 }
@@ -110,18 +120,25 @@ func (e *Engine) Answer(decisionID int64, option int) error {
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
 		"decision_id": p.ID, "option": option})
 	p.reply <- option
-	return nil
+	return e.cfg.Store.AnswerDecision(decisionID, option, "answered")
 }
 
 // escalate blocks until the human answers; returns chosen option.
 func (e *Engine) escalate(issueID, stage string, d levers.Decision) int {
-	e.mu.Lock()
-	e.nextDec++
+	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
+		IssueID: issueID, Stage: stage, Question: d.Question,
+		Options: d.Options, Recommended: d.Recommended,
+		BlockingCost: e.blockingCost(issueID),
+	})
+	if err != nil {
+		panic(fmt.Sprintf("insert decision: %v", err))
+	}
 	p := &pending{
-		PendingDecision: PendingDecision{ID: e.nextDec, IssueID: issueID, Stage: stage, D: d},
+		PendingDecision: PendingDecision{ID: rowID, IssueID: issueID, Stage: stage, D: d},
 		reply:           make(chan int, 1),
 	}
-	e.pend[p.ID] = p
+	e.mu.Lock()
+	e.pend[rowID] = p
 	e.mu.Unlock()
 	e.emit(core.EvDecisionRequired, issueID, map[string]any{
 		"decision_id": p.ID, "stage": stage, "question": d.Question,
@@ -129,11 +146,26 @@ func (e *Engine) escalate(issueID, stage string, d levers.Decision) int {
 	return <-p.reply
 }
 
+func (e *Engine) blockingCost(issueID string) int {
+	if e.cfg.Marshal == nil {
+		return 1
+	}
+	return 1 + e.cfg.Marshal.BlockedBehind(issueID)
+}
+
 func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 	lever := is.matrix[stage]
 	if levers.Route(a.Decision, lever, e.cfg.Rules) {
 		a.Reply <- e.escalate(is.id, stage, a.Decision)
 		return
+	}
+	if _, err := e.cfg.Store.InsertDecision(store.DecisionRow{
+		IssueID: is.id, Stage: stage, Question: a.Decision.Question,
+		Options: a.Decision.Options, Recommended: a.Decision.Recommended,
+		Status: "auto", Answer: a.Decision.Recommended,
+		BlockingCost: e.blockingCost(is.id),
+	}); err != nil {
+		panic(fmt.Sprintf("insert auto decision: %v", err))
 	}
 	e.emit(core.EvDecisionAutoResolved, is.id, map[string]any{
 		"stage": stage, "question": a.Decision.Question, "option": a.Decision.Recommended})

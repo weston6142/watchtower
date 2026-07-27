@@ -46,6 +46,19 @@ type StageRun struct {
 	Tokens    int
 }
 
+type DecisionRow struct {
+	ID           int64
+	IssueID      string
+	Stage        string
+	Question     string
+	Options      []string
+	Recommended  int
+	Status       string
+	Answer       int
+	BlockingCost int
+	CreatedAt    time.Time
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -146,6 +159,71 @@ func (s *Store) IssueTokens(issueID string) (int, error) {
 	err := s.db.QueryRow(
 		`SELECT COALESCE(SUM(tokens),0) FROM stage_runs WHERE issue_id=?`, issueID).Scan(&n)
 	return n, err
+}
+
+func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
+	opts, err := json.Marshal(d.Options)
+	if err != nil {
+		return 0, err
+	}
+	if d.CreatedAt.IsZero() {
+		d.CreatedAt = time.Now().UTC()
+	}
+	if d.Status == "" {
+		d.Status = "pending"
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO decisions(issue_id,question,options,recommended,lever,status,answer,answered_by,blocking_cost,created_at,evidence)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		d.IssueID, d.Question, string(opts), d.Recommended, d.Stage, d.Status,
+		d.Answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), "")
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) AnswerDecision(id int64, answer int, status string) error {
+	_, err := s.db.Exec(`UPDATE decisions SET status=?, answer=? WHERE id=?`, status, answer, id)
+	return err
+}
+
+func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
+	rows, err := s.db.Query(
+		`SELECT id,issue_id,lever,question,options,recommended,status,answer,blocking_cost,created_at
+		 FROM decisions ` + where + ` ORDER BY blocking_cost DESC, created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DecisionRow
+	for rows.Next() {
+		var d DecisionRow
+		var opts, created string
+		// The legacy Plan 1 schema calls the stage column "lever"; keep using
+		// it as the persisted stage name without a migration.
+		if err := rows.Scan(&d.ID, &d.IssueID, &d.Stage, &d.Question, &opts,
+			&d.Recommended, &d.Status, &d.Answer, &d.BlockingCost, &created); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(opts), &d.Options); err != nil {
+			return nil, err
+		}
+		d.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) PendingDecisionRows() ([]DecisionRow, error) {
+	return s.decisionRows(`WHERE status='pending'`)
+}
+
+func (s *Store) AllDecisionRows() ([]DecisionRow, error) {
+	return s.decisionRows(``)
 }
 
 func (s *Store) Close() error { return s.db.Close() }
