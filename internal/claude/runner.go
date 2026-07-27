@@ -25,6 +25,10 @@ type CodeRunner struct {
 	OnProposal func(string, runner.Proposal)
 }
 
+const coachMsg = `Your guildhall_decision is missing required fields. Re-emit the SAME decision
+as one JSON line including: "why" (one line: why you recommend option N) and
+"consequences" (one line per option, same order as options). Nothing else.`
+
 func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
 	asks chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
@@ -87,6 +91,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	gotResult := false
 	repliedThisTurn := false
 	sessionDone := false
+	coachCount := 0
 	for sc.Scan() {
 		ev := ParseLine(sc.Bytes())
 		switch ev.Kind {
@@ -94,6 +99,14 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			res.SessionID = ev.SessionID
 		case KindAssistantText:
 			if d, found := ExtractDecision(ev.Text); found {
+				if (d.Why == "" || len(d.Consequences) != len(d.Options)) && coachCount < 2 {
+					coachCount++
+					if _, err := stdin.Write(UserMessage(coachMsg)); err != nil {
+						return abort(err)
+					}
+					repliedThisTurn = true
+					continue
+				}
 				repliedThisTurn = true
 				reply := make(chan int, 1)
 				select {

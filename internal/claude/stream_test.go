@@ -34,6 +34,14 @@ func TestExtractDecision(t *testing.T) {
 	}
 }
 
+func TestExtractDecisionV2Fields(t *testing.T) {
+	text := `{"guildhall_decision": {"question": "Q?", "options": ["a","b"], "recommended": 1, "importance": 0.5, "paths": [], "why": "b is safer", "consequences": ["fast but risky", "slower, safe"], "reversible": "until execute"}}`
+	d, ok := ExtractDecision(text)
+	if !ok || d.Why != "b is safer" || len(d.Consequences) != 2 || d.Reversible != "until execute" {
+		t.Fatalf("v2 fields: %+v ok=%v", d, ok)
+	}
+}
+
 func TestExtractProposal(t *testing.T) {
 	text := "found something\n{\"guildhall_proposal\": {\"title\": \"Refactor refunds\", \"body\": \"3 call sites entangled\"}}"
 	p, ok := ExtractProposal(text)

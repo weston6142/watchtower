@@ -80,11 +80,14 @@ func ParseLine(line []byte) StreamEvent {
 
 type decisionMarker struct {
 	D struct {
-		Question    string   `json:"question"`
-		Options     []string `json:"options"`
-		Recommended int      `json:"recommended"`
-		Importance  float64  `json:"importance"`
-		Paths       []string `json:"paths"`
+		Question     string   `json:"question"`
+		Options      []string `json:"options"`
+		Recommended  int      `json:"recommended"`
+		Importance   float64  `json:"importance"`
+		Paths        []string `json:"paths"`
+		Why          string   `json:"why"`
+		Consequences []string `json:"consequences"`
+		Reversible   string   `json:"reversible"`
 	} `json:"guildhall_decision"`
 }
 
@@ -106,7 +109,8 @@ func ExtractDecision(text string) (levers.Decision, bool) {
 		return levers.Decision{
 			Question: m.D.Question, Options: m.D.Options,
 			Recommended: m.D.Recommended, Importance: m.D.Importance,
-			Paths: m.D.Paths,
+			Paths: m.D.Paths, Why: m.D.Why,
+			Consequences: m.D.Consequences, Reversible: m.D.Reversible,
 		}, true
 	}
 	return levers.Decision{}, false

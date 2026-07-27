@@ -53,6 +53,9 @@ type DecisionRow struct {
 	Question     string
 	Options      []string
 	Recommended  int
+	Why          string
+	Consequences []string
+	Reversible   string
 	Status       string
 	Answer       int
 	BlockingCost int
@@ -230,6 +233,16 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Reuse the existing evidence column for v2 decision context; this avoids
+	// a schema migration while keeping rationale metadata with the decision.
+	evidence, err := json.Marshal(struct {
+		Why          string   `json:"why"`
+		Consequences []string `json:"consequences"`
+		Reversible   string   `json:"reversible"`
+	}{d.Why, d.Consequences, d.Reversible})
+	if err != nil {
+		return 0, err
+	}
 	if d.CreatedAt.IsZero() {
 		d.CreatedAt = time.Now().UTC()
 	}
@@ -240,7 +253,7 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 		`INSERT INTO decisions(issue_id,question,options,recommended,lever,status,answer,answered_by,blocking_cost,created_at,evidence)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		d.IssueID, d.Question, string(opts), d.Recommended, d.Stage, d.Status,
-		d.Answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), "")
+		d.Answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), string(evidence))
 	if err != nil {
 		return 0, err
 	}
@@ -258,7 +271,7 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(
-		`SELECT id,issue_id,lever,question,options,recommended,status,answer,blocking_cost,created_at
+		`SELECT id,issue_id,lever,question,options,recommended,evidence,status,answer,blocking_cost,created_at
 		 FROM decisions ` + where + ` ORDER BY blocking_cost DESC, created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -267,15 +280,25 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 	var out []DecisionRow
 	for rows.Next() {
 		var d DecisionRow
-		var opts, created string
+		var opts, evidence, created string
 		// The legacy Plan 1 schema calls the stage column "lever"; keep using
 		// it as the persisted stage name without a migration.
 		if err := rows.Scan(&d.ID, &d.IssueID, &d.Stage, &d.Question, &opts,
-			&d.Recommended, &d.Status, &d.Answer, &d.BlockingCost, &created); err != nil {
+			&d.Recommended, &evidence, &d.Status, &d.Answer, &d.BlockingCost, &created); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(opts), &d.Options); err != nil {
 			return nil, err
+		}
+		if evidence != "" {
+			var context struct {
+				Why          string   `json:"why"`
+				Consequences []string `json:"consequences"`
+				Reversible   string   `json:"reversible"`
+			}
+			if json.Unmarshal([]byte(evidence), &context) == nil {
+				d.Why, d.Consequences, d.Reversible = context.Why, context.Consequences, context.Reversible
+			}
 		}
 		d.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 		if err != nil {

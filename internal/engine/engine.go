@@ -168,6 +168,7 @@ func (e *Engine) escalate(issueID, stage string, d levers.Decision) int {
 	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: issueID, Stage: stage, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended,
+		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
 		BlockingCost: e.blockingCost(issueID),
 	})
 	if err != nil {
@@ -250,6 +251,7 @@ func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 	if _, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: is.id, Stage: stage, Question: a.Decision.Question,
 		Options: a.Decision.Options, Recommended: a.Decision.Recommended,
+		Why: a.Decision.Why, Consequences: a.Decision.Consequences, Reversible: a.Decision.Reversible,
 		Status: "auto", Answer: a.Decision.Recommended,
 		BlockingCost: e.blockingCost(is.id),
 	}); err != nil {

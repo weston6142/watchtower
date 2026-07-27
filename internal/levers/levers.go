@@ -18,11 +18,14 @@ func Preset(f flow.Flow, l flow.Lever) Matrix {
 }
 
 type Decision struct {
-	Question    string
-	Options     []string
-	Recommended int
-	Importance  float64
-	Paths       []string
+	Question     string
+	Options      []string
+	Recommended  int
+	Importance   float64
+	Paths        []string
+	Why          string
+	Consequences []string
+	Reversible   string
 }
 
 type Rules struct {

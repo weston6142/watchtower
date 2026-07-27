@@ -51,6 +51,18 @@ func TestDecisionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunnerCoachesIncompleteDecision(t *testing.T) {
+	done, asks := run(t, abs(t, "testdata/coached.sh"), t.TempDir())
+	a := <-asks // must be the COACHED (v2) decision, not the v1 one
+	if a.Decision.Why == "" || len(a.Decision.Consequences) != 2 {
+		t.Fatalf("ask not coached to v2: %+v", a.Decision)
+	}
+	a.Reply <- 0
+	if res := <-done; res.Err != nil {
+		t.Fatal(res.Err)
+	}
+}
+
 func TestErrorResultFails(t *testing.T) {
 	done, _ := run(t, abs(t, "testdata/failer.sh"), t.TempDir())
 	if res := <-done; res.Err == nil {
