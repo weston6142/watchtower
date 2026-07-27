@@ -24,6 +24,8 @@ type Command struct {
 	Accept     bool   `json:"accept,omitempty"`
 	SinceSeq   int64  `json:"since_seq,omitempty"`
 	Repo       string `json:"repo,omitempty"`
+	Stage      string `json:"stage,omitempty"`
+	Lever      string `json:"lever,omitempty"`
 }
 
 type Response struct {

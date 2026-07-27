@@ -108,6 +108,21 @@ func (sv *Server) exec(cmd Command) Response {
 		// in the log rather than in this response.
 		go sv.eng.StartIssue(context.Background(), cmd.IssueID)
 		return Response{OK: true, IssueID: cmd.IssueID}
+	case "pause_issue":
+		if err := sv.eng.Pause(cmd.IssueID); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
+	case "resume_issue":
+		if err := sv.eng.Resume(cmd.IssueID); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
+	case "kill_stage":
+		if err := sv.eng.KillStage(cmd.IssueID); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
 	case "list_decisions":
 		return Response{OK: true, Decisions: sv.eng.PendingDecisions()}
 	case "answer_decision":

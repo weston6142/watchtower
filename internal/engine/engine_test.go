@@ -262,6 +262,90 @@ func TestWorktreeAcquiredOnceAndReleased(t *testing.T) {
 	}
 }
 
+func TestPauseGatesBetweenStages(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, _ := e.CreateIssue("p", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	if err := e.Pause(id); err != nil {
+		t.Fatal(err)
+	}
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+	// paused before the first stage: no stage_started should appear
+	time.Sleep(50 * time.Millisecond)
+	evs, _ := s.EventsSince(0)
+	for _, ev := range evs {
+		if ev.Type == core.EvStageStarted {
+			t.Fatal("stage started while paused")
+		}
+	}
+	if err := e.Resume(id); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if ds := e.PendingDecisions(); len(ds) == 1 {
+			if err := e.Answer(ds[0].ID, 0); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-errC; err != nil {
+		t.Fatal(err)
+	}
+	evs, _ = s.EventsSince(0)
+	var paused, resumed int
+	for _, ev := range evs {
+		if ev.Type == core.EvIssuePaused {
+			paused++
+		}
+		if ev.Type == core.EvIssueResumed {
+			resumed++
+		}
+	}
+	if paused != 1 || resumed != 1 {
+		t.Fatalf("paused=%d resumed=%d", paused, resumed)
+	}
+}
+
+func TestKillStageEmitsKilledAndPauses(t *testing.T) {
+	sc := scripts()
+	sc["brainstorm/brainstorm"] = runner.Script{Asks: []levers.Decision{
+		{Question: "block forever?", Options: []string{"a"}, Recommended: 0, Importance: 1.0}}}
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: sc})
+	id, _ := e.CreateIssue("k", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+	// wait until the stage is genuinely running (blocked on its ask)
+	deadline := time.After(5 * time.Second)
+	for len(e.PendingDecisions()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := e.KillStage(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errC; err == nil {
+		t.Fatal("expected killed issue run to return an error")
+	}
+	evs, _ := s.EventsSince(0)
+	killed := false
+	for _, ev := range evs {
+		if ev.Type == core.EvStageKilled {
+			killed = true
+		}
+	}
+	if !killed {
+		t.Fatal("no stage_killed event")
+	}
+	if len(e.PendingDecisions()) != 0 {
+		t.Fatal("killed stage left a pending decision")
+	}
+}
+
 func TestTokenBudgetEscalates(t *testing.T) {
 	sc := scripts()
 	sc["brainstorm/brainstorm"] = runner.Script{Tokens: 5000}

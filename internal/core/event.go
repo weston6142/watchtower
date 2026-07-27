@@ -29,6 +29,9 @@ const (
 	EvArtifactProduced     EventType = "artifact_produced"
 	EvIssueCompleted       EventType = "issue_completed"
 	EvBudgetExceeded       EventType = "budget_exceeded"
+	EvIssuePaused          EventType = "issue_paused"
+	EvIssueResumed         EventType = "issue_resumed"
+	EvStageKilled          EventType = "stage_killed"
 )
 
 type Event struct {

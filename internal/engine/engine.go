@@ -69,6 +69,9 @@ type issueState struct {
 	branch         string
 	baseRef        string
 	wsRelease      func() error
+	pauseGate      chan struct{}
+	stageCancel    context.CancelFunc
+	killRequested  bool
 	budgetWaived   bool
 	activeTouchset *touchset.Set
 }
@@ -96,6 +99,77 @@ func (e *Engine) ActiveTouchsets() map[string][]string {
 		}
 	}
 	return out
+}
+
+// Pause stops an issue at the next boundary between stages.
+func (e *Engine) Pause(issueID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	is, ok := e.issues[issueID]
+	if !ok {
+		return fmt.Errorf("unknown issue %s", issueID)
+	}
+	if is.pauseGate == nil {
+		is.pauseGate = make(chan struct{})
+	}
+	return nil
+}
+
+// Resume releases an issue waiting at a between-stage pause gate.
+func (e *Engine) Resume(issueID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	is, ok := e.issues[issueID]
+	if !ok {
+		return fmt.Errorf("unknown issue %s", issueID)
+	}
+	if is.pauseGate == nil {
+		return fmt.Errorf("issue %s is not paused", issueID)
+	}
+	close(is.pauseGate)
+	is.pauseGate = nil
+	return nil
+}
+
+// KillStage cancels only the currently running stage and leaves the issue
+// paused so an operator can intervene before resuming or retrying it.
+func (e *Engine) KillStage(issueID string) error {
+	e.mu.Lock()
+	is, ok := e.issues[issueID]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", issueID)
+	}
+	if is.stageCancel == nil {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s has no running stage", issueID)
+	}
+	is.killRequested = true
+	if is.pauseGate == nil {
+		is.pauseGate = make(chan struct{})
+	}
+	cancel := is.stageCancel
+	var killed []int64
+	for id, p := range e.pend {
+		if p.IssueID != issueID {
+			continue
+		}
+		delete(e.pend, id)
+		close(p.reply)
+		killed = append(killed, id)
+	}
+	e.mu.Unlock()
+	for _, id := range killed {
+		_ = e.cfg.Store.AnswerDecision(id, -1, "killed")
+	}
+	cancel()
+	return nil
+}
+
+func (e *Engine) wasKilled(is *issueState) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return is.killRequested
 }
 
 // emit appends an event best-effort: marshal or store failures are dropped
@@ -186,7 +260,11 @@ func (e *Engine) escalate(issueID, stage string, d levers.Decision) int {
 	e.emit(core.EvDecisionRequired, issueID, map[string]any{
 		"decision_id": p.ID, "stage": stage, "question": d.Question,
 		"options": d.Options, "recommended": d.Recommended})
-	return <-p.reply
+	choice, ok := <-p.reply
+	if !ok {
+		return -1
+	}
+	return choice
 }
 
 func (e *Engine) blockingCost(issueID string) int {
@@ -368,14 +446,25 @@ func (e *Engine) stageWorkdir(is *issueState, st flow.Stage) string {
 }
 
 func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) error {
+	stageCtx, cancel := context.WithCancel(ctx)
+	e.mu.Lock()
+	is.stageCancel = cancel
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		is.stageCancel = nil
+		e.mu.Unlock()
+		cancel()
+	}()
+
 	if st.MergeBarrier && e.cfg.Marshal != nil {
-		if err := e.cfg.Marshal.ReadyToMerge(ctx, is.id); err != nil {
+		if err := e.cfg.Marshal.ReadyToMerge(stageCtx, is.id); err != nil {
 			return err
 		}
 	}
 	if st.HeavySlot {
 		e.emit(core.EvSlotQueued, is.id, map[string]string{"stage": st.Name})
-		release, err := e.cfg.Pool.Acquire(ctx, is.id, is.priority)
+		release, err := e.cfg.Pool.Acquire(stageCtx, is.id, is.priority)
 		if err != nil {
 			return err
 		}
@@ -389,9 +478,13 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 	var err error
 	of := st.Retries + 1
 	for attempt := 0; attempt <= st.Retries; attempt++ {
-		err = e.runStageOnce(ctx, is, st, attempt+1, of)
+		err = e.runStageOnce(stageCtx, is, st, attempt+1, of)
 		if err == nil {
 			break
+		}
+		if e.wasKilled(is) {
+			e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
+			return context.Canceled
 		}
 		e.emit(core.EvStageFailed, is.id, map[string]any{
 			"stage": st.Name, "error": err.Error(),
@@ -399,6 +492,10 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 	}
 	if err != nil {
 		return err
+	}
+	if e.wasKilled(is) {
+		e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
+		return context.Canceled
 	}
 	if st.Workspace == "worktree" && is.branch != "" && is.baseRef != "" {
 		evDir := filepath.Join(e.cfg.DataDir, is.id, "evidence", st.Name)
@@ -463,6 +560,18 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 		}
 	}()
 	for _, st := range f.Stages {
+		e.mu.Lock()
+		gate := is.pauseGate
+		e.mu.Unlock()
+		if gate != nil {
+			e.emit(core.EvIssuePaused, id, nil)
+			select {
+			case <-gate:
+				e.emit(core.EvIssueResumed, id, nil)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		if st.Workspace != "none" && e.cfg.Workspace != nil && is.wsPath == "" {
 			path, release, err := e.cfg.Workspace.Acquire(is.id)
 			if err != nil {

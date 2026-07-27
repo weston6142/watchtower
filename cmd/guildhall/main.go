@@ -36,7 +36,7 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|pause|resume|kill|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -149,6 +149,19 @@ func main() {
 		for _, issue := range r.Issues {
 			fmt.Printf("%s  %s  %s\n", issue.ID, issue.State, issue.Title)
 		}
+	case "pause", "resume", "kill":
+		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		if len(fs.Args()) != 1 {
+			fmt.Fprintf(os.Stderr, "usage: guildhall %s <issue-id>\n", cmd)
+			os.Exit(2)
+		}
+		c := mustDial(*data)
+		defer c.Close()
+		ops := map[string]string{"pause": "pause_issue", "resume": "resume_issue", "kill": "kill_stage"}
+		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0]})
+		fmt.Println(cmd, fs.Args()[0])
 	case "tail":
 		fs := flag.NewFlagSet("tail", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")

@@ -40,7 +40,11 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				return
 			}
 			select {
-			case <-reply:
+			case choice, ok := <-reply:
+				if !ok || choice < 0 {
+					done <- Result{Err: context.Canceled}
+					return
+				}
 			case <-ctx.Done():
 				done <- Result{Err: ctx.Err()}
 				return
