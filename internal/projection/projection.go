@@ -96,6 +96,7 @@ func (s *State) Apply(ev core.Event) {
 		}
 	case core.EvStageFailed:
 		if iv != nil {
+			iv.CurrentStage = str("stage")
 			iv.State = "failed"
 		}
 	case core.EvMergeSequenced:

@@ -43,6 +43,11 @@ type tickMsg struct{}
 
 type pollErrorMsg struct{ err error }
 
+type detailMsg struct {
+	detail *proto.IssueDetail
+	err    error
+}
+
 func NewModel(client *proto.Client, stages []string) Model {
 	flowStages := make([]flow.Stage, len(stages))
 	for i, name := range stages {
@@ -76,6 +81,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pollErrorMsg:
 		m.Err = msg.err.Error()
 		return m, m.tick()
+	case detailMsg:
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		m.Detail = msg.detail
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = msg.Width, msg.Height
 		return m, nil
@@ -84,8 +96,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
+		moved := moveFocus(m.Focus, m.State, m.stages, msg.String())
+		if moved != m.Focus {
+			m.Focus = moved
+			m.Detail = nil
+			if m.Focus.Issue != "" {
+				return m, m.fetchDetail(m.Focus.Issue)
+			}
+		}
 	}
 	return m, nil
+}
+
+func (m Model) fetchDetail(issueID string) tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	client := m.client
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "issue_detail", IssueID: issueID})
+		if err != nil {
+			return detailMsg{err: err}
+		}
+		if !r.OK {
+			return detailMsg{err: errors.New(r.Error)}
+		}
+		return detailMsg{detail: r.Detail}
+	}
 }
 
 func (m Model) applyEvents(evs []core.Event) Model {
