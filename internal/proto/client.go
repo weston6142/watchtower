@@ -4,9 +4,14 @@ import (
 	"bufio"
 	"encoding/json"
 	"net"
+	"sync"
 )
 
 type Client struct {
+	// mu serializes request/response pairs: the TUI issues concurrent Do
+	// calls (tail + overview + issue_detail per tick) over one connection,
+	// and interleaved frames corrupt the JSONL stream.
+	mu   sync.Mutex
 	conn net.Conn
 	sc   *bufio.Scanner
 	enc  *json.Encoder
@@ -23,6 +28,8 @@ func Dial(sockPath string) (*Client, error) {
 }
 
 func (c *Client) Do(cmd Command) (Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if err := c.enc.Encode(cmd); err != nil {
 		return Response{}, err
 	}
