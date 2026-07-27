@@ -124,7 +124,12 @@ func truncate(s string, width int) string {
 	return ansi.Truncate(s, width, "…")
 }
 
-const laneWidth = 14
+// laneWidth is the fixed width of one issue lane; stageGutterWidth is the
+// left gutter that holds the stage label on every grid row.
+const (
+	laneWidth        = 14
+	stageGutterWidth = 12
+)
 
 func padCell(s string, width int) string {
 	s = truncate(s, width)
@@ -171,26 +176,22 @@ func completedStage(iv *projection.IssueView, stage string) bool {
 	return false
 }
 
-func cellContent(iv *projection.IssueView, ids map[string]Identity, stageIdx, tick int, focused bool) string {
-	return cellContentForStage(iv, ids, "", stageIdx, tick, focused, false)
-}
-
 func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stage string, stageIdx, tick int, focused, reducedMotion bool) string {
 	if iv == nil {
 		return ""
 	}
 	identity := ids[iv.ID]
-	identityStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(identity.Color))
+	laneStyle := identityStyle(identity)
 	if focused {
-		identityStyle = identityStyle.Bold(true)
+		laneStyle = laneStyle.Bold(true)
 	}
 	if iv.Merged && (stage == "merge" || stageIdx == len(iv.Completed)) {
-		return identityStyle.Render("⇡")
+		return laneStyle.Render("⇡")
 	}
 	if iv.Behind != "" && stage == "merge" {
 		blocker := iv.Behind
 		if blockerIdentity, ok := ids[iv.Behind]; ok {
-			return themeDim.Render("after ") + lipgloss.NewStyle().Foreground(lipgloss.Color(blockerIdentity.Color)).Render("▐"+blockerIdentity.Tag+"▌")
+			return themeDim.Render("after ") + identityStyle(blockerIdentity).Render("▐"+blockerIdentity.Tag+"▌")
 		}
 		return themeDim.Render("after " + blocker)
 	}
@@ -218,13 +219,13 @@ func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stag
 		return themeDim.Render(spinner)
 	}
 	if completedStage(iv, stage) {
-		return identityStyle.Render("✓")
+		return laneStyle.Render("✓")
 	}
 	return themeDim.Render("·")
 }
 
 func headerCell(content string, identity Identity, focused bool) string {
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color(identity.Color))
+	style := identityStyle(identity)
 	if focused {
 		style = style.Bold(true)
 	}
@@ -243,7 +244,7 @@ func visibleLanes(order []string, focus, width int) (full, compactLeft, compactR
 	}
 	capacity := 3
 	if width > 0 {
-		capacity = max(capacity, (width-12)/laneWidth)
+		capacity = max(capacity, (width-stageGutterWidth)/laneWidth)
 	}
 	capacity = min(capacity, len(order))
 	if len(order) <= capacity {
@@ -318,17 +319,17 @@ func renderTowerConfigured(st *projection.State, stages []string, ids map[string
 	}
 	// The stage label occupies the left gutter; each issue lane remains fixed at
 	// fourteen cells so transient status text can never reflow the grid.
-	lines = append(lines, withEdgeGutters(padCell("", 12)+" "+strings.Join(chips, ""), compactLeft, compactRight))
-	lines = append(lines, withEdgeGutters(padCell("", 12)+" "+strings.Join(first, ""), compactLeft, compactRight))
-	lines = append(lines, withEdgeGutters(padCell("", 12)+" "+strings.Join(second, ""), compactLeft, compactRight))
+	lines = append(lines, withEdgeGutters(padCell("", stageGutterWidth)+" "+strings.Join(chips, ""), compactLeft, compactRight))
+	lines = append(lines, withEdgeGutters(padCell("", stageGutterWidth)+" "+strings.Join(first, ""), compactLeft, compactRight))
+	lines = append(lines, withEdgeGutters(padCell("", stageGutterWidth)+" "+strings.Join(second, ""), compactLeft, compactRight))
 	var idRow []string
 	for _, id := range issueIDs {
 		identity := ids[id]
 		idRow = append(idRow, headerCell(id, identity, focus.Issue == id))
 	}
-	lines = append(lines, withEdgeGutters(padCell("", 12)+" "+strings.Join(idRow, ""), compactLeft, compactRight))
+	lines = append(lines, withEdgeGutters(padCell("", stageGutterWidth)+" "+strings.Join(idRow, ""), compactLeft, compactRight))
 	for stageIdx, stage := range stages {
-		label := padCell(strings.ToUpper(stageName(aliases, stage)), 12) + " "
+		label := padCell(strings.ToUpper(stageName(aliases, stage)), stageGutterWidth) + " "
 		var cells []string
 		for _, id := range issueIDs {
 			cells = append(cells, padCell(cellContentForStage(st.Issues[id], ids, stage, stageIdx, tick, focus.Issue == id, reducedMotion), laneWidth))
@@ -415,7 +416,7 @@ func renderShelf(items []shelfItem, ids map[string]Identity, width int) string {
 func shelfLine(item shelfItem, identity Identity, status string) string {
 	line := fmt.Sprintf("▓ %s %s %s", identity.Tag, item.Title, status)
 	if identity.Color != "" {
-		line = lipgloss.NewStyle().Foreground(lipgloss.Color(identity.Color)).Render("▓ "+identity.Tag) + " " + item.Title + " " + status
+		line = identityStyle(identity).Render("▓ "+identity.Tag) + " " + item.Title + " " + status
 	}
 	return line
 }

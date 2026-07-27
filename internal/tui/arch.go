@@ -5,8 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-
 	"github.com/wbushyeager/guildhall/internal/archmap"
 	"github.com/wbushyeager/guildhall/internal/projection"
 	"github.com/wbushyeager/guildhall/internal/touchset"
@@ -97,7 +95,7 @@ func areaMarks(area string, builders map[string]map[string]bool, overlays []arch
 		}
 		identity := ids[issueID]
 		if identity.Color != "" {
-			marks = append(marks, lipgloss.NewStyle().Foreground(lipgloss.Color(identity.Color)).Render(mark+identity.Tag))
+			marks = append(marks, identityStyle(identity).Render(mark+identity.Tag))
 		} else {
 			marks = append(marks, mark+issueID)
 		}
@@ -127,6 +125,9 @@ func buildersByArea(issues map[string]*projection.IssueView) map[string]map[stri
 			if builders[area] == nil {
 				builders[area] = map[string]bool{}
 			}
+			// An issue "builds" an area when the area holds at least a
+			// quarter of its total change weight; lighter touches are
+			// rendered as brushers.
 			builders[area][issueID] = weight*4 >= total
 		}
 	}

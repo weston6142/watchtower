@@ -40,8 +40,9 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 		if det.Budget > 0 {
 			percent := det.Tokens * 100 / det.Budget
 			percent = max(0, min(100, percent))
-			filled := (percent*4 + 50) / 100
-			bar := strings.Repeat("▰", filled) + strings.Repeat("▱", 4-filled)
+			const budgetBarWidth = 4
+			filled := (percent*budgetBarWidth + 50) / 100 // +50 rounds to nearest cell
+			bar := strings.Repeat("▰", filled) + strings.Repeat("▱", budgetBarWidth-filled)
 			cost := ""
 			if det.Dollars > 0 {
 				cost = fmt.Sprintf(" ($%.2f)", det.Dollars)

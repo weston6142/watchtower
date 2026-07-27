@@ -119,7 +119,6 @@ type confirmState struct {
 }
 
 type commandMsg struct {
-	op       string
 	response proto.Response
 	err      error
 }
@@ -492,7 +491,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case "R":
-				if iv := m.State.Issues[m.Focus.Issue]; iv != nil && (iv.State == "failed" || iv.Killed || (iv.State == "paused" && iv.Killed)) {
+				if iv := m.State.Issues[m.Focus.Issue]; iv != nil && (iv.State == "failed" || iv.Killed) {
 					return m, m.issueCommand(m.Focus.Issue, "retry_stage")
 				}
 			case "L":
@@ -558,7 +557,7 @@ func (m Model) issueCommand(issueID, op string) tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: op, IssueID: issueID})
-		return commandMsg{op: op, response: r, err: err}
+		return commandMsg{response: r, err: err}
 	}
 }
 
@@ -1074,6 +1073,15 @@ func (m Model) fetchTranscript() tea.Cmd {
 	}
 }
 
+// writeHeaderRows writes the status sentence and the reserved notice row that
+// every screen (grid, doors, help) keeps at the top.
+func (m Model) writeHeaderRows(b *strings.Builder, width int) {
+	b.WriteString(renderHeader(m.Overview, width))
+	b.WriteByte('\n')
+	b.WriteString(renderNoticeRow(m.State, width))
+	b.WriteByte('\n')
+}
+
 func (m Model) View() string {
 	layoutWidth := m.Width
 	if layoutWidth <= 0 {
@@ -1099,23 +1107,16 @@ func (m Model) View() string {
 	}
 	if m.currentMode() != "" && !m.help {
 		// Doors replace the grid and rail but retain the header and footer.
-		body := tower
 		var b strings.Builder
-		b.WriteString(renderHeader(m.Overview, layoutWidth))
-		b.WriteByte('\n')
-		b.WriteString(renderNoticeRow(m.State, layoutWidth))
-		b.WriteByte('\n')
-		b.WriteString(body)
+		m.writeHeaderRows(&b, layoutWidth)
+		b.WriteString(tower)
 		b.WriteString("\n\n")
 		b.WriteString("j/k select · enter open · esc back · q quit")
 		return b.String()
 	}
 	if m.help {
 		var b strings.Builder
-		b.WriteString(renderHeader(m.Overview, layoutWidth))
-		b.WriteByte('\n')
-		b.WriteString(renderNoticeRow(m.State, layoutWidth))
-		b.WriteByte('\n')
+		m.writeHeaderRows(&b, layoutWidth)
 		b.WriteString(renderHelp(layoutWidth))
 		b.WriteString("\n\n? close help · q quit")
 		return b.String()
@@ -1154,10 +1155,7 @@ func (m Model) View() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, tower, right)
 	}
 	var b strings.Builder
-	b.WriteString(renderHeader(m.Overview, layoutWidth))
-	b.WriteByte('\n')
-	b.WriteString(renderNoticeRow(m.State, layoutWidth))
-	b.WriteByte('\n')
+	m.writeHeaderRows(&b, layoutWidth)
 	b.WriteString(body)
 	if shelf := renderShelf(m.shelfItems(), m.Ids, layoutWidth); shelf != "" {
 		b.WriteString("\n\n")
