@@ -50,3 +50,24 @@ func TestIssueCompletedSetsDone(t *testing.T) {
 		t.Fatalf("want done, got %q", s.Issues["GH-2"].State)
 	}
 }
+
+func TestMergeSequencingProjection(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "a", "flow": "default"}))
+	s.Apply(ev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "b", "flow": "default"}))
+	s.Apply(ev(t, core.EvMergeSequenced, "GH-2", map[string]any{"behind": "GH-1"}))
+	if s.Issues["GH-2"].Behind != "GH-1" {
+		t.Fatalf("behind: %+v", s.Issues["GH-2"])
+	}
+	if len(s.Order) != 2 || s.Order[0] != "GH-1" {
+		t.Fatalf("order: %v", s.Order)
+	}
+	s.Apply(ev(t, core.EvIssueMerged, "GH-1", nil))
+	if !s.Issues["GH-1"].Merged || s.Issues["GH-2"].Behind != "" {
+		t.Fatalf("release: %+v %+v", s.Issues["GH-1"], s.Issues["GH-2"])
+	}
+	s.Apply(ev(t, core.EvProposalFiled, "GH-2", map[string]any{"title": "x"}))
+	if s.ProposalCount != 1 {
+		t.Fatalf("proposals: %d", s.ProposalCount)
+	}
+}

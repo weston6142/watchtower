@@ -9,10 +9,14 @@ import (
 type IssueView struct {
 	ID           string
 	Title        string
+	Flow         string
 	CurrentStage string
 	State        string
 	Completed    []string
 	Tokens       int
+	Behind       string
+	Merged       bool
+	Unmerged     bool
 }
 
 type DecisionView struct {
@@ -25,8 +29,10 @@ type DecisionView struct {
 }
 
 type State struct {
-	Issues    map[string]*IssueView
-	Decisions map[int64]DecisionView
+	Issues        map[string]*IssueView
+	Decisions     map[int64]DecisionView
+	Order         []string
+	ProposalCount int
 }
 
 func NewState() *State {
@@ -44,7 +50,8 @@ func (s *State) Apply(ev core.Event) {
 	iv := s.Issues[ev.IssueID]
 	switch ev.Type {
 	case core.EvIssueCreated:
-		s.Issues[ev.IssueID] = &IssueView{ID: ev.IssueID, Title: str("title"), State: "running"}
+		s.Issues[ev.IssueID] = &IssueView{ID: ev.IssueID, Title: str("title"), Flow: str("flow"), State: "running"}
+		s.Order = append(s.Order, ev.IssueID)
 	case core.EvStageStarted:
 		if iv != nil {
 			iv.CurrentStage = str("stage")
@@ -85,10 +92,33 @@ func (s *State) Apply(ev core.Event) {
 	case core.EvIssueCompleted:
 		if iv != nil {
 			iv.State = "done"
+			iv.Unmerged = str("merge") == "left-unmerged"
 		}
 	case core.EvStageFailed:
 		if iv != nil {
 			iv.State = "failed"
+		}
+	case core.EvMergeSequenced:
+		if iv != nil {
+			iv.Behind = str("behind")
+		}
+	case core.EvMergeStarted:
+		// Merge sequencing is the meaningful projection for now.
+	case core.EvIssueMerged:
+		if iv != nil {
+			iv.Merged = true
+			iv.Behind = ""
+		}
+		for _, other := range s.Issues {
+			if other.Behind == ev.IssueID {
+				other.Behind = ""
+			}
+		}
+	case core.EvProposalFiled:
+		s.ProposalCount++
+	case core.EvProposalAccepted, core.EvProposalRejected:
+		if s.ProposalCount > 0 {
+			s.ProposalCount--
 		}
 	}
 }
