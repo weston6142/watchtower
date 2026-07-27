@@ -32,11 +32,13 @@ type Model struct {
 	Height int
 	Err    string
 
-	client     *proto.Client
-	stages     []string
-	lastSeq    int64
-	dismissed  map[int64]bool
-	optionMode bool
+	client        *proto.Client
+	stages        []string
+	lastSeq       int64
+	dismissed     map[int64]bool
+	optionMode    bool
+	pager         pagerState
+	openArtifacts bool
 }
 
 type Msg struct{ Events []core.Event }
@@ -92,9 +94,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case detailMsg:
 		if msg.err != nil {
 			m.Err = msg.err.Error()
+			m.openArtifacts = false
 			return m, nil
 		}
 		m.Detail = msg.detail
+		if m.openArtifacts && msg.detail != nil {
+			m.pager = pagerState{Mode: "artifacts", Files: append([]string(nil), msg.detail.Artifacts...)}
+			m.openArtifacts = false
+		}
 		return m, nil
 	case answerMsg:
 		if msg.err != nil {
@@ -119,6 +126,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
+		if m.pager.Mode != "" {
+			return m, m.updatePagerKey(key)
+		}
 		if m.Toast != nil {
 			switch {
 			case key == "y":
@@ -135,17 +145,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.dismissToast()
 				return m, nil
 			case key == "o":
-				m.Focus = focusIssue(m.State, m.stages, m.Toast.IssueID)
-				m.Detail = nil
-				m.dismissToast()
-				return m, m.fetchDetail(m.Focus.Issue)
+				return m, m.openArtifactsFor(m.Toast.IssueID)
 			}
 			return m, nil
+		}
+		if key == "enter" && m.Focus.Issue != "" {
+			return m, m.openArtifactsFor(m.Focus.Issue)
+		}
+		if key == "o" && m.Focus.Issue != "" {
+			return m, m.openArtifactsFor(m.Focus.Issue)
 		}
 		moved := moveFocus(m.Focus, m.State, m.stages, key)
 		if moved != m.Focus {
 			m.Focus = moved
 			m.Detail = nil
+			m.openArtifacts = false
 			if m.Focus.Issue != "" {
 				return m, m.fetchDetail(m.Focus.Issue)
 			}
@@ -164,6 +178,43 @@ func (m *Model) dismissToast() {
 	m.dismissed[m.Toast.ID] = true
 	m.Toast = nil
 	m.optionMode = false
+}
+
+func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
+	m.Focus = focusIssue(m.State, m.stages, issueID)
+	m.Detail = nil
+	m.openArtifacts = true
+	if m.Toast != nil {
+		m.dismissToast()
+	}
+	return m.fetchDetail(issueID)
+}
+
+func (m *Model) updatePagerKey(key string) tea.Cmd {
+	switch {
+	case key == "esc":
+		if m.pager.Mode == "pager" {
+			m.pager.Mode = "artifacts"
+			m.pager.Lines = nil
+			m.pager.Top = 0
+		} else {
+			m.pager = pagerState{}
+		}
+	case m.pager.Mode == "artifacts" && key == "j":
+		m.pager.Sel = min(m.pager.Sel+1, max(0, len(m.pager.Files)-1))
+	case m.pager.Mode == "artifacts" && key == "k":
+		m.pager.Sel = max(m.pager.Sel-1, 0)
+	case m.pager.Mode == "artifacts" && key == "enter":
+		loaded, err := readArtifact(m.pager)
+		if err != nil {
+			m.Err = err.Error()
+		} else {
+			m.pager = loaded
+		}
+	case m.pager.Mode == "pager":
+		m.pager = m.pager.scroll(key, max(1, m.Height-2))
+	}
+	return nil
 }
 
 func (m Model) answerDecision(option int) tea.Cmd {
@@ -263,7 +314,11 @@ func (m Model) View() string {
 	railWidth := max(24, min(40, layoutWidth/3))
 	towerWidth := max(1, layoutWidth-railWidth-1)
 	tower := renderTower(m.State, m.stages, m.Ids, m.Focus, towerWidth)
-	if m.Toast != nil {
+	if m.pager.Mode == "artifacts" {
+		tower = renderArtifactList(m.pager, m.Ids[m.Focus.Issue], towerWidth, m.Height)
+	} else if m.pager.Mode == "pager" {
+		tower = renderPager(m.pager, towerWidth, m.Height)
+	} else if m.Toast != nil {
 		tower = renderToast(*m.Toast, m.Ids[m.Toast.IssueID], towerWidth)
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, tower, renderRail(m.State, m.Ids, m.Detail, railWidth))
