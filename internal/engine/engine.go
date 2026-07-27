@@ -13,15 +13,18 @@ import (
 	"github.com/wbushyeager/guildhall/internal/runner"
 	"github.com/wbushyeager/guildhall/internal/slots"
 	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/wbushyeager/guildhall/internal/workspace"
 )
 
 type Config struct {
-	Store   *store.Store
-	Runner  runner.Runner
-	Pool    *slots.Pool
-	Flows   map[string]flow.Flow
-	Rules   levers.Rules
-	DataDir string
+	Store       *store.Store
+	Runner      runner.Runner
+	Pool        *slots.Pool
+	Flows       map[string]flow.Flow
+	Rules       levers.Rules
+	DataDir     string
+	Workspace   workspace.Provider
+	TokenBudget int
 }
 
 type PendingDecision struct {
@@ -37,10 +40,13 @@ type pending struct {
 }
 
 type issueState struct {
-	id       string
-	flowName string
-	matrix   levers.Matrix
-	priority int
+	id           string
+	flowName     string
+	matrix       levers.Matrix
+	priority     int
+	wsPath       string
+	wsRelease    func() error
+	budgetWaived bool
 }
 
 type Engine struct {
@@ -134,6 +140,9 @@ func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 
 func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage) error {
 	workdir := filepath.Join(e.cfg.DataDir, is.id, st.Name)
+	if st.Workspace != "none" && is.wsPath != "" {
+		workdir = is.wsPath
+	}
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return err
 	}
@@ -263,11 +272,52 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 		return fmt.Errorf("unknown issue %s", id)
 	}
 	f := e.cfg.Flows[is.flowName]
+	defer func() {
+		if is.wsRelease != nil {
+			is.wsRelease()
+			is.wsRelease = nil
+		}
+	}()
 	for _, st := range f.Stages {
+		if st.Workspace != "none" && e.cfg.Workspace != nil && is.wsPath == "" {
+			path, release, err := e.cfg.Workspace.Acquire(is.id)
+			if err != nil {
+				e.emit(core.EvStageFailed, is.id, map[string]string{"stage": st.Name, "error": "workspace: " + err.Error()})
+				return err
+			}
+			is.wsPath, is.wsRelease = path, release
+		}
+		if err := e.checkBudget(is, st.Name); err != nil {
+			return err
+		}
 		if err := e.runStage(ctx, is, st); err != nil {
 			return err
 		}
 	}
 	e.emit(core.EvIssueCompleted, id, nil)
 	return nil
+}
+
+func (e *Engine) checkBudget(is *issueState, stage string) error {
+	if e.cfg.TokenBudget <= 0 || is.budgetWaived {
+		return nil
+	}
+	spent, err := e.cfg.Store.IssueTokens(is.id)
+	if err != nil || spent <= e.cfg.TokenBudget {
+		return nil
+	}
+	e.emit(core.EvBudgetExceeded, is.id, map[string]any{"spent": spent, "budget": e.cfg.TokenBudget})
+	d := levers.Decision{
+		Question:    fmt.Sprintf("Issue %s exceeded its token budget (%d/%d). Continue?", is.id, spent, e.cfg.TokenBudget),
+		Options:     []string{"continue", "abort"},
+		Recommended: 1,
+		Importance:  1.0,
+	}
+	if e.escalate(is.id, stage, d) == 0 {
+		is.budgetWaived = true
+		return nil
+	}
+	err = fmt.Errorf("issue %s aborted: token budget exceeded", is.id)
+	e.emit(core.EvStageFailed, is.id, map[string]string{"stage": stage, "error": err.Error()})
+	return err
 }

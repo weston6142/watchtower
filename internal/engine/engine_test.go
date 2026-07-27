@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ func newEngine(t *testing.T, r runner.Runner) (*Engine, *store.Store) {
 	t.Cleanup(func() { s.Close() })
 	return New(Config{
 		Store: s, Runner: r, Pool: slots.NewPool(2),
-		Flows: map[string]flow.Flow{"default": testFlow()},
+		Flows:   map[string]flow.Flow{"default": testFlow()},
 		DataDir: t.TempDir(),
 	}), s
 }
@@ -39,11 +40,11 @@ func scripts() map[string]runner.Script {
 	return map[string]runner.Script{
 		"brainstorm/brainstorm": {Asks: []levers.Decision{
 			{Question: "Scope ok?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 0.3}}},
-		"spec/spec-writer":            {Artifacts: map[string]string{"spec.md": ""}},
-		"execute/executor":            {Artifacts: map[string]string{"diff": ""}, Tokens: 100},
-		"review/clean-code-reviewer":  {Artifacts: map[string]string{"review.md": ""}},
-		"review/reviewer":             {},
-		"review/doc-writer":           {Artifacts: map[string]string{"docs": ""}},
+		"spec/spec-writer":           {Artifacts: map[string]string{"spec.md": ""}},
+		"execute/executor":           {Artifacts: map[string]string{"diff": ""}, Tokens: 100},
+		"review/clean-code-reviewer": {Artifacts: map[string]string{"review.md": ""}},
+		"review/reviewer":            {},
+		"review/doc-writer":          {Artifacts: map[string]string{"docs": ""}},
 	}
 }
 
@@ -164,5 +165,81 @@ func TestEngineRecordsStageRuns(t *testing.T) {
 		if r.Status != "succeeded" {
 			t.Fatalf("unfinished run: %+v", r)
 		}
+	}
+}
+
+type fakeWS struct {
+	dir      string
+	acquired int
+	released int
+}
+
+func (f *fakeWS) Acquire(issueID string) (string, func() error, error) {
+	f.acquired++
+	return f.dir, func() error { f.released++; return nil }, nil
+}
+
+func TestWorktreeAcquiredOnceAndReleased(t *testing.T) {
+	ws := &fakeWS{dir: t.TempDir()}
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	e.cfg.Workspace = ws
+	id, _ := e.CreateIssue("w", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+	for {
+		if ds := e.PendingDecisions(); len(ds) == 1 {
+			e.Answer(ds[0].ID, 0)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-errC; err != nil {
+		t.Fatal(err)
+	}
+	// default.yaml has two worktree stages (execute, review) — one acquire, one release
+	if ws.acquired != 1 || ws.released != 1 {
+		t.Fatalf("acquired=%d released=%d", ws.acquired, ws.released)
+	}
+}
+
+func TestTokenBudgetEscalates(t *testing.T) {
+	sc := scripts()
+	sc["brainstorm/brainstorm"] = runner.Script{Tokens: 5000}
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: sc})
+	e.cfg.TokenBudget = 1000
+	id, _ := e.CreateIssue("b", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+
+	// first escalation must be the budget question (before spec's gate)
+	var pd PendingDecision
+	deadline := time.After(5 * time.Second)
+	for {
+		if ds := e.PendingDecisions(); len(ds) == 1 {
+			pd = ds[0]
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("no decision")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if !strings.Contains(pd.D.Question, "token budget") {
+		t.Fatalf("expected budget question, got %q", pd.D.Question)
+	}
+	e.Answer(pd.ID, 1) // abort
+	if err := <-errC; err == nil {
+		t.Fatal("expected abort error")
+	}
+	evs, _ := s.EventsSince(0)
+	found := false
+	for _, ev := range evs {
+		if ev.Type == core.EvBudgetExceeded {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("budget_exceeded event missing")
 	}
 }
