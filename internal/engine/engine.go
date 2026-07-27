@@ -153,6 +153,54 @@ func (e *Engine) blockingCost(issueID string) int {
 	return 1 + e.cfg.Marshal.BlockedBehind(issueID)
 }
 
+func (e *Engine) FileProposal(issueID, title, body string) {
+	if _, err := e.cfg.Store.InsertProposal(issueID, title, body); err != nil {
+		return
+	}
+	e.emit(core.EvProposalFiled, issueID, map[string]string{"title": title})
+}
+
+func (e *Engine) ResolveProposal(id int64, accept bool, flowName, preset string) (string, error) {
+	if !accept {
+		if err := e.cfg.Store.SetProposalStatus(id, "rejected"); err != nil {
+			return "", err
+		}
+		e.emit(core.EvProposalRejected, "", map[string]any{"proposal_id": id})
+		return "", nil
+	}
+	ps, err := e.cfg.Store.PendingProposals()
+	if err != nil {
+		return "", err
+	}
+	var row *store.ProposalRow
+	for i := range ps {
+		if ps[i].ID == id {
+			row = &ps[i]
+			break
+		}
+	}
+	if row == nil {
+		return "", fmt.Errorf("no pending proposal %d", id)
+	}
+	f, ok := e.cfg.Flows[flowName]
+	if !ok {
+		return "", fmt.Errorf("unknown flow %q", flowName)
+	}
+	lever := flow.Lever(preset)
+	if lever != flow.LeverYolo && lever != flow.LeverRegular && lever != flow.LeverStrict {
+		lever = flow.LeverRegular
+	}
+	newID, err := e.CreateIssue(row.Title, row.Body, flowName, levers.Preset(f, lever), 0)
+	if err != nil {
+		return "", err
+	}
+	if err := e.cfg.Store.SetProposalStatus(id, "accepted"); err != nil {
+		return "", err
+	}
+	e.emit(core.EvProposalAccepted, newID, map[string]any{"proposal_id": id})
+	return newID, nil
+}
+
 func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 	lever := is.matrix[stage]
 	if levers.Route(a.Decision, lever, e.cfg.Rules) {

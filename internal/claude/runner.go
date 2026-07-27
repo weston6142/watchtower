@@ -19,9 +19,10 @@ const maxLineBytes = 1 << 20
 // CodeRunner drives a claude CLI subprocess in stream-json mode, translating
 // its output into runner.Result and decision markers into runner.Ask.
 type CodeRunner struct {
-	Bin      string
-	Packages map[string]pkgs.Package
-	ExtraEnv []string
+	Bin        string
+	Packages   map[string]pkgs.Package
+	ExtraEnv   []string
+	OnProposal func(string, runner.Proposal)
 }
 
 func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
@@ -113,6 +114,9 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				if _, err := stdin.Write(UserMessage("Human decision: " + opt)); err != nil {
 					return abort(err)
 				}
+			}
+			if p, found := ExtractProposal(ev.Text); found && c.OnProposal != nil {
+				c.OnProposal(issueID, p)
 			}
 		case KindResult:
 			res.Tokens += ev.Tokens

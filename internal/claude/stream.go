@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/wbushyeager/guildhall/internal/levers"
+	"github.com/wbushyeager/guildhall/internal/runner"
 )
 
 // Kinds of StreamEvent produced by ParseLine.
@@ -109,6 +110,29 @@ func ExtractDecision(text string) (levers.Decision, bool) {
 		}, true
 	}
 	return levers.Decision{}, false
+}
+
+type proposalMarker struct {
+	P struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	} `json:"guildhall_proposal"`
+}
+
+// ExtractProposal scans assistant text for the guildhall_proposal marker.
+func ExtractProposal(text string) (runner.Proposal, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `{"guildhall_proposal":`) {
+			continue
+		}
+		var m proposalMarker
+		if err := json.Unmarshal([]byte(line), &m); err != nil || m.P.Title == "" {
+			continue
+		}
+		return runner.Proposal{Title: m.P.Title, Body: m.P.Body}, true
+	}
+	return runner.Proposal{}, false
 }
 
 // UserMessage encodes text as a stream-json user message line (newline-terminated),

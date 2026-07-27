@@ -276,3 +276,31 @@ func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
 		t.Fatalf("auto=%d answered=%d rows=%+v", auto, answered, rows)
 	}
 }
+
+func TestProposalAcceptCreatesIssue(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	e.FileProposal("GH-1", "Follow-up: retry queue", "discovered during execute")
+	ps, _ := s.PendingProposals()
+	if len(ps) != 1 {
+		t.Fatalf("proposals: %+v", ps)
+	}
+	newID, err := e.ResolveProposal(ps[0].ID, true, "default", "regular")
+	if err != nil || newID == "" {
+		t.Fatalf("resolve: %v %q", err, newID)
+	}
+	evs, _ := s.EventsSince(0)
+	var filed, accepted, created int
+	for _, ev := range evs {
+		switch ev.Type {
+		case core.EvProposalFiled:
+			filed++
+		case core.EvProposalAccepted:
+			accepted++
+		case core.EvIssueCreated:
+			created++
+		}
+	}
+	if filed != 1 || accepted != 1 || created != 1 {
+		t.Fatalf("filed=%d accepted=%d created=%d", filed, accepted, created)
+	}
+}

@@ -59,6 +59,14 @@ type DecisionRow struct {
 	CreatedAt    time.Time
 }
 
+type ProposalRow struct {
+	ID      int64
+	IssueID string
+	Title   string
+	Body    string
+	Status  string
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -224,6 +232,39 @@ func (s *Store) PendingDecisionRows() ([]DecisionRow, error) {
 
 func (s *Store) AllDecisionRows() ([]DecisionRow, error) {
 	return s.decisionRows(``)
+}
+
+func (s *Store) InsertProposal(issueID, title, body string) (int64, error) {
+	res, err := s.db.Exec(
+		`INSERT INTO proposals(issue_id,title,body,status) VALUES(?,?,?,'pending')`,
+		issueID, title, body)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) SetProposalStatus(id int64, status string) error {
+	_, err := s.db.Exec(`UPDATE proposals SET status=? WHERE id=?`, status, id)
+	return err
+}
+
+func (s *Store) PendingProposals() ([]ProposalRow, error) {
+	rows, err := s.db.Query(
+		`SELECT id,issue_id,title,body,status FROM proposals WHERE status='pending' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProposalRow
+	for rows.Next() {
+		var p ProposalRow
+		if err := rows.Scan(&p.ID, &p.IssueID, &p.Title, &p.Body, &p.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) Close() error { return s.db.Close() }

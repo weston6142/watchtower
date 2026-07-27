@@ -26,7 +26,7 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|new|decisions|answer|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|new|decisions|answer|proposals|accept-proposal|reject-proposal|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -84,6 +84,38 @@ func main() {
 		defer c.Close()
 		mustDo(c, proto.Command{Op: "answer_decision", DecisionID: id, Option: opt})
 		fmt.Println("answered")
+	case "proposals":
+		fs := flag.NewFlagSet("proposals", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		c := mustDial(*data)
+		defer c.Close()
+		r := mustDo(c, proto.Command{Op: "list_proposals"})
+		for _, p := range r.Proposals {
+			fmt.Printf("[%d] (from %s) %s — %s\n", p.ID, p.IssueID, p.Title, p.Body)
+		}
+	case "accept-proposal", "reject-proposal":
+		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		rest := fs.Args()
+		if len(rest) != 1 {
+			fmt.Fprintf(os.Stderr, "usage: guildhall %s <proposal-id>\n", cmd)
+			os.Exit(2)
+		}
+		id, err := strconv.ParseInt(rest[0], 10, 64)
+		if err != nil {
+			fatal(fmt.Errorf("bad proposal-id %q: %w", rest[0], err))
+		}
+		c := mustDial(*data)
+		defer c.Close()
+		accepted := cmd == "accept-proposal"
+		r := mustDo(c, proto.Command{Op: "resolve_proposal", ProposalID: id, Accept: accepted, Flow: "default", Preset: "regular"})
+		if accepted {
+			fmt.Println(r.IssueID)
+		} else {
+			fmt.Println("rejected")
+		}
 	case "tail":
 		fs := flag.NewFlagSet("tail", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
@@ -161,6 +193,16 @@ func runDaemon(args []string) {
 		Flows: flows, DataDir: filepath.Join(*data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
 	})
+	switch r := run.(type) {
+	case *claude.CodeRunner:
+		r.OnProposal = func(issueID string, p runner.Proposal) {
+			eng.FileProposal(issueID, p.Title, p.Body)
+		}
+	case *runner.FakeRunner:
+		r.OnProposal = func(issueID string, p runner.Proposal) {
+			eng.FileProposal(issueID, p.Title, p.Body)
+		}
+	}
 	sock := filepath.Join(*data, "guildhall.sock")
 	os.Remove(sock)
 	l, err := net.Listen("unix", sock)

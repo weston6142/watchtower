@@ -11,6 +11,12 @@ type Ask struct {
 	Reply    chan int
 }
 
+// Proposal is a suggested new issue discovered by an agent mid-flow.
+type Proposal struct {
+	Title string
+	Body  string
+}
+
 type Result struct {
 	Artifacts map[string]string
 	SessionID string

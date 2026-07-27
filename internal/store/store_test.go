@@ -56,6 +56,23 @@ func TestDecisionOrderingByBlockingCost(t *testing.T) {
 	}
 }
 
+func TestProposalLifecycle(t *testing.T) {
+	s, _ := Open("file:t4?mode=memory&cache=shared")
+	defer s.Close()
+	id, err := s.InsertProposal("GH-1", "New task", "details")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := s.PendingProposals()
+	if len(ps) != 1 || ps[0].Title != "New task" {
+		t.Fatalf("pending: %+v", ps)
+	}
+	s.SetProposalStatus(id, "accepted")
+	if ps, _ = s.PendingProposals(); len(ps) != 0 {
+		t.Fatalf("still pending: %+v", ps)
+	}
+}
+
 func TestStageRunLifecycle(t *testing.T) {
 	s, err := Open("file:t2?mode=memory&cache=shared")
 	if err != nil {

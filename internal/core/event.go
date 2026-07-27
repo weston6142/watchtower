@@ -19,6 +19,8 @@ const (
 	EvSlotQueued           EventType = "slot_queued"
 	EvSlotReleased         EventType = "slot_released"
 	EvProposalFiled        EventType = "proposal_filed"
+	EvProposalAccepted     EventType = "proposal_accepted"
+	EvProposalRejected     EventType = "proposal_rejected"
 	EvArtifactProduced     EventType = "artifact_produced"
 	EvIssueCompleted       EventType = "issue_completed"
 	EvBudgetExceeded       EventType = "budget_exceeded"

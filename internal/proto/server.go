@@ -78,6 +78,18 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true}
+	case "list_proposals":
+		ps, err := sv.st.PendingProposals()
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Proposals: ps}
+	case "resolve_proposal":
+		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: issueID}
 	case "tail":
 		evs, err := sv.st.EventsSince(cmd.SinceSeq)
 		if err != nil {

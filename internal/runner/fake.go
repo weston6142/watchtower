@@ -11,13 +11,15 @@ import (
 
 type Script struct {
 	Asks      []levers.Decision
+	Proposals []Proposal
 	Artifacts map[string]string
 	Tokens    int
 	Fail      bool
 }
 
 type FakeRunner struct {
-	Scripts map[string]Script
+	Scripts    map[string]Script
+	OnProposal func(string, Proposal)
 }
 
 func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
@@ -42,6 +44,11 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			case <-ctx.Done():
 				done <- Result{Err: ctx.Err()}
 				return
+			}
+		}
+		for _, p := range sc.Proposals {
+			if f.OnProposal != nil {
+				f.OnProposal(issueID, p)
 			}
 		}
 		if sc.Fail {

@@ -34,6 +34,17 @@ func TestExtractDecision(t *testing.T) {
 	}
 }
 
+func TestExtractProposal(t *testing.T) {
+	text := "found something\n{\"guildhall_proposal\": {\"title\": \"Refactor refunds\", \"body\": \"3 call sites entangled\"}}"
+	p, ok := ExtractProposal(text)
+	if !ok || p.Title != "Refactor refunds" || p.Body != "3 call sites entangled" {
+		t.Fatalf("proposal: %+v ok=%v", p, ok)
+	}
+	if _, ok := ExtractProposal("nothing"); ok {
+		t.Fatal("false positive")
+	}
+}
+
 func TestUserMessage(t *testing.T) {
 	line := string(UserMessage("go on"))
 	if !strings.Contains(line, `"type":"user"`) || !strings.Contains(line, "go on") || !strings.HasSuffix(line, "\n") {
