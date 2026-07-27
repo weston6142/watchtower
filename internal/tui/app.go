@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/flow"
@@ -31,10 +32,11 @@ type Model struct {
 	Height int
 	Err    string
 
-	client    *proto.Client
-	stages    []string
-	lastSeq   int64
-	dismissed map[int64]bool
+	client     *proto.Client
+	stages     []string
+	lastSeq    int64
+	dismissed  map[int64]bool
+	optionMode bool
 }
 
 type Msg struct{ Events []core.Event }
@@ -46,6 +48,12 @@ type pollErrorMsg struct{ err error }
 type detailMsg struct {
 	detail *proto.IssueDetail
 	err    error
+}
+
+type answerMsg struct {
+	decisionID int64
+	response   proto.Response
+	err        error
 }
 
 func NewModel(client *proto.Client, stages []string) Model {
@@ -88,15 +96,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.Detail = msg.detail
 		return m, nil
+	case answerMsg:
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		if !msg.response.OK {
+			m.Err = msg.response.Error
+			return m, nil
+		}
+		if m.Toast != nil && m.Toast.ID == msg.decisionID {
+			m.Toast = nil
+			m.optionMode = false
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = msg.Width, msg.Height
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.String() {
+		key := msg.String()
+		switch key {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
-		moved := moveFocus(m.Focus, m.State, m.stages, msg.String())
+		if m.Toast != nil {
+			switch {
+			case key == "y":
+				return m, m.answerDecision(m.Toast.Recommended)
+			case key == "n":
+				m.optionMode = true
+				return m, nil
+			case m.optionMode && len(key) == 1 && key >= "0" && key <= "9":
+				option := int(key[0] - '0')
+				if option < len(m.Toast.Options) {
+					return m, m.answerDecision(option)
+				}
+			case key == "esc":
+				m.dismissToast()
+				return m, nil
+			case key == "o":
+				m.Focus = focusIssue(m.State, m.stages, m.Toast.IssueID)
+				m.Detail = nil
+				m.dismissToast()
+				return m, m.fetchDetail(m.Focus.Issue)
+			}
+			return m, nil
+		}
+		moved := moveFocus(m.Focus, m.State, m.stages, key)
 		if moved != m.Focus {
 			m.Focus = moved
 			m.Detail = nil
@@ -106,6 +152,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m *Model) dismissToast() {
+	if m.Toast == nil {
+		return
+	}
+	if m.dismissed == nil {
+		m.dismissed = map[int64]bool{}
+	}
+	m.dismissed[m.Toast.ID] = true
+	m.Toast = nil
+	m.optionMode = false
+}
+
+func (m Model) answerDecision(option int) tea.Cmd {
+	if m.Toast == nil || m.client == nil {
+		return nil
+	}
+	client := m.client
+	decisionID := m.Toast.ID
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "answer_decision", DecisionID: decisionID, Option: option})
+		return answerMsg{decisionID: decisionID, response: r, err: err}
+	}
 }
 
 func (m Model) fetchDetail(issueID string) tea.Cmd {
@@ -186,9 +256,21 @@ func (m Model) View() string {
 	if m.State != nil {
 		issues = len(m.State.Issues)
 	}
+	layoutWidth := m.Width
+	if layoutWidth <= 0 {
+		layoutWidth = 120
+	}
+	railWidth := max(24, min(40, layoutWidth/3))
+	towerWidth := max(1, layoutWidth-railWidth-1)
+	tower := renderTower(m.State, m.stages, m.Ids, m.Focus, towerWidth)
+	if m.Toast != nil {
+		tower = renderToast(*m.Toast, m.Ids[m.Toast.IssueID], towerWidth)
+	}
+	body := lipgloss.JoinHorizontal(lipgloss.Top, tower, renderRail(m.State, m.Ids, m.Detail, railWidth))
 	var b strings.Builder
 	fmt.Fprintf(&b, "◆ GUILD TOWER · %d issues · q quit · ? help\n", issues)
-	b.WriteString(renderTower(m.State, m.stages, m.Ids, m.Focus, m.Width))
+	b.WriteString(body)
+	b.WriteString("\n\nj/k floors · h/l cards · tab attention · 1-9 jump · enter drill · q quit")
 	if m.Err != "" {
 		fmt.Fprintf(&b, "\nerror: %s", m.Err)
 	}
