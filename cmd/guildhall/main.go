@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/wbushyeager/guildhall/internal/claude"
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/engine"
@@ -23,6 +25,7 @@ import (
 	"github.com/wbushyeager/guildhall/internal/slots"
 	"github.com/wbushyeager/guildhall/internal/steward"
 	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/wbushyeager/guildhall/internal/tui"
 	"github.com/wbushyeager/guildhall/internal/workspace"
 )
 
@@ -33,13 +36,23 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	switch cmd {
 	case "daemon":
 		runDaemon(args)
+	case "tower":
+		fs := flag.NewFlagSet("tower", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		c := mustDial(*data)
+		defer c.Close()
+		r := mustDo(c, proto.Command{Op: "get_flow", Flow: "default"})
+		if _, err := tea.NewProgram(tui.NewModel(c, r.FlowStages), tea.WithAltScreen()).Run(); err != nil {
+			fatal(err)
+		}
 	case "new":
 		fs := flag.NewFlagSet("new", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")

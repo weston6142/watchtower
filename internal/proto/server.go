@@ -52,6 +52,20 @@ func (sv *Server) handle(conn net.Conn) {
 
 func (sv *Server) exec(cmd Command) Response {
 	switch cmd.Op {
+	case "get_flow":
+		name := cmd.Flow
+		if name == "" {
+			name = "default"
+		}
+		f, ok := sv.flowFor(name)
+		if !ok {
+			return Response{Error: "unknown flow " + name}
+		}
+		stages := make([]string, len(f.Stages))
+		for i, stage := range f.Stages {
+			stages[i] = stage.Name
+		}
+		return Response{OK: true, FlowStages: stages}
 	case "create_issue":
 		fl, ok := sv.flowFor(cmd.Flow)
 		if !ok {

@@ -25,14 +25,15 @@ type Command struct {
 }
 
 type Response struct {
-	OK        bool                     `json:"ok"`
-	Error     string                   `json:"error,omitempty"`
-	IssueID   string                   `json:"issue_id,omitempty"`
-	Decisions []engine.PendingDecision `json:"decisions,omitempty"`
-	Proposals []store.ProposalRow      `json:"proposals,omitempty"`
-	Issues    []store.IssueRow         `json:"issues,omitempty"`
-	Events    []core.Event             `json:"events,omitempty"`
-	Detail    *IssueDetail             `json:"detail,omitempty"`
+	OK         bool                     `json:"ok"`
+	Error      string                   `json:"error,omitempty"`
+	IssueID    string                   `json:"issue_id,omitempty"`
+	Decisions  []engine.PendingDecision `json:"decisions,omitempty"`
+	Proposals  []store.ProposalRow      `json:"proposals,omitempty"`
+	Issues     []store.IssueRow         `json:"issues,omitempty"`
+	Events     []core.Event             `json:"events,omitempty"`
+	Detail     *IssueDetail             `json:"detail,omitempty"`
+	FlowStages []string                 `json:"flow_stages,omitempty"`
 }
 
 type IssueDetail struct {
