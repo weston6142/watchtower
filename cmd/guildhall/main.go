@@ -15,6 +15,7 @@ import (
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/engine"
 	"github.com/wbushyeager/guildhall/internal/flow"
+	"github.com/wbushyeager/guildhall/internal/librarian"
 	"github.com/wbushyeager/guildhall/internal/marshal"
 	"github.com/wbushyeager/guildhall/internal/pkgs"
 	"github.com/wbushyeager/guildhall/internal/proto"
@@ -207,6 +208,8 @@ func runDaemon(args []string) {
 	}
 	var seq *marshal.Marshal
 	var train *marshal.Train
+	var lib *librarian.Librarian
+	var reconcile func(context.Context, string) error
 	if *runnerKind == "claude" {
 		seq = marshal.New(func(typ core.EventType, issueID string, payload any) {
 			ev, err := core.NewEvent(typ, issueID, payload)
@@ -237,12 +240,24 @@ func runDaemon(args []string) {
 			return res.Err
 		}
 		train = &marshal.Train{Repo: *repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve}
+		lib = &librarian.Librarian{MemoryDir: filepath.Join(*repo, "docs", "guildhall")}
+		reconcile = func(ctx context.Context, issueID string) error {
+			asks := make(chan runner.Ask)
+			go func() {
+				for a := range asks {
+					a.Reply <- a.Decision.Recommended
+				}
+			}()
+			res := <-run.Run(ctx, issueID, "librarian", "librarian", *repo, asks)
+			return res.Err
+		}
 	}
 	eng := engine.New(engine.Config{
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(*data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
 		Marshal: seq, Train: train,
+		Librarian: lib, Reconcile: reconcile,
 		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
 	})
 	switch r := run.(type) {

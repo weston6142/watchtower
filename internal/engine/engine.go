@@ -12,6 +12,7 @@ import (
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/levers"
+	"github.com/wbushyeager/guildhall/internal/librarian"
 	"github.com/wbushyeager/guildhall/internal/marshal"
 	"github.com/wbushyeager/guildhall/internal/runner"
 	"github.com/wbushyeager/guildhall/internal/slots"
@@ -25,6 +26,8 @@ type Config struct {
 	Runner      runner.Runner
 	Marshal     Sequencer
 	Train       *marshal.Train
+	Librarian   *librarian.Librarian
+	Reconcile   func(context.Context, string) error
 	Observers   []func(core.Event)
 	Pool        *slots.Pool
 	Flows       map[string]flow.Flow
@@ -249,6 +252,11 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	// Materialize the issue for the agents: ISSUE.md is the contract for how
 	// a stage learns what it is working on.
 	issueMD := fmt.Sprintf("# %s: %s\n\n%s\n", is.id, is.title, is.body)
+	if e.cfg.Librarian != nil {
+		if mem, err := e.cfg.Librarian.Context(); err == nil && mem != "" {
+			issueMD += "\n# Project memory (curated by the Librarian)\n\n" + mem + "\n"
+		}
+	}
 	if err := os.WriteFile(filepath.Join(workdir, "ISSUE.md"), []byte(issueMD), 0o644); err != nil {
 		return err
 	}
@@ -435,6 +443,11 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 			}
 			aborted = false
 			return nil
+		}
+		if e.cfg.Reconcile != nil {
+			if err := e.cfg.Reconcile(ctx, is.id); err == nil {
+				e.emit(core.EvDocsReconciled, is.id, nil)
+			}
 		}
 		e.emit(core.EvIssueMerged, id, map[string]string{"branch": is.branch})
 		if e.cfg.Marshal != nil {
