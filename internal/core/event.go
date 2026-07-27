@@ -32,6 +32,7 @@ const (
 	EvIssuePaused          EventType = "issue_paused"
 	EvIssueResumed         EventType = "issue_resumed"
 	EvStageKilled          EventType = "stage_killed"
+	EvLeverChanged         EventType = "lever_changed"
 )
 
 type Event struct {

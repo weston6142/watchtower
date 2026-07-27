@@ -346,6 +346,76 @@ func TestKillStageEmitsKilledAndPauses(t *testing.T) {
 	}
 }
 
+func TestRetryStageResumesFromFailure(t *testing.T) {
+	sc := scripts()
+	sc["execute/executor"] = runner.Script{Fail: true}
+	fr := &runner.FakeRunner{Scripts: sc}
+	e, s := newEngine(t, fr)
+	id, _ := e.CreateIssue("r", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+	for {
+		if ds := e.PendingDecisions(); len(ds) == 1 {
+			if err := e.Answer(ds[0].ID, 0); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-errC; err == nil {
+		t.Fatal("expected failure")
+	}
+	// fix the world, then retry
+	fr.Scripts["execute/executor"] = runner.Script{Artifacts: map[string]string{"diff": ""}}
+	errC2 := make(chan error, 1)
+	go func() { errC2 <- e.RetryStage(context.Background(), id) }()
+	if err := <-errC2; err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := s.EventsSince(0)
+	var completed, brainstormStarts int
+	for _, ev := range evs {
+		if ev.Type == core.EvStageCompleted {
+			completed++
+		}
+		if ev.Type == core.EvStageStarted {
+			var p map[string]any
+			if err := json.Unmarshal(ev.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["stage"] == "brainstorm" {
+				brainstormStarts++
+			}
+		}
+	}
+	// retry must NOT re-run earlier stages
+	if brainstormStarts != 1 {
+		t.Fatalf("brainstorm re-ran: %d", brainstormStarts)
+	}
+	if completed != 4 {
+		t.Fatalf("completed=%d", completed)
+	}
+}
+
+func TestSetLeverEmitsEvent(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, _ := e.CreateIssue("l", "", "default", levers.Preset(testFlow(), flow.LeverStrict), 0)
+	if err := e.SetLever(id, "execute", flow.LeverYolo); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := s.EventsSince(0)
+	found := false
+	for _, ev := range evs {
+		if ev.Type == core.EvLeverChanged {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no lever_changed event")
+	}
+}
+
 func TestTokenBudgetEscalates(t *testing.T) {
 	sc := scripts()
 	sc["brainstorm/brainstorm"] = runner.Script{Tokens: 5000}

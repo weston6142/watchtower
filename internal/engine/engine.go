@@ -72,6 +72,9 @@ type issueState struct {
 	pauseGate      chan struct{}
 	stageCancel    context.CancelFunc
 	killRequested  bool
+	stageIdx       int
+	terminal       bool
+	running        bool
 	budgetWaived   bool
 	activeTouchset *touchset.Set
 }
@@ -538,53 +541,69 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 	return nil
 }
 
-func (e *Engine) StartIssue(ctx context.Context, id string) error {
+func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) error {
 	e.mu.Lock()
-	is, ok := e.issues[id]
-	e.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("unknown issue %s", id)
+	if is.running {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is already running", is.id)
 	}
+	is.running = true
+	e.mu.Unlock()
 	f := e.cfg.Flows[is.flowName]
 	aborted := true
 	defer func() {
 		e.mu.Lock()
 		is.activeTouchset = nil
+		release := is.wsRelease
+		is.wsRelease = nil
+		is.wsPath = ""
+		is.branch = ""
+		is.baseRef = ""
+		is.running = false
 		e.mu.Unlock()
-		if is.wsRelease != nil {
-			is.wsRelease()
-			is.wsRelease = nil
+		if release != nil {
+			_ = release()
 		}
 		if aborted && e.cfg.Marshal != nil {
-			e.cfg.Marshal.Aborted(id)
+			e.cfg.Marshal.Aborted(is.id)
 		}
 	}()
-	for _, st := range f.Stages {
+	for i := startIdx; i < len(f.Stages); i++ {
+		st := f.Stages[i]
 		e.mu.Lock()
+		is.stageIdx = i
 		gate := is.pauseGate
 		e.mu.Unlock()
 		if gate != nil {
-			e.emit(core.EvIssuePaused, id, nil)
+			e.emit(core.EvIssuePaused, is.id, nil)
 			select {
 			case <-gate:
-				e.emit(core.EvIssueResumed, id, nil)
+				e.emit(core.EvIssueResumed, is.id, nil)
 			case <-ctx.Done():
 				return ctx.Err()
 			}
 		}
-		if st.Workspace != "none" && e.cfg.Workspace != nil && is.wsPath == "" {
+		e.mu.Lock()
+		needsWorkspace := st.Workspace != "none" && e.cfg.Workspace != nil && is.wsPath == ""
+		e.mu.Unlock()
+		if needsWorkspace {
 			path, release, err := e.cfg.Workspace.Acquire(is.id)
 			if err != nil {
 				e.emit(core.EvStageFailed, is.id, map[string]string{"stage": st.Name, "error": "workspace: " + err.Error()})
 				return err
 			}
-			is.wsPath, is.wsRelease = path, release
+			branch := ""
 			if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
-				is.branch = strings.TrimSpace(string(out))
+				branch = strings.TrimSpace(string(out))
 			}
+			baseRef := ""
 			if out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output(); err == nil {
-				is.baseRef = strings.TrimSpace(string(out))
+				baseRef = strings.TrimSpace(string(out))
 			}
+			e.mu.Lock()
+			is.wsPath, is.wsRelease = path, release
+			is.branch, is.baseRef = branch, baseRef
+			e.mu.Unlock()
 		}
 		if err := e.checkBudget(is, st.Name); err != nil {
 			return err
@@ -594,9 +613,9 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 		}
 	}
 	if e.cfg.Train != nil && is.branch != "" {
-		e.emit(core.EvMergeStarted, id, map[string]string{"branch": is.branch})
+		e.emit(core.EvMergeStarted, is.id, map[string]string{"branch": is.branch})
 		if err := e.landWithEscalation(ctx, is); err != nil {
-			e.emit(core.EvIssueCompleted, id, map[string]string{
+			e.emit(core.EvIssueCompleted, is.id, map[string]string{
 				"merge": "left-unmerged", "branch": is.branch})
 			if e.cfg.Marshal != nil {
 				e.cfg.Marshal.Merged(is.id)
@@ -609,13 +628,87 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 				e.emit(core.EvDocsReconciled, is.id, nil)
 			}
 		}
-		e.emit(core.EvIssueMerged, id, map[string]string{"branch": is.branch})
+		e.emit(core.EvIssueMerged, is.id, map[string]string{"branch": is.branch})
 	}
 	if e.cfg.Marshal != nil {
 		e.cfg.Marshal.Merged(is.id)
 	}
 	aborted = false
-	e.emit(core.EvIssueCompleted, id, nil)
+	e.emit(core.EvIssueCompleted, is.id, nil)
+	return nil
+}
+
+func (e *Engine) StartIssue(ctx context.Context, id string) error {
+	e.mu.Lock()
+	is, ok := e.issues[id]
+	e.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("unknown issue %s", id)
+	}
+	err := e.runFrom(ctx, is, 0)
+	e.mu.Lock()
+	is.terminal = err != nil
+	e.mu.Unlock()
+	return err
+}
+
+// RetryStage restarts a terminal issue at the stage that last failed or was
+// killed. Earlier successful stages are not repeated.
+func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
+	e.mu.Lock()
+	is, ok := e.issues[issueID]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", issueID)
+	}
+	if !is.terminal {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s has no failed stage to retry", issueID)
+	}
+	if is.running {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is already running", issueID)
+	}
+	startIdx := is.stageIdx
+	is.terminal = false
+	is.killRequested = false
+	e.mu.Unlock()
+	err := e.runFrom(ctx, is, startIdx)
+	e.mu.Lock()
+	is.terminal = err != nil
+	e.mu.Unlock()
+	return err
+}
+
+// SetLever changes the routing lever for one stage and records the change.
+func (e *Engine) SetLever(issueID, stage string, l flow.Lever) error {
+	if l != flow.LeverYolo && l != flow.LeverRegular && l != flow.LeverStrict {
+		return fmt.Errorf("invalid lever %q", l)
+	}
+	e.mu.Lock()
+	is, ok := e.issues[issueID]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", issueID)
+	}
+	f := e.cfg.Flows[is.flowName]
+	found := false
+	for _, st := range f.Stages {
+		if st.Name == stage {
+			found = true
+			break
+		}
+	}
+	if !found {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown stage %s", stage)
+	}
+	if is.matrix == nil {
+		is.matrix = levers.Matrix{}
+	}
+	is.matrix[stage] = l
+	e.mu.Unlock()
+	e.emit(core.EvLeverChanged, issueID, map[string]string{"stage": stage, "lever": string(l)})
 	return nil
 }
 

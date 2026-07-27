@@ -36,7 +36,7 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|pause|resume|kill|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|pause|resume|kill|retry|lever|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -162,6 +162,30 @@ func main() {
 		ops := map[string]string{"pause": "pause_issue", "resume": "resume_issue", "kill": "kill_stage"}
 		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0]})
 		fmt.Println(cmd, fs.Args()[0])
+	case "retry":
+		fs := flag.NewFlagSet("retry", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		if len(fs.Args()) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: guildhall retry <issue-id>")
+			os.Exit(2)
+		}
+		c := mustDial(*data)
+		defer c.Close()
+		mustDo(c, proto.Command{Op: "retry_stage", IssueID: fs.Args()[0]})
+		fmt.Println("retry", fs.Args()[0])
+	case "lever":
+		fs := flag.NewFlagSet("lever", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		if len(fs.Args()) != 3 {
+			fmt.Fprintln(os.Stderr, "usage: guildhall lever <issue-id> <stage> <yolo|regular|strict>")
+			os.Exit(2)
+		}
+		c := mustDial(*data)
+		defer c.Close()
+		mustDo(c, proto.Command{Op: "set_lever", IssueID: fs.Args()[0], Stage: fs.Args()[1], Lever: fs.Args()[2]})
+		fmt.Printf("lever %s %s %s\n", fs.Args()[0], fs.Args()[1], fs.Args()[2])
 	case "tail":
 		fs := flag.NewFlagSet("tail", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
