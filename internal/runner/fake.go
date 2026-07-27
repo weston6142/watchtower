@@ -12,6 +12,7 @@ import (
 type Script struct {
 	Asks      []levers.Decision
 	Proposals []Proposal
+	Lines     []string
 	Artifacts map[string]string
 	Tokens    int
 	Fail      bool
@@ -20,6 +21,7 @@ type Script struct {
 type FakeRunner struct {
 	Scripts    map[string]Script
 	OnProposal func(string, Proposal)
+	OnLine     func(string, string, string)
 }
 
 func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
@@ -55,6 +57,11 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				f.OnProposal(issueID, p)
 			}
 		}
+		for _, line := range sc.Lines {
+			if f.OnLine != nil {
+				f.OnLine(issueID, stage, line)
+			}
+		}
 		if sc.Fail {
 			done <- Result{Err: fmt.Errorf("scripted failure %s/%s", stage, agentPkg)}
 			return
@@ -72,3 +79,5 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	}()
 	return done
 }
+
+func (f *FakeRunner) SetOnLine(fn func(issueID, stage, line string)) { f.OnLine = fn }

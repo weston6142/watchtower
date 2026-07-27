@@ -36,6 +36,7 @@ type Config struct {
 	DataDir     string
 	Workspace   workspace.Provider
 	TokenBudget int
+	OnLine      func(issueID, stage, line string)
 }
 
 type Sequencer interface {
@@ -88,7 +89,13 @@ type Engine struct {
 }
 
 func New(cfg Config) *Engine {
-	return &Engine{cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{}}
+	e := &Engine{cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{}}
+	if cfg.OnLine != nil {
+		if sink, ok := cfg.Runner.(runner.LineSink); ok {
+			sink.SetOnLine(cfg.OnLine)
+		}
+	}
+	return e
 }
 
 // ActiveTouchsets returns a snapshot of plans that are still in flight.

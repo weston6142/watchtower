@@ -26,6 +26,7 @@ type Command struct {
 	Repo       string `json:"repo,omitempty"`
 	Stage      string `json:"stage,omitempty"`
 	Lever      string `json:"lever,omitempty"`
+	N          int    `json:"n,omitempty"`
 }
 
 type Response struct {
@@ -36,6 +37,7 @@ type Response struct {
 	Proposals  []store.ProposalRow      `json:"proposals,omitempty"`
 	Issues     []store.IssueRow         `json:"issues,omitempty"`
 	Events     []core.Event             `json:"events,omitempty"`
+	Lines      []string                 `json:"lines,omitempty"`
 	Detail     *IssueDetail             `json:"detail,omitempty"`
 	FlowStages []string                 `json:"flow_stages,omitempty"`
 	Arch       *archmap.Map             `json:"arch,omitempty"`

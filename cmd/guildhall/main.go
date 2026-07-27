@@ -25,6 +25,7 @@ import (
 	"github.com/wbushyeager/guildhall/internal/slots"
 	"github.com/wbushyeager/guildhall/internal/steward"
 	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/wbushyeager/guildhall/internal/transcript"
 	"github.com/wbushyeager/guildhall/internal/tui"
 	"github.com/wbushyeager/guildhall/internal/workspace"
 )
@@ -36,7 +37,7 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|pause|resume|kill|retry|lever|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|pause|resume|kill|retry|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -186,6 +187,21 @@ func main() {
 		defer c.Close()
 		mustDo(c, proto.Command{Op: "set_lever", IssueID: fs.Args()[0], Stage: fs.Args()[1], Lever: fs.Args()[2]})
 		fmt.Printf("lever %s %s %s\n", fs.Args()[0], fs.Args()[1], fs.Args()[2])
+	case "transcript":
+		fs := flag.NewFlagSet("transcript", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		n := fs.Int("n", 50, "number of lines")
+		fs.Parse(args)
+		if len(fs.Args()) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: guildhall transcript <issue-id> [-n 50]")
+			os.Exit(2)
+		}
+		c := mustDial(*data)
+		defer c.Close()
+		r := mustDo(c, proto.Command{Op: "transcript_tail", IssueID: fs.Args()[0], N: *n})
+		for _, line := range r.Lines {
+			fmt.Println(line)
+		}
 	case "tail":
 		fs := flag.NewFlagSet("tail", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
@@ -292,12 +308,14 @@ func runDaemon(args []string) {
 			return res.Err
 		}
 	}
+	transcriptBuffer := transcript.NewBuffer(500)
 	eng := engine.New(engine.Config{
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(*data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
 		Marshal: seq, Train: train,
 		Librarian: lib, Reconcile: reconcile,
+		OnLine:    transcriptBuffer.Add,
 		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
 	})
 	fileProposal := func(issueID string, p runner.Proposal) {
@@ -318,6 +336,7 @@ func runDaemon(args []string) {
 	fmt.Println("guildhall daemon listening on", sock)
 	srv := proto.NewServer(eng, st)
 	srv.SetFlows(flows)
+	srv.SetTranscript(transcriptBuffer)
 	fatal(srv.Serve(l))
 }
 

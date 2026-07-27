@@ -28,3 +28,8 @@ type Runner interface {
 	Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
 		asks chan<- Ask) <-chan Result
 }
+
+// LineSink is implemented by runners that can stream human-readable output.
+type LineSink interface {
+	SetOnLine(func(issueID, stage, line string))
+}

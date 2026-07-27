@@ -12,12 +12,14 @@ import (
 	"github.com/wbushyeager/guildhall/internal/flow"
 	"github.com/wbushyeager/guildhall/internal/levers"
 	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/wbushyeager/guildhall/internal/transcript"
 )
 
 type Server struct {
-	eng   *engine.Engine
-	st    *store.Store
-	flows map[string]flow.Flow
+	eng        *engine.Engine
+	st         *store.Store
+	flows      map[string]flow.Flow
+	transcript *transcript.Buffer
 }
 
 func NewServer(e *engine.Engine, s *store.Store) *Server {
@@ -26,6 +28,8 @@ func NewServer(e *engine.Engine, s *store.Store) *Server {
 
 // SetFlows lets the daemon share loaded flows for preset expansion.
 func (sv *Server) SetFlows(f map[string]flow.Flow) { sv.flows = f }
+
+func (sv *Server) SetTranscript(b *transcript.Buffer) { sv.transcript = b }
 
 func (sv *Server) Serve(l net.Listener) error {
 	for {
@@ -199,6 +203,15 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, Events: evs}
+	case "transcript_tail":
+		n := cmd.N
+		if n <= 0 {
+			n = 50
+		}
+		if sv.transcript == nil {
+			return Response{OK: true, Lines: []string{}}
+		}
+		return Response{OK: true, Lines: sv.transcript.Tail(cmd.IssueID, n)}
 	default:
 		return Response{Error: "unknown op " + cmd.Op}
 	}

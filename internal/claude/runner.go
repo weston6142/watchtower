@@ -23,6 +23,7 @@ type CodeRunner struct {
 	Packages   map[string]pkgs.Package
 	ExtraEnv   []string
 	OnProposal func(string, runner.Proposal)
+	OnLine     func(string, string, string)
 }
 
 const coachMsg = `Your guildhall_decision is missing required fields. Re-emit the SAME decision
@@ -98,6 +99,11 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		case KindInit:
 			res.SessionID = ev.SessionID
 		case KindAssistantText:
+			if c.OnLine != nil {
+				for _, line := range strings.Split(ev.Text, "\n") {
+					c.OnLine(issueID, stage, line)
+				}
+			}
 			if d, found := ExtractDecision(ev.Text); found {
 				if (d.Why == "" || len(d.Consequences) != len(d.Options)) && coachCount < 2 {
 					coachCount++
@@ -133,6 +139,9 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			}
 		case KindResult:
 			res.Tokens += ev.Tokens
+			if c.OnLine != nil {
+				c.OnLine(issueID, stage, fmt.Sprintf("— turn complete (%d tokens) —", ev.Tokens))
+			}
 			gotResult = true
 			if ev.IsError {
 				res.Err = fmt.Errorf("claude session %s ended with error", res.SessionID)
@@ -160,3 +169,5 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	}
 	return res
 }
+
+func (c *CodeRunner) SetOnLine(fn func(issueID, stage, line string)) { c.OnLine = fn }
