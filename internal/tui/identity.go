@@ -11,8 +11,7 @@ type Identity struct {
 }
 
 var palette = []string{
-	"#e06c75", "#61afef", "#98c379", "#e5c07b",
-	"#c678dd", "#56b6c2", "#d19a66", "#abb2bf",
+	"#61afef", "#c678dd", "#56b6c2", "#e78ac8", "#7d9bf0",
 }
 
 func tagFor(issueID, title string) string {
@@ -36,8 +35,22 @@ func tagFor(issueID, title string) string {
 // Identify assigns colors by creation order and derives a short title tag.
 func Identify(order []string, titles map[string]string) map[string]Identity {
 	out := make(map[string]Identity, len(order))
+	seen := make(map[string]bool, len(order))
 	for i, id := range order {
-		out[id] = Identity{Color: palette[i%len(palette)], Tag: tagFor(id, titles[id])}
+		tag := tagFor(id, titles[id])
+		if seen[tag] {
+			tag = digitsFor(id)
+		}
+		seen[tag] = true
+		out[id] = Identity{Color: palette[i%len(palette)], Tag: tag}
 	}
 	return out
+}
+
+func digitsFor(issueID string) string {
+	digits := strings.TrimPrefix(issueID, "GH-")
+	if len([]rune(digits)) == 1 {
+		digits = "0" + digits
+	}
+	return digits
 }

@@ -13,10 +13,14 @@ import (
 var (
 	themeDim   = lipgloss.NewStyle().Faint(true)
 	themeLabel = lipgloss.NewStyle().Bold(true)
-	themeWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("#e5c07b"))
-	themeBad   = lipgloss.NewStyle().Foreground(lipgloss.Color("#e06c75"))
-	themeGood  = lipgloss.NewStyle().Foreground(lipgloss.Color("#98c379"))
+	statusBad  = "#e06c75"
+	statusWarn = "#f2c14e"
+	statusOk   = "#98c379"
 )
+
+func styleStatusBad() lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(statusBad)) }
+func styleStatusWarn() lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(statusWarn)) }
+func styleStatusOk() lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(statusOk)) }
 
 // floorCards returns issue IDs on a rendered stage floor in creation order.
 func floorCards(st *projection.State, stages []string, floor int) []string {
