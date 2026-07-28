@@ -150,10 +150,18 @@ func (s *State) Apply(ev core.Event) {
 		if iv != nil {
 			iv.Paused = true
 			iv.State = "paused"
+			// The gate sits before the upcoming stage, so that is where the
+			// lane is parked. Older events carry no payload; leave those.
+			if stage := str("stage"); stage != "" {
+				iv.CurrentStage = stage
+			}
 		}
 	case core.EvIssueResumed:
 		if iv != nil {
 			iv.Paused = false
+			// The lane recovered from whatever stopped it; a stale Killed
+			// keeps the retry affordance armed for a running stage.
+			iv.Killed = false
 			iv.State = "running"
 		}
 	case core.EvIssueAbandoned:

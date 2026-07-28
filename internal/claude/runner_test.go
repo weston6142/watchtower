@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/pkgs"
@@ -21,6 +22,41 @@ func run(t *testing.T, bin string, dir string) (<-chan runner.Result, chan runne
 	c := &CodeRunner{Bin: bin, Packages: testPkgs()}
 	asks := make(chan runner.Ask, 1)
 	return c.Run(context.Background(), "GH-1", "spec", "spec-writer", dir, asks), asks
+}
+
+// runLines is run() with OnLine wired, for tests that assert on transcript
+// output rather than on the result.
+func runLines(t *testing.T, bin, dir string) ([]string, runner.Result) {
+	t.Helper()
+	var lines []string
+	c := &CodeRunner{Bin: bin, Packages: testPkgs(), OnLine: func(_, _, line string) {
+		lines = append(lines, line)
+	}}
+	asks := make(chan runner.Ask, 1)
+	res := <-c.Run(context.Background(), "GH-1", "spec", "spec-writer", dir, asks)
+	return lines, res
+}
+
+// The operator watching a tool-heavy stage needs to see the tools. A tool-only
+// message used to fall through as empty assistant text, writing a blank line —
+// so the door filled with nothing while the agent worked.
+func TestOnLineReceivesToolCalls(t *testing.T) {
+	lines, res := runLines(t, abs(t, "testdata/tools.sh"), t.TempDir())
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "looking at the engine") {
+		t.Fatalf("prose missing: %q", joined)
+	}
+	if !strings.Contains(joined, "↳ Bash go test ./...") {
+		t.Fatalf("tool line missing: %q", joined)
+	}
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			t.Fatalf("blank line written to transcript: %q", joined)
+		}
+	}
 }
 
 func TestHappyPathProducesArtifactAndTokens(t *testing.T) {

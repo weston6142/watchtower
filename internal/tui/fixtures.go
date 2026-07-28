@@ -16,12 +16,14 @@ import (
 
 // FixtureFlows lists every posable flow, in spec order.
 func FixtureFlows() []string {
-	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "levers", "arch", "pager", "help"}
+	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "levers", "arch", "pager", "help", "stream"}
 }
 
 func fixtureState() *projection.State {
 	st := projection.NewState()
-	st.Order = []string{"ca-repo", "gh-importer", "fx-e2e"}
+	// fx-dark is parked: it keeps a paused lane on the rendered grid so the
+	// snapshots cover the one-cell paused marker and the notice-row hint.
+	st.Order = []string{"ca-repo", "gh-importer", "fx-e2e", "fx-dark"}
 	st.Issues["ca-repo"] = &projection.IssueView{
 		ID: "ca-repo", Title: "create a repo for GH-1", Flow: "default",
 		CurrentStage: "brainstorm", State: "waiting_decision", Tokens: 12000,
@@ -54,7 +56,11 @@ func fixtureState() *projection.State {
 	st.ShippedToday = []string{"ml-retry"}
 	st.Parked = []string{"fx-dark"}
 	st.Issues["ml-retry"] = &projection.IssueView{ID: "ml-retry", Title: "retry budget for marshal", Merged: true, State: "done"}
-	st.Issues["fx-dark"] = &projection.IssueView{ID: "fx-dark", Title: "dark-mode audit", Paused: true}
+	st.Issues["fx-dark"] = &projection.IssueView{
+		ID: "fx-dark", Title: "dark-mode audit", Flow: "default",
+		Completed: []string{"brainstorm"}, CurrentStage: "spec",
+		Paused: true, State: "paused",
+	}
 	return st
 }
 
@@ -133,6 +139,15 @@ func FixtureModel(flowName string, width, height int) Model {
 		}}
 	case "help":
 		m.help = true
+	case "stream":
+		m.modes = []string{"transcript"}
+		m.doorLines = []string{
+			"brainstorm │ Requirements settled. brainstorm.md is written to the issue directory.",
+			"brainstorm │ ↳ Read internal/engine/engine.go",
+			"brainstorm │ ↳ Bash go test ./internal/engine",
+			"brainstorm │ The rename target is real: the remote is weston6142/watchtower and go.mod already agrees.",
+			"brainstorm │ — turn complete (13560 tokens) —",
+		}
 	}
 	return m
 }

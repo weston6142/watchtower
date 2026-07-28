@@ -1,17 +1,17 @@
 [2m  ● 1 question for you  ● 1 build failing      2 building · 1 shipped today · 412k tokens · ~$6.18  [0m
-[2m                                                                                                    [0m
+[2m⏸ FX parked at spec — p resumes[0m
 [2mshipping order: — · builders 1/4 busy · ideas 0 · questions 1     FOCUS                            [0m
 [2mMAP · quiet · a full map                                                                           [0m
-[2m             ▸CA            GH            FX                      DECISION QUEUE                   [0m
-[2m             create a      issue         flaky e2e                ▶ [1] CA brainstorm — Should cre…[0m
-[2m             repo for      importer —    fix —                                                     [0m
-[2m             ca-repo       gh-importer   fx-e2e                                                    [0m
-[2mBRAINSTORM   ◔ need-you    ●             ●                                                         [0m
-[2mSPEC         ○             ●             ●                                                         [0m
-[2mPLAN         ○             ●             ●                                                         [0m
-[2mEXECUTE      ○             ◐ working 96k ✕ failed                                                  [0m
-[2mREVIEW       ○             ○             ○                                                         [0m
-[2mMERGE        ○             ○             ○                                                         [0m
+[2m              ▸CA            GH            FX            ‹1›      DECISION QUEUE                   [0m
+[2m              create a      issue         flaky e2e      ‹1›      ▶ [1] CA brainstorm — Should cre…[0m
+[2m              repo for      importer —    fix —          ‹1›                                       [0m
+[2m              ca-repo       gh-importer   fx-e2e         ‹1›                                       [0m
+[2m BRAINSTORM   ◔ need-you    ●             ●              ‹1›                                       [0m
+[2m SPEC         ○             ●             ●              ‹1›                                       [0m
+[2m PLAN         ○             ●             ●              ‹1›                                       [0m
+[2m EXECUTE      ○             ◐ working 96k ✕ failed       ‹1›                                       [0m
+[2m REVIEW       ○             ○             ○              ‹1›                                       [0m
+[2m MERGE        ○             ○             ○              ‹1›                                       [0m
 [2m[0m                           [38;2;187;154;247m┌────────────────────────────────────────────┐[0m[2m[0m
 [2mSHIPPED today[0m              [38;2;187;154;247m│[0m [1;38;2;227;236;255;48;2;31;35;52m levers[0m[38;2;86;95;137;48;2;31;35;52m per-stage autonomy[0m[48;2;31;35;52m     [0m[1;38;2;22;22;30;48;2;187;154;247m esc close [0m [38;2;187;154;247m│[0m[2m[0m
 [2m⇡ ▓ ML retry budget for mar[0m[38;2;187;154;247m│[0m                                            [38;2;187;154;247m│[0m[2m[0m
@@ -19,7 +19,7 @@
 [2mPARKED[0m                     [38;2;187;154;247m│[0m   spec                             [38;2;121;162;247mregular[0m [38;2;187;154;247m│[0m[2m[0m
 [2m⏸ ▓ FX dark-mode audit[0m     [38;2;187;154;247m│[0m   plan                             [38;2;121;162;247mregular[0m [38;2;187;154;247m│[0m[2m[0m
 [2m[0m                           [38;2;187;154;247m│[0m   execute                          [38;2;121;162;247mregular[0m [38;2;187;154;247m│[0m[2m[0m
-[2m   j/k  floors   tab  atten[0m[38;2;187;154;247m│[0m   review                            [38;2;121;162;247mstrict[0m [38;2;187;154;247m│[0m[2mrs   ?  help   q  quit     [0m
+[2m   j/k  floors   tab  next [0m[38;2;187;154;247m│[0m   review                            [38;2;121;162;247mstrict[0m [38;2;187;154;247m│[0m[2mream   L  levers   ?  help [0m
 [2m[0m                           [38;2;187;154;247m│[0m   merge                            [38;2;121;162;247mregular[0m [38;2;187;154;247m│[0m[2m[0m
 [2m[0m                           [38;2;187;154;247m│[0m                                            [38;2;187;154;247m│[0m[2m[0m
 [2m[0m                           [38;2;187;154;247m│[0m [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mj/k[0m[48;2;40;46;65m [0m[38;2;86;95;137m lever  [0m[48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mh/l[0m[48;2;40;46;65m [0m[38;2;86;95;137m adjust  [0m[48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65menter[0m[48;2;40;46;65m [0m[38;2;86;95;137m apply[0m   [38;2;187;154;247m│[0m[2m[0m

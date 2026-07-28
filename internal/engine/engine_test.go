@@ -108,6 +108,39 @@ func TestYoloRunEscalatesOnlyGate(t *testing.T) {
 	}
 }
 
+// The pause gate parks a lane before a stage; the event has to name it so the
+// grid can mark one cell instead of the whole column.
+func TestPausedEventNamesUpcomingStage(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, _ := e.CreateIssue("p", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	if err := e.Pause(id); err != nil {
+		t.Fatal(err)
+	}
+	go e.StartIssue(context.Background(), id)
+	deadline := time.After(5 * time.Second)
+	for {
+		evs, _ := s.EventsSince(0)
+		for _, event := range evs {
+			if event.Type != core.EvIssuePaused {
+				continue
+			}
+			var p map[string]any
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["stage"] != "brainstorm" {
+				t.Fatalf("paused payload stage = %v, want brainstorm", p["stage"])
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("no issue_paused event")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func TestFailedAgentRetriesThenFails(t *testing.T) {
 	sc := scripts()
 	sc["execute/executor"] = runner.Script{Fail: true}
@@ -344,6 +377,107 @@ func TestKillStageEmitsKilledAndPauses(t *testing.T) {
 	if len(e.PendingDecisions()) != 0 {
 		t.Fatal("killed stage left a pending decision")
 	}
+}
+
+// A killed lane has no goroutine waiting at the gate. Resume must restart the
+// stage that was killed rather than close a channel nobody is listening on.
+func TestResumeRestartsKilledLane(t *testing.T) {
+	sc := scripts()
+	sc["brainstorm/brainstorm"] = runner.Script{Asks: []levers.Decision{
+		{Question: "block forever?", Options: []string{"a"}, Recommended: 0, Importance: 1.0}}}
+	fr := &runner.FakeRunner{Scripts: sc}
+	e, s := newEngine(t, fr)
+	id, _ := e.CreateIssue("k", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+	deadline := time.After(5 * time.Second)
+	for len(e.PendingDecisions()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := e.KillStage(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errC; err == nil {
+		t.Fatal("expected killed run to return an error")
+	}
+
+	// Unblock the stage, then resume. brainstorm must run a second time.
+	fr.Scripts["brainstorm/brainstorm"] = runner.Script{}
+	if err := e.Resume(id); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.After(5 * time.Second)
+	for {
+		evs, _ := s.EventsSince(0)
+		starts := 0
+		for _, ev := range evs {
+			if ev.Type != core.EvStageStarted {
+				continue
+			}
+			var p map[string]any
+			if err := json.Unmarshal(ev.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["stage"] == "brainstorm" {
+				starts++
+			}
+		}
+		if starts >= 2 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("brainstorm never restarted (starts=%d)", starts)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// A lane created and paused but never started must not be launched by Resume;
+// clearing the gate is all that is asked for.
+func TestResumeDoesNotStartUnstartedLane(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, _ := e.CreateIssue("u", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	if err := e.Pause(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Resume(id); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	evs, _ := s.EventsSince(0)
+	for _, ev := range evs {
+		if ev.Type == core.EvStageStarted {
+			t.Fatal("resume started a lane that was never started")
+		}
+	}
+}
+
+// Resuming a lane that is running normally, with no gate, is an error.
+func TestResumeRunningLaneWithNoGateErrors(t *testing.T) {
+	sc := scripts()
+	sc["brainstorm/brainstorm"] = runner.Script{Asks: []levers.Decision{
+		{Question: "hold", Options: []string{"a"}, Recommended: 0, Importance: 1.0}}}
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: sc})
+	id, _ := e.CreateIssue("n", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	go e.StartIssue(context.Background(), id)
+	deadline := time.After(5 * time.Second)
+	for len(e.PendingDecisions()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := e.Resume(id); err == nil {
+		t.Fatal("expected an error resuming a lane with no gate")
+	}
+	_ = e.KillStage(id)
 }
 
 func TestRetryStageResumesFromFailure(t *testing.T) {

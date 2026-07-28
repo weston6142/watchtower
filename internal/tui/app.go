@@ -21,6 +21,9 @@ import (
 	"github.com/weston6142/watchtower/internal/store"
 )
 
+// msgNoLaneFocused is what every issue-scoped key says when nothing is focused.
+const msgNoLaneFocused = "no lane focused — press j or 1-9 to focus"
+
 type Focus struct {
 	Floor int
 	Card  int
@@ -315,11 +318,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		key := msg.String()
-		switch key {
-		case "q", "ctrl+c":
+		if key == "q" || key == "ctrl+c" {
 			return m, tea.Quit
-		case "?":
-			m.help = !m.help
+		}
+		// The help overlay is modal. It paints over the grid, so it has to
+		// swallow the grid's keys — otherwise p pauses a lane and x arms a
+		// kill confirm behind a screen the operator cannot see.
+		if m.help {
+			if key == "?" || key == "esc" {
+				m.help = false
+			}
+			return m, nil
+		}
+		if key == "?" {
+			m.help = true
 			return m, nil
 		}
 		if m.modal != nil {
@@ -428,6 +440,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
 			return m, nil
 		case "T":
+			// Issue-scoped like p and R: without focus fetchTranscript returns
+			// nil and the door opens empty, which reads as broken.
+			if m.Focus.Issue == "" {
+				m.Err = msgNoLaneFocused
+				return m, nil
+			}
 			m.modes = append(m.modes, "transcript")
 			return m, m.fetchTranscript()
 		case "u":
@@ -538,7 +556,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// they would silently no-op, which reads as broken.
 			switch key {
 			case "p", "x", "X", "R", "L", "c", "o", "enter":
-				m.Err = "no lane focused — press j or 1-9 to focus"
+				m.Err = msgNoLaneFocused
 				return m, nil
 			}
 		}
@@ -1120,12 +1138,27 @@ func (m Model) fetchTranscript() tea.Cmd {
 	}
 }
 
+// streamSubtitle names the lane and the stage whose output is on screen. The
+// stage comes from the newest line's gutter, since the buffer spans stages.
+func (m Model) streamSubtitle() string {
+	tag := m.Focus.Issue
+	if identity, ok := m.Ids[m.Focus.Issue]; ok && identity.Tag != "" {
+		tag = identity.Tag + " " + m.Focus.Issue
+	}
+	for i := len(m.doorLines) - 1; i >= 0; i-- {
+		if stage, _, found := strings.Cut(m.doorLines[i], " │ "); found && stage != "" {
+			return tag + " · " + stage
+		}
+	}
+	return tag
+}
+
 // writeHeaderRows writes the status sentence and the reserved notice row that
 // every screen (grid, doors, help) keeps at the top.
 func (m Model) writeHeaderRows(b *strings.Builder, width int) {
 	b.WriteString(renderHeader(m.Overview, width))
 	b.WriteByte('\n')
-	b.WriteString(renderNoticeRow(m.State, width))
+	b.WriteString(renderNoticeRow(m.State, m.Ids, width))
 	b.WriteByte('\n')
 }
 
@@ -1148,7 +1181,7 @@ func (m Model) View() string {
 	case "timeline":
 		tower = renderTextDoor("TIMELINE", m.doorLines, layoutWidth)
 	case "transcript":
-		tower = renderTextDoor("TRANSCRIPT", m.doorLines, layoutWidth)
+		tower = renderStreamDoor(m.streamSubtitle(), m.doorLines, layoutWidth)
 	case "shelf":
 		tower = renderShelf(m.shelfItems(), m.Ids, layoutWidth)
 	}
@@ -1218,8 +1251,8 @@ func (m Model) View() string {
 	}
 	b.WriteString("\n\n")
 	mainBindings := [][2]string{
-		{"j/k", "floors"}, {"tab", "attention"}, {"p", "pause"}, {"x", "kill"},
-		{"R", "retry"}, {"L", "levers"}, {"?", "help"}, {"q", "quit"},
+		{"j/k", "floors"}, {"tab", "next"}, {"p", "pause/resume"}, {"x", "kill"},
+		{"R", "retry"}, {"T", "stream"}, {"L", "levers"}, {"?", "help"}, {"q", "quit"},
 	}
 	right := errText(m.Err)
 	if m.archMode == "full" {

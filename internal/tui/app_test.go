@@ -165,6 +165,76 @@ func laneModel(t *testing.T, evs ...core.Event) Model {
 	return m
 }
 
+// T is issue-scoped like p, x, and R. Opening an empty door instead of saying
+// why is the same silent no-op those keys were fixed for.
+func TestTranscriptKeyHintsWhenNothingFocused(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm", "spec", "execute", "review", "merge"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	})
+	m = pressKey(t, m, "T")
+	if m.Err != "no lane focused — press j or 1-9 to focus" {
+		t.Fatalf("expected no-focus hint, got %q", m.Err)
+	}
+	if len(m.modes) != 0 {
+		t.Fatalf("transcript door opened without focus: %v", m.modes)
+	}
+}
+
+// With a lane focused the door still opens.
+func TestTranscriptKeyOpensDoorWhenFocused(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	m = pressKey(t, m, "T")
+	if m.currentMode() != "transcript" {
+		t.Fatalf("mode = %q, want transcript", m.currentMode())
+	}
+}
+
+// The overlay paints over the grid, so it has to swallow the grid's keys.
+// Driving a lane you cannot see is worse than the key doing nothing.
+func TestHelpOverlaySwallowsIssueKeys(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	m = pressKey(t, m, "?")
+	if !m.help {
+		t.Fatal("? did not open help")
+	}
+	for _, key := range []string{"p", "x", "X", "L", "d", "T", "n"} {
+		m = pressKey(t, m, key)
+		if !m.help {
+			t.Fatalf("key %q closed the help overlay", key)
+		}
+		if m.confirm != nil || m.modal != nil || m.leverEditor != nil || len(m.modes) != 0 {
+			t.Fatalf("key %q drove the screen beneath the overlay", key)
+		}
+	}
+}
+
+// esc closes it, as the overlay's own footer promises.
+func TestHelpOverlayEscCloses(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	m = pressKey(t, m, "?")
+	m = pressKey(t, m, "esc")
+	if m.help {
+		t.Fatal("esc did not close help")
+	}
+	// ? still toggles it closed too.
+	m = pressKey(t, m, "?")
+	m = pressKey(t, m, "?")
+	if m.help {
+		t.Fatal("? did not close help")
+	}
+}
+
 func TestKillGuardOnIdleLane(t *testing.T) {
 	m := laneModel(t,
 		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "dead lane", "flow": "default"}),

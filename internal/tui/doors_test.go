@@ -34,3 +34,45 @@ func TestTimelineHumanizes(t *testing.T) {
 		t.Fatalf("humanize: %v", lines)
 	}
 }
+
+// The stream door is the one reading surface an operator stares at while a
+// stage runs; it wears the same chrome as every other box in the room.
+func TestStreamDoorWearsBoxChrome(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	lines := []string{
+		"brainstorm │ Requirements settled.",
+		"brainstorm │ ↳ Bash go test ./...",
+		"brainstorm │ — turn complete (13560 tokens) —",
+	}
+	got := renderStreamDoor("GH-2 · brainstorm", lines, 100)
+	if !strings.Contains(got, "─") {
+		t.Fatalf("no border: %q", got)
+	}
+	if !strings.Contains(got, "stream") {
+		t.Fatalf("no title: %q", got)
+	}
+	if !strings.Contains(got, "GH-2 · brainstorm") {
+		t.Fatalf("no subtitle: %q", got)
+	}
+	if !strings.Contains(got, "esc close") {
+		t.Fatalf("no close chip: %q", got)
+	}
+	if !strings.Contains(got, "Requirements settled.") {
+		t.Fatalf("body missing: %q", got)
+	}
+	if !strings.Contains(got, "↳ Bash go test ./...") {
+		t.Fatalf("tool line missing: %q", got)
+	}
+	if strings.Contains(got, "turn complete") {
+		t.Fatalf("turn marker should render as a rule, not prose: %q", got)
+	}
+}
+
+// An empty buffer says so rather than rendering a hollow box.
+func TestStreamDoorEmpty(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	got := renderStreamDoor("GH-2", nil, 100)
+	if !strings.Contains(got, "nothing yet") {
+		t.Fatalf("empty door = %q", got)
+	}
+}
