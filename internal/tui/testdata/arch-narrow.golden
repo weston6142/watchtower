@@ -1,0 +1,17 @@
+[38;2;224;108;117m●[0m 1 build failing, 1 question for you — 2 building, 1 shipped today, 412k tokens, ~$6.18
+                                                                                                    
+ARCHITECTURE MAP · a/esc back
+MAP · quiet
+▸ ▣ internal/tui [38;2;187;154;247m◈CA[0m
+  ▣ internal/marshal [38;2;121;162;247m◈GH[0m
+  ▣ internal/store [38;2;121;162;247m◈GH[0m
+▸ 3 quiet areas
+[2mselection: internal/tui · active areas show builders and brushers[0m
+
+SHIPPED today
+[38;2;158;206;105m▓ ML[0m retry budget for marshal ⇡
+
+PARKED
+[38;2;125;207;255m▓ FX[0m dark-mode audit ⏸
+
+j/k floors · tab attention · p pause · x kill · R retry · L levers · ? help · q quit

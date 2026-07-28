@@ -1,0 +1,13 @@
+[38;2;224;108;117m●[0m 1 build failing, 1 question for you — 2 building, 1 shipped today, 412k tokens, ~$6.18
+                                                                                                    
+TRAY · enter accept · r reject · esc back
+▸ Add smoke test for the importer webhook
+  The last two importer regressions were webhook-shaped. A 30-second smoke test on PR would have
+  caught both before review.
+  Split marshal retries into their own lever
+  Retry budget currently rides on the global aggressiveness lever; tuning one shouldn't move the
+  other.
+  Park FX-9 until the token budget resets
+  Dark-mode audit is cosmetic and burning budget the failing e2e fix needs this week.
+
+j/k select · enter open · esc back · q quit

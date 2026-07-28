@@ -1,0 +1,18 @@
+[38;2;224;108;117m●[0m 1 build failing, 1 question for you — 2 building, 1 shipped today, 412k tokens, ~$6.18
+                                                                                                                                                                                                        
+evidence · decision 1 · 0/7 · esc back                    FOCUS                                   
+docs/brainstorm/repo-scope.md                                                                     
+@@ options considered @@                                  DECISION QUEUE                          
+  The issue tracker prefix (GH-) implies a GitHub home.   ▶ [1] CA brainstorm — Should creating t…
++ Recommendation: create remote now; renaming later breaks                                        
++ clone URLs and CI triggers once anything points at it.                                          
+- Alternative: defer remote until first collaborator.                                             
+  Cost of reversal stays low until CI or clones exist.                                            
+
+SHIPPED today
+[38;2;158;206;105m▓ ML[0m retry budget for marshal ⇡
+
+PARKED
+[38;2;125;207;255m▓ FX[0m dark-mode audit ⏸
+
+j/k floors · tab attention · p pause · x kill · R retry · L levers · ? help · q quit

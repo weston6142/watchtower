@@ -109,6 +109,28 @@ func main() {
 		if _, err := tea.NewProgram(model, tea.WithAltScreen()).Run(); err != nil {
 			fatal(err)
 		}
+	case "snap":
+		// Hidden dev command: render every TUI flow from fixtures for
+		// visual verification and golden regeneration. Not in usage text.
+		fs := flag.NewFlagSet("snap", flag.ExitOnError)
+		out := fs.String("out", "tmp-snaps", "output directory")
+		width := fs.Int("width", 200, "render width")
+		height := fs.Int("height", 50, "render height")
+		only := fs.String("flow", "", "render a single flow")
+		fs.Parse(args)
+		if err := os.MkdirAll(*out, 0o755); err != nil {
+			fatal(err)
+		}
+		for _, f := range tui.FixtureFlows() {
+			if *only != "" && f != *only {
+				continue
+			}
+			path := filepath.Join(*out, f+".txt")
+			if err := os.WriteFile(path, []byte(tui.SnapshotFlow(f, *width, *height)), 0o644); err != nil {
+				fatal(err)
+			}
+			fmt.Println(path)
+		}
 	case "new":
 		fs := flag.NewFlagSet("new", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
