@@ -59,13 +59,39 @@ func renderArtifactList(p pagerState, id Identity, width, height int) string {
 	return boundedLines(lines, width)
 }
 
+// renderPager is a reading mode: diff semantics in Ok/Err/Structure, body in
+// Dim — the position indicator is the ONLY accent on the surface, so nothing
+// claims your action while you read.
 func renderPager(p pagerState, width, height int) string {
+	t := activeTheme
 	windowHeight := max(1, height-2)
 	start := min(max(p.Top, 0), max(0, len(p.Lines)-windowHeight))
 	end := min(start+windowHeight, len(p.Lines))
-	lines := []string{fmt.Sprintf("%s · %d/%d · esc back", p.Title, start, len(p.Lines))}
-	lines = append(lines, p.Lines[start:end]...)
+	title := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render(p.Title)
+	position := lipgloss.NewStyle().Foreground(t.Accent).Render(fmt.Sprintf("%d/%d", start, len(p.Lines)))
+	hint := lipgloss.NewStyle().Foreground(t.Dim).Render(" · esc back")
+	lines := []string{title + "  " + position + hint, ""}
+	for _, line := range p.Lines[start:end] {
+		lines = append(lines, pagerLine(line))
+	}
 	return boundedLines(lines, width)
+}
+
+// pagerLine classifies one pager line for diff-aware coloring.
+func pagerLine(line string) string {
+	t := activeTheme
+	switch {
+	case strings.HasPrefix(line, "+"):
+		return lipgloss.NewStyle().Foreground(t.Ok).Render(line)
+	case strings.HasPrefix(line, "-"):
+		return lipgloss.NewStyle().Foreground(t.Err).Render(line)
+	case strings.HasPrefix(line, "@@"):
+		return lipgloss.NewStyle().Foreground(t.Structure).Render(line)
+	case strings.HasPrefix(line, "diff "):
+		return lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render(line)
+	default:
+		return lipgloss.NewStyle().Foreground(t.Dim).Render(line)
+	}
 }
 
 func readArtifact(p pagerState) (pagerState, error) {
