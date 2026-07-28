@@ -14,6 +14,7 @@ import (
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/transcript"
 )
@@ -22,6 +23,7 @@ type Server struct {
 	eng          *engine.Engine
 	st           *store.Store
 	flows        map[string]flow.Flow
+	packages     map[string]pkgs.Package
 	transcript   *transcript.Buffer
 	pricePerMTok float64
 	budget       int
@@ -33,6 +35,10 @@ func NewServer(e *engine.Engine, s *store.Store) *Server {
 
 // SetFlows lets the daemon share loaded flows for preset expansion.
 func (sv *Server) SetFlows(f map[string]flow.Flow) { sv.flows = f }
+
+// SetPackages lets the daemon share loaded agent packages so issue_detail can
+// report which model/effort a stage runs with.
+func (sv *Server) SetPackages(p map[string]pkgs.Package) { sv.packages = p }
 
 func (sv *Server) SetTranscript(b *transcript.Buffer) { sv.transcript = b }
 
@@ -197,12 +203,29 @@ func (sv *Server) exec(cmd Command) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		_, attempt, attemptOf, lastError, err := sv.st.LastStageEvents(cmd.IssueID)
+		stage, attempt, attemptOf, lastError, err := sv.st.LastStageEvents(cmd.IssueID)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
+		model, effort := "", ""
+		if f, ok := sv.flows[issue.Flow]; ok {
+			for _, stg := range f.Stages {
+				if stg.Name != stage || len(stg.Agents) == 0 {
+					continue
+				}
+				ref := stg.Agents[0]
+				if p, ok := sv.packages[ref.Package]; ok {
+					model, effort = p.Model, p.Effort
+				}
+				if ref.Model != "" {
+					model = ref.Model
+				}
+				break
+			}
+		}
 		return Response{OK: true, Detail: &IssueDetail{
 			Issue: issue, Runs: runs, Tokens: tokens, Artifacts: artifacts,
+			Model: model, Effort: effort,
 			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf, Budget: sv.budget, Levers: issue.Levers,
 			Dollars: float64(tokens) / 1_000_000 * sv.pricePerMTok,
 		}}

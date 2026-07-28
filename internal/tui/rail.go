@@ -65,6 +65,14 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 			fmt.Sprintf("%s %s · %s", identity.Tag, det.Issue.ID, det.Issue.Title),
 			fmt.Sprintf("%s · %s", det.Issue.Flow, focusStatus(det.Issue.State)),
 		)
+		model, effort := det.Model, det.Effort
+		if model == "" {
+			model = "cli default"
+		}
+		if effort == "" {
+			effort = "default"
+		}
+		lines = append(lines, "model "+model+" · effort "+effort)
 		if strings.HasPrefix(det.Issue.State, "failed") {
 			lines = append(lines, fmt.Sprintf("error: %s · attempt %d of %d", det.LastError, det.Attempt, det.AttemptOf))
 		}

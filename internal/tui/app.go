@@ -1172,10 +1172,18 @@ func (m Model) streamSubtitle() string {
 	counts := fmt.Sprintf("%d line%s · %d tool call%s", len(m.doorLines), pluralSuffix(len(m.doorLines)), tools, pluralSuffix(tools))
 	for i := len(m.doorLines) - 1; i >= 0; i-- {
 		if stage, _, found := strings.Cut(m.doorLines[i], " │ "); found && stage != "" {
-			return tag + " · " + stage + " · " + counts
+			subtitle := tag + " · " + stage + " · " + counts
+			if m.Detail != nil && m.Detail.Model != "" {
+				subtitle += " · " + m.Detail.Model
+			}
+			return subtitle
 		}
 	}
-	return tag + " · " + counts
+	subtitle := tag + " · " + counts
+	if m.Detail != nil && m.Detail.Model != "" {
+		subtitle += " · " + m.Detail.Model
+	}
+	return subtitle
 }
 
 // writeHeaderRows writes the status sentence and the reserved notice row that

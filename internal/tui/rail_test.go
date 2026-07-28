@@ -147,3 +147,17 @@ func TestRenderRailFocusV2(t *testing.T) {
 		}
 	}
 }
+
+func TestRailShowsModelAndEffort(t *testing.T) {
+	det := &proto.IssueDetail{Issue: store.IssueRow{ID: "GH-1", Title: "t", Flow: "default", State: "running"},
+		Model: "sonnet", Effort: "medium"}
+	out := renderRail(nil, map[string]Identity{}, det, 60)
+	if !strings.Contains(out, "model sonnet · effort medium") {
+		t.Fatalf("rail missing model line:\n%s", out)
+	}
+	det.Model, det.Effort = "", ""
+	out = renderRail(nil, map[string]Identity{}, det, 60)
+	if !strings.Contains(out, "model cli default") {
+		t.Fatalf("rail missing cli-default line:\n%s", out)
+	}
+}

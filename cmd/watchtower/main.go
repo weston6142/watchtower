@@ -389,13 +389,14 @@ func runDaemon(args []string) {
 	if os.Getenv("WATCHTOWER_FAKE") == "1" {
 		*runnerKind = "fake"
 	}
+	packages := map[string]pkgs.Package{}
 	var run runner.Runner
 	var ws workspace.Provider
 	switch *runnerKind {
 	case "fake":
 		run = fakeForFlows(flows)
 	case "claude":
-		packages, err := pkgs.LoadDir(*pkgDir)
+		packages, err = pkgs.LoadDir(*pkgDir)
 		if err != nil {
 			fatal(err)
 		}
@@ -471,6 +472,7 @@ func runDaemon(args []string) {
 	fmt.Println("watchtower daemon listening on", sock)
 	srv := proto.NewServer(eng, st)
 	srv.SetFlows(flows)
+	srv.SetPackages(packages)
 	srv.SetTranscript(transcriptBuffer)
 	srv.SetPricePerMTok(*pricePerMTok)
 	srv.SetBudget(*budget)
