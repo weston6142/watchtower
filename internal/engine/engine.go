@@ -149,7 +149,7 @@ func (e *Engine) Rehydrate() error {
 	}
 
 	for _, row := range rows {
-		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" {
+		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" || row.State == "abandoned" {
 			continue
 		}
 		e.mu.Lock()
@@ -284,6 +284,40 @@ func (e *Engine) KillStage(issueID string) error {
 		_ = e.cfg.Store.AnswerDecision(id, -1, "killed")
 	}
 	cancel()
+	return nil
+}
+
+// Abandon removes an issue for good: any running stage is cancelled, its
+// pending decisions are closed, and the lane disappears from every surface
+// via EvIssueAbandoned. Abandon is a state, not a purge — rows, events, and
+// artifacts stay in the store.
+func (e *Engine) Abandon(issueID string) error {
+	e.mu.Lock()
+	is, ok := e.issues[issueID]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", issueID)
+	}
+	is.killRequested = true
+	cancel := is.stageCancel
+	var killed []int64
+	for id, p := range e.pend {
+		if p.IssueID != issueID {
+			continue
+		}
+		delete(e.pend, id)
+		close(p.reply)
+		killed = append(killed, id)
+	}
+	delete(e.issues, issueID)
+	e.mu.Unlock()
+	for _, id := range killed {
+		_ = e.cfg.Store.AnswerDecision(id, -1, "killed")
+	}
+	if cancel != nil {
+		cancel()
+	}
+	e.emit(core.EvIssueAbandoned, issueID, map[string]any{})
 	return nil
 }
 

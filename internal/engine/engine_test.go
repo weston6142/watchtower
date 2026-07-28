@@ -732,3 +732,106 @@ func TestRehydrateSkipsUnknownFlow(t *testing.T) {
 		t.Fatalf("expected GH-8 after GH-7, got %s", id)
 	}
 }
+
+func TestAbandonRehydratedIssue(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	dataDir := t.TempDir()
+	e1 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
+	id, err := e1.CreateIssue("doomed", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	deadline := time.After(5 * time.Second)
+	for len(e1.PendingDecisions()) != 1 {
+		select {
+		case <-deadline:
+			t.Fatal("gate decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Restart, rehydrate, abandon.
+	e2 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.Abandon(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), "unknown issue") {
+		t.Fatalf("expected unknown issue after abandon, got %v", err)
+	}
+	evs, _ := s.EventsSince(0)
+	found := false
+	for _, ev := range evs {
+		if ev.IssueID == id && ev.Type == core.EvIssueAbandoned {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("issue_abandoned event not emitted")
+	}
+	// The steward persists "abandoned" (wired separately); once it is stored,
+	// a later rehydrate must not resurrect the lane.
+	rows, _ := s.Issues()
+	for _, r := range rows {
+		if r.ID == id {
+			r.State = "abandoned"
+			_ = s.UpsertIssue(r)
+		}
+	}
+	e3 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
+	if err := e3.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e3.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), "unknown issue") {
+		t.Fatalf("rehydrate resurrected abandoned issue: %v", err)
+	}
+}
+
+func TestAbandonRunningIssueCancelsStage(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, err := e.CreateIssue("live", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- e.StartIssue(context.Background(), id) }()
+	deadline := time.After(5 * time.Second)
+	for len(e.PendingDecisions()) != 1 {
+		select {
+		case <-deadline:
+			t.Fatal("gate decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := e.Abandon(id); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-errc:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stage goroutine never unblocked after abandon")
+	}
+	if ds := e.PendingDecisions(); len(ds) != 0 {
+		t.Fatalf("pending decisions survived abandon: %d", len(ds))
+	}
+	rows, _ := s.AllDecisionRows()
+	for _, row := range rows {
+		if row.IssueID == id && row.Status == "pending" {
+			t.Fatal("decision row left pending after abandon")
+		}
+	}
+}
+
+func TestAbandonUnknownIssue(t *testing.T) {
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	if err := e.Abandon("GH-404"); err == nil {
+		t.Fatal("expected error for unknown issue")
+	}
+}
