@@ -243,7 +243,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/wbushyeager/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 func mkev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -339,7 +339,7 @@ import (
 
 	"github.com/muesli/termenv"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wbushyeager/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 func TestRenderTowerPlacesCards(t *testing.T) {
@@ -375,7 +375,7 @@ func TestRenderTowerPlacesCards(t *testing.T) {
 	}
 	// floors ordered: war room above BRAINSTORM above MERGE (ground)
 	if strings.Index(out, "MERGE LANE") > strings.Index(out, "BRAINSTORM") ||
-		strings.Index(out, "BRAINSTORM") > strings.Index(out, "MERGE ")+len(out) { // merge floor label is last
+		strings.Index(out, "BRAINSTORM") > strings.Index(out, "MERGE")+len(out) { // merge floor label is last
 		_ = 0
 	}
 	if strings.LastIndex(out, "MERGE") < strings.Index(out, "BRAINSTORM") {
@@ -441,7 +441,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/wbushyeager/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 func navModel(t *testing.T) Model {
@@ -555,7 +555,7 @@ import (
 
 	"github.com/muesli/termenv"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wbushyeager/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/projection"
 )
 
 func TestRenderToastMarksRecommended(t *testing.T) {

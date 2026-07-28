@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Module path: `github.com/wbushyeager/watchtower` (rename later is fine; keep consistent).
+- Module path: `github.com/weston6142/watchtower` (rename later is fine; keep consistent).
 - Pure Go — no cgo (SQLite via `modernc.org/sqlite`).
 - Every state mutation MUST be expressed as an `Event` appended to the log before side effects propagate; SQLite tables are projections.
 - Events and protocol messages are JSON with `snake_case` fields.
@@ -36,7 +36,7 @@
 - [ ] **Step 1: Init module and write the failing test**
 
 ```bash
-cd ~/watchtower && go mod init github.com/wbushyeager/watchtower
+cd ~/watchtower && go mod init github.com/weston6142/watchtower
 ```
 
 ```go
@@ -153,7 +153,7 @@ package store
 import (
 	"testing"
 
-	"github.com/wbushyeager/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 func TestAppendAssignsSeqAndReplays(t *testing.T) {
@@ -202,7 +202,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/wbushyeager/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 const schema = `
@@ -540,7 +540,7 @@ package levers
 import (
 	"testing"
 
-	"github.com/wbushyeager/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/flow"
 )
 
 func TestRouteMatrix(t *testing.T) {
@@ -590,7 +590,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/wbushyeager/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/flow"
 )
 
 type Matrix map[string]flow.Lever
@@ -696,7 +696,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wbushyeager/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 func TestFakeRunnerAsksThenProduces(t *testing.T) {
@@ -745,7 +745,7 @@ package runner
 import (
 	"context"
 
-	"github.com/wbushyeager/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 type Ask struct {
@@ -775,7 +775,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/wbushyeager/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 type Script struct {
@@ -1086,12 +1086,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wbushyeager/watchtower/internal/core"
-	"github.com/wbushyeager/watchtower/internal/flow"
-	"github.com/wbushyeager/watchtower/internal/levers"
-	"github.com/wbushyeager/watchtower/internal/runner"
-	"github.com/wbushyeager/watchtower/internal/slots"
-	"github.com/wbushyeager/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func testFlow() flow.Flow {
@@ -1235,12 +1235,12 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/wbushyeager/watchtower/internal/core"
-	"github.com/wbushyeager/watchtower/internal/flow"
-	"github.com/wbushyeager/watchtower/internal/levers"
-	"github.com/wbushyeager/watchtower/internal/runner"
-	"github.com/wbushyeager/watchtower/internal/slots"
-	"github.com/wbushyeager/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 type Config struct {
@@ -1557,13 +1557,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wbushyeager/watchtower/internal/core"
-	"github.com/wbushyeager/watchtower/internal/engine"
-	"github.com/wbushyeager/watchtower/internal/flow"
-	"github.com/wbushyeager/watchtower/internal/levers"
-	"github.com/wbushyeager/watchtower/internal/runner"
-	"github.com/wbushyeager/watchtower/internal/slots"
-	"github.com/wbushyeager/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func TestCreateAnswerAndTailOverSocket(t *testing.T) {
@@ -1657,8 +1657,8 @@ Expected: FAIL (undefined symbols).
 package proto
 
 import (
-	"github.com/wbushyeager/watchtower/internal/core"
-	"github.com/wbushyeager/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/engine"
 )
 
 type Command struct {
@@ -1693,10 +1693,10 @@ import (
 	"encoding/json"
 	"net"
 
-	"github.com/wbushyeager/watchtower/internal/engine"
-	"github.com/wbushyeager/watchtower/internal/flow"
-	"github.com/wbushyeager/watchtower/internal/levers"
-	"github.com/wbushyeager/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 type Server struct {
@@ -1878,12 +1878,12 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/wbushyeager/watchtower/internal/engine"
-	"github.com/wbushyeager/watchtower/internal/flow"
-	"github.com/wbushyeager/watchtower/internal/proto"
-	"github.com/wbushyeager/watchtower/internal/runner"
-	"github.com/wbushyeager/watchtower/internal/slots"
-	"github.com/wbushyeager/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func defaultData() string {
@@ -2133,7 +2133,7 @@ package projection
 import (
 	"testing"
 
-	"github.com/wbushyeager/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -2183,7 +2183,7 @@ package projection
 import (
 	"encoding/json"
 
-	"github.com/wbushyeager/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 type IssueView struct {

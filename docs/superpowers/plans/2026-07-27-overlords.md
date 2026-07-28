@@ -493,8 +493,8 @@ package steward
 import (
 	"testing"
 
-	"github.com/wbushyeager/watchtower/internal/core"
-	"github.com/wbushyeager/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -540,8 +540,8 @@ package steward
 import (
 	"encoding/json"
 
-	"github.com/wbushyeager/watchtower/internal/core"
-	"github.com/wbushyeager/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 type Steward struct {
@@ -803,8 +803,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wbushyeager/watchtower/internal/core"
-	"github.com/wbushyeager/watchtower/internal/touchset"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/touchset"
 )
 
 func TestSequencingAndRelease(t *testing.T) {
@@ -884,8 +884,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/wbushyeager/watchtower/internal/core"
-	"github.com/wbushyeager/watchtower/internal/touchset"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/touchset"
 )
 
 type Emit func(t core.EventType, issueID string, payload any)

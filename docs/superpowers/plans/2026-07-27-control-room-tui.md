@@ -371,7 +371,7 @@ import (
 
 	"github.com/muesli/termenv"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wbushyeager/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/projection"
 )
 
 func TestDecisionsDoorSelectable(t *testing.T) {

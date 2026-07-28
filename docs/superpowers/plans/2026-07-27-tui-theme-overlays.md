@@ -185,7 +185,7 @@ In `cmd/watchtower/main.go`, in the `case "tower":` block after `model.SetRetire
 		}
 ```
 
-Add `"github.com/wbushyeager/watchtower/internal/repocfg"` to main.go imports if not present (it is already imported for the daemon path — check first).
+Add `"github.com/weston6142/watchtower/internal/repocfg"` to main.go imports if not present (it is already imported for the daemon path — check first).
 
 Note: `SetTheme("")` must fall back to tokyo-night — Task 1's `themeByName` already handles any unknown key, including empty.
 

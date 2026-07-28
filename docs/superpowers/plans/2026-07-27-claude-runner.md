@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- All Plan 1 global constraints still apply (pure Go, events before side effects, snake_case JSON, module `github.com/wbushyeager/watchtower`).
+- All Plan 1 global constraints still apply (pure Go, events before side effects, snake_case JSON, module `github.com/weston6142/watchtower`).
 - Runner contract from Plan 1 is frozen: `Run(ctx, issueID, stage, agentPkg, workdir string, asks chan<- Ask) <-chan Result` — `ClaudeCodeRunner` implements it unchanged.
 - The Claude CLI is invoked as: `claude -p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions=false` plus per-package `--allowedTools`, `--model`, and `--append-system-prompt`; never hardcode a model default (empty = CLI default).
 - Decision marker (exact): an assistant text turn whose trimmed content contains a line starting with `{"watchtower_decision":` parseable as `{"watchtower_decision": {"question": string, "options": []string, "recommended": int, "importance": float, "paths": []string}}`.
@@ -299,7 +299,7 @@ In `internal/engine/engine.go` `runStageOnce`, wrap `runAgent`:
 	}
 ```
 
-(Import `"github.com/wbushyeager/watchtower/internal/store"` in engine.go.)
+(Import `"github.com/weston6142/watchtower/internal/store"` in engine.go.)
 
 - [ ] **Step 4: Run the full suite**
 
@@ -540,7 +540,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/wbushyeager/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 type StreamEvent struct {
@@ -731,8 +731,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wbushyeager/watchtower/internal/pkgs"
-	"github.com/wbushyeager/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 func testPkgs() map[string]pkgs.Package {
@@ -813,8 +813,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/wbushyeager/watchtower/internal/pkgs"
-	"github.com/wbushyeager/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 type CodeRunner struct {

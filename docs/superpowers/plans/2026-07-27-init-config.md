@@ -632,7 +632,7 @@ case "repos":
 	}
 ```
 
-Add imports `"github.com/wbushyeager/watchtower/internal/repocfg"` and `"github.com/wbushyeager/watchtower/internal/scaffold"` (`net` is already imported).
+Add imports `"github.com/weston6142/watchtower/internal/repocfg"` and `"github.com/weston6142/watchtower/internal/scaffold"` (`net` is already imported).
 
 - [ ] **Step 2: Verify by hand in a temp repo**
 
@@ -807,8 +807,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wbushyeager/watchtower/internal/proto"
-	"github.com/wbushyeager/watchtower/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/repocfg"
 )
 
 // mustDial resolves the target repo, connects to its daemon socket, and
