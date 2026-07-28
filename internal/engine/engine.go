@@ -236,19 +236,43 @@ func (e *Engine) Pause(issueID string) error {
 	return nil
 }
 
-// Resume releases an issue waiting at a between-stage pause gate.
+// Resume continues a stopped lane. A lane whose runFrom goroutine is alive is
+// released from its between-stage gate. A lane whose goroutine has already
+// exited — killed, aborted, or rehydrated after a daemon restart — has no
+// waiter to release, so it is restarted at the stage it stopped on instead;
+// closing the gate there would report success and do nothing.
 func (e *Engine) Resume(issueID string) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	is, ok := e.issues[issueID]
 	if !ok {
+		e.mu.Unlock()
 		return fmt.Errorf("unknown issue %s", issueID)
 	}
-	if is.pauseGate == nil {
-		return fmt.Errorf("issue %s is not paused", issueID)
+	if is.running {
+		if is.pauseGate == nil {
+			e.mu.Unlock()
+			return fmt.Errorf("issue %s is not paused", issueID)
+		}
+		close(is.pauseGate)
+		is.pauseGate = nil
+		e.mu.Unlock()
+		return nil
 	}
-	close(is.pauseGate)
+	// terminal, not merely stopped: a lane created and paused before it ever
+	// started must stay unstarted, and only clear its gate.
+	if !is.terminal {
+		is.pauseGate = nil
+		e.mu.Unlock()
+		return nil
+	}
+	startIdx := is.stageIdx
 	is.pauseGate = nil
+	is.killRequested = false
+	is.terminal = false
+	e.mu.Unlock()
+	// Detached, like start_issue and retry_stage: failures surface as
+	// stage_failed events, not in the caller's response.
+	go e.runAndRecord(context.Background(), is, startIdx)
 	return nil
 }
 
@@ -802,6 +826,17 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 	return nil
 }
 
+// runAndRecord runs an issue from startIdx and records whether it ended
+// terminally. StartIssue, RetryStage, and Resume all restart a lane through
+// this one path so their bookkeeping cannot drift apart.
+func (e *Engine) runAndRecord(ctx context.Context, is *issueState, startIdx int) error {
+	err := e.runFrom(ctx, is, startIdx)
+	e.mu.Lock()
+	is.terminal = err != nil
+	e.mu.Unlock()
+	return err
+}
+
 func (e *Engine) StartIssue(ctx context.Context, id string) error {
 	e.mu.Lock()
 	is, ok := e.issues[id]
@@ -809,11 +844,7 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("unknown issue %s", id)
 	}
-	err := e.runFrom(ctx, is, 0)
-	e.mu.Lock()
-	is.terminal = err != nil
-	e.mu.Unlock()
-	return err
+	return e.runAndRecord(ctx, is, 0)
 }
 
 // RetryStage restarts a terminal issue at the stage that last failed or was
@@ -837,11 +868,7 @@ func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
 	is.terminal = false
 	is.killRequested = false
 	e.mu.Unlock()
-	err := e.runFrom(ctx, is, startIdx)
-	e.mu.Lock()
-	is.terminal = err != nil
-	e.mu.Unlock()
-	return err
+	return e.runAndRecord(ctx, is, startIdx)
 }
 
 // SetLever changes the routing lever for one stage and records the change.
