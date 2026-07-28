@@ -266,7 +266,7 @@ func renderEvidence(b evidence.Bundle, title string, width int) string {
 
 func renderEvidenceDetails(b evidence.Bundle, title, lastError string, artifacts []string, width int) string {
 	t := activeTheme
-	head := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render("Evidence · " + title)
+	head := panelTitle("Evidence · "+title, "")
 	added := lipgloss.NewStyle().Foreground(t.Ok).Render(fmt.Sprintf("+%d", b.Added))
 	removed := lipgloss.NewStyle().Foreground(t.Err).Render(fmt.Sprintf("−%d", b.Removed))
 	lines := []string{

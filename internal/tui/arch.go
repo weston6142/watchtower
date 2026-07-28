@@ -28,14 +28,14 @@ const archNameWidth = 28
 
 func renderArchWithState(am *archmap.Map, st *projection.State, ids map[string]Identity, width, height, selected int, filter string) string {
 	t := activeTheme
-	title := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render("Architecture map")
 	if am == nil || len(am.Modules) == 0 {
-		return boundedLines([]string{title, "", lipgloss.NewStyle().Foreground(t.Dim).Render("no repo — arch map available with --repo")}, width)
+		return boundedLines([]string{panelTitle("Architecture map", ""), "", lipgloss.NewStyle().Foreground(t.Dim).Render("no repo — arch map available with --repo")}, width)
 	}
+	insight := ""
 	if st != nil {
-		title += lipgloss.NewStyle().Foreground(t.Dim).Render("  " + mapInsight(st.Issues))
+		insight = mapInsight(st.Issues)
 	}
-	lines := []string{title, ""}
+	lines := []string{panelTitle("Architecture map", insight), ""}
 	builders := map[string]map[string]bool{}
 	if st != nil {
 		builders = buildersByArea(st.Issues)

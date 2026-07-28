@@ -18,12 +18,8 @@ const (
 	glyphParked  = "⏸"
 )
 
-// Spacing — renderers use these, never literal spacing.
-const (
-	padV   = 1 // blank lines inside a panel
-	padH   = 2 // cells of horizontal panel padding
-	gutter = 2 // cells between adjacent panels
-)
+// padH is the horizontal padding, in cells, inside chrome bars.
+const padH = 2
 
 type badgeKind int
 
@@ -98,6 +94,22 @@ func chromeBar(width int, left, right string) string {
 func keyChip(key string) string {
 	t := activeTheme
 	return lipgloss.NewStyle().Foreground(t.Bright).Background(t.Bg3).Padding(0, 1).Render(key)
+}
+
+// panelTitle renders the shared door heading: bright bold title plus an
+// optional dim subtitle.
+func panelTitle(title, subtitle string) string {
+	t := activeTheme
+	out := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render(title)
+	if subtitle != "" {
+		out += lipgloss.NewStyle().Foreground(t.Dim).Render("  " + subtitle)
+	}
+	return out
+}
+
+// emptyDoorRow is the dim placeholder shown when a door has no content.
+func emptyDoorRow() string {
+	return lipgloss.NewStyle().Foreground(activeTheme.Dimmer).Render("  —")
 }
 
 // cursorRow renders a selectable list row: accent ▸ + Bg2 ground when

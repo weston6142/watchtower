@@ -14,11 +14,9 @@ import (
 
 func renderDecisionsDoor(ds []projection.DecisionView, ids map[string]Identity, sel, width int) string {
 	t := activeTheme
-	title := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render("Decisions")
-	subtitle := lipgloss.NewStyle().Foreground(t.Dim).Render(fmt.Sprintf("  worst first · %d open", len(ds)))
-	lines := []string{title + subtitle, ""}
+	lines := []string{panelTitle("Decisions", fmt.Sprintf("worst first · %d open", len(ds))), ""}
 	if len(ds) == 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(t.Dimmer).Render("  —"))
+		lines = append(lines, emptyDoorRow())
 		return boundedLines(lines, width)
 	}
 	sel = min(max(sel, 0), len(ds)-1)
@@ -46,11 +44,9 @@ func identityStyle(identity Identity) lipgloss.Style {
 
 func renderProposalsDoor(ps []store.ProposalRow, sel, width int) string {
 	t := activeTheme
-	title := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render("Tray")
-	subtitle := lipgloss.NewStyle().Foreground(t.Dim).Render(fmt.Sprintf("  %d proposal%s", len(ps), pluralSuffix(len(ps))))
-	lines := []string{title + subtitle, ""}
+	lines := []string{panelTitle("Tray", fmt.Sprintf("%d proposal%s", len(ps), pluralSuffix(len(ps)))), ""}
 	if len(ps) == 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(t.Dimmer).Render("  —"))
+		lines = append(lines, emptyDoorRow())
 		return boundedLines(lines, width)
 	}
 	sel = min(max(sel, 0), len(ps)-1)
@@ -147,12 +143,10 @@ func humanizeEvents(evs []core.Event, issueID string) []string {
 // renderTextDoor is a reading surface (timeline, transcript): bright title,
 // dim count, body in plain text — no other decoration.
 func renderTextDoor(title string, lines []string, width int) string {
-	t := activeTheme
-	head := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render(capitalizeDoor(title))
-	head += lipgloss.NewStyle().Foreground(t.Dim).Render(fmt.Sprintf("  %d line%s", len(lines), pluralSuffix(len(lines))))
+	head := panelTitle(capitalizeDoor(title), fmt.Sprintf("%d line%s", len(lines), pluralSuffix(len(lines))))
 	out := []string{head, ""}
 	if len(lines) == 0 {
-		out = append(out, lipgloss.NewStyle().Foreground(t.Dimmer).Render("  —"))
+		out = append(out, emptyDoorRow())
 	} else {
 		out = append(out, lines...)
 	}

@@ -11,10 +11,7 @@ import (
 	"github.com/weston6142/watchtower/internal/proto"
 )
 
-var (
-	themeDim   = lipgloss.NewStyle().Faint(true)
-	themeLabel = lipgloss.NewStyle().Bold(true)
-)
+var themeDim = lipgloss.NewStyle().Faint(true)
 
 func styleStatusBad() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(activeTheme.Err)
