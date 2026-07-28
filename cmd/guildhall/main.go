@@ -278,25 +278,69 @@ func main() {
 
 func runDaemon(args []string) {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-	data := fs.String("data", defaultData(), "data dir")
-	flowsDir := fs.String("flows", "", "flows dir (required)")
-	slotN := fs.Int("slots", 4, "heavy slots")
-	runnerKind := fs.String("runner", "claude", "claude|fake")
-	repo := fs.String("repo", "", "target repo (required for --runner claude)")
-	pkgDir := fs.String("packages", "dist/packages", "agent packages dir")
-	budget := fs.Int("budget", 0, "per-issue token budget (0=off)")
-	pricePerMTok := fs.Float64("price-per-mtok", 0, "estimated dollars per million tokens (0=hide)")
-	claudeBin := fs.String("claude-bin", "claude", "claude binary")
-	testCmd := fs.String("test-cmd", "", "merge-train test command")
+	base := fs.String("data", defaultData(), "base data dir")
+	flowsDir := fs.String("flows", "", "flows dir (default from config)")
+	slotN := fs.Int("slots", 0, "heavy slots (default from config)")
+	runnerKind := fs.String("runner", "", "claude|fake (default from config)")
+	repoFlag := fs.String("repo", "", "target repo (default: walk up from CWD)")
+	pkgDir := fs.String("packages", "", "agent packages dir (default from config)")
+	budget := fs.Int("budget", -1, "per-issue token budget (0=off; default from config)")
+	pricePerMTok := fs.Float64("price-per-mtok", -1, "estimated dollars per million tokens (0=hide; default from config)")
+	claudeBin := fs.String("claude-bin", "", "claude binary (default from config)")
+	testCmd := fs.String("test-cmd", "", "merge-train test command (default from config)")
 	fs.Parse(args)
-	if *flowsDir == "" {
-		fmt.Fprintln(os.Stderr, "daemon: --flows is required")
-		os.Exit(2)
+
+	repo := *repoFlag
+	if repo == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			fatal(err)
+		}
+		repo, err = repocfg.FindRepo(cwd)
+		if err != nil {
+			fatal(err)
+		}
 	}
-	if err := os.MkdirAll(*data, 0o755); err != nil {
+	cfg, err := repocfg.Load(repo)
+	if err != nil {
 		fatal(err)
 	}
-	st, err := store.Open(filepath.Join(*data, "guildhall.db"))
+	// Explicit flags override config; unset flags take config values.
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if !set["flows"] {
+		*flowsDir = cfg.Flows
+	}
+	if !set["packages"] {
+		*pkgDir = cfg.Packages
+	}
+	if !set["runner"] {
+		*runnerKind = cfg.Runner
+	}
+	if !set["slots"] {
+		*slotN = cfg.Slots
+	}
+	if !set["budget"] {
+		*budget = cfg.Budget
+	}
+	if !set["price-per-mtok"] {
+		*pricePerMTok = cfg.PricePerMTok
+	}
+	if !set["claude-bin"] {
+		*claudeBin = cfg.ClaudeBin
+	}
+	if !set["test-cmd"] {
+		*testCmd = cfg.TestCmd
+	}
+
+	data := repocfg.RepoDataDir(*base, repo)
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, "daemon.pid"), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		fatal(err)
+	}
+	st, err := store.Open(filepath.Join(data, "guildhall.db"))
 	if err != nil {
 		fatal(err)
 	}
@@ -310,7 +354,7 @@ func runDaemon(args []string) {
 		flows[f.Name] = f
 	}
 	if len(flows) == 0 {
-		fatal(fmt.Errorf("no flows found in %s", *flowsDir))
+		fatal(fmt.Errorf("no flows found in %s (configured in %s)", *flowsDir, repocfg.ConfigPath(repo)))
 	}
 	if os.Getenv("GUILDHALL_FAKE") == "1" {
 		*runnerKind = "fake"
@@ -321,15 +365,12 @@ func runDaemon(args []string) {
 	case "fake":
 		run = fakeForFlows(flows)
 	case "claude":
-		if *repo == "" {
-			fatal(fmt.Errorf("--repo is required with --runner claude"))
-		}
 		packages, err := pkgs.LoadDir(*pkgDir)
 		if err != nil {
 			fatal(err)
 		}
 		run = &claude.CodeRunner{Bin: *claudeBin, Packages: packages}
-		ws = workspace.Detect(*repo)
+		ws = workspace.Detect(repo)
 	default:
 		fatal(fmt.Errorf("unknown runner %q", *runnerKind))
 	}
@@ -359,17 +400,17 @@ func runDaemon(args []string) {
 			res := <-run.Run(ctx, issueID, "conflict-repair", "conflict-resolver", wt, autoAnswerAsks())
 			return res.Err
 		}
-		train = &marshal.Train{Repo: *repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve}
-		lib = &librarian.Librarian{MemoryDir: filepath.Join(*repo, "docs", "guildhall")}
+		train = &marshal.Train{Repo: repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve}
+		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "guildhall")}
 		reconcile = func(ctx context.Context, issueID string) error {
-			res := <-run.Run(ctx, issueID, "librarian", "librarian", *repo, autoAnswerAsks())
+			res := <-run.Run(ctx, issueID, "librarian", "librarian", repo, autoAnswerAsks())
 			return res.Err
 		}
 	}
 	transcriptBuffer := transcript.NewBuffer(500)
 	eng := engine.New(engine.Config{
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
-		Flows: flows, DataDir: filepath.Join(*data, "issues"),
+		Flows: flows, DataDir: filepath.Join(data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
 		Marshal: seq, Train: train,
 		Librarian: lib, Reconcile: reconcile,
@@ -385,7 +426,7 @@ func runDaemon(args []string) {
 	case *runner.FakeRunner:
 		r.OnProposal = fileProposal
 	}
-	sock := filepath.Join(*data, "guildhall.sock")
+	sock := filepath.Join(data, "guildhall.sock")
 	os.Remove(sock)
 	l, err := net.Listen("unix", sock)
 	if err != nil {
