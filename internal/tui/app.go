@@ -1163,27 +1163,26 @@ func (m Model) streamSubtitle() string {
 	}
 	tools := 0
 	for _, line := range m.doorLines {
-		if _, text, found := strings.Cut(line, " │ "); found && strings.HasPrefix(text, "↳ ") {
-			tools++
-		} else if strings.HasPrefix(line, "↳ ") {
+		text := line
+		if _, rest, found := strings.Cut(line, streamGutterSep); found {
+			text = rest
+		}
+		if strings.HasPrefix(text, streamToolPrefix) {
 			tools++
 		}
 	}
-	counts := fmt.Sprintf("%d line%s · %d tool call%s", len(m.doorLines), pluralSuffix(len(m.doorLines)), tools, pluralSuffix(tools))
+	parts := []string{tag}
 	for i := len(m.doorLines) - 1; i >= 0; i-- {
-		if stage, _, found := strings.Cut(m.doorLines[i], " │ "); found && stage != "" {
-			subtitle := tag + " · " + stage + " · " + counts
-			if m.Detail != nil && m.Detail.Model != "" {
-				subtitle += " · " + m.Detail.Model
-			}
-			return subtitle
+		if stage, _, found := strings.Cut(m.doorLines[i], streamGutterSep); found && stage != "" {
+			parts = append(parts, stage)
+			break
 		}
 	}
-	subtitle := tag + " · " + counts
+	parts = append(parts, fmt.Sprintf("%d line%s · %d tool call%s", len(m.doorLines), pluralSuffix(len(m.doorLines)), tools, pluralSuffix(tools)))
 	if m.Detail != nil && m.Detail.Model != "" {
-		subtitle += " · " + m.Detail.Model
+		parts = append(parts, m.Detail.Model)
 	}
-	return subtitle
+	return strings.Join(parts, " · ")
 }
 
 // writeHeaderRows writes the status sentence and the reserved notice row that

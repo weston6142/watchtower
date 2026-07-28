@@ -154,6 +154,13 @@ func renderTextDoor(title string, lines []string, width int) string {
 	return boundedLines(out, width)
 }
 
+// Stream lines arrive as "<stage> │ <text>"; tool calls carry a "↳ " prefix.
+// Both markers are written by internal/claude/stream.go.
+const (
+	streamGutterSep  = " │ "
+	streamToolPrefix = "↳ "
+)
+
 // renderStreamDoor is the live agent view. Unlike the timeline it is watched
 // while a stage runs, so it wears the same box chrome as the help overlay and
 // gives its content typography: dim stage gutter, prose in Text, turn markers
@@ -170,7 +177,7 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 		body = append(body, gutter.Render("nothing here yet — either the stage just started or the transcript was lost to a daemon restart"))
 	}
 	for _, line := range lines {
-		stage, text, found := strings.Cut(line, " │ ")
+		stage, text, found := strings.Cut(line, streamGutterSep)
 		if !found {
 			stage, text = "", line
 		}
@@ -179,23 +186,18 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 			body = append(body, gutter.Render(strings.Repeat("─", inner)))
 			continue
 		}
-		style := prose
-		if rest, ok := strings.CutPrefix(text, "↳ "); ok {
+		lead := ""
+		if stage != "" {
+			lead = stage + streamGutterSep
+		}
+		if rest, ok := strings.CutPrefix(text, streamToolPrefix); ok {
 			name, args, _ := strings.Cut(rest, "(")
 			tool := lipgloss.NewStyle().Foreground(t.Structure).Render(name)
 			if args != "" {
 				tool += prose.Render("(" + args)
 			}
-			lead := ""
-			if stage != "" {
-				lead = stage + " │ "
-			}
-			body = append(body, gutter.Render(lead)+dim.Render("↳ ")+tool)
+			body = append(body, gutter.Render(lead)+dim.Render(streamToolPrefix)+tool)
 			continue
-		}
-		lead := ""
-		if stage != "" {
-			lead = stage + " │ "
 		}
 		wrapWidth := max(1, inner-lipgloss.Width(lead))
 		pad := strings.Repeat(" ", lipgloss.Width(lead))
@@ -204,7 +206,7 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 			if i == 0 {
 				marker = lead
 			}
-			body = append(body, gutter.Render(marker)+style.Render(wrapped))
+			body = append(body, gutter.Render(marker)+prose.Render(wrapped))
 		}
 	}
 	foot := keyChip("esc") + dim.Render(" close  ") + keyChip("q") + dim.Render(" quit")
