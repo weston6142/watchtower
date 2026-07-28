@@ -68,11 +68,31 @@ func TestStreamDoorWearsBoxChrome(t *testing.T) {
 	}
 }
 
+func TestStreamDoorCountsAndBrightensToolCalls(t *testing.T) {
+	lines := []string{"plan │ ↳ Bash(go test ./...)", "plan │ thinking about tests"}
+	out := renderStreamDoor("GH-1 · plan · 2 lines · 1 tool call", lines, 100)
+	if !strings.Contains(out, "Bash(go test ./...)") {
+		t.Fatal("tool line missing")
+	}
+	if !strings.Contains(out, "1 tool call") {
+		t.Fatal("subtitle counts missing from box band")
+	}
+}
+
+func TestStreamSubtitleCounts(t *testing.T) {
+	m := Model{Focus: Focus{Issue: "GH-1"},
+		doorLines: []string{"plan │ ↳ Read(a.go)", "plan │ ↳ Read(b.go)", "plan │ ok"}}
+	got := m.streamSubtitle()
+	if !strings.Contains(got, "3 lines") || !strings.Contains(got, "2 tool calls") {
+		t.Fatalf("subtitle = %q", got)
+	}
+}
+
 // An empty buffer says so rather than rendering a hollow box.
 func TestStreamDoorEmpty(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	got := renderStreamDoor("GH-2", nil, 100)
-	if !strings.Contains(got, "nothing yet") {
+	if !strings.Contains(got, "nothing here yet") {
 		t.Fatalf("empty door = %q", got)
 	}
 }

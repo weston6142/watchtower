@@ -167,7 +167,7 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 
 	var body []string
 	if len(lines) == 0 {
-		body = append(body, gutter.Render("nothing yet — the agent has not spoken this stage"))
+		body = append(body, gutter.Render("nothing here yet — either the stage just started or the transcript was lost to a daemon restart"))
 	}
 	for _, line := range lines {
 		stage, text, found := strings.Cut(line, " │ ")
@@ -180,8 +180,18 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 			continue
 		}
 		style := prose
-		if strings.HasPrefix(text, "↳ ") {
-			style = dim
+		if rest, ok := strings.CutPrefix(text, "↳ "); ok {
+			name, args, _ := strings.Cut(rest, "(")
+			tool := lipgloss.NewStyle().Foreground(t.Structure).Render(name)
+			if args != "" {
+				tool += prose.Render("(" + args)
+			}
+			lead := ""
+			if stage != "" {
+				lead = stage + " │ "
+			}
+			body = append(body, gutter.Render(lead)+dim.Render("↳ ")+tool)
+			continue
 		}
 		lead := ""
 		if stage != "" {

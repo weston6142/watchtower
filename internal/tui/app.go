@@ -1161,12 +1161,21 @@ func (m Model) streamSubtitle() string {
 	if identity, ok := m.Ids[m.Focus.Issue]; ok && identity.Tag != "" {
 		tag = identity.Tag + " " + m.Focus.Issue
 	}
-	for i := len(m.doorLines) - 1; i >= 0; i-- {
-		if stage, _, found := strings.Cut(m.doorLines[i], " │ "); found && stage != "" {
-			return tag + " · " + stage
+	tools := 0
+	for _, line := range m.doorLines {
+		if _, text, found := strings.Cut(line, " │ "); found && strings.HasPrefix(text, "↳ ") {
+			tools++
+		} else if strings.HasPrefix(line, "↳ ") {
+			tools++
 		}
 	}
-	return tag
+	counts := fmt.Sprintf("%d line%s · %d tool call%s", len(m.doorLines), pluralSuffix(len(m.doorLines)), tools, pluralSuffix(tools))
+	for i := len(m.doorLines) - 1; i >= 0; i-- {
+		if stage, _, found := strings.Cut(m.doorLines[i], " │ "); found && stage != "" {
+			return tag + " · " + stage + " · " + counts
+		}
+	}
+	return tag + " · " + counts
 }
 
 // writeHeaderRows writes the status sentence and the reserved notice row that
