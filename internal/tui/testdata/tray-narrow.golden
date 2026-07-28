@@ -1,13 +1,16 @@
 [48;2;26;27;38m  [1;38;2;224;175;104m● 1 question for you[0m  [1;38;2;247;118;142m● 1 build failing[0m      [38;2;86;95;137m2 building · 1 shipped today · 412k tokens · ~$6.18[0m  [0m
                                                                                                     
-TRAY · enter accept · r reject · esc back
-▸ Add smoke test for the importer webhook
-  The last two importer regressions were webhook-shaped. A 30-second smoke test on PR would have
-  caught both before review.
-  Split marshal retries into their own lever
-  Retry budget currently rides on the global aggressiveness lever; tuning one shouldn't move the
-  other.
-  Park FX-9 until the token budget resets
-  Dark-mode audit is cosmetic and burning budget the failing e2e fix needs this week.
+[1;38;2;227;236;255mTray[0m[38;2;86;95;137m  3 proposals[0m
 
-[48;2;26;27;38m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mj/k[0m[48;2;40;46;65m [0m[38;2;86;95;137m select[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65menter[0m[48;2;40;46;65m [0m[38;2;86;95;137m open[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mesc[0m[48;2;40;46;65m [0m[38;2;86;95;137m back[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mq[0m[48;2;40;46;65m [0m[38;2;86;95;137m quit[0m                                                  [0m
+[48;2;31;35;52m[38;2;187;154;247m▸[0m [38;2;227;236;255mAdd smoke test for the importer webhook[0m[0m
+    [38;2;86;95;137mThe last two importer regressions were webhook-shaped. A 30-second smoke test on PR would have[0m
+    [38;2;86;95;137mcaught both before review.[0m
+
+  [38;2;192;202;245mSplit marshal retries into their own lever[0m
+    [38;2;86;95;137mRetry budget currently rides on the global aggressiveness lever; tuning one shouldn't move the[0m
+    [38;2;86;95;137mother.[0m
+
+  [38;2;192;202;245mPark FX-9 until the token budget resets[0m
+    [38;2;86;95;137mDark-mode audit is cosmetic and burning budget the failing e2e fix needs this week.[0m
+
+[48;2;26;27;38m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mj/k[0m[48;2;40;46;65m [0m[38;2;86;95;137m select[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65menter[0m[48;2;40;46;65m [0m[38;2;86;95;137m accept → new issue[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mr[0m[48;2;40;46;65m [0m[38;2;86;95;137m reject[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mesc[0m[48;2;40;46;65m [0m[38;2;86;95;137m back[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mq[0m[48;2;40;46;65m [0m[38;2;86;95;137m quit[0m                        [0m

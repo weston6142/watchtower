@@ -1134,9 +1134,11 @@ func (m Model) View() string {
 		m.writeHeaderRows(&b, layoutWidth)
 		b.WriteString(tower)
 		b.WriteString("\n\n")
-		b.WriteString(renderKeybar(layoutWidth, [][2]string{
-			{"j/k", "select"}, {"enter", "open"}, {"esc", "back"}, {"q", "quit"},
-		}, errText(m.Err)))
+		bindings := [][2]string{{"j/k", "select"}, {"enter", "open"}, {"esc", "back"}, {"q", "quit"}}
+		if m.currentMode() == "tray" {
+			bindings = [][2]string{{"j/k", "select"}, {"enter", "accept → new issue"}, {"r", "reject"}, {"esc", "back"}, {"q", "quit"}}
+		}
+		b.WriteString(renderKeybar(layoutWidth, bindings, errText(m.Err)))
 		screen := b.String()
 		if m.help {
 			return m.composite(screen, renderHelpOverlay(layoutWidth), layoutWidth)
