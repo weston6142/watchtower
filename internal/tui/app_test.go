@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -149,5 +150,62 @@ func TestIssueOpKeysHintWhenNothingFocused(t *testing.T) {
 	}
 	if m.Err != "" {
 		t.Fatalf("expected hint cleared after focus, got %q", m.Err)
+	}
+}
+
+// laneModel builds a focused single-lane model in the given state.
+func laneModel(t *testing.T, evs ...core.Event) Model {
+	t.Helper()
+	m := NewModel(nil, []string{"brainstorm", "spec", "execute", "review", "merge"})
+	m = m.applyEvents(evs)
+	m = pressKey(t, m, "j")
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("expected GH-1 focused, got %q", m.Focus.Issue)
+	}
+	return m
+}
+
+func TestKillGuardOnIdleLane(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "dead lane", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+		mkev(t, core.EvStageFailed, "GH-1", map[string]any{"stage": "brainstorm", "error": "boom", "final": true}),
+	)
+	m = pressKey(t, m, "x")
+	if m.confirm != nil {
+		t.Fatal("kill confirm opened for idle lane")
+	}
+	if m.Err != "nothing running — R retries · X abandons" {
+		t.Fatalf("expected kill hint, got %q", m.Err)
+	}
+}
+
+func TestKillStillConfirmsOnRunningLane(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "busy lane", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	m = pressKey(t, m, "x")
+	if m.confirm == nil || m.confirm.Op != "kill_stage" {
+		t.Fatalf("expected kill confirm, got %+v", m.confirm)
+	}
+}
+
+func TestAbandonConfirmSendsOp(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "dead lane", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+		mkev(t, core.EvStageFailed, "GH-1", map[string]any{"stage": "brainstorm", "error": "boom", "final": true}),
+	)
+	m = pressKey(t, m, "X")
+	if m.confirm == nil || m.confirm.Op != "abandon_issue" {
+		t.Fatalf("expected abandon confirm, got %+v", m.confirm)
+	}
+	if !strings.Contains(m.confirm.Prompt, "abandon") {
+		t.Fatalf("prompt: %q", m.confirm.Prompt)
+	}
+	m = pressKey(t, m, "y")
+	if m.confirm != nil {
+		t.Fatal("confirm not cleared after y")
 	}
 }

@@ -116,6 +116,7 @@ type transcriptMsg struct {
 type confirmState struct {
 	IssueID string
 	Prompt  string
+	Op      string // daemon op sent on y — kill_stage, abandon_issue, …
 }
 
 type commandMsg struct {
@@ -356,9 +357,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.confirm != nil {
 			switch key {
 			case "y":
-				issueID := m.confirm.IssueID
+				issueID, op := m.confirm.IssueID, m.confirm.Op
 				m.confirm = nil
-				return m, m.issueCommand(issueID, "kill_stage")
+				return m, m.issueCommand(issueID, op)
 			case "n", "esc":
 				m.confirm = nil
 			}
@@ -496,11 +497,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "x":
 				if iv := m.State.Issues[m.Focus.Issue]; iv != nil {
+					// Kill only means something for an in-flight stage; asking
+					// first and erroring later reads as broken.
+					if iv.State != "running" && iv.State != "waiting_decision" {
+						m.Err = "nothing running — R retries · X abandons"
+						return m, nil
+					}
 					stage := iv.CurrentStage
 					if stage == "" {
 						stage = "current"
 					}
-					m.confirm = &confirmState{IssueID: iv.ID, Prompt: fmt.Sprintf("kill the running %s stage of %s? y/n", stage, iv.Title)}
+					m.confirm = &confirmState{IssueID: iv.ID, Op: "kill_stage",
+						Prompt: fmt.Sprintf("kill the running %s stage of %s? y/n", stage, iv.Title)}
+					return m, nil
+				}
+			case "X":
+				if iv := m.State.Issues[m.Focus.Issue]; iv != nil {
+					m.confirm = &confirmState{IssueID: iv.ID, Op: "abandon_issue",
+						Prompt: fmt.Sprintf("abandon %s? the lane is removed for good. y/n", iv.Title)}
 					return m, nil
 				}
 			case "R":
@@ -523,7 +537,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Issue-op keys act on the focused lane; with nothing focused
 			// they would silently no-op, which reads as broken.
 			switch key {
-			case "p", "x", "R", "L", "c", "o", "enter":
+			case "p", "x", "X", "R", "L", "c", "o", "enter":
 				m.Err = "no lane focused — press j or 1-9 to focus"
 				return m, nil
 			}
