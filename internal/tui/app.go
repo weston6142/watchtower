@@ -47,7 +47,7 @@ type Model struct {
 	stages           []string
 	lastSeq          int64
 	dismissed        map[int64]bool
-	optionMode       bool
+	toastSel         int
 	pager            pagerState
 	openArtifacts    bool
 	openEvidence     bool
@@ -264,8 +264,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.Toast != nil && m.Toast.ID == msg.decisionID {
-			m.Toast = nil
-			m.optionMode = false
+			m.setToast(nil)
 		}
 		return m, nil
 	case commandMsg:
@@ -341,6 +340,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.modal = &updated
 			}
 			return m, nil
+		}
+		// Arrow keys act as vim motions everywhere below; the modal
+		// above takes raw text input, so it must not see the aliases.
+		switch key {
+		case "up":
+			key = "k"
+		case "down":
+			key = "j"
+		case "left":
+			key = "h"
+		case "right":
+			key = "l"
 		}
 		if m.confirm != nil {
 			switch key {
@@ -438,28 +449,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.Toast != nil {
-			switch {
-			case key == "y":
+			switch key {
+			case "y":
 				if !m.evidenceOpened[m.Toast.ID] {
 					m.acceptStreak++
 				}
 				return m, m.answerDecision(m.Toast.Recommended)
-			case key == "n":
-				m.acceptStreak = 0
-				m.optionMode = true
-				return m, nil
-			case m.optionMode && len(key) == 1 && key >= "0" && key <= "9":
-				option := int(key[0] - '0')
-				if option < len(m.Toast.Options) {
-					return m, m.answerDecision(option)
+			case "j":
+				m.toastSel = min(m.toastSel+1, max(0, len(m.Toast.Options)-1))
+			case "k":
+				m.toastSel = max(m.toastSel-1, 0)
+			case "enter":
+				if m.toastSel == m.Toast.Recommended {
+					if !m.evidenceOpened[m.Toast.ID] {
+						m.acceptStreak++
+					}
+				} else {
+					m.acceptStreak = 0
 				}
-			case key == "esc":
+				return m, m.answerDecision(m.toastSel)
+			case "esc":
 				m.dismissToast()
-				return m, nil
-			case key == "o":
+			case "o":
 				m.acceptStreak = 0
-				cmd := m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
-				return m, cmd
+				return m, m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
 			}
 			return m, nil
 		}
@@ -527,6 +540,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// setToast swaps the raised decision and rests the j/k cursor on the
+// recommended option.
+func (m *Model) setToast(d *projection.DecisionView) {
+	m.Toast = d
+	if d != nil {
+		m.toastSel = d.Recommended
+	} else {
+		m.toastSel = 0
+	}
+}
+
 func (m *Model) dismissToast() {
 	if m.Toast == nil {
 		return
@@ -535,8 +559,7 @@ func (m *Model) dismissToast() {
 		m.dismissed = map[int64]bool{}
 	}
 	m.dismissed[m.Toast.ID] = true
-	m.Toast = nil
-	m.optionMode = false
+	m.setToast(nil)
 }
 
 func cloneStringMap(values map[string]string) map[string]string {
@@ -849,7 +872,7 @@ func (m Model) applyEvents(evs []core.Event) Model {
 			candidate := decision
 			selected = &candidate
 		}
-		m.Toast = selected
+		m.setToast(selected)
 	}
 	return m
 }
@@ -921,7 +944,7 @@ func (m *Model) updateDoorKey(key string) tea.Cmd {
 		case "enter":
 			if len(ds) > 0 {
 				decision := ds[min(m.doorSel, len(ds)-1)]
-				m.Toast = &decision
+				m.setToast(&decision)
 				m.popMode()
 			}
 		default:
@@ -929,7 +952,7 @@ func (m *Model) updateDoorKey(key string) tea.Cmd {
 				index := int(key[0] - '1')
 				if index < len(ds) {
 					decision := ds[index]
-					m.Toast = &decision
+					m.setToast(&decision)
 					m.popMode()
 				}
 			}
@@ -1144,7 +1167,7 @@ func (m Model) View() string {
 	} else if m.Toast != nil {
 		// The toast never replaces the grid — spatial memory rule: the tower
 		// stays visible and the toast stacks beneath it, above the shelf.
-		toast := renderToast(*m.Toast, m.Ids[m.Toast.IssueID], m.acceptStreak, towerWidth)
+		toast := renderToast(*m.Toast, m.Ids[m.Toast.IssueID], m.toastSel, m.acceptStreak, towerWidth)
 		tower = lipgloss.JoinVertical(lipgloss.Left, tower, "", toast)
 	}
 	var body string

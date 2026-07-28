@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/wbushyeager/guildhall/internal/evidence"
 	"github.com/wbushyeager/guildhall/internal/projection"
@@ -21,6 +22,36 @@ func boundedLines(lines []string, width int) string {
 		bounded[i] = truncate(line, width)
 	}
 	return strings.Join(bounded, "\n")
+}
+
+// wrapLines word-wraps each line to width instead of truncating; long
+// prose (decision questions, rationale) must stay fully readable.
+func wrapLines(lines []string, width int) string {
+	if width <= 0 {
+		return strings.Join(lines, "\n")
+	}
+	wrapped := make([]string, len(lines))
+	for i, line := range lines {
+		wrapped[i] = ansi.Wrap(line, width, "")
+	}
+	return strings.Join(wrapped, "\n")
+}
+
+// wrapIndent wraps text with a marker on the first line and a hanging
+// indent of the same width on continuation lines.
+func wrapIndent(text string, width int, first string) []string {
+	rest := strings.Repeat(" ", lipgloss.Width(first))
+	inner := max(1, width-lipgloss.Width(first))
+	parts := strings.Split(ansi.Wrap(text, inner, ""), "\n")
+	out := make([]string, len(parts))
+	for i, part := range parts {
+		if i == 0 {
+			out[i] = first + part
+		} else {
+			out[i] = rest + part
+		}
+	}
+	return out
 }
 
 // renderRail draws the focused issue's plain-language FOCUS panel above the
@@ -148,33 +179,43 @@ func orderedLeverStages(levers map[string]string) []string {
 }
 
 // renderToast draws the raised decision as a self-contained modal string.
-func renderToast(d projection.DecisionView, id Identity, streak, width int) string {
-	lines := []string{
-		fmt.Sprintf("DECISION [%d] %s %s", d.ID, id.Tag, d.Stage),
-		d.Question,
-	}
+// sel is the option the j/k cursor is on.
+func renderToast(d projection.DecisionView, id Identity, sel, streak, width int) string {
+	inner := max(1, width-4)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	lines := []string{fmt.Sprintf("DECISION [%d] %s %s", d.ID, id.Tag, d.Stage), ""}
+	lines = append(lines, wrapIndent(d.Question, inner, "")...)
 	if d.Why != "" {
-		lines = append(lines, "why: "+d.Why)
+		for _, line := range wrapIndent(d.Why, inner, "why: ") {
+			lines = append(lines, dim.Render(line))
+		}
 	}
+	lines = append(lines, "")
 	for i, option := range d.Options {
-		mark := "  "
+		cursor, star := " ", " "
+		if i == sel {
+			cursor = "▸"
+		}
 		if i == d.Recommended {
-			mark = "★ "
+			star = "★"
 		}
-		line := fmt.Sprintf("%s%s (%d)", mark, option, i)
+		text := option
 		if i < len(d.Consequences) && d.Consequences[i] != "" {
-			line += " → " + d.Consequences[i]
+			text += " → " + d.Consequences[i]
 		}
-		lines = append(lines, line)
+		lines = append(lines, wrapIndent(text, inner, cursor+star+" ")...)
 	}
 	if d.Reversible != "" {
-		lines = append(lines, "reversible: "+d.Reversible)
+		lines = append(lines, "")
+		for _, line := range wrapIndent(d.Reversible, inner, "reversible: ") {
+			lines = append(lines, dim.Render(line))
+		}
 	}
 	if streak >= 3 {
 		lines = append(lines, "", fmt.Sprintf("you've accepted %d recommendations in a row without opening evidence", streak))
 	}
-	lines = append(lines, "", "y accept ★ · n choose · o evidence · esc dismiss")
-	content := boundedLines(lines, max(1, width-4))
+	lines = append(lines, "", dim.Render("j/k choose · enter select · y accept ★ · o evidence · esc dismiss"))
+	content := strings.Join(lines, "\n")
 	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(id.Color)).Padding(1)
 	return style.Render(content)
 }
@@ -219,7 +260,7 @@ func renderEvidenceDetails(b evidence.Bundle, title, lastError string, artifacts
 		lines = append(lines, "tests: no test result artifact available")
 	}
 	lines = append(lines, "enter diff · esc back")
-	return boundedLines(lines, width)
+	return wrapLines(lines, width)
 }
 
 func renderEvidenceFallback(d projection.DecisionView, det *proto.IssueDetail, width int) string {
@@ -239,5 +280,5 @@ func renderEvidenceFallback(d projection.DecisionView, det *proto.IssueDetail, w
 		lines = append(lines, "available artifacts: none")
 	}
 	lines = append(lines, "esc back")
-	return boundedLines(lines, width)
+	return wrapLines(lines, width)
 }

@@ -17,12 +17,49 @@ func TestRenderToastMarksRecommended(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	d := projection.DecisionView{ID: 4, IssueID: "GH-1", Stage: "spec",
 		Question: "Approve spec artifacts?", Options: []string{"approve", "reject"}, Recommended: 0}
-	out := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 0, 60)
+	out := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 0, 0, 60)
 	if !strings.Contains(out, "Approve spec artifacts?") || !strings.Contains(out, "★ approve") {
 		t.Fatalf("toast:\n%s", out)
 	}
 	if !strings.Contains(out, "y accept") {
 		t.Fatalf("keys missing:\n%s", out)
+	}
+}
+
+func TestRenderToastWrapsLongLines(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	d := projection.DecisionView{ID: 4, IssueID: "GH-1", Stage: "brainstorm",
+		Question:    "Should creating the repo mean just setting up local version control, or also creating a hosted remote somewhere?",
+		Options:     []string{"local git repo plus a hosted remote", "local git repo only, add a remote later"},
+		Why:         "the issue is numbered GH-1, suggesting GitHub is the intended home for this project",
+		Recommended: 0}
+	out := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 0, 0, 48)
+	if strings.Contains(out, "…") {
+		t.Fatalf("toast truncated instead of wrapping:\n%s", out)
+	}
+	flat := strings.Join(strings.Fields(strings.NewReplacer("│", " ", "╭", " ", "╮", " ", "╰", " ", "╯", " ", "─", " ").Replace(out)), " ")
+	for _, want := range []string{"hosted remote somewhere?", "intended home for this project", "add a remote later"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("missing wrapped text %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderToastShowsSelectionCursor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	d := projection.DecisionView{ID: 4, IssueID: "GH-1", Stage: "spec",
+		Question: "Approve the spec?", Options: []string{"approve", "reject"}, Recommended: 0}
+	out := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 1, 0, 60)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "reject") && !strings.Contains(line, "▸") {
+			t.Fatalf("selected option missing cursor:\n%s", out)
+		}
+		if strings.Contains(line, "approve") && strings.Contains(line, "▸") {
+			t.Fatalf("cursor on unselected option:\n%s", out)
+		}
+	}
+	if !strings.Contains(out, "j/k") || !strings.Contains(out, "enter") {
+		t.Fatalf("footer missing j/k · enter hints:\n%s", out)
 	}
 }
 
@@ -32,13 +69,13 @@ func TestToastV2RendersRationaleAndConsequences(t *testing.T) {
 		Question: "Approve the spec?", Options: []string{"approve", "reject"}, Recommended: 0,
 		Why: "scope is settled", Consequences: []string{"planning starts now", "agent revises (~10 min)"},
 		Reversible: "changeable until build"}
-	out := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 4, 70)
+	out := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 0, 4, 70)
 	for _, want := range []string{"scope is settled", "planning starts now", "agent revises", "changeable until build", "4 recommendations in a row"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
 	}
-	if out2 := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 0, 70); strings.Contains(out2, "in a row") {
+	if out2 := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 0, 0, 70); strings.Contains(out2, "in a row") {
 		t.Fatal("friction line shown with zero streak")
 	}
 }
