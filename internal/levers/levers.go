@@ -4,7 +4,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/wbushyeager/guildhall/internal/flow"
+	"github.com/weston6142/watchtower/internal/flow"
 )
 
 type Matrix map[string]flow.Lever

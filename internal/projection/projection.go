@@ -2,8 +2,9 @@ package projection
 
 import (
 	"encoding/json"
+	"time"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 type IssueView struct {
@@ -20,15 +21,28 @@ type IssueView struct {
 	Behind       string
 	Merged       bool
 	Unmerged     bool
+	Paused       bool
+	Killed       bool
+	AreaWeights  map[string]int
+	MergedAt     time.Time
 }
 
 type DecisionView struct {
-	ID          int64
-	IssueID     string
-	Stage       string
-	Question    string
-	Options     []string
-	Recommended int
+	ID           int64
+	IssueID      string
+	Stage        string
+	Question     string
+	Options      []string
+	Recommended  int
+	Why          string
+	Consequences []string
+	Reversible   string
+	Paths        []string
+}
+
+type Notice struct {
+	Text string
+	Seq  int64
 }
 
 type State struct {
@@ -36,6 +50,9 @@ type State struct {
 	Decisions     map[int64]DecisionView
 	Order         []string
 	ProposalCount int
+	Notices       []Notice
+	ShippedToday  []string
+	Parked        []string
 }
 
 func NewState() *State {
@@ -53,12 +70,14 @@ func (s *State) Apply(ev core.Event) {
 	iv := s.Issues[ev.IssueID]
 	switch ev.Type {
 	case core.EvIssueCreated:
-		s.Issues[ev.IssueID] = &IssueView{ID: ev.IssueID, Title: str("title"), Flow: str("flow"), State: "running"}
+		s.Issues[ev.IssueID] = &IssueView{ID: ev.IssueID, Title: str("title"), Flow: str("flow"), State: "running", AreaWeights: map[string]int{}}
 		s.Order = append(s.Order, ev.IssueID)
 	case core.EvStageStarted:
 		if iv != nil {
 			iv.CurrentStage = str("stage")
 			iv.State = "running"
+			iv.Paused = false
+			iv.Killed = false
 			iv.Attempt = int(num("attempt"))
 			iv.AttemptOf = int(num("of"))
 			iv.LastError = ""
@@ -82,7 +101,9 @@ func (s *State) Apply(ev core.Event) {
 		}
 		id := int64(num("decision_id"))
 		s.Decisions[id] = DecisionView{ID: id, IssueID: ev.IssueID, Stage: str("stage"),
-			Question: str("question"), Options: opts, Recommended: int(num("recommended"))}
+			Question: str("question"), Options: opts, Recommended: int(num("recommended")),
+			Why: str("why"), Consequences: stringsFromPayload(p["consequences"]),
+			Reversible: str("reversible"), Paths: stringsFromPayload(p["paths"])}
 		if iv != nil {
 			iv.State = "waiting_decision"
 		}
@@ -90,6 +111,19 @@ func (s *State) Apply(ev core.Event) {
 		delete(s.Decisions, int64(num("decision_id")))
 		if iv != nil {
 			iv.State = "running"
+		}
+	case core.EvArtifactProduced:
+		if iv != nil {
+			if iv.AreaWeights == nil {
+				iv.AreaWeights = map[string]int{}
+			}
+			if weights, ok := p["area_weight"].(map[string]any); ok {
+				for area, value := range weights {
+					if weight, ok := value.(float64); ok {
+						iv.AreaWeights[area] = int(weight)
+					}
+				}
+			}
 		}
 	case core.EvStageCompleted:
 		if iv != nil {
@@ -108,7 +142,28 @@ func (s *State) Apply(ev core.Event) {
 			iv.Attempt = int(num("attempt"))
 			iv.AttemptOf = int(num("of"))
 			iv.LastError = str("error")
+			if final, _ := p["final"].(bool); final {
+				appendUnique(&s.Parked, ev.IssueID)
+			}
 		}
+	case core.EvIssuePaused:
+		if iv != nil {
+			iv.Paused = true
+			iv.State = "paused"
+		}
+	case core.EvIssueResumed:
+		if iv != nil {
+			iv.Paused = false
+			iv.State = "running"
+		}
+	case core.EvStageKilled:
+		if iv != nil {
+			iv.Killed = true
+			iv.Paused = true
+			iv.State = "paused"
+			iv.CurrentStage = str("stage")
+		}
+		appendUnique(&s.Parked, ev.IssueID)
 	case core.EvMergeSequenced:
 		if iv != nil {
 			iv.Behind = str("behind")
@@ -118,8 +173,10 @@ func (s *State) Apply(ev core.Event) {
 	case core.EvIssueMerged:
 		if iv != nil {
 			iv.Merged = true
+			iv.MergedAt = ev.At
 			iv.Behind = ""
 		}
+		appendUnique(&s.ShippedToday, ev.IssueID)
 		for _, other := range s.Issues {
 			if other.Behind == ev.IssueID {
 				other.Behind = ""
@@ -127,9 +184,37 @@ func (s *State) Apply(ev core.Event) {
 		}
 	case core.EvProposalFiled:
 		s.ProposalCount++
+		s.Notices = append(s.Notices, Notice{Text: "✉ new idea from " + ev.IssueID + ": " + str("title"), Seq: ev.Seq})
+		if len(s.Notices) > 5 {
+			s.Notices = s.Notices[len(s.Notices)-5:]
+		}
 	case core.EvProposalAccepted, core.EvProposalRejected:
 		if s.ProposalCount > 0 {
 			s.ProposalCount--
 		}
 	}
+}
+
+func stringsFromPayload(raw any) []string {
+	var out []string
+	switch values := raw.(type) {
+	case []any:
+		for _, value := range values {
+			if value, ok := value.(string); ok {
+				out = append(out, value)
+			}
+		}
+	case []string:
+		out = append(out, values...)
+	}
+	return out
+}
+
+func appendUnique(items *[]string, value string) {
+	for _, item := range *items {
+		if item == value {
+			return
+		}
+	}
+	*items = append(*items, value)
 }

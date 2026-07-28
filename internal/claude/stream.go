@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/wbushyeager/guildhall/internal/levers"
-	"github.com/wbushyeager/guildhall/internal/runner"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 // Kinds of StreamEvent produced by ParseLine.

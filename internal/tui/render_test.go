@@ -5,9 +5,37 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/proto"
 )
+
+func TestRenderHeaderSeverityOrder(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	h := renderHeader(&proto.Overview{Failing: 1, NeedYou: 2, Building: 3}, 100)
+	if !strings.Contains(h, "1 build failing") || !strings.Contains(h, "2 questions for you") {
+		t.Fatalf("header: %q", h)
+	}
+	h = renderHeader(&proto.Overview{Building: 2, ShippedToday: 1, TokensTotal: 41000, DollarsTotal: 0.35}, 100)
+	if !strings.Contains(h, "all clear") || !strings.Contains(h, "~$0.35") {
+		t.Fatalf("calm header: %q", h)
+	}
+	h = renderHeader(&proto.Overview{Building: 2}, 100)
+	if strings.Contains(h, "$") {
+		t.Fatalf("dollars shown when price unset: %q", h)
+	}
+}
+
+func TestNoticeRowAlwaysReserved(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	st := projection.NewState()
+	empty := renderNoticeRow(st, 80)
+	if lipgloss.Height(empty) != 1 {
+		t.Fatalf("empty notice row height %d", lipgloss.Height(empty))
+	}
+}
 
 func TestRenderTowerPlacesCards(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
@@ -19,27 +47,120 @@ func TestRenderTowerPlacesCards(t *testing.T) {
 		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "spec"}),
 		mkev(t, core.EvMergeSequenced, "GH-2", map[string]any{"behind": "GH-1"}),
 	})
-	out := renderTower(m.State, m.stages, m.Ids, m.Focus, 100)
-	lines := strings.Split(out, "\n")
-	var execLine, specLine string
-	for _, line := range lines {
-		if strings.Contains(line, "EXECUTE") {
-			execLine = line
-		}
-		if strings.Contains(line, "SPEC") {
-			specLine = line
-		}
+	out := renderTower(m.State, m.stages, m.Ids, m.Focus, 0, 100)
+	if !strings.Contains(out, "PA") || !strings.Contains(out, "GH-1") || !strings.Contains(out, "payment") {
+		t.Fatalf("payment lane missing:\n%s", out)
 	}
-	if !strings.Contains(execLine, "PA GH-1") {
-		t.Fatalf("PA not on execute floor: %q", execLine)
+	if !strings.Contains(out, "SF") || !strings.Contains(out, "GH-2") || !strings.Contains(out, "after") {
+		t.Fatalf("search lane wrong:\n%s", out)
 	}
-	if !strings.Contains(specLine, "SF GH-2") || !strings.Contains(specLine, "behind:PA") {
-		t.Fatalf("SF card wrong: %q", specLine)
-	}
-	if !strings.Contains(out, "MERGE LANE") || !strings.Contains(out, "DECISIONS 0") {
+	if !strings.Contains(out, "shipping order:") || !strings.Contains(out, "questions 0") {
 		t.Fatalf("war room missing:\n%s", out)
 	}
 	if strings.LastIndex(out, "MERGE") < strings.Index(out, "BRAINSTORM") {
 		t.Fatal("merge floor not at the bottom")
+	}
+}
+
+func TestCellWordsAndStates(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	m := NewModel(nil, []string{"brainstorm", "spec", "execute", "review", "merge"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "payment adapter", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "execute", "attempt": float64(1), "of": float64(2)}),
+		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "search fix", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "spec", "attempt": float64(1), "of": float64(1)}),
+		mkev(t, core.EvDecisionRequired, "GH-2", map[string]any{
+			"decision_id": float64(1), "stage": "spec", "question": "q",
+			"options": []any{"a"}, "recommended": float64(0)}),
+		mkev(t, core.EvMergeSequenced, "GH-2", map[string]any{"behind": "GH-1"}),
+		mkev(t, core.EvIssueCreated, "GH-3", map[string]any{"title": "auth patch", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-3", map[string]any{"stage": "execute", "attempt": float64(2), "of": float64(2)}),
+		mkev(t, core.EvStageFailed, "GH-3", map[string]any{"stage": "execute", "error": "boom", "attempt": float64(2), "of": float64(2), "final": true}),
+	})
+	out := renderTower(m.State, m.stages, m.Ids, m.Focus, 0, 120)
+	for _, want := range []string{"NEED-YOU", "FAILED", "after", "payment", "search fix"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "behind:") || strings.Contains(out, "🔒") {
+		t.Fatalf("old jargon rendering survived:\n%s", out)
+	}
+}
+
+func TestStageAliases(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	m := NewModel(nil, []string{"spec", "execute"})
+	m.aliases = map[string]string{"spec": "AGREE", "execute": "BUILD"}
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+	})
+	out := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, false, 0, 100)
+	if !strings.Contains(out, "AGREE") || strings.Contains(out, "SPEC") {
+		t.Fatalf("aliases not applied:\n%s", out)
+	}
+}
+
+func TestVisibleLanesCompaction(t *testing.T) {
+	order := []string{"A", "B", "C", "D", "E", "F", "G", "H"}
+	full, left, right := visibleLanes(order, 4 /* focused=E */, 100)
+	if len(left)+len(full)+len(right) != 8 {
+		t.Fatalf("lanes lost: %v %v %v", left, full, right)
+	}
+	found := false
+	for _, lane := range full {
+		if lane == "E" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("focused lane not full-width")
+	}
+	if len(left) == 0 && len(right) == 0 {
+		t.Fatal("no compaction at 8 lanes/100 cols")
+	}
+}
+
+func TestShelfRendersShippedAndParked(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	out := renderShelf([]shelfItem{{ID: "GH-1", Title: "payment adapter", Parked: false},
+		{ID: "GH-3", Title: "auth patch", Parked: true}},
+		map[string]Identity{"GH-1": {Tag: "PA"}, "GH-3": {Tag: "AP"}}, 100)
+	if !strings.Contains(out, "SHIPPED") || !strings.Contains(out, "PARKED") || !strings.Contains(out, "auth patch") {
+		t.Fatalf("shelf:\n%s", out)
+	}
+}
+
+func TestRowsReuseStateWords(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	st := projection.NewState()
+	st.Issues["GH-1"] = &projection.IssueView{ID: "GH-1", Title: "broken", CurrentStage: "execute", State: "failed"}
+	st.Order = []string{"GH-1"}
+	out := renderRows(st, []string{"spec", "execute"}, map[string]Identity{"GH-1": {Tag: "BR", Color: "#61afef"}}, Focus{Issue: "GH-1"}, 1, 100)
+	if !strings.Contains(out, "FAILED") {
+		t.Fatalf("rows did not reuse failed cell:\n%s", out)
+	}
+}
+
+func TestRenderHelpOverlay(t *testing.T) {
+	out := ansi.Strip(renderHelpOverlay(100))
+	for _, want := range []string{
+		"help", "esc close",
+		"NAVIGATION", "CONTROL", "DOORS", "DECISIONS",
+		"war room", "lever editor", "architecture pane / map",
+		"close ? / esc", "quit q / ctrl+c",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "SYSTEM") {
+		t.Fatal("SYSTEM section should be gone")
+	}
+	// bordered box
+	if !strings.Contains(out, "┌") || !strings.Contains(out, "└") {
+		t.Fatal("expected box border")
 	}
 }

@@ -1,4 +1,4 @@
-module github.com/wbushyeager/guildhall
+module github.com/weston6142/watchtower
 
 go 1.25.7
 

@@ -9,17 +9,17 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/evidence"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/levers"
-	"github.com/wbushyeager/guildhall/internal/librarian"
-	"github.com/wbushyeager/guildhall/internal/marshal"
-	"github.com/wbushyeager/guildhall/internal/runner"
-	"github.com/wbushyeager/guildhall/internal/slots"
-	"github.com/wbushyeager/guildhall/internal/store"
-	"github.com/wbushyeager/guildhall/internal/touchset"
-	"github.com/wbushyeager/guildhall/internal/workspace"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/evidence"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/librarian"
+	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/touchset"
+	"github.com/weston6142/watchtower/internal/workspace"
 )
 
 type Config struct {
@@ -208,13 +208,21 @@ func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, prio
 	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority}
 	e.mu.Unlock()
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
-		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Priority: priority,
+		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Levers: matrixStrings(m), Priority: priority,
 	}); err != nil {
 		return "", err
 	}
 	e.emit(core.EvIssueCreated, id, map[string]any{
 		"title": title, "flow": flowName, "body": body, "priority": priority})
 	return id, nil
+}
+
+func matrixStrings(m levers.Matrix) map[string]string {
+	values := make(map[string]string, len(m))
+	for stage, lever := range m {
+		values[stage] = string(lever)
+	}
+	return values
 }
 
 func (e *Engine) PendingDecisions() []PendingDecision {
@@ -269,7 +277,8 @@ func (e *Engine) escalate(issueID, stage string, d levers.Decision) int {
 	e.mu.Unlock()
 	e.emit(core.EvDecisionRequired, issueID, map[string]any{
 		"decision_id": p.ID, "stage": stage, "question": d.Question,
-		"options": d.Options, "recommended": d.Recommended})
+		"options": d.Options, "recommended": d.Recommended, "why": d.Why,
+		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths})
 	choice, ok := <-p.reply
 	if !ok {
 		return -1
@@ -714,6 +723,12 @@ func (e *Engine) SetLever(issueID, stage string, l flow.Lever) error {
 		is.matrix = levers.Matrix{}
 	}
 	is.matrix[stage] = l
+	if e.cfg.Store != nil {
+		if err := e.cfg.Store.SetIssueLever(issueID, stage, string(l)); err != nil {
+			e.mu.Unlock()
+			return err
+		}
+	}
 	e.mu.Unlock()
 	e.emit(core.EvLeverChanged, issueID, map[string]string{"stage": stage, "lever": string(l)})
 	return nil

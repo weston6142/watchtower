@@ -10,24 +10,27 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/wbushyeager/guildhall/internal/claude"
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/engine"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/librarian"
-	"github.com/wbushyeager/guildhall/internal/marshal"
-	"github.com/wbushyeager/guildhall/internal/pkgs"
-	"github.com/wbushyeager/guildhall/internal/proto"
-	"github.com/wbushyeager/guildhall/internal/runner"
-	"github.com/wbushyeager/guildhall/internal/slots"
-	"github.com/wbushyeager/guildhall/internal/steward"
-	"github.com/wbushyeager/guildhall/internal/store"
-	"github.com/wbushyeager/guildhall/internal/transcript"
-	"github.com/wbushyeager/guildhall/internal/tui"
-	"github.com/wbushyeager/guildhall/internal/workspace"
+	"github.com/weston6142/watchtower/internal/claude"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/librarian"
+	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/scaffold"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/steward"
+	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/transcript"
+	"github.com/weston6142/watchtower/internal/tui"
+	"github.com/weston6142/watchtower/internal/workspace"
 )
 
 func defaultData() string {
@@ -37,35 +40,85 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|init|repos|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	switch cmd {
+	case "init":
+		fs := flag.NewFlagSet("init", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		cwd, err := os.Getwd()
+		if err != nil {
+			fatal(err)
+		}
+		created, skipped, err := scaffold.Init(cwd)
+		if err != nil {
+			fatal(err)
+		}
+		if err := repocfg.Register(*data, cwd); err != nil {
+			fatal(err)
+		}
+		for _, p := range created {
+			fmt.Println("created .guildhall/" + p)
+		}
+		for _, p := range skipped {
+			fmt.Println("exists  .guildhall/" + p)
+		}
+		fmt.Println("registered", cwd)
+		fmt.Println("next: run 'guildhall tower' — the daemon starts automatically")
+	case "repos":
+		fs := flag.NewFlagSet("repos", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		entries, err := repocfg.ListRegistered(*data)
+		if err != nil {
+			fatal(err)
+		}
+		for _, e := range entries {
+			status := "stopped"
+			sock := filepath.Join(repocfg.RepoDataDir(*data, e.Path), sockFileName)
+			if conn, err := net.Dial("unix", sock); err == nil {
+				conn.Close()
+				status = "running"
+			}
+			fmt.Printf("%-8s %s\n", status, e.Path)
+		}
 	case "daemon":
 		runDaemon(args)
 	case "tower":
 		fs := flag.NewFlagSet("tower", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repo := fs.String("repo", "", "repository path for the architecture map")
+		stageAliases := fs.String("stage-aliases", "", "display aliases, e.g. spec=AGREE,execute=BUILD")
+		reducedMotion := fs.Bool("reduced-motion", false, "disable spinner and failure motion")
+		retireAfter := fs.Duration("retire-after", 5*time.Minute, "auto-retire shipped lanes after this duration")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repo)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "get_flow", Flow: "default"})
 		model := tui.NewModel(c, r.FlowStages)
 		model.Repo = *repo
+		model.SetStageAliases(tui.ParseStageAliases(*stageAliases))
+		model.SetReducedMotion(*reducedMotion)
+		model.SetRetireAfter(*retireAfter)
+		if cfg, err := repocfg.Load(resolveRepo(*repo)); err == nil {
+			tui.SetTheme(cfg.Theme) // empty or unknown falls back to tokyo-night
+		}
 		if _, err := tea.NewProgram(model, tea.WithAltScreen()).Run(); err != nil {
 			fatal(err)
 		}
 	case "new":
 		fs := flag.NewFlagSet("new", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		title := fs.String("title", "", "issue title")
 		flowName := fs.String("flow", "default", "flow name")
 		preset := fs.String("preset", "regular", "yolo|regular|strict")
 		prio := fs.Int("priority", 0, "priority")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "create_issue", Title: *title, Flow: *flowName, Preset: *preset, Priority: *prio})
 		mustDo(c, proto.Command{Op: "start_issue", IssueID: r.IssueID})
@@ -73,8 +126,9 @@ func main() {
 	case "decisions":
 		fs := flag.NewFlagSet("decisions", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_decisions"})
 		for _, d := range r.Decisions {
@@ -90,6 +144,7 @@ func main() {
 	case "answer":
 		fs := flag.NewFlagSet("answer", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		rest := fs.Args()
 		if len(rest) != 2 {
@@ -104,15 +159,16 @@ func main() {
 		if err != nil {
 			fatal(fmt.Errorf("bad option %q: %w", rest[1], err))
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		mustDo(c, proto.Command{Op: "answer_decision", DecisionID: id, Option: opt})
 		fmt.Println("answered")
 	case "proposals":
 		fs := flag.NewFlagSet("proposals", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_proposals"})
 		for _, p := range r.Proposals {
@@ -121,6 +177,7 @@ func main() {
 	case "accept-proposal", "reject-proposal":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		rest := fs.Args()
 		if len(rest) != 1 {
@@ -131,7 +188,7 @@ func main() {
 		if err != nil {
 			fatal(fmt.Errorf("bad proposal-id %q: %w", rest[0], err))
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		accepted := cmd == "accept-proposal"
 		r := mustDo(c, proto.Command{Op: "resolve_proposal", ProposalID: id, Accept: accepted, Flow: "default", Preset: "regular"})
@@ -143,8 +200,9 @@ func main() {
 	case "issues":
 		fs := flag.NewFlagSet("issues", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_issues"})
 		for _, issue := range r.Issues {
@@ -153,20 +211,22 @@ func main() {
 	case "status":
 		fs := flag.NewFlagSet("status", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "overview"})
 		fmt.Println(statusSentence(r.Overview))
 	case "pause", "resume", "kill", "retry":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		if len(fs.Args()) != 1 {
 			fmt.Fprintf(os.Stderr, "usage: guildhall %s <issue-id>\n", cmd)
 			os.Exit(2)
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		ops := map[string]string{
 			"pause": "pause_issue", "resume": "resume_issue",
@@ -177,18 +237,20 @@ func main() {
 	case "lever":
 		fs := flag.NewFlagSet("lever", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		if len(fs.Args()) != 3 {
 			fmt.Fprintln(os.Stderr, "usage: guildhall lever <issue-id> <stage> <yolo|regular|strict>")
 			os.Exit(2)
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		mustDo(c, proto.Command{Op: "set_lever", IssueID: fs.Args()[0], Stage: fs.Args()[1], Lever: fs.Args()[2]})
 		fmt.Printf("lever %s %s %s\n", fs.Args()[0], fs.Args()[1], fs.Args()[2])
 	case "transcript":
 		fs := flag.NewFlagSet("transcript", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		n := fs.Int("n", 50, "number of lines")
 		fs.Parse(args)
 		rest := fs.Args()
@@ -204,7 +266,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: guildhall transcript <issue-id> [-n 50]")
 			os.Exit(2)
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "transcript_tail", IssueID: rest[0], N: *n})
 		for _, line := range r.Lines {
@@ -213,9 +275,10 @@ func main() {
 	case "tail":
 		fs := flag.NewFlagSet("tail", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		since := fs.Int64("since", 0, "since seq")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "tail", SinceSeq: *since})
 		for _, ev := range r.Events {
@@ -229,25 +292,59 @@ func main() {
 
 func runDaemon(args []string) {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-	data := fs.String("data", defaultData(), "data dir")
-	flowsDir := fs.String("flows", "", "flows dir (required)")
-	slotN := fs.Int("slots", 4, "heavy slots")
-	runnerKind := fs.String("runner", "claude", "claude|fake")
-	repo := fs.String("repo", "", "target repo (required for --runner claude)")
-	pkgDir := fs.String("packages", "dist/packages", "agent packages dir")
-	budget := fs.Int("budget", 0, "per-issue token budget (0=off)")
-	pricePerMTok := fs.Float64("price-per-mtok", 0, "estimated dollars per million tokens (0=hide)")
-	claudeBin := fs.String("claude-bin", "claude", "claude binary")
-	testCmd := fs.String("test-cmd", "", "merge-train test command")
+	base := fs.String("data", defaultData(), "base data dir")
+	flowsDir := fs.String("flows", "", "flows dir (default from config)")
+	slotN := fs.Int("slots", 0, "heavy slots (default from config)")
+	runnerKind := fs.String("runner", "", "claude|fake (default from config)")
+	repoFlag := fs.String("repo", "", "target repo (default: walk up from CWD)")
+	pkgDir := fs.String("packages", "", "agent packages dir (default from config)")
+	budget := fs.Int("budget", -1, "per-issue token budget (0=off; default from config)")
+	pricePerMTok := fs.Float64("price-per-mtok", -1, "estimated dollars per million tokens (0=hide; default from config)")
+	claudeBin := fs.String("claude-bin", "", "claude binary (default from config)")
+	testCmd := fs.String("test-cmd", "", "merge-train test command (default from config)")
 	fs.Parse(args)
-	if *flowsDir == "" {
-		fmt.Fprintln(os.Stderr, "daemon: --flows is required")
-		os.Exit(2)
-	}
-	if err := os.MkdirAll(*data, 0o755); err != nil {
+
+	repo := resolveRepo(*repoFlag)
+	cfg, err := repocfg.Load(repo)
+	if err != nil {
 		fatal(err)
 	}
-	st, err := store.Open(filepath.Join(*data, "guildhall.db"))
+	// Explicit flags override config; unset flags take config values.
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if !set["flows"] {
+		*flowsDir = cfg.Flows
+	}
+	if !set["packages"] {
+		*pkgDir = cfg.Packages
+	}
+	if !set["runner"] {
+		*runnerKind = cfg.Runner
+	}
+	if !set["slots"] {
+		*slotN = cfg.Slots
+	}
+	if !set["budget"] {
+		*budget = cfg.Budget
+	}
+	if !set["price-per-mtok"] {
+		*pricePerMTok = cfg.PricePerMTok
+	}
+	if !set["claude-bin"] {
+		*claudeBin = cfg.ClaudeBin
+	}
+	if !set["test-cmd"] {
+		*testCmd = cfg.TestCmd
+	}
+
+	data := repocfg.RepoDataDir(*base, repo)
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, pidFileName), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		fatal(err)
+	}
+	st, err := store.Open(filepath.Join(data, "guildhall.db"))
 	if err != nil {
 		fatal(err)
 	}
@@ -261,7 +358,7 @@ func runDaemon(args []string) {
 		flows[f.Name] = f
 	}
 	if len(flows) == 0 {
-		fatal(fmt.Errorf("no flows found in %s", *flowsDir))
+		fatal(fmt.Errorf("no flows found in %s (configured in %s)", *flowsDir, repocfg.ConfigPath(repo)))
 	}
 	if os.Getenv("GUILDHALL_FAKE") == "1" {
 		*runnerKind = "fake"
@@ -272,15 +369,12 @@ func runDaemon(args []string) {
 	case "fake":
 		run = fakeForFlows(flows)
 	case "claude":
-		if *repo == "" {
-			fatal(fmt.Errorf("--repo is required with --runner claude"))
-		}
 		packages, err := pkgs.LoadDir(*pkgDir)
 		if err != nil {
 			fatal(err)
 		}
 		run = &claude.CodeRunner{Bin: *claudeBin, Packages: packages}
-		ws = workspace.Detect(*repo)
+		ws = workspace.Detect(repo)
 	default:
 		fatal(fmt.Errorf("unknown runner %q", *runnerKind))
 	}
@@ -310,17 +404,17 @@ func runDaemon(args []string) {
 			res := <-run.Run(ctx, issueID, "conflict-repair", "conflict-resolver", wt, autoAnswerAsks())
 			return res.Err
 		}
-		train = &marshal.Train{Repo: *repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve}
-		lib = &librarian.Librarian{MemoryDir: filepath.Join(*repo, "docs", "guildhall")}
+		train = &marshal.Train{Repo: repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve}
+		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "guildhall")}
 		reconcile = func(ctx context.Context, issueID string) error {
-			res := <-run.Run(ctx, issueID, "librarian", "librarian", *repo, autoAnswerAsks())
+			res := <-run.Run(ctx, issueID, "librarian", "librarian", repo, autoAnswerAsks())
 			return res.Err
 		}
 	}
 	transcriptBuffer := transcript.NewBuffer(500)
 	eng := engine.New(engine.Config{
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
-		Flows: flows, DataDir: filepath.Join(*data, "issues"),
+		Flows: flows, DataDir: filepath.Join(data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
 		Marshal: seq, Train: train,
 		Librarian: lib, Reconcile: reconcile,
@@ -336,7 +430,7 @@ func runDaemon(args []string) {
 	case *runner.FakeRunner:
 		r.OnProposal = fileProposal
 	}
-	sock := filepath.Join(*data, "guildhall.sock")
+	sock := filepath.Join(data, sockFileName)
 	os.Remove(sock)
 	l, err := net.Listen("unix", sock)
 	if err != nil {
@@ -347,6 +441,7 @@ func runDaemon(args []string) {
 	srv.SetFlows(flows)
 	srv.SetTranscript(transcriptBuffer)
 	srv.SetPricePerMTok(*pricePerMTok)
+	srv.SetBudget(*budget)
 	fatal(srv.Serve(l))
 }
 
@@ -434,14 +529,6 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 		}
 	}
 	return &runner.FakeRunner{Scripts: scripts}
-}
-
-func mustDial(data string) *proto.Client {
-	c, err := proto.Dial(filepath.Join(data, "guildhall.sock"))
-	if err != nil {
-		fatal(err)
-	}
-	return c
 }
 
 func mustDo(c *proto.Client, cmd proto.Command) proto.Response {

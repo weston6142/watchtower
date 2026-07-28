@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/pkgs"
-	"github.com/wbushyeager/guildhall/internal/runner"
+	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 func testPkgs() map[string]pkgs.Package {

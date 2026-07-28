@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/touchset"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/touchset"
 )
 
 type Emit func(t core.EventType, issueID string, payload any)

@@ -1,0 +1,3 @@
+allowed_tools: ["Bash", "Read", "Edit", "Glob", "Grep", "Write"]
+model: ""
+max_turns: 0

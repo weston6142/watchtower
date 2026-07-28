@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/engine"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/levers"
-	"github.com/wbushyeager/guildhall/internal/runner"
-	"github.com/wbushyeager/guildhall/internal/slots"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func TestCreateAnswerAndTailOverSocket(t *testing.T) {

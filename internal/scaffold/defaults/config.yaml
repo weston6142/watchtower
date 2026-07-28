@@ -1,0 +1,10 @@
+# guildhall repo configuration. All fields optional; shown values are defaults.
+# Relative paths resolve against the repo root.
+flows: .guildhall/flows
+packages: .guildhall/packages
+runner: claude        # claude|fake
+slots: 4              # concurrent heavy slots
+budget: 0             # per-issue token budget (0=off)
+price_per_mtok: 0     # estimated $/Mtok (0=hide cost)
+claude_bin: claude
+test_cmd: ""          # merge-train test command, e.g. "go test ./..."

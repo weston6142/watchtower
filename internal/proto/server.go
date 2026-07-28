@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wbushyeager/guildhall/internal/archmap"
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/engine"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/levers"
-	"github.com/wbushyeager/guildhall/internal/store"
-	"github.com/wbushyeager/guildhall/internal/transcript"
+	"github.com/weston6142/watchtower/internal/archmap"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/transcript"
 )
 
 type Server struct {
@@ -24,6 +24,7 @@ type Server struct {
 	flows        map[string]flow.Flow
 	transcript   *transcript.Buffer
 	pricePerMTok float64
+	budget       int
 }
 
 func NewServer(e *engine.Engine, s *store.Store) *Server {
@@ -36,6 +37,8 @@ func (sv *Server) SetFlows(f map[string]flow.Flow) { sv.flows = f }
 func (sv *Server) SetTranscript(b *transcript.Buffer) { sv.transcript = b }
 
 func (sv *Server) SetPricePerMTok(price float64) { sv.pricePerMTok = price }
+
+func (sv *Server) SetBudget(budget int) { sv.budget = budget }
 
 func (sv *Server) Serve(l net.Listener) error {
 	for {
@@ -195,7 +198,8 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		return Response{OK: true, Detail: &IssueDetail{
 			Issue: issue, Runs: runs, Tokens: tokens, Artifacts: artifacts,
-			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf,
+			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf, Budget: sv.budget, Levers: issue.Levers,
+			Dollars: float64(tokens) / 1_000_000 * sv.pricePerMTok,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 func navModel(t *testing.T) Model {
