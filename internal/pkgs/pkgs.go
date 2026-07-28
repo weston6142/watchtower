@@ -15,6 +15,7 @@ type Package struct {
 	Prompt       string   `yaml:"-"`
 	AllowedTools []string `yaml:"allowed_tools"`
 	Model        string   `yaml:"model"`
+	Effort       string   `yaml:"effort"` // low|medium|high; empty = CLI default
 	MaxTurns     int      `yaml:"max_turns"`
 }
 

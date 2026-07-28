@@ -16,6 +16,20 @@ import (
 // assistant messages that exceed bufio.Scanner's default 64KiB limit.
 const maxLineBytes = 1 << 20
 
+// EffortEnv maps a package effort level to the CLI's thinking-budget env var.
+// Empty or unknown levels return "" (CLI default).
+func EffortEnv(effort string) string {
+	switch effort {
+	case "low":
+		return "MAX_THINKING_TOKENS=1024"
+	case "medium":
+		return "MAX_THINKING_TOKENS=8192"
+	case "high":
+		return "MAX_THINKING_TOKENS=32768"
+	}
+	return ""
+}
+
 // CodeRunner drives a claude CLI subprocess in stream-json mode, translating
 // its output into runner.Result and decision markers into runner.Ask.
 type CodeRunner struct {
@@ -61,6 +75,9 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	cmd := exec.CommandContext(ctx, c.Bin, args...)
 	cmd.Dir = workdir
 	cmd.Env = append(os.Environ(), c.ExtraEnv...)
+	if env := EffortEnv(pkg.Effort); env != "" {
+		cmd.Env = append(cmd.Env, env)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return runner.Result{Err: err}

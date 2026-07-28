@@ -1,0 +1,4 @@
+allowed_tools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+model: "sonnet"
+effort: "medium"
+max_turns: 0
