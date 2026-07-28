@@ -41,22 +41,23 @@ func (p pagerState) scroll(key string, height int) pagerState {
 }
 
 func renderArtifactList(p pagerState, id Identity, width, height int) string {
-	lines := []string{fmt.Sprintf("ARTIFACTS %s %s · enter open · esc back", id.Tag, p.Title)}
+	t := activeTheme
+	dim := lipgloss.NewStyle().Foreground(t.Dim)
+	inner := max(20, width-8)
+	var body []string
 	if len(p.Files) == 0 {
-		lines = append(lines, themeDim.Render("no artifacts"))
+		body = append(body, themeDim.Render("no artifacts"))
 	} else {
 		for i, file := range p.Files {
-			mark := "  "
-			if i == p.Sel {
-				mark = "▶ "
-			}
-			lines = append(lines, mark+file)
+			body = append(body, cursorRow(i == p.Sel, truncate(file, max(1, inner-2)), inner))
 		}
 	}
-	if height > 0 && len(lines) > height {
-		lines = lines[:height]
+	if height > 4 && len(body) > height-4 {
+		body = body[:height-4]
 	}
-	return boundedLines(lines, width)
+	foot := keyChip("enter") + dim.Render(" open  ") + keyChip("esc") + dim.Render(" back to tower")
+	sub := strings.TrimSpace(id.Tag + " " + p.Title)
+	return renderBox("artifacts", sub, " esc back ", strings.Join(append(body, "", foot), "\n"))
 }
 
 // renderPager is a reading mode: diff semantics in Ok/Err/Structure, body in

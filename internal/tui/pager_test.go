@@ -34,6 +34,20 @@ func TestRenderPagerWindow(t *testing.T) {
 	}
 }
 
+func TestArtifactListWearsBoxChrome(t *testing.T) {
+	p := pagerState{Mode: "artifacts", Files: []string{"a.md", "b.md"}, Sel: 1, Title: "GH-1"}
+	out := renderArtifactList(p, Identity{Tag: "◆"}, 80, 20)
+	if !strings.Contains(out, "─") {
+		t.Fatal("artifact list has no border")
+	}
+	if !strings.Contains(out, glyphCursor) {
+		t.Fatal("selected row has no cursor glyph")
+	}
+	if !strings.Contains(out, "esc back") {
+		t.Fatal("missing esc hint")
+	}
+}
+
 func mklines(n int) []string {
 	out := make([]string, n)
 	for i := range out {
