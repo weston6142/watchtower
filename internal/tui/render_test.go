@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"github.com/wbushyeager/guildhall/internal/core"
 	"github.com/wbushyeager/guildhall/internal/projection"
@@ -143,11 +144,23 @@ func TestRowsReuseStateWords(t *testing.T) {
 	}
 }
 
-func TestHelpListsControlKeys(t *testing.T) {
-	out := renderHelp(100)
-	for _, key := range []string{"p", "x", "R", "L", "n", "z", "c", "u", "?", "q"} {
-		if !strings.Contains(out, key) {
-			t.Fatalf("help missing %q:\n%s", key, out)
+func TestRenderHelpOverlay(t *testing.T) {
+	out := ansi.Strip(renderHelpOverlay(100))
+	for _, want := range []string{
+		"help", "esc close",
+		"NAVIGATION", "CONTROL", "DOORS", "DECISIONS",
+		"war room", "lever editor", "architecture pane / map",
+		"close ? / esc", "quit q / ctrl+c",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "SYSTEM") {
+		t.Fatal("SYSTEM section should be gone")
+	}
+	// bordered box
+	if !strings.Contains(out, "┌") || !strings.Contains(out, "└") {
+		t.Fatal("expected box border")
 	}
 }

@@ -421,30 +421,96 @@ func shelfLine(item shelfItem, identity Identity, status string) string {
 	return line
 }
 
-func renderHelp(width int) string {
-	lines := []string{
-		"HELP · every key in the control room",
-		"",
-		"NAVIGATION",
-		"j/k floors · h/l cards · 1-9 focus issue · tab attention · g war room",
-		"enter artifacts · esc back · z rows / tower",
-		"tab next field · backspace edit modal text",
-		"",
-		"CONTROL",
-		"p pause/resume · x kill stage · R retry failed stage · L lever editor",
-		"n new issue · c retire shipped lane · u shipped shelf",
-		"",
-		"DOORS",
-		"d decisions · t triage · e timeline · T transcript · r reject tray item",
-		"a architecture pane · A architecture map",
-		"",
-		"DECISIONS",
-		"y accept recommendation · n choose option · o evidence · digits choose",
-		"",
-		"SYSTEM",
-		"? close help · q quit · ctrl+c quit",
+type helpGroup struct {
+	name string
+	rows [][2]string // key, description
+}
+
+var helpGroups = [][]helpGroup{
+	{ // left column
+		{"NAVIGATION", [][2]string{
+			{"j / k", "floors"},
+			{"h / l", "cards"},
+			{"1..9", "focus issue"},
+			{"tab", "attention / next field"},
+			{"g", "war room"},
+			{"enter", "open artifacts"},
+			{"esc", "back"},
+			{"z", "rows / tower layout"},
+		}},
+		{"CONTROL", [][2]string{
+			{"p", "pause / resume"},
+			{"x", "kill stage"},
+			{"R", "retry failed stage"},
+			{"L", "lever editor"},
+			{"n", "new issue"},
+			{"c", "retire shipped lane"},
+			{"u", "shipped shelf"},
+		}},
+	},
+	{ // right column
+		{"DOORS", [][2]string{
+			{"d", "decisions"},
+			{"t", "triage"},
+			{"e", "timeline"},
+			{"T", "transcript"},
+			{"r", "reject tray item"},
+			{"a / A", "architecture pane / map"},
+		}},
+		{"DECISIONS", [][2]string{
+			{"y", "accept recommendation"},
+			{"n", "choose option"},
+			{"o", "show evidence"},
+			{"1..9", "choose option by number"},
+		}},
+	},
+}
+
+func renderHelpOverlay(width int) string {
+	t := activeTheme
+	keyStyle := lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Width(8)
+	descStyle := lipgloss.NewStyle().Foreground(t.Text)
+	headStyle := lipgloss.NewStyle().Foreground(t.Heading).Bold(true)
+
+	var cols []string
+	for _, col := range helpGroups {
+		var blocks []string
+		for _, g := range col {
+			lines := []string{headStyle.Render(g.name)}
+			for _, row := range g.rows {
+				lines = append(lines, keyStyle.Render(row[0])+descStyle.Render(row[1]))
+			}
+			blocks = append(blocks, strings.Join(lines, "\n"))
+		}
+		cols = append(cols, strings.Join(blocks, "\n\n"))
 	}
-	return boundedLines(lines, width)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, cols[0], "    ", cols[1])
+	inner := lipgloss.Width(body)
+
+	title := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render("help")
+	sub := lipgloss.NewStyle().Foreground(t.Dim).Render(" every key in the control room")
+	chip := lipgloss.NewStyle().Foreground(t.Panel).Background(t.Accent).Bold(true).Render(" esc close ")
+	gap := max(1, inner-lipgloss.Width(title)-lipgloss.Width(sub)-lipgloss.Width(chip))
+	header := title + sub + strings.Repeat(" ", gap) + chip
+
+	foot := lipgloss.NewStyle().Foreground(t.Heading).Render("close ") + descStyle.Render("? / esc") +
+		lipgloss.NewStyle().Foreground(t.Dim).Render("  ·  ") +
+		lipgloss.NewStyle().Foreground(t.Heading).Render("quit ") + descStyle.Render("q / ctrl+c")
+	rule := lipgloss.NewStyle().Foreground(t.Dim).Render(strings.Repeat("─", inner))
+
+	content := strings.Join([]string{header, "", body, rule, foot}, "\n")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(t.Accent).
+		Padding(0, 1).
+		Render(content)
+	if lipgloss.Width(box) >= width {
+		// narrow terminal: stack the two columns
+		body = cols[0] + "\n\n" + cols[1]
+		content = strings.Join([]string{header, "", body, foot}, "\n")
+		box = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(t.Accent).Padding(0, 1).Render(content)
+	}
+	return box
 }
 
 func warRoom(st *projection.State, ids map[string]Identity) string {

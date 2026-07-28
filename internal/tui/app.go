@@ -1128,21 +1128,18 @@ func (m Model) View() string {
 	case "shelf":
 		tower = renderShelf(m.shelfItems(), m.Ids, layoutWidth)
 	}
-	if m.currentMode() != "" && !m.help {
+	if m.currentMode() != "" {
 		// Doors replace the grid and rail but retain the header and footer.
 		var b strings.Builder
 		m.writeHeaderRows(&b, layoutWidth)
 		b.WriteString(tower)
 		b.WriteString("\n\n")
 		b.WriteString("j/k select · enter open · esc back · q quit")
-		return b.String()
-	}
-	if m.help {
-		var b strings.Builder
-		m.writeHeaderRows(&b, layoutWidth)
-		b.WriteString(renderHelp(layoutWidth))
-		b.WriteString("\n\n? close help · q quit")
-		return b.String()
+		screen := b.String()
+		if m.help {
+			return overlayCenter(screen, renderHelpOverlay(layoutWidth), layoutWidth, max(m.Height, lipgloss.Height(screen)))
+		}
+		return screen
 	}
 	if m.modal != nil {
 		tower = renderModal(*m.modal, layoutWidth)
@@ -1191,5 +1188,9 @@ func (m Model) View() string {
 	if m.Err != "" {
 		fmt.Fprintf(&b, "\nerror: %s", m.Err)
 	}
-	return b.String()
+	screen := b.String()
+	if m.help {
+		return overlayCenter(screen, renderHelpOverlay(layoutWidth), layoutWidth, max(m.Height, lipgloss.Height(screen)))
+	}
+	return screen
 }
