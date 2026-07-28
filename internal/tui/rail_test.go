@@ -161,3 +161,15 @@ func TestRailShowsModelAndEffort(t *testing.T) {
 		t.Fatalf("rail missing cli-default line:\n%s", out)
 	}
 }
+
+func TestRailIsBoxed(t *testing.T) {
+	out := renderRail(nil, map[string]Identity{}, nil, 40)
+	if !strings.Contains(out, "─") || !strings.Contains(out, "│") {
+		t.Fatalf("rail has no border:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > 40 {
+			t.Fatalf("rail line %d cells wide, budget 40: %q", w, line)
+		}
+	}
+}

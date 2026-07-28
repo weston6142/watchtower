@@ -58,7 +58,8 @@ func wrapIndent(text string, width int, first string) []string {
 // pending decision queue. Paths and session IDs intentionally stay here: they
 // are diagnostic details, not grid copy.
 func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueDetail, width int) string {
-	lines := []string{"FOCUS"}
+	inner := max(16, width-4) // border + padding
+	var lines []string
 	if det != nil {
 		identity := ids[det.Issue.ID]
 		lines = append(lines,
@@ -120,7 +121,14 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 			lines = append(lines, fmt.Sprintf("%s[%d] %s %s — %s", mark, d.ID, identity.Tag, d.Stage, d.Question))
 		}
 	}
-	return boundedLines(lines, width)
+	t := activeTheme
+	band := lipgloss.NewStyle().Foreground(t.Bright).Background(t.Bg2).Bold(true).Render(" FOCUS ")
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(t.Dimmer).
+		Padding(0, 1).
+		Width(width - 2).
+		Render(band + "\n" + boundedLines(lines, inner))
 }
 
 func focusStatus(state string) string {

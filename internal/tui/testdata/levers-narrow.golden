@@ -1,11 +1,11 @@
 [2m  ● 1 question for you  ● 1 build failing      2 building · 1 shipped today · 412k tokens · ~$6.18  [0m
 [2m⏸ FX parked at spec — p resumes[0m
-[2mshipping order: — · builders 1/4 busy · ideas 0 · questions 1     FOCUS                            [0m
-[2mMAP · quiet · a full map                                                                           [0m
-[2m              ▸CA            GH            FX            ‹1›      DECISION QUEUE                   [0m
-[2m              create a      issue         flaky e2e      ‹1›      ▶ [1] CA brainstorm — Should cre…[0m
-[2m              repo for      importer —    fix —          ‹1›                                       [0m
-[2m              ca-repo       gh-importer   fx-e2e         ‹1›                                       [0m
+[2mshipping order: — · builders 1/4 busy · ideas 0 · questions 1     ┌───────────────────────────────┐[0m
+[2mMAP · quiet · a full map                                          │  FOCUS                        │[0m
+[2m              ▸CA            GH            FX            ‹1›      │                               │[0m
+[2m              create a      issue         flaky e2e      ‹1›      │ DECISION QUEUE                │[0m
+[2m              repo for      importer —    fix —          ‹1›      │ ▶ [1] CA brainstorm — Should… │[0m
+[2m              ca-repo       gh-importer   fx-e2e         ‹1›      └───────────────────────────────┘[0m
 [2m BRAINSTORM   ◔ need-you    ●             ●              ‹1›                                       [0m
 [2m SPEC         ○             ●             ●              ‹1›                                       [0m
 [2m PLAN         ○             ●             ●              ‹1›                                       [0m

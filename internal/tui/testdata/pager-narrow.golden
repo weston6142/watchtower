@@ -1,11 +1,11 @@
 [48;2;26;27;38m  [1;38;2;224;175;104m● 1 question for you[0m  [1;38;2;247;118;142m● 1 build failing[0m      [38;2;86;95;137m2 building · 1 shipped today · 412k tokens · ~$6.18[0m  [0m
 ⏸ FX parked at spec — p resumes
-[1;38;2;227;236;255mevidence · decision 1[0m  [38;2;187;154;247m0/7[0m[38;2;86;95;137m · esc back[0m                             FOCUS                            
-                                                                                                   
-[38;2;86;95;137mdocs/brainstorm/repo-scope.md[0m                                     DECISION QUEUE                   
-[38;2;121;162;247m@@ options considered @@[0m                                          ▶ [1] CA brainstorm — Should cre…
-[38;2;86;95;137m  The issue tracker prefix (GH-) implies a GitHub home.[0m                                            
-[38;2;158;206;105m+ Recommendation: create remote now; renaming later breaks[0m                                         
+[1;38;2;227;236;255mevidence · decision 1[0m  [38;2;187;154;247m0/7[0m[38;2;86;95;137m · esc back[0m                             [38;2;59;65;97m┌───────────────────────────────┐[0m
+                                                                  [38;2;59;65;97m│[0m [1;38;2;227;236;255;48;2;31;35;52m FOCUS [0m                       [38;2;59;65;97m│[0m
+[38;2;86;95;137mdocs/brainstorm/repo-scope.md[0m                                     [38;2;59;65;97m│[0m                               [38;2;59;65;97m│[0m
+[38;2;121;162;247m@@ options considered @@[0m                                          [38;2;59;65;97m│[0m DECISION QUEUE                [38;2;59;65;97m│[0m
+[38;2;86;95;137m  The issue tracker prefix (GH-) implies a GitHub home.[0m           [38;2;59;65;97m│[0m ▶ [1] CA brainstorm — Should… [38;2;59;65;97m│[0m
+[38;2;158;206;105m+ Recommendation: create remote now; renaming later breaks[0m        [38;2;59;65;97m└───────────────────────────────┘[0m
 [38;2;158;206;105m+ clone URLs and CI triggers once anything points at it.[0m                                           
 [38;2;247;118;142m- Alternative: defer remote until first collaborator.[0m                                              
 [38;2;86;95;137m  Cost of reversal stays low until CI or clones exist.[0m                                             
