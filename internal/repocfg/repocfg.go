@@ -21,6 +21,7 @@ type Config struct {
 	PricePerMTok float64 `yaml:"price_per_mtok"`
 	ClaudeBin    string  `yaml:"claude_bin"`
 	TestCmd      string  `yaml:"test_cmd"`
+	Theme        string  `yaml:"theme"`
 }
 
 func Default() Config {

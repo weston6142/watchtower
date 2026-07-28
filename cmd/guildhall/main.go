@@ -103,6 +103,9 @@ func main() {
 		model.SetStageAliases(tui.ParseStageAliases(*stageAliases))
 		model.SetReducedMotion(*reducedMotion)
 		model.SetRetireAfter(*retireAfter)
+		if cfg, err := repocfg.Load(resolveRepo(*repo)); err == nil {
+			tui.SetTheme(cfg.Theme) // empty or unknown falls back to tokyo-night
+		}
 		if _, err := tea.NewProgram(model, tea.WithAltScreen()).Run(); err != nil {
 			fatal(err)
 		}

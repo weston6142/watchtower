@@ -44,6 +44,31 @@ func TestLoadReadsFileAndFillsGaps(t *testing.T) {
 	}
 }
 
+func TestLoadTheme(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".guildhall"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".guildhall", "config.yaml"), []byte("theme: gruvbox\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Theme != "gruvbox" {
+		t.Fatalf("Theme = %q", cfg.Theme)
+	}
+	// missing file: Theme stays empty (tui applies its own default)
+	cfg, err = Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Theme != "" {
+		t.Fatalf("default Theme = %q, want empty", cfg.Theme)
+	}
+}
+
 func TestLoadBadYAMLErrors(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".guildhall")
