@@ -64,23 +64,26 @@ func (m modalState) fieldValue() string {
 	}
 }
 
-// renderBox wraps content in the themed overlay chrome: accent border,
-// bright title, dim subtitle, inverted chip pinned to the right.
+// renderBox wraps content in the shared overlay chrome: a Bg2 header band
+// holding the bright title, dim subtitle, and inverted accent chip, over an
+// accent-bordered body. Every overlay uses this box.
 func renderBox(title, sub, chipText, content string) string {
 	t := activeTheme
-	head := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render(title)
+	head := lipgloss.NewStyle().Foreground(t.Bright).Background(t.Bg2).Bold(true).Render(" " + title)
 	if sub != "" {
-		head += lipgloss.NewStyle().Foreground(t.Dim).Render(" " + sub)
+		head += lipgloss.NewStyle().Foreground(t.Dim).Background(t.Bg2).Render(" " + sub)
 	}
 	chip := lipgloss.NewStyle().Foreground(t.Bg0).Background(t.Accent).Bold(true).Render(chipText)
 	inner := max(lipgloss.Width(content), lipgloss.Width(head)+lipgloss.Width(chip)+2)
 	gap := max(1, inner-lipgloss.Width(head)-lipgloss.Width(chip))
-	header := head + strings.Repeat(" ", gap) + chip
+	band := head +
+		lipgloss.NewStyle().Background(t.Bg2).Render(strings.Repeat(" ", gap)) +
+		chip
 	return lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(t.Accent).
 		Padding(0, 1).
-		Render(header + "\n\n" + content)
+		Render(band + "\n\n" + content)
 }
 
 func renderModal(m modalState, width int) string {
