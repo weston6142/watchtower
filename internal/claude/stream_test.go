@@ -23,6 +23,67 @@ func TestParseInitAssistantResult(t *testing.T) {
 	}
 }
 
+func TestParseToolUse(t *testing.T) {
+	ev := ParseLine([]byte(`{"type":"assistant","message":{"content":[` +
+		`{"type":"tool_use","name":"Bash","input":{"command":"go test ./..."}},` +
+		`{"type":"tool_use","name":"Read","input":{"file_path":"internal/engine/engine.go"}}]}}`))
+	if ev.Kind != KindToolUse {
+		t.Fatalf("kind = %q, want tool_use", ev.Kind)
+	}
+	if len(ev.Tools) != 2 {
+		t.Fatalf("tools = %v", ev.Tools)
+	}
+	if ev.Tools[0] != "↳ Bash go test ./..." {
+		t.Fatalf("tools[0] = %q", ev.Tools[0])
+	}
+	if ev.Tools[1] != "↳ Read internal/engine/engine.go" {
+		t.Fatalf("tools[1] = %q", ev.Tools[1])
+	}
+}
+
+// Text and tool blocks in one message must both survive, text first.
+func TestParseMixedTextAndToolUse(t *testing.T) {
+	ev := ParseLine([]byte(`{"type":"assistant","message":{"content":[` +
+		`{"type":"text","text":"checking the tests"},` +
+		`{"type":"tool_use","name":"Bash","input":{"command":"go vet ./..."}}]}}`))
+	if ev.Kind != KindAssistantText {
+		t.Fatalf("kind = %q, want assistant_text", ev.Kind)
+	}
+	if ev.Text != "checking the tests" {
+		t.Fatalf("text = %q", ev.Text)
+	}
+	if len(ev.Tools) != 1 || ev.Tools[0] != "↳ Bash go vet ./..." {
+		t.Fatalf("tools = %v", ev.Tools)
+	}
+}
+
+// An unknown tool, or one whose input has no field we recognize, still names
+// itself rather than dumping raw JSON at the operator.
+func TestParseToolUseUnknownShape(t *testing.T) {
+	ev := ParseLine([]byte(`{"type":"assistant","message":{"content":[` +
+		`{"type":"tool_use","name":"mcp__thing__do","input":{"weird":{"nested":1}}}]}}`))
+	if len(ev.Tools) != 1 || ev.Tools[0] != "↳ mcp__thing__do" {
+		t.Fatalf("tools = %v", ev.Tools)
+	}
+}
+
+// Malformed input must not panic or leak newlines into the transcript.
+func TestParseToolUseMalformedInput(t *testing.T) {
+	ev := ParseLine([]byte(`{"type":"assistant","message":{"content":[` +
+		`{"type":"tool_use","name":"Bash","input":"not-an-object"}]}}`))
+	if len(ev.Tools) != 1 || ev.Tools[0] != "↳ Bash" {
+		t.Fatalf("tools = %v", ev.Tools)
+	}
+	long := ParseLine([]byte(`{"type":"assistant","message":{"content":[` +
+		`{"type":"tool_use","name":"Bash","input":{"command":"echo ` + strings.Repeat("x", 400) + `"}}]}}`))
+	if strings.Contains(long.Tools[0], "\n") {
+		t.Fatal("summary leaked a newline")
+	}
+	if len([]rune(long.Tools[0])) > 120 {
+		t.Fatalf("summary not truncated: %d runes", len([]rune(long.Tools[0])))
+	}
+}
+
 func TestExtractDecision(t *testing.T) {
 	text := "I need input.\n{\"watchtower_decision\": {\"question\": \"REST or GraphQL?\", \"options\": [\"REST\", \"GraphQL\"], \"recommended\": 0, \"importance\": 0.6, \"paths\": [\"api/routes.go\"]}}\n"
 	d, ok := ExtractDecision(text)

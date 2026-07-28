@@ -12,6 +12,7 @@ import (
 const (
 	KindInit          = "init"
 	KindAssistantText = "assistant_text"
+	KindToolUse       = "tool_use"
 	KindResult        = "result"
 	KindOther         = "other"
 )
@@ -21,8 +22,12 @@ type StreamEvent struct {
 	Kind      string
 	SessionID string
 	Text      string
-	Tokens    int
-	IsError   bool
+	// Tools holds one-line summaries of the tool_use blocks in this message,
+	// already prefixed. They are what an operator watching a stage sees while
+	// the agent is working rather than talking.
+	Tools   []string
+	Tokens  int
+	IsError bool
 }
 
 type rawLine struct {
@@ -33,8 +38,10 @@ type rawLine struct {
 	Usage     *usage `json:"usage"`
 	Message   *struct {
 		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
 		} `json:"content"`
 		Usage *usage `json:"usage"`
 	} `json:"message"`
@@ -57,12 +64,22 @@ func ParseLine(line []byte) StreamEvent {
 		return StreamEvent{Kind: KindInit, SessionID: r.SessionID}
 	case r.Type == "assistant" && r.Message != nil:
 		var parts []string
+		var tools []string
 		for _, c := range r.Message.Content {
-			if c.Type == "text" && c.Text != "" {
+			switch {
+			case c.Type == "text" && c.Text != "":
 				parts = append(parts, c.Text)
+			case c.Type == "tool_use" && c.Name != "":
+				tools = append(tools, "↳ "+toolSummary(c.Name, c.Input))
 			}
 		}
-		return StreamEvent{Kind: KindAssistantText, Text: strings.Join(parts, "\n")}
+		text := strings.Join(parts, "\n")
+		// A message with nothing but tool calls used to fall through as an
+		// empty assistant_text, writing a blank line per tool call.
+		if text == "" && len(tools) > 0 {
+			return StreamEvent{Kind: KindToolUse, Tools: tools}
+		}
+		return StreamEvent{Kind: KindAssistantText, Text: text, Tools: tools}
 	case r.Type == "result":
 		u := r.Usage
 		if u == nil && r.Message != nil {
@@ -76,6 +93,38 @@ func ParseLine(line []byte) StreamEvent {
 	default:
 		return StreamEvent{Kind: KindOther}
 	}
+}
+
+// toolSummary renders one tool_use block as a single transcript line: the tool
+// name plus its most identifying argument. Unrecognized tools and unparseable
+// inputs degrade to the bare name — raw JSON in the stream door is noise.
+func toolSummary(name string, input json.RawMessage) string {
+	// The public line adds the two-rune "↳ " prefix after this helper returns.
+	const maxRunes = 118
+	var fields map[string]json.RawMessage
+	if len(input) == 0 || json.Unmarshal(input, &fields) != nil {
+		return name
+	}
+	var arg string
+	for _, key := range []string{"command", "file_path", "path", "pattern", "description", "query"} {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		if json.Unmarshal(raw, &arg) == nil && arg != "" {
+			break
+		}
+		arg = ""
+	}
+	if arg == "" {
+		return name
+	}
+	arg = strings.Join(strings.Fields(arg), " ")
+	out := name + " " + arg
+	if runes := []rune(out); len(runes) > maxRunes {
+		out = string(runes[:maxRunes-1]) + "…"
+	}
+	return out
 }
 
 type decisionPayload struct {
