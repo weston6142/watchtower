@@ -21,7 +21,9 @@ func FixtureFlows() []string {
 
 func fixtureState() *projection.State {
 	st := projection.NewState()
-	st.Order = []string{"ca-repo", "gh-importer", "fx-e2e"}
+	// fx-dark is parked: it keeps a paused lane on the rendered grid so the
+	// snapshots cover the one-cell paused marker and the notice-row hint.
+	st.Order = []string{"ca-repo", "gh-importer", "fx-e2e", "fx-dark"}
 	st.Issues["ca-repo"] = &projection.IssueView{
 		ID: "ca-repo", Title: "create a repo for GH-1", Flow: "default",
 		CurrentStage: "brainstorm", State: "waiting_decision", Tokens: 12000,
@@ -54,7 +56,11 @@ func fixtureState() *projection.State {
 	st.ShippedToday = []string{"ml-retry"}
 	st.Parked = []string{"fx-dark"}
 	st.Issues["ml-retry"] = &projection.IssueView{ID: "ml-retry", Title: "retry budget for marshal", Merged: true, State: "done"}
-	st.Issues["fx-dark"] = &projection.IssueView{ID: "fx-dark", Title: "dark-mode audit", Paused: true}
+	st.Issues["fx-dark"] = &projection.IssueView{
+		ID: "fx-dark", Title: "dark-mode audit", Flow: "default",
+		Completed: []string{"brainstorm"}, CurrentStage: "spec",
+		Paused: true, State: "paused",
+	}
 	return st
 }
 
