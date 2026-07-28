@@ -1,8 +1,13 @@
 # Watchtower — Design Spec
 
-*2026-07-26 · working title "Watchtower" (name subject to change)*
+*2026-07-26 · watchtower*
 
-A terminal-native orchestrator for running many AI coding agents on real software projects, rendered as a pixel-art guild tower. Visual reference for the target look and feel: the Guild Tower concept mockup at https://claude.ai/code/artifact/b736348a-1393-4d49-9d97-85942a298bc7 (stage-floors variant; v2 sprite styling), fused with the Forge Line's stage-pipeline separation (https://claude.ai/code/artifact/6bc478b0-209d-4b46-938d-56856bbc76b5). The engine runs issues through a configurable pipeline (brainstorm → spec → plan → execute → review → merge) with per-stage autonomy levers; the TUI makes 10 parallel flows legible at a glance and funnels every human call into one decision queue.
+> Renamed from guildhall. User state moved to `~/.local/share/watchtower` and
+> the repo config folder to `.watchtower/`, but the checkout path is
+> deliberately unchanged: the per-repo ID is a hash of the absolute checkout
+> path, so moving the checkout would orphan all issue state.
+
+A terminal-native orchestrator for running many AI coding agents on real software projects, rendered as a pixel-art tower. Visual reference for the target look and feel: the tower concept mockup at https://claude.ai/code/artifact/b736348a-1393-4d49-9d97-85942a298bc7 (stage-floors variant; v2 sprite styling), fused with the Forge Line's stage-pipeline separation (https://claude.ai/code/artifact/6bc478b0-209d-4b46-938d-56856bbc76b5). The engine runs issues through a configurable pipeline (brainstorm → spec → plan → execute → review → merge) with per-stage autonomy levers; the TUI makes 10 parallel flows legible at a glance and funnels every human call into one decision queue.
 
 ## Goals
 

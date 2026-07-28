@@ -39,6 +39,9 @@ func defaultData() string {
 }
 
 func main() {
+	if err := migrateStateDir(); err != nil {
+		fatal(err)
+	}
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|repos|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
 		os.Exit(2)
