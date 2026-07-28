@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 )
 
@@ -21,6 +22,15 @@ func TestModalTyping(t *testing.T) {
 	out := renderModal(m, 70)
 	if !strings.Contains(out, "add rate limitin") || !strings.Contains(out, "regular") {
 		t.Fatalf("modal:\n%s", out)
+	}
+}
+
+func TestRenderBoxChrome(t *testing.T) {
+	out := ansi.Strip(renderBox("confirm", "", " n cancel ", "really?"))
+	for _, want := range []string{"confirm", "n cancel", "really?", "┌", "└"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
 	}
 }
 

@@ -1141,12 +1141,13 @@ func (m Model) View() string {
 		}
 		return screen
 	}
+	var overlayBox string
 	if m.modal != nil {
-		tower = renderModal(*m.modal, layoutWidth)
+		overlayBox = renderModal(*m.modal, layoutWidth)
 	} else if m.confirm != nil {
-		tower = renderConfirm(m.confirm.Prompt, layoutWidth)
+		overlayBox = renderConfirm(m.confirm.Prompt, layoutWidth)
 	} else if m.leverEditor != nil {
-		tower = renderLeverEditor(m.leverEditor.Stages, m.leverEditor.Matrix, m.leverEditor.Sel)
+		overlayBox = renderLeverEditor(m.leverEditor.Stages, m.leverEditor.Matrix, m.leverEditor.Sel)
 	} else if m.pager.Mode == "artifacts" {
 		tower = renderArtifactList(m.pager, m.Ids[m.Focus.Issue], towerWidth, m.Height)
 	} else if m.pager.Mode == "pager" {
@@ -1189,8 +1190,11 @@ func (m Model) View() string {
 		fmt.Fprintf(&b, "\nerror: %s", m.Err)
 	}
 	screen := b.String()
-	if m.help {
+	switch {
+	case m.help:
 		return overlayCenter(screen, renderHelpOverlay(layoutWidth), layoutWidth, max(m.Height, lipgloss.Height(screen)))
+	case overlayBox != "":
+		return overlayCenter(screen, overlayBox, layoutWidth, max(m.Height, lipgloss.Height(screen)))
 	}
 	return screen
 }

@@ -64,6 +64,25 @@ func (m modalState) fieldValue() string {
 	}
 }
 
+// renderBox wraps content in the themed overlay chrome: accent border,
+// bright title, dim subtitle, inverted chip pinned to the right.
+func renderBox(title, sub, chipText, content string) string {
+	t := activeTheme
+	head := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render(title)
+	if sub != "" {
+		head += lipgloss.NewStyle().Foreground(t.Dim).Render(" " + sub)
+	}
+	chip := lipgloss.NewStyle().Foreground(t.Panel).Background(t.Accent).Bold(true).Render(chipText)
+	inner := max(lipgloss.Width(content), lipgloss.Width(head)+lipgloss.Width(chip)+2)
+	gap := max(1, inner-lipgloss.Width(head)-lipgloss.Width(chip))
+	header := head + strings.Repeat(" ", gap) + chip
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(t.Accent).
+		Padding(0, 1).
+		Render(header + "\n\n" + content)
+}
+
 func renderModal(m modalState, width int) string {
 	flowName := m.FlowName
 	if flowName == "" {
@@ -73,17 +92,18 @@ func renderModal(m modalState, width int) string {
 	if preset == "" {
 		preset = string(flow.LeverRegular)
 	}
+	t := activeTheme
+	key := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(t.Dim)
 	lines := []string{
-		"NEW ISSUE",
 		modalField(m.Field == 0, "title", m.Title, true),
 		modalField(m.Field == 1, "body", m.Body, false),
 		modalField(m.Field == 2, "flow", flowName, false),
 		modalField(m.Field == 3, "preset", preset, false),
 		"",
-		"tab next field · enter create · esc cancel",
+		key.Render("tab") + dim.Render(" next field · ") + key.Render("enter") + dim.Render(" create"),
 	}
-	content := boundedLines(lines, max(1, width-4))
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1).Render(content)
+	return renderBox("new issue", "", " esc cancel ", boundedLines(lines, max(1, width-6)))
 }
 
 func modalField(selected bool, name, value string, required bool) string {
@@ -99,8 +119,12 @@ func modalField(selected bool, name, value string, required bool) string {
 }
 
 func renderConfirm(prompt string, width int) string {
-	lines := []string{"CONFIRM", prompt, "", "y confirm · n cancel"}
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1).Render(boundedLines(lines, max(1, width-4)))
+	t := activeTheme
+	key := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(t.Dim)
+	hint := key.Render("y") + dim.Render(" confirm")
+	content := boundedLines([]string{prompt, "", hint}, max(1, width-6))
+	return renderBox("confirm", "", " n cancel ", content)
 }
 
 var leverCycle = []string{string(flow.LeverYolo), string(flow.LeverRegular), string(flow.LeverStrict)}
@@ -140,7 +164,7 @@ func renderLeverEditor(stages []string, matrix map[string]string, sel int) strin
 		}
 		lines = append(lines, fmt.Sprintf("%s%-12s %s", mark, stage, value))
 	}
-	return strings.Join(lines, "\n")
+	return renderBox("levers", "per-stage autonomy", " esc close ", strings.Join(lines, "\n"))
 }
 
 func cycleLever(current string, delta int) string {
