@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/wbushyeager/guildhall/internal/archmap"
+	"github.com/weston6142/watchtower/internal/archmap"
 )
 
 type FileStat struct {

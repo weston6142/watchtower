@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/touchset"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/touchset"
 )
 
 func TestSequencingAndRelease(t *testing.T) {

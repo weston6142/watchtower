@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/projection"
+	"github.com/weston6142/watchtower/internal/projection"
 )
 
 func TestBuildersAndContention(t *testing.T) {

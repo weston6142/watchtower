@@ -7,9 +7,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/projection"
-	"github.com/wbushyeager/guildhall/internal/proto"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/proto"
 )
 
 func TestRenderHeaderSeverityOrder(t *testing.T) {

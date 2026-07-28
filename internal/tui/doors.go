@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/projection"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func renderDecisionsDoor(ds []projection.DecisionView, ids map[string]Identity, sel, width int) string {

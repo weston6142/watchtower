@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/wbushyeager/guildhall/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 type Script struct {

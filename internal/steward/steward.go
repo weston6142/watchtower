@@ -3,8 +3,8 @@ package steward
 import (
 	"encoding/json"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 type Steward struct {

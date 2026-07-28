@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 func TestFakeRunnerAsksThenProduces(t *testing.T) {

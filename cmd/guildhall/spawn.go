@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wbushyeager/guildhall/internal/proto"
-	"github.com/wbushyeager/guildhall/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/repocfg"
 )
 
 // Well-known filenames inside a repo's data dir.

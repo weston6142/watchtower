@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wbushyeager/guildhall/internal/flow"
+	"github.com/weston6142/watchtower/internal/flow"
 )
 
 // modalState is intentionally small: the control room only needs plain rune

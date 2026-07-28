@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wbushyeager/guildhall/internal/archmap"
-	"github.com/wbushyeager/guildhall/internal/projection"
-	"github.com/wbushyeager/guildhall/internal/touchset"
+	"github.com/weston6142/watchtower/internal/archmap"
+	"github.com/weston6142/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/touchset"
 )
 
 func moduleMatches(module string, glob string) bool {

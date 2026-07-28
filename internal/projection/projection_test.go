@@ -3,7 +3,7 @@ package projection
 import (
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {

@@ -12,13 +12,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/wbushyeager/guildhall/internal/archmap"
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/evidence"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/projection"
-	"github.com/wbushyeager/guildhall/internal/proto"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/archmap"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/evidence"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 type Focus struct {

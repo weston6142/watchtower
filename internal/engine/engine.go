@@ -9,17 +9,17 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/evidence"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/levers"
-	"github.com/wbushyeager/guildhall/internal/librarian"
-	"github.com/wbushyeager/guildhall/internal/marshal"
-	"github.com/wbushyeager/guildhall/internal/runner"
-	"github.com/wbushyeager/guildhall/internal/slots"
-	"github.com/wbushyeager/guildhall/internal/store"
-	"github.com/wbushyeager/guildhall/internal/touchset"
-	"github.com/wbushyeager/guildhall/internal/workspace"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/evidence"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/librarian"
+	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/touchset"
+	"github.com/weston6142/watchtower/internal/workspace"
 )
 
 type Config struct {

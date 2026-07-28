@@ -8,8 +8,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/wbushyeager/guildhall/internal/pkgs"
-	"github.com/wbushyeager/guildhall/internal/runner"
+	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 // maxLineBytes bounds a single stream-json line; the CLI can emit large

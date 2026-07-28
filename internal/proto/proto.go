@@ -1,10 +1,10 @@
 package proto
 
 import (
-	"github.com/wbushyeager/guildhall/internal/archmap"
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/engine"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/archmap"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 // maxMessageBytes bounds a single newline-delimited JSON message on the wire.

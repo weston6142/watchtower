@@ -3,7 +3,7 @@ package tui
 import (
 	"sort"
 
-	"github.com/wbushyeager/guildhall/internal/projection"
+	"github.com/weston6142/watchtower/internal/projection"
 )
 
 func resolveFocus(f Focus, st *projection.State, stages []string) Focus {

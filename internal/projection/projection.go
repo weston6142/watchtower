@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 type IssueView struct {
