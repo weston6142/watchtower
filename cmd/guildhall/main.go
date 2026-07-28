@@ -78,7 +78,7 @@ func main() {
 		}
 		for _, e := range entries {
 			status := "stopped"
-			sock := filepath.Join(repocfg.RepoDataDir(*data, e.Path), "guildhall.sock")
+			sock := filepath.Join(repocfg.RepoDataDir(*data, e.Path), sockFileName)
 			if conn, err := net.Dial("unix", sock); err == nil {
 				conn.Close()
 				status = "running"
@@ -301,17 +301,7 @@ func runDaemon(args []string) {
 	testCmd := fs.String("test-cmd", "", "merge-train test command (default from config)")
 	fs.Parse(args)
 
-	repo := *repoFlag
-	if repo == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			fatal(err)
-		}
-		repo, err = repocfg.FindRepo(cwd)
-		if err != nil {
-			fatal(err)
-		}
-	}
+	repo := resolveRepo(*repoFlag)
 	cfg, err := repocfg.Load(repo)
 	if err != nil {
 		fatal(err)
@@ -348,7 +338,7 @@ func runDaemon(args []string) {
 	if err := os.MkdirAll(data, 0o755); err != nil {
 		fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(data, "daemon.pid"), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(data, pidFileName), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
 		fatal(err)
 	}
 	st, err := store.Open(filepath.Join(data, "guildhall.db"))
@@ -437,7 +427,7 @@ func runDaemon(args []string) {
 	case *runner.FakeRunner:
 		r.OnProposal = fileProposal
 	}
-	sock := filepath.Join(data, "guildhall.sock")
+	sock := filepath.Join(data, sockFileName)
 	os.Remove(sock)
 	l, err := net.Listen("unix", sock)
 	if err != nil {

@@ -97,6 +97,10 @@ func FindRepo(startDir string) (string, error) {
 	}
 }
 
+// repoIDLen is the number of hex chars kept from the path hash — short
+// enough for socket paths, long enough to avoid collisions in practice.
+const repoIDLen = 12
+
 // RepoID is a short stable identifier for a repo path.
 func RepoID(repoRoot string) string {
 	abs, err := filepath.Abs(repoRoot)
@@ -104,7 +108,7 @@ func RepoID(repoRoot string) string {
 		abs = repoRoot
 	}
 	sum := sha256.Sum256([]byte(abs))
-	return hex.EncodeToString(sum[:])[:12]
+	return hex.EncodeToString(sum[:])[:repoIDLen]
 }
 
 // RepoDataDir is where a repo's db, socket, log, and pidfile live.
