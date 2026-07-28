@@ -95,7 +95,7 @@ func main() {
 		reducedMotion := fs.Bool("reduced-motion", false, "disable spinner and failure motion")
 		retireAfter := fs.Duration("retire-after", 5*time.Minute, "auto-retire shipped lanes after this duration")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repo)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "get_flow", Flow: "default"})
 		model := tui.NewModel(c, r.FlowStages)
@@ -109,12 +109,13 @@ func main() {
 	case "new":
 		fs := flag.NewFlagSet("new", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		title := fs.String("title", "", "issue title")
 		flowName := fs.String("flow", "default", "flow name")
 		preset := fs.String("preset", "regular", "yolo|regular|strict")
 		prio := fs.Int("priority", 0, "priority")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "create_issue", Title: *title, Flow: *flowName, Preset: *preset, Priority: *prio})
 		mustDo(c, proto.Command{Op: "start_issue", IssueID: r.IssueID})
@@ -122,8 +123,9 @@ func main() {
 	case "decisions":
 		fs := flag.NewFlagSet("decisions", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_decisions"})
 		for _, d := range r.Decisions {
@@ -139,6 +141,7 @@ func main() {
 	case "answer":
 		fs := flag.NewFlagSet("answer", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		rest := fs.Args()
 		if len(rest) != 2 {
@@ -153,15 +156,16 @@ func main() {
 		if err != nil {
 			fatal(fmt.Errorf("bad option %q: %w", rest[1], err))
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		mustDo(c, proto.Command{Op: "answer_decision", DecisionID: id, Option: opt})
 		fmt.Println("answered")
 	case "proposals":
 		fs := flag.NewFlagSet("proposals", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_proposals"})
 		for _, p := range r.Proposals {
@@ -170,6 +174,7 @@ func main() {
 	case "accept-proposal", "reject-proposal":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		rest := fs.Args()
 		if len(rest) != 1 {
@@ -180,7 +185,7 @@ func main() {
 		if err != nil {
 			fatal(fmt.Errorf("bad proposal-id %q: %w", rest[0], err))
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		accepted := cmd == "accept-proposal"
 		r := mustDo(c, proto.Command{Op: "resolve_proposal", ProposalID: id, Accept: accepted, Flow: "default", Preset: "regular"})
@@ -192,8 +197,9 @@ func main() {
 	case "issues":
 		fs := flag.NewFlagSet("issues", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_issues"})
 		for _, issue := range r.Issues {
@@ -202,20 +208,22 @@ func main() {
 	case "status":
 		fs := flag.NewFlagSet("status", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "overview"})
 		fmt.Println(statusSentence(r.Overview))
 	case "pause", "resume", "kill", "retry":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		if len(fs.Args()) != 1 {
 			fmt.Fprintf(os.Stderr, "usage: guildhall %s <issue-id>\n", cmd)
 			os.Exit(2)
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		ops := map[string]string{
 			"pause": "pause_issue", "resume": "resume_issue",
@@ -226,18 +234,20 @@ func main() {
 	case "lever":
 		fs := flag.NewFlagSet("lever", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		if len(fs.Args()) != 3 {
 			fmt.Fprintln(os.Stderr, "usage: guildhall lever <issue-id> <stage> <yolo|regular|strict>")
 			os.Exit(2)
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		mustDo(c, proto.Command{Op: "set_lever", IssueID: fs.Args()[0], Stage: fs.Args()[1], Lever: fs.Args()[2]})
 		fmt.Printf("lever %s %s %s\n", fs.Args()[0], fs.Args()[1], fs.Args()[2])
 	case "transcript":
 		fs := flag.NewFlagSet("transcript", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		n := fs.Int("n", 50, "number of lines")
 		fs.Parse(args)
 		rest := fs.Args()
@@ -253,7 +263,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: guildhall transcript <issue-id> [-n 50]")
 			os.Exit(2)
 		}
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "transcript_tail", IssueID: rest[0], N: *n})
 		for _, line := range r.Lines {
@@ -262,9 +272,10 @@ func main() {
 	case "tail":
 		fs := flag.NewFlagSet("tail", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		since := fs.Int64("since", 0, "since seq")
 		fs.Parse(args)
-		c := mustDial(*data)
+		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "tail", SinceSeq: *since})
 		for _, ev := range r.Events {
@@ -525,14 +536,6 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 		}
 	}
 	return &runner.FakeRunner{Scripts: scripts}
-}
-
-func mustDial(data string) *proto.Client {
-	c, err := proto.Dial(filepath.Join(data, "guildhall.sock"))
-	if err != nil {
-		fatal(err)
-	}
-	return c
 }
 
 func mustDo(c *proto.Client, cmd proto.Command) proto.Response {
