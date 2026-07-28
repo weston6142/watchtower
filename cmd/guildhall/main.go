@@ -443,6 +443,12 @@ func runDaemon(args []string) {
 		OnLine:    transcriptBuffer.Add,
 		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
 	})
+	// A restart loses all in-memory engine state; rebuild it from the store
+	// so pre-restart issues stay controllable. Non-fatal: a failed rehydrate
+	// must not stop the daemon from serving new issues.
+	if err := eng.Rehydrate(); err != nil {
+		fmt.Fprintln(os.Stderr, "rehydrate:", err)
+	}
 	fileProposal := func(issueID string, p runner.Proposal) {
 		eng.FileProposal(issueID, p.Title, p.Body)
 	}
