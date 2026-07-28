@@ -31,9 +31,95 @@ func TestRenderHeaderSeverityOrder(t *testing.T) {
 func TestNoticeRowAlwaysReserved(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	st := projection.NewState()
-	empty := renderNoticeRow(st, 80)
+	empty := renderNoticeRow(st, nil, 80)
 	if lipgloss.Height(empty) != 1 {
 		t.Fatalf("empty notice row height %d", lipgloss.Height(empty))
+	}
+}
+
+// A parked lane must still show how far it got. Painting every row "paused"
+// hides the resume point and reads as a hung tower.
+func TestPausedLaneMarksOnlyItsCurrentStage(t *testing.T) {
+	iv := &projection.IssueView{
+		ID: "GH-1", Title: "t",
+		Completed: []string{"brainstorm"}, CurrentStage: "spec",
+		Paused: true, State: "paused",
+	}
+	stages := []string{"brainstorm", "spec", "execute"}
+	var got []string
+	for i, stage := range stages {
+		got = append(got, ansi.Strip(cellContentForStage(iv, nil, stage, i, 0, false, true)))
+	}
+	if strings.Contains(got[0], "paused") {
+		t.Fatalf("completed stage shows paused: %q", got[0])
+	}
+	if !strings.Contains(got[0], glyphDone) {
+		t.Fatalf("completed stage lost its tick: %q", got[0])
+	}
+	if !strings.Contains(got[1], "paused") {
+		t.Fatalf("current stage missing paused: %q", got[1])
+	}
+	if strings.Contains(got[2], "paused") {
+		t.Fatalf("later stage shows paused: %q", got[2])
+	}
+}
+
+// Rehydrated and pre-payload lanes have no usable CurrentStage; the marker
+// falls back to the first stage that has not finished.
+func TestPausedLaneWithStaleCurrentStageFallsBack(t *testing.T) {
+	iv := &projection.IssueView{
+		ID: "GH-1", Title: "t",
+		Completed: []string{"brainstorm"}, CurrentStage: "brainstorm",
+		Paused: true, State: "paused",
+	}
+	stages := []string{"brainstorm", "spec", "execute"}
+	var got []string
+	for i, stage := range stages {
+		got = append(got, ansi.Strip(cellContentForStage(iv, nil, stage, i, 0, false, true)))
+	}
+	if !strings.Contains(got[0], glyphDone) {
+		t.Fatalf("completed stage lost its tick: %q", got[0])
+	}
+	if !strings.Contains(got[1], "paused") {
+		t.Fatalf("expected fallback marker on spec: %q", got[1])
+	}
+}
+
+// A lane waiting on a human under a blank notice row reads as a hung tower.
+func TestNoticeRowNamesParkedLane(t *testing.T) {
+	st := projection.NewState()
+	st.Order = []string{"GH-2"}
+	st.Issues["GH-2"] = &projection.IssueView{
+		ID: "GH-2", Title: "rewrite refs",
+		Completed: []string{"brainstorm"}, CurrentStage: "spec",
+		Paused: true, State: "paused",
+	}
+	ids := map[string]Identity{"GH-2": {Tag: "RG"}}
+	got := ansi.Strip(renderNoticeRow(st, ids, 80))
+	if !strings.Contains(got, "RG") || !strings.Contains(got, "spec") || !strings.Contains(got, "p resumes") {
+		t.Fatalf("notice row = %q", got)
+	}
+}
+
+// Real notices outrank the derived hint.
+func TestNoticeRowPrefersRealNotices(t *testing.T) {
+	st := projection.NewState()
+	st.Order = []string{"GH-2"}
+	st.Issues["GH-2"] = &projection.IssueView{ID: "GH-2", Paused: true, State: "paused"}
+	st.Notices = []projection.Notice{{Text: "✉ new idea from GH-3: something", Seq: 1}}
+	got := ansi.Strip(renderNoticeRow(st, nil, 80))
+	if !strings.Contains(got, "new idea") {
+		t.Fatalf("notice row = %q", got)
+	}
+}
+
+// Nothing parked, nothing to say — the row stays blank at full width.
+func TestNoticeRowBlankWhenNothingParked(t *testing.T) {
+	st := projection.NewState()
+	st.Order = []string{"GH-2"}
+	st.Issues["GH-2"] = &projection.IssueView{ID: "GH-2", State: "running", CurrentStage: "spec"}
+	if got := renderNoticeRow(st, nil, 20); strings.TrimSpace(got) != "" {
+		t.Fatalf("notice row = %q, want blank", got)
 	}
 }
 

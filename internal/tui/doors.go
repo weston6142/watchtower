@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/store"
@@ -151,6 +152,54 @@ func renderTextDoor(title string, lines []string, width int) string {
 		out = append(out, lines...)
 	}
 	return boundedLines(out, width)
+}
+
+// renderStreamDoor is the live agent view. Unlike the timeline it is watched
+// while a stage runs, so it wears the same box chrome as the help overlay and
+// gives its content typography: dim stage gutter, prose in Text, turn markers
+// promoted from a line of prose into a rule.
+func renderStreamDoor(subtitle string, lines []string, width int) string {
+	t := activeTheme
+	gutter := lipgloss.NewStyle().Foreground(t.Dimmer)
+	prose := lipgloss.NewStyle().Foreground(t.Text)
+	tool := lipgloss.NewStyle().Foreground(t.Dim)
+	inner := max(20, width-8) // border, padding, and the gutter's own width
+
+	var body []string
+	if len(lines) == 0 {
+		body = append(body, gutter.Render("nothing yet — the agent has not spoken this stage"))
+	}
+	for _, line := range lines {
+		stage, text, found := strings.Cut(line, " │ ")
+		if !found {
+			stage, text = "", line
+		}
+		// The turn marker is punctuation, not something to read.
+		if strings.HasPrefix(strings.TrimSpace(text), "— turn complete") {
+			body = append(body, gutter.Render(strings.Repeat("─", inner)))
+			continue
+		}
+		style := prose
+		if strings.HasPrefix(text, "↳ ") {
+			style = tool
+		}
+		lead := ""
+		if stage != "" {
+			lead = stage + " │ "
+		}
+		wrapWidth := max(1, inner-lipgloss.Width(lead))
+		pad := strings.Repeat(" ", lipgloss.Width(lead))
+		for i, wrapped := range strings.Split(ansi.Wrap(text, wrapWidth, ""), "\n") {
+			marker := pad
+			if i == 0 {
+				marker = lead
+			}
+			body = append(body, gutter.Render(marker)+style.Render(wrapped))
+		}
+	}
+	foot := keyChip("esc") + lipgloss.NewStyle().Foreground(t.Dim).Render(" close  ") +
+		keyChip("q") + lipgloss.NewStyle().Foreground(t.Dim).Render(" quit")
+	return renderBox("stream", subtitle, " esc close ", strings.Join(append(body, "", foot), "\n"))
 }
 
 // capitalizeDoor turns legacy ALL-CAPS door names into title case.

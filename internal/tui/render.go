@@ -65,15 +65,45 @@ func compactTokens(tokens int) string {
 	return fmt.Sprintf("%d", tokens)
 }
 
-func renderNoticeRow(st *projection.State, width int) string {
-	if st == nil || len(st.Notices) == 0 {
+func renderNoticeRow(st *projection.State, ids map[string]Identity, width int) string {
+	text := ""
+	switch {
+	case st != nil && len(st.Notices) > 0:
+		text = strings.ReplaceAll(st.Notices[len(st.Notices)-1].Text, "\n", " ")
+	default:
+		text = parkedHint(st, ids)
+	}
+	if text == "" {
 		if width > 0 {
 			return strings.Repeat(" ", width)
 		}
 		return " "
 	}
-	text := strings.ReplaceAll(st.Notices[len(st.Notices)-1].Text, "\n", " ")
 	return truncate(text, width)
+}
+
+// parkedHint names the first parked lane and the key that continues it. A lane
+// waiting on a human with nothing on screen saying so reads as a hung tower.
+// Killed lanes are left out: R is their verb, and the kill copy already says so.
+func parkedHint(st *projection.State, ids map[string]Identity) string {
+	if st == nil {
+		return ""
+	}
+	for _, id := range st.Order {
+		iv := st.Issues[id]
+		if iv == nil || iv.Killed || !(iv.Paused || iv.State == "paused") {
+			continue
+		}
+		tag := id
+		if identity, ok := ids[id]; ok && identity.Tag != "" {
+			tag = identity.Tag
+		}
+		if iv.CurrentStage != "" {
+			return glyphParked + " " + tag + " parked at " + iv.CurrentStage + " — p resumes"
+		}
+		return glyphParked + " " + tag + " parked — p resumes"
+	}
+	return ""
 }
 
 // floorCards returns issue IDs on a rendered stage floor in creation order.
@@ -160,6 +190,17 @@ func completedStage(iv *projection.IssueView, stage string) bool {
 	return false
 }
 
+// pausedAtStage reports whether this cell is where a parked lane stopped.
+// CurrentStage is authoritative when it names a stage that has not finished;
+// rehydrated lanes and pre-payload pause events leave it pointing at a
+// completed stage, so fall back to the first unfinished one.
+func pausedAtStage(iv *projection.IssueView, stage string, stageIdx int) bool {
+	if iv.CurrentStage != "" && !completedStage(iv, iv.CurrentStage) {
+		return iv.CurrentStage == stage
+	}
+	return stageIdx == len(iv.Completed)
+}
+
 func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stage string, stageIdx, tick int, focused, reducedMotion bool) string {
 	if iv == nil {
 		return ""
@@ -174,7 +215,7 @@ func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stag
 		}
 		return themeDim.Render("after " + blocker)
 	}
-	if iv.Paused || iv.Killed || iv.State == "paused" {
+	if (iv.Paused || iv.Killed || iv.State == "paused") && pausedAtStage(iv, stage, stageIdx) {
 		return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render(glyphParked + " paused")
 	}
 	if iv.CurrentStage == stage && iv.State == "waiting_decision" {
@@ -447,7 +488,7 @@ var helpGroups = [][]helpGroup{
 			{"d", "decisions"},
 			{"t", "triage"},
 			{"e", "timeline"},
-			{"T", "transcript"},
+			{"T", "stream"},
 			{"r", "reject tray item"},
 			{"a / A", "architecture pane / map"},
 		}},

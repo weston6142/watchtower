@@ -16,7 +16,7 @@ import (
 
 // FixtureFlows lists every posable flow, in spec order.
 func FixtureFlows() []string {
-	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "levers", "arch", "pager", "help"}
+	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "levers", "arch", "pager", "help", "stream"}
 }
 
 func fixtureState() *projection.State {
@@ -133,6 +133,15 @@ func FixtureModel(flowName string, width, height int) Model {
 		}}
 	case "help":
 		m.help = true
+	case "stream":
+		m.modes = []string{"transcript"}
+		m.doorLines = []string{
+			"brainstorm │ Requirements settled. brainstorm.md is written to the issue directory.",
+			"brainstorm │ ↳ Read internal/engine/engine.go",
+			"brainstorm │ ↳ Bash go test ./internal/engine",
+			"brainstorm │ The rename target is real: the remote is weston6142/watchtower and go.mod already agrees.",
+			"brainstorm │ — turn complete (13560 tokens) —",
+		}
 	}
 	return m
 }
