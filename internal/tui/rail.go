@@ -184,7 +184,7 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 	inner := max(1, width-4)
 	t := activeTheme
 	dim := lipgloss.NewStyle().Foreground(t.Dim)
-	heading := lipgloss.NewStyle().Foreground(t.Heading).Bold(true)
+	heading := lipgloss.NewStyle().Foreground(t.Structure).Bold(true)
 	key := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
 	lines := []string{heading.Render(fmt.Sprintf("DECISION [%d] %s %s", d.ID, id.Tag, d.Stage)), ""}
 	lines = append(lines, wrapIndent(d.Question, inner, "")...)

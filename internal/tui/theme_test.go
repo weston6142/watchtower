@@ -2,26 +2,31 @@ package tui
 
 import "testing"
 
-func TestThemeByName(t *testing.T) {
-	if got := themeByName("tokyo-night").Accent; got != "#bb9af7" {
-		t.Fatalf("tokyo-night accent = %q", got)
-	}
-	if got := themeByName("gruvbox").Heading; got != "#fabd2f" {
-		t.Fatalf("gruvbox heading = %q", got)
-	}
-	if got := themeByName("terminal").Accent; got != "13" {
-		t.Fatalf("terminal accent = %q", got)
-	}
-	// unknown name falls back to tokyo-night
-	if got := themeByName("does-not-exist"); got != themeByName("tokyo-night") {
-		t.Fatalf("fallback = %+v", got)
+func TestThemePresetsComplete(t *testing.T) {
+	for name, th := range themes {
+		for field, v := range map[string]string{
+			"Bg0": string(th.Bg0), "Bg1": string(th.Bg1), "Bg2": string(th.Bg2), "Bg3": string(th.Bg3),
+			"Accent": string(th.Accent), "Structure": string(th.Structure),
+			"Ok": string(th.Ok), "Warn": string(th.Warn), "Err": string(th.Err),
+			"Text": string(th.Text), "Dim": string(th.Dim), "Dimmer": string(th.Dimmer), "Bright": string(th.Bright),
+		} {
+			if v == "" {
+				t.Errorf("theme %q: token %s is empty", name, field)
+			}
+		}
 	}
 }
 
-func TestSetTheme(t *testing.T) {
-	defer SetTheme("tokyo-night")
-	SetTheme("catppuccin")
-	if activeTheme.Accent != "#cba6f7" {
-		t.Fatalf("activeTheme.Accent = %q", activeTheme.Accent)
+func TestThemeByNameFallsBack(t *testing.T) {
+	if themeByName("nope") != themes[defaultThemeName] {
+		t.Error("unknown theme should fall back to default")
+	}
+}
+
+func TestSetThemeSelectsPreset(t *testing.T) {
+	defer SetTheme(defaultThemeName)
+	SetTheme("gruvbox")
+	if activeTheme != themes["gruvbox"] {
+		t.Error("SetTheme should activate the named preset")
 	}
 }

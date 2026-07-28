@@ -72,7 +72,7 @@ func renderBox(title, sub, chipText, content string) string {
 	if sub != "" {
 		head += lipgloss.NewStyle().Foreground(t.Dim).Render(" " + sub)
 	}
-	chip := lipgloss.NewStyle().Foreground(t.Panel).Background(t.Accent).Bold(true).Render(chipText)
+	chip := lipgloss.NewStyle().Foreground(t.Bg0).Background(t.Accent).Bold(true).Render(chipText)
 	inner := max(lipgloss.Width(content), lipgloss.Width(head)+lipgloss.Width(chip)+2)
 	gap := max(1, inner-lipgloss.Width(head)-lipgloss.Width(chip))
 	header := head + strings.Repeat(" ", gap) + chip

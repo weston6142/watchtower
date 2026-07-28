@@ -14,18 +14,15 @@ import (
 var (
 	themeDim   = lipgloss.NewStyle().Faint(true)
 	themeLabel = lipgloss.NewStyle().Bold(true)
-	statusBad  = "#e06c75"
-	statusWarn = "#f2c14e"
-	statusOk   = "#98c379"
 )
 
 func styleStatusBad() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(statusBad))
+	return lipgloss.NewStyle().Foreground(activeTheme.Err)
 }
 func styleStatusWarn() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(statusWarn))
+	return lipgloss.NewStyle().Foreground(activeTheme.Warn)
 }
-func styleStatusOk() lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(statusOk)) }
+func styleStatusOk() lipgloss.Style { return lipgloss.NewStyle().Foreground(activeTheme.Ok) }
 
 func renderHeader(ov *proto.Overview, width int) string {
 	if ov == nil {
@@ -470,7 +467,7 @@ func renderHelpOverlay(width int) string {
 	t := activeTheme
 	keyStyle := lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Width(8)
 	descStyle := lipgloss.NewStyle().Foreground(t.Text)
-	headStyle := lipgloss.NewStyle().Foreground(t.Heading).Bold(true)
+	headStyle := lipgloss.NewStyle().Foreground(t.Structure).Bold(true)
 
 	var cols []string
 	for _, col := range helpGroups {
@@ -486,9 +483,9 @@ func renderHelpOverlay(width int) string {
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, cols[0], "    ", cols[1])
 
-	foot := lipgloss.NewStyle().Foreground(t.Heading).Render("close ") + descStyle.Render("? / esc") +
+	foot := lipgloss.NewStyle().Foreground(t.Structure).Render("close ") + descStyle.Render("? / esc") +
 		lipgloss.NewStyle().Foreground(t.Dim).Render("  ·  ") +
-		lipgloss.NewStyle().Foreground(t.Heading).Render("quit ") + descStyle.Render("q / ctrl+c")
+		lipgloss.NewStyle().Foreground(t.Structure).Render("quit ") + descStyle.Render("q / ctrl+c")
 	rule := lipgloss.NewStyle().Foreground(t.Dim).Render(strings.Repeat("─", lipgloss.Width(body)))
 
 	const subtitle = "every key in the control room"
