@@ -298,7 +298,7 @@ func renderTowerConfigured(st *projection.State, stages []string, ids map[string
 		identity := ids[id]
 		marker := " "
 		if focus.Issue == id {
-			marker = "▸"
+			marker = glyphCursor
 		}
 		chips = append(chips, headerCell(marker+identity.Tag, identity, focus.Issue == id))
 		wrapped := titleLines(iv.Title)
@@ -482,13 +482,23 @@ func renderHelpOverlay(width int) string {
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, cols[0], "    ", cols[1])
 
-	foot := lipgloss.NewStyle().Foreground(t.Structure).Render("close ") + descStyle.Render("? / esc") +
-		lipgloss.NewStyle().Foreground(t.Dim).Render("  ·  ") +
-		lipgloss.NewStyle().Foreground(t.Structure).Render("quit ") + descStyle.Render("q / ctrl+c")
-	rule := lipgloss.NewStyle().Foreground(t.Dim).Render(strings.Repeat("─", lipgloss.Width(body)))
+	// STATES is the one legitimate legend home: the glyph language, in its
+	// semantic colors.
+	dim := lipgloss.NewStyle().Foreground(t.Dim)
+	states := headStyle.Render("STATES") + "\n" +
+		lipgloss.NewStyle().Foreground(t.Ok).Render(glyphDone) + descStyle.Render(" done") + dim.Render("  ·  ") +
+		lipgloss.NewStyle().Foreground(t.Warn).Render(glyphNeedYou) + descStyle.Render(" need-you") + dim.Render("  ·  ") +
+		lipgloss.NewStyle().Foreground(t.Structure).Render(glyphWorking) + descStyle.Render(" working") + dim.Render("  ·  ") +
+		lipgloss.NewStyle().Foreground(t.Dimmer).Render(glyphWaiting) + descStyle.Render(" waiting") + dim.Render("  ·  ") +
+		lipgloss.NewStyle().Foreground(t.Err).Render(glyphFailed) + descStyle.Render(" failed") + dim.Render("  ·  ") +
+		lipgloss.NewStyle().Foreground(t.Ok).Render(glyphShipped) + descStyle.Render(" shipped") + dim.Render("  ·  ") +
+		dim.Render(glyphParked) + descStyle.Render(" parked")
+
+	foot := keyChip("? / esc") + dim.Render(" close  ") + keyChip("q / ctrl+c") + dim.Render(" quit")
+	rule := lipgloss.NewStyle().Foreground(t.Dimmer).Render(strings.Repeat("─", lipgloss.Width(body)))
 
 	const subtitle = "every key in the control room"
-	box := renderBox("help", subtitle, " esc close ", strings.Join([]string{body, rule, foot}, "\n"))
+	box := renderBox("help", subtitle, " esc close ", strings.Join([]string{body, "", states, rule, foot}, "\n"))
 	if lipgloss.Width(box) >= width {
 		// narrow terminal: stack the two columns
 		box = renderBox("help", subtitle, " esc close ", strings.Join([]string{cols[0] + "\n\n" + cols[1], foot}, "\n"))

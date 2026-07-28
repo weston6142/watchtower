@@ -150,7 +150,7 @@ func TestRenderHelpOverlay(t *testing.T) {
 		"help", "esc close",
 		"NAVIGATION", "CONTROL", "DOORS", "DECISIONS",
 		"war room", "lever editor", "architecture pane / map",
-		"close ? / esc", "quit q / ctrl+c",
+		"? / esc", "close", "q / ctrl+c", "quit", "STATES",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
