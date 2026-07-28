@@ -1193,10 +1193,18 @@ func (m Model) View() string {
 		b.WriteString(shelf)
 	}
 	b.WriteString("\n\n")
-	b.WriteString(renderKeybar(layoutWidth, [][2]string{
+	mainBindings := [][2]string{
 		{"j/k", "floors"}, {"tab", "attention"}, {"p", "pause"}, {"x", "kill"},
 		{"R", "retry"}, {"L", "levers"}, {"?", "help"}, {"q", "quit"},
-	}, errText(m.Err)))
+	}
+	right := errText(m.Err)
+	if m.archMode == "full" {
+		mainBindings = [][2]string{{"j/k", "module"}, {"/", "filter"}, {"a/esc", "back"}}
+		if right == "" {
+			right = archFooterDetail(m.Arch, m.State, m.Ids, m.archSel, m.archFilter)
+		}
+	}
+	b.WriteString(renderKeybar(layoutWidth, mainBindings, right))
 	screen := b.String()
 	switch {
 	case m.help:

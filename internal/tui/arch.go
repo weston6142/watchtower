@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/weston6142/watchtower/internal/archmap"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/touchset"
@@ -22,47 +24,74 @@ func renderArch(am *archmap.Map, ids map[string]Identity, width, height int) str
 	return renderArchWithState(am, nil, ids, width, height, 0, "")
 }
 
+const archNameWidth = 28
+
 func renderArchWithState(am *archmap.Map, st *projection.State, ids map[string]Identity, width, height, selected int, filter string) string {
+	t := activeTheme
+	title := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render("Architecture map")
 	if am == nil || len(am.Modules) == 0 {
-		return boundedLines([]string{"ARCHITECTURE MAP", "no repo — arch map available with --repo"}, width)
+		return boundedLines([]string{title, "", lipgloss.NewStyle().Foreground(t.Dim).Render("no repo — arch map available with --repo")}, width)
 	}
-	lines := []string{"ARCHITECTURE MAP · a/esc back"}
 	if st != nil {
-		lines = append(lines, "MAP · "+mapInsight(st.Issues))
+		title += lipgloss.NewStyle().Foreground(t.Dim).Render("  " + mapInsight(st.Issues))
 	}
+	lines := []string{title, ""}
 	builders := map[string]map[string]bool{}
 	if st != nil {
 		builders = buildersByArea(st.Issues)
 	}
 	active := 0
-	firstActive := ""
-	quiet := 0
+	quietNames := []string{}
+	structure := lipgloss.NewStyle().Foreground(t.Structure)
 	for _, module := range am.Modules {
 		marks := areaMarks(module.Name, builders, am.Overlays, ids, filter)
 		if len(marks) == 0 {
-			quiet++
+			quietNames = append(quietNames, module.Name)
 			continue
 		}
-		if firstActive == "" {
-			firstActive = module.Name
-		}
-		marker := "  "
+		nameStyle := lipgloss.NewStyle().Foreground(t.Text)
 		if active == selected {
-			marker = "▸ "
+			nameStyle = nameStyle.Foreground(t.Bright)
 		}
-		lines = append(lines, marker+"▣ "+module.Name+" "+strings.Join(marks, " "))
+		row := structure.Render("▣") + " " + nameStyle.Render(padCell(module.Name, archNameWidth)) + " " + strings.Join(marks, " ")
+		lines = append(lines, cursorRow(active == selected, row, width))
 		active++
 	}
-	if quiet > 0 {
-		lines = append(lines, fmt.Sprintf("▸ %d quiet areas", quiet))
-	}
-	if firstActive != "" {
-		lines = append(lines, themeDim.Render("selection: "+firstActive+" · active areas show builders and brushers"))
+	if n := len(quietNames); n > 0 {
+		// Quiet areas collapse into one dim row with a short name sample.
+		sample := strings.Join(quietNames[:min(3, n)], " · ")
+		if n > 3 {
+			sample += " · …"
+		}
+		dim := lipgloss.NewStyle().Foreground(t.Dim)
+		lines = append(lines, "  "+lipgloss.NewStyle().Foreground(t.Dimmer).Render("▢")+" "+dim.Render(fmt.Sprintf("%d quiet area%s", n, pluralSuffix(n))+"   "+sample))
 	}
 	if height > 0 && len(lines) > height {
 		lines = lines[:height]
 	}
 	return boundedLines(lines, width)
+}
+
+// archFooterDetail names the selected active module for the keybar's right
+// slot; empty when the map has no active modules.
+func archFooterDetail(am *archmap.Map, st *projection.State, ids map[string]Identity, selected int, filter string) string {
+	if am == nil || st == nil {
+		return ""
+	}
+	builders := buildersByArea(st.Issues)
+	active := 0
+	for _, module := range am.Modules {
+		marks := areaMarks(module.Name, builders, am.Overlays, ids, filter)
+		if len(marks) == 0 {
+			continue
+		}
+		if active == selected {
+			return lipgloss.NewStyle().Foreground(activeTheme.Dim).
+				Render(fmt.Sprintf("%s · %d active", module.Name, len(marks)))
+		}
+		active++
+	}
+	return ""
 }
 
 func areaMarks(area string, builders map[string]map[string]bool, overlays []archmap.Overlay, ids map[string]Identity, filter string) []string {
