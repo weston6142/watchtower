@@ -19,10 +19,10 @@ func TestInitCreatesTree(t *testing.T) {
 		t.Fatal("nothing created")
 	}
 	for _, p := range []string{
-		filepath.Join(root, ".guildhall", "config.yaml"),
-		filepath.Join(root, ".guildhall", "flows", "default.yaml"),
-		filepath.Join(root, ".guildhall", "packages", "executor", "package.yaml"),
-		filepath.Join(root, ".guildhall", "packages", "executor", "prompt.md"),
+		filepath.Join(root, ".watchtower", "config.yaml"),
+		filepath.Join(root, ".watchtower", "flows", "default.yaml"),
+		filepath.Join(root, ".watchtower", "packages", "executor", "package.yaml"),
+		filepath.Join(root, ".watchtower", "packages", "executor", "prompt.md"),
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("missing %s: %v", p, err)
@@ -35,7 +35,7 @@ func TestInitIdempotentAndNonDestructive(t *testing.T) {
 	if _, _, err := Init(root); err != nil {
 		t.Fatal(err)
 	}
-	custom := filepath.Join(root, ".guildhall", "config.yaml")
+	custom := filepath.Join(root, ".watchtower", "config.yaml")
 	os.WriteFile(custom, []byte("runner: fake\n"), 0o644)
 	created, skipped, err := Init(root)
 	if err != nil {

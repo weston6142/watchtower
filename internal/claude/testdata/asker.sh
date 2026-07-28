@@ -1,6 +1,6 @@
 #!/bin/sh
 echo '{"type":"system","subtype":"init","session_id":"s-ask"}'
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"guildhall_decision\": {\"question\": \"Pick one\", \"options\": [\"a\",\"b\"], \"recommended\": 1, \"importance\": 0.7, \"paths\": [], \"why\": \"b is clearer\", \"consequences\": [\"use a\", \"use b\"], \"reversible\": \"before implementation\"}}"}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"watchtower_decision\": {\"question\": \"Pick one\", \"options\": [\"a\",\"b\"], \"recommended\": 1, \"importance\": 0.7, \"paths\": [], \"why\": \"b is clearer\", \"consequences\": [\"use a\", \"use b\"], \"reversible\": \"before implementation\"}}"}]}}'
 # Wait for the reply line on stdin (the initial task line arrives first).
 read _first_line
 read reply

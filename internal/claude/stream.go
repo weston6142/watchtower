@@ -88,15 +88,15 @@ type decisionMarker struct {
 		Why          string   `json:"why"`
 		Consequences []string `json:"consequences"`
 		Reversible   string   `json:"reversible"`
-	} `json:"guildhall_decision"`
+	} `json:"watchtower_decision"`
 }
 
-// ExtractDecision scans assistant text for a guildhall_decision marker line
+// ExtractDecision scans assistant text for a watchtower_decision marker line
 // and returns the parsed decision if a valid one is found.
 func ExtractDecision(text string) (levers.Decision, bool) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, `{"guildhall_decision":`) {
+		if !strings.HasPrefix(line, `{"watchtower_decision":`) {
 			continue
 		}
 		var m decisionMarker
@@ -120,14 +120,14 @@ type proposalMarker struct {
 	P struct {
 		Title string `json:"title"`
 		Body  string `json:"body"`
-	} `json:"guildhall_proposal"`
+	} `json:"watchtower_proposal"`
 }
 
-// ExtractProposal scans assistant text for the guildhall_proposal marker.
+// ExtractProposal scans assistant text for the watchtower_proposal marker.
 func ExtractProposal(text string) (runner.Proposal, bool) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, `{"guildhall_proposal":`) {
+		if !strings.HasPrefix(line, `{"watchtower_proposal":`) {
 			continue
 		}
 		var m proposalMarker

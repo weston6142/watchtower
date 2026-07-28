@@ -15,17 +15,17 @@ func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	if cfg.Runner != "claude" || cfg.Slots != 4 || cfg.ClaudeBin != "claude" {
 		t.Fatalf("bad defaults: %+v", cfg)
 	}
-	if cfg.Flows != filepath.Join(root, ".guildhall", "flows") {
+	if cfg.Flows != filepath.Join(root, ".watchtower", "flows") {
 		t.Fatalf("flows not resolved: %s", cfg.Flows)
 	}
-	if cfg.Packages != filepath.Join(root, ".guildhall", "packages") {
+	if cfg.Packages != filepath.Join(root, ".watchtower", "packages") {
 		t.Fatalf("packages not resolved: %s", cfg.Packages)
 	}
 }
 
 func TestLoadReadsFileAndFillsGaps(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".guildhall")
+	dir := filepath.Join(root, ".watchtower")
 	os.MkdirAll(dir, 0o755)
 	yaml := "runner: fake\nslots: 2\nflows: myflows\ntest_cmd: \"go test ./...\"\n"
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o644)
@@ -46,10 +46,10 @@ func TestLoadReadsFileAndFillsGaps(t *testing.T) {
 
 func TestLoadTheme(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".guildhall"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, ".watchtower"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".guildhall", "config.yaml"), []byte("theme: gruvbox\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".watchtower", "config.yaml"), []byte("theme: gruvbox\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(dir)
@@ -71,7 +71,7 @@ func TestLoadTheme(t *testing.T) {
 
 func TestLoadBadYAMLErrors(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".guildhall")
+	dir := filepath.Join(root, ".watchtower")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("slots: [not an int"), 0o644)
 	if _, err := Load(root); err == nil {
@@ -81,7 +81,7 @@ func TestLoadBadYAMLErrors(t *testing.T) {
 
 func TestFindRepoWalksUp(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, ".guildhall"), 0o755)
+	os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755)
 	nested := filepath.Join(root, "a", "b")
 	os.MkdirAll(nested, 0o755)
 	got, err := FindRepo(nested)

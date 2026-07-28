@@ -24,7 +24,7 @@ func TestParseInitAssistantResult(t *testing.T) {
 }
 
 func TestExtractDecision(t *testing.T) {
-	text := "I need input.\n{\"guildhall_decision\": {\"question\": \"REST or GraphQL?\", \"options\": [\"REST\", \"GraphQL\"], \"recommended\": 0, \"importance\": 0.6, \"paths\": [\"api/routes.go\"]}}\n"
+	text := "I need input.\n{\"watchtower_decision\": {\"question\": \"REST or GraphQL?\", \"options\": [\"REST\", \"GraphQL\"], \"recommended\": 0, \"importance\": 0.6, \"paths\": [\"api/routes.go\"]}}\n"
 	d, ok := ExtractDecision(text)
 	if !ok || d.Question != "REST or GraphQL?" || len(d.Options) != 2 || d.Importance != 0.6 || d.Paths[0] != "api/routes.go" {
 		t.Fatalf("decision: %+v ok=%v", d, ok)
@@ -35,7 +35,7 @@ func TestExtractDecision(t *testing.T) {
 }
 
 func TestExtractDecisionV2Fields(t *testing.T) {
-	text := `{"guildhall_decision": {"question": "Q?", "options": ["a","b"], "recommended": 1, "importance": 0.5, "paths": [], "why": "b is safer", "consequences": ["fast but risky", "slower, safe"], "reversible": "until execute"}}`
+	text := `{"watchtower_decision": {"question": "Q?", "options": ["a","b"], "recommended": 1, "importance": 0.5, "paths": [], "why": "b is safer", "consequences": ["fast but risky", "slower, safe"], "reversible": "until execute"}}`
 	d, ok := ExtractDecision(text)
 	if !ok || d.Why != "b is safer" || len(d.Consequences) != 2 || d.Reversible != "until execute" {
 		t.Fatalf("v2 fields: %+v ok=%v", d, ok)
@@ -43,7 +43,7 @@ func TestExtractDecisionV2Fields(t *testing.T) {
 }
 
 func TestExtractProposal(t *testing.T) {
-	text := "found something\n{\"guildhall_proposal\": {\"title\": \"Refactor refunds\", \"body\": \"3 call sites entangled\"}}"
+	text := "found something\n{\"watchtower_proposal\": {\"title\": \"Refactor refunds\", \"body\": \"3 call sites entangled\"}}"
 	p, ok := ExtractProposal(text)
 	if !ok || p.Title != "Refactor refunds" || p.Body != "3 call sites entangled" {
 		t.Fatalf("proposal: %+v ok=%v", p, ok)

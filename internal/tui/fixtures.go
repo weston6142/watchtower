@@ -10,7 +10,7 @@ import (
 	"github.com/weston6142/watchtower/internal/store"
 )
 
-// Fixtures pose the Model for every flow so `guildhall snap` and the golden
+// Fixtures pose the Model for every flow so `watchtower snap` and the golden
 // snapshot tests render through the real View(). Not used by the daemon or
 // the live TUI.
 
@@ -27,7 +27,7 @@ func fixtureState() *projection.State {
 		CurrentStage: "brainstorm", State: "waiting_decision", Tokens: 12000,
 	}
 	st.Issues["gh-importer"] = &projection.IssueView{
-		ID: "gh-importer", Title: "issue importer — GitHub → guildhall", Flow: "default",
+		ID: "gh-importer", Title: "issue importer — GitHub → watchtower", Flow: "default",
 		CurrentStage: "execute", State: "running", Tokens: 96000,
 		Completed: []string{"brainstorm", "spec", "plan"},
 	}

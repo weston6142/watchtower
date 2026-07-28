@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=tmp-snaps
-go run ./cmd/guildhall snap --out "$out" ${1:+--flow "$1"} ${2:+--width "$2"}
+go run ./cmd/watchtower snap --out "$out" ${1:+--flow "$1"} ${2:+--width "$2"}
 if command -v freeze >/dev/null; then
   for f in "$out"/*.txt; do
     freeze "$f" --output "${f%.txt}.png"

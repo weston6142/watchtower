@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-// buildBinary compiles guildhall once into a temp dir.
+// buildBinary compiles watchtower once into a temp dir.
 func buildBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "guildhall")
+	bin := filepath.Join(t.TempDir(), "watchtower")
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	cmd.Env = os.Environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -35,7 +35,7 @@ func initRepo(t *testing.T, bin, base string) string {
 	t.Helper()
 	repo := t.TempDir()
 	run(t, bin, repo, "init", "--data", base)
-	cfg := filepath.Join(repo, ".guildhall", "config.yaml")
+	cfg := filepath.Join(repo, ".watchtower", "config.yaml")
 	if err := os.WriteFile(cfg, []byte("runner: fake\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -26,7 +26,7 @@ type CodeRunner struct {
 	OnLine     func(issueID, stage, line string)
 }
 
-const coachMsg = `Your guildhall_decision is missing required fields. Re-emit the SAME decision
+const coachMsg = `Your watchtower_decision is missing required fields. Re-emit the SAME decision
 as one JSON line including: "why" (one line: why you recommend option N) and
 "consequences" (one line per option, same order as options). Nothing else.`
 
