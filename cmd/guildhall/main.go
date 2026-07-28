@@ -22,7 +22,9 @@ import (
 	"github.com/wbushyeager/guildhall/internal/marshal"
 	"github.com/wbushyeager/guildhall/internal/pkgs"
 	"github.com/wbushyeager/guildhall/internal/proto"
+	"github.com/wbushyeager/guildhall/internal/repocfg"
 	"github.com/wbushyeager/guildhall/internal/runner"
+	"github.com/wbushyeager/guildhall/internal/scaffold"
 	"github.com/wbushyeager/guildhall/internal/slots"
 	"github.com/wbushyeager/guildhall/internal/steward"
 	"github.com/wbushyeager/guildhall/internal/store"
@@ -38,11 +40,51 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|init|repos|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	switch cmd {
+	case "init":
+		fs := flag.NewFlagSet("init", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		cwd, err := os.Getwd()
+		if err != nil {
+			fatal(err)
+		}
+		created, skipped, err := scaffold.Init(cwd)
+		if err != nil {
+			fatal(err)
+		}
+		if err := repocfg.Register(*data, cwd); err != nil {
+			fatal(err)
+		}
+		for _, p := range created {
+			fmt.Println("created .guildhall/" + p)
+		}
+		for _, p := range skipped {
+			fmt.Println("exists  .guildhall/" + p)
+		}
+		fmt.Println("registered", cwd)
+		fmt.Println("next: run 'guildhall tower' — the daemon starts automatically")
+	case "repos":
+		fs := flag.NewFlagSet("repos", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		fs.Parse(args)
+		entries, err := repocfg.ListRegistered(*data)
+		if err != nil {
+			fatal(err)
+		}
+		for _, e := range entries {
+			status := "stopped"
+			sock := filepath.Join(repocfg.RepoDataDir(*data, e.Path), "guildhall.sock")
+			if conn, err := net.Dial("unix", sock); err == nil {
+				conn.Close()
+				status = "running"
+			}
+			fmt.Printf("%-8s %s\n", status, e.Path)
+		}
 	case "daemon":
 		runDaemon(args)
 	case "tower":
