@@ -26,6 +26,19 @@ func TestRenderToastMarksRecommended(t *testing.T) {
 	}
 }
 
+func TestRenderToastUsesTheme(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	d := projection.DecisionView{ID: 3, Stage: "plan", Question: "Pick one", Options: []string{"a", "b"}, Recommended: 0}
+	out := renderToast(d, Identity{Tag: "st-1"}, 0, 0, 60)
+	// theme accent (tokyo-night #bb9af7 → truecolor SGR 187;154;247) on border/keys
+	if !strings.Contains(out, "187;154;247") {
+		t.Fatalf("no accent color in toast:\n%q", out)
+	}
+	if strings.Contains(out, "\x1b[38;5;245m") {
+		t.Fatal("hardcoded color 245 still present")
+	}
+}
+
 func TestRenderToastWrapsLongLines(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	d := projection.DecisionView{ID: 4, IssueID: "GH-1", Stage: "brainstorm",

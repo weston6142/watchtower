@@ -182,8 +182,11 @@ func orderedLeverStages(levers map[string]string) []string {
 // sel is the option the j/k cursor is on.
 func renderToast(d projection.DecisionView, id Identity, sel, streak, width int) string {
 	inner := max(1, width-4)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	lines := []string{fmt.Sprintf("DECISION [%d] %s %s", d.ID, id.Tag, d.Stage), ""}
+	t := activeTheme
+	dim := lipgloss.NewStyle().Foreground(t.Dim)
+	heading := lipgloss.NewStyle().Foreground(t.Heading).Bold(true)
+	key := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
+	lines := []string{heading.Render(fmt.Sprintf("DECISION [%d] %s %s", d.ID, id.Tag, d.Stage)), ""}
 	lines = append(lines, wrapIndent(d.Question, inner, "")...)
 	if d.Why != "" {
 		for _, line := range wrapIndent(d.Why, inner, "why: ") {
@@ -194,7 +197,7 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 	for i, option := range d.Options {
 		cursor, star := " ", " "
 		if i == sel {
-			cursor = "▸"
+			cursor = key.Render("▸")
 		}
 		if i == d.Recommended {
 			star = "★"
@@ -214,9 +217,14 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 	if streak >= 3 {
 		lines = append(lines, "", fmt.Sprintf("you've accepted %d recommendations in a row without opening evidence", streak))
 	}
-	lines = append(lines, "", dim.Render("j/k choose · enter select · y accept ★ · o evidence · esc dismiss"))
+	hint := key.Render("j/k") + dim.Render(" choose · ") +
+		key.Render("enter") + dim.Render(" select · ") +
+		key.Render("y") + dim.Render(" accept ") +
+		dim.Render("★ · ") + key.Render("o") + dim.Render(" evidence · ") +
+		key.Render("esc") + dim.Render(" dismiss")
+	lines = append(lines, "", hint)
 	content := strings.Join(lines, "\n")
-	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(id.Color)).Padding(1)
+	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Accent).Padding(1)
 	return style.Render(content)
 }
 
