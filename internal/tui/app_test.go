@@ -123,3 +123,31 @@ func TestShelfAutoRetiresAndUnretiresMergedIssue(t *testing.T) {
 		t.Fatalf("unretire did not remove shelf item: %+v", items)
 	}
 }
+
+func TestIssueOpKeysHintWhenNothingFocused(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm", "spec", "execute", "review", "merge"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "payment adapter", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	})
+	if m.Focus.Issue != "" {
+		t.Fatalf("expected empty focus at startup, got %q", m.Focus.Issue)
+	}
+	for _, key := range []string{"L", "p", "R"} {
+		m = pressKey(t, m, key)
+		if m.Err != "no lane focused — press j or 1-9 to focus" {
+			t.Fatalf("key %q: expected no-focus hint, got %q", key, m.Err)
+		}
+		if m.leverEditor != nil {
+			t.Fatal("lever editor should not open without focus")
+		}
+	}
+	// Focusing a lane clears the hint.
+	m = pressKey(t, m, "j")
+	if m.Focus.Issue == "" {
+		t.Fatal("expected j to focus a lane")
+	}
+	if m.Err != "" {
+		t.Fatalf("expected hint cleared after focus, got %q", m.Err)
+	}
+}

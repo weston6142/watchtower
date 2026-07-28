@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -96,6 +97,116 @@ func New(cfg Config) *Engine {
 		}
 	}
 	return e
+}
+
+// Rehydrate rebuilds in-memory state from the store after a daemon restart.
+// Non-terminal issues become terminal (retryable via RetryStage) — stages are
+// never auto-restarted, so a reboot cannot spend tokens on its own. Pending
+// decisions whose stage goroutine died with the old process are closed as
+// "orphaned"; retrying the stage re-raises them. Paused and killed issues are
+// rehydrated the same way: a pause gate with no parked goroutine is
+// meaningless. Idempotent.
+//
+// TODO: worktrees acquired by the previous daemon are never released; a
+// retried stage acquires a fresh one and the old lease leaks.
+func (e *Engine) Rehydrate() error {
+	rows, err := e.cfg.Store.Issues()
+	if err != nil {
+		return err
+	}
+
+	// Restore the ID counter across every row — including terminal issues —
+	// so CreateIssue never mints a colliding GH-n.
+	maxID := 0
+	for _, row := range rows {
+		if n, ok := issueNumber(row.ID); ok && n > maxID {
+			maxID = n
+		}
+	}
+	e.mu.Lock()
+	if maxID > e.nextID {
+		e.nextID = maxID
+	}
+	e.mu.Unlock()
+
+	// Close pending decisions with no living stage goroutine before marking
+	// their issues failed: the answered event returns projection state to
+	// "running" so the failure marker below lands last.
+	prows, err := e.cfg.Store.PendingDecisionRows()
+	if err != nil {
+		return err
+	}
+	for _, row := range prows {
+		e.mu.Lock()
+		_, alive := e.pend[row.ID]
+		e.mu.Unlock()
+		if alive {
+			continue
+		}
+		_ = e.cfg.Store.AnswerDecision(row.ID, -1, "orphaned")
+		e.emit(core.EvDecisionAnswered, row.IssueID, map[string]any{
+			"decision_id": row.ID, "option": -1, "orphaned": true})
+	}
+
+	for _, row := range rows {
+		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" {
+			continue
+		}
+		e.mu.Lock()
+		_, known := e.issues[row.ID]
+		e.mu.Unlock()
+		if known {
+			continue
+		}
+		// Best-effort: on error or missing events the zero values fall back
+		// to the flow's first stage below.
+		stage, attempt, of, _, _ := e.cfg.Store.LastStageEvents(row.ID)
+		f, ok := e.cfg.Flows[row.Flow]
+		if !ok || len(f.Stages) == 0 {
+			// Never insert an issue whose flow can't run: a retry through a
+			// zero-stage flow would fake-complete it. Surface it instead.
+			e.emit(core.EvStageFailed, row.ID, map[string]any{
+				"stage": stage, "error": fmt.Sprintf("flow %q no longer configured", row.Flow), "final": true})
+			continue
+		}
+		stageIdx := 0
+		for i, st := range f.Stages {
+			if st.Name == stage {
+				stageIdx = i
+				break
+			}
+		}
+		if stage == "" {
+			stage = f.Stages[0].Name
+		}
+		matrix := levers.Matrix{}
+		for st, lv := range row.Levers {
+			matrix[st] = flow.Lever(lv)
+		}
+		e.mu.Lock()
+		e.issues[row.ID] = &issueState{
+			id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+			matrix: matrix, priority: row.Priority, stageIdx: stageIdx, terminal: true,
+		}
+		e.mu.Unlock()
+		e.emit(core.EvStageFailed, row.ID, map[string]any{
+			"stage": stage, "attempt": attempt, "of": of,
+			"error": "daemon restarted — press R to retry", "final": true})
+	}
+	return nil
+}
+
+// issueNumber extracts n from a GH-n issue ID.
+func issueNumber(id string) (int, bool) {
+	rest, ok := strings.CutPrefix(id, "GH-")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // ActiveTouchsets returns a snapshot of plans that are still in flight.

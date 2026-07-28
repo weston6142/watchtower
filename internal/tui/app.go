@@ -519,6 +519,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd := m.openArtifactsFor(m.Focus.Issue)
 			return m, cmd
 		}
+		if m.Focus.Issue == "" {
+			// Issue-op keys act on the focused lane; with nothing focused
+			// they would silently no-op, which reads as broken.
+			switch key {
+			case "p", "x", "R", "L", "c", "o", "enter":
+				m.Err = "no lane focused — press j or 1-9 to focus"
+				return m, nil
+			}
+		}
 		if key == "a" {
 			m.archMode = "pane"
 			return m, m.fetchArch()
@@ -529,6 +538,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		moved := moveFocus(m.Focus, m.State, m.stages, key)
 		if moved != m.Focus {
+			m.Err = ""
 			m.Focus = moved
 			m.Detail = nil
 			m.openArtifacts = false

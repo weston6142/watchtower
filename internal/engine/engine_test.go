@@ -576,3 +576,159 @@ func TestProposalAcceptCreatesIssue(t *testing.T) {
 		t.Fatalf("filed=%d accepted=%d created=%d", filed, accepted, created)
 	}
 }
+
+// newEngineOnFile builds an engine on a file-backed store so a second engine
+// can be constructed on the same durable state, simulating a daemon restart.
+func newEngineOnFile(t *testing.T, s *store.Store, r runner.Runner, dataDir string) *Engine {
+	t.Helper()
+	return New(Config{
+		Store: s, Runner: r, Pool: slots.NewPool(2),
+		Flows:   map[string]flow.Flow{"default": testFlow()},
+		DataDir: dataDir,
+	})
+}
+
+func TestRehydrateAfterDaemonRestart(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	dataDir := t.TempDir()
+
+	// Engine 1: run until the spec approve_artifact gate parks a decision.
+	e1 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
+	id, err := e1.CreateIssue("restart me", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	deadline := time.After(5 * time.Second)
+	for len(e1.PendingDecisions()) != 1 {
+		select {
+		case <-deadline:
+			t.Fatal("gate decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// "Restart": a fresh engine on the same store knows nothing in memory.
+	e2 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.Rehydrate(); err != nil { // idempotent
+		t.Fatal(err)
+	}
+
+	// nextID advanced past existing issues: no GH-1 collision.
+	id2, err := e2.CreateIssue("after restart", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id2 == id {
+		t.Fatalf("issue ID collision after restart: %s", id2)
+	}
+
+	// Orphaned decision closed, not resurrected.
+	if ds := e2.PendingDecisions(); len(ds) != 0 {
+		t.Fatalf("expected no pending decisions after rehydrate, got %d", len(ds))
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphaned := 0
+	for _, row := range rows {
+		if row.IssueID == id && row.Status == "orphaned" {
+			orphaned++
+		}
+	}
+	if orphaned != 1 {
+		t.Fatalf("expected 1 orphaned decision for %s, got %d (%+v)", id, orphaned, rows)
+	}
+
+	// Events: decision answered (orphaned) then a final stage failure marker.
+	evs, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answeredSeq, failedSeq int64
+	for _, ev := range evs {
+		if ev.IssueID != id {
+			continue
+		}
+		var p map[string]any
+		_ = json.Unmarshal(ev.Payload, &p)
+		switch ev.Type {
+		case core.EvDecisionAnswered:
+			if orphanedFlag, _ := p["orphaned"].(bool); orphanedFlag {
+				answeredSeq = ev.Seq
+			}
+		case core.EvStageFailed:
+			if msg, _ := p["error"].(string); strings.Contains(msg, "daemon restarted") {
+				failedSeq = ev.Seq
+			}
+		}
+	}
+	if answeredSeq == 0 || failedSeq == 0 || answeredSeq > failedSeq {
+		t.Fatalf("expected orphaned answer before restart failure marker, got answered=%d failed=%d", answeredSeq, failedSeq)
+	}
+
+	// The issue is retryable: no "unknown issue", and with the re-raised gate
+	// answered the flow completes.
+	go func() {
+		deadline := time.After(5 * time.Second)
+		for {
+			if ds := e2.PendingDecisions(); len(ds) == 1 {
+				_ = e2.Answer(ds[0].ID, 0)
+				return
+			}
+			select {
+			case <-deadline:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}()
+	if err := e2.RetryStage(context.Background(), id); err != nil {
+		t.Fatalf("retry after rehydrate: %v", err)
+	}
+	evs, _ = s.EventsSince(0)
+	completed := false
+	for _, ev := range evs {
+		if ev.IssueID == id && ev.Type == core.EvIssueCompleted {
+			completed = true
+		}
+	}
+	if !completed {
+		t.Fatal("issue did not complete after rehydrated retry")
+	}
+}
+
+func TestRehydrateSkipsUnknownFlow(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.UpsertIssue(store.IssueRow{ID: "GH-7", Title: "ghost", Flow: "gone", State: "running:plan"}); err != nil {
+		t.Fatal(err)
+	}
+	e := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, t.TempDir())
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	err = e.RetryStage(context.Background(), "GH-7")
+	if err == nil || !strings.Contains(err.Error(), "unknown issue") {
+		t.Fatalf("expected unknown issue for unloadable flow, got %v", err)
+	}
+	// nextID still advanced past GH-7.
+	id, err := e.CreateIssue("new", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "GH-8" {
+		t.Fatalf("expected GH-8 after GH-7, got %s", id)
+	}
+}
