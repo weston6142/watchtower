@@ -149,7 +149,7 @@ func (e *Engine) Rehydrate() error {
 	}
 
 	for _, row := range rows {
-		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" {
+		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" || row.State == "abandoned" {
 			continue
 		}
 		e.mu.Lock()
@@ -270,6 +270,16 @@ func (e *Engine) KillStage(issueID string) error {
 		is.pauseGate = make(chan struct{})
 	}
 	cancel := is.stageCancel
+	killed := e.dropPendingDecisions(issueID)
+	e.mu.Unlock()
+	e.markDecisionsKilled(killed)
+	cancel()
+	return nil
+}
+
+// dropPendingDecisions unblocks and forgets every in-memory decision waiting
+// on issueID, returning their ids. The caller must hold e.mu.
+func (e *Engine) dropPendingDecisions(issueID string) []int64 {
 	var killed []int64
 	for id, p := range e.pend {
 		if p.IssueID != issueID {
@@ -279,11 +289,38 @@ func (e *Engine) KillStage(issueID string) error {
 		close(p.reply)
 		killed = append(killed, id)
 	}
-	e.mu.Unlock()
-	for _, id := range killed {
+	return killed
+}
+
+// markDecisionsKilled records the killed outcome in the store best-effort;
+// it must be called without e.mu held.
+func (e *Engine) markDecisionsKilled(ids []int64) {
+	for _, id := range ids {
 		_ = e.cfg.Store.AnswerDecision(id, -1, "killed")
 	}
-	cancel()
+}
+
+// Abandon removes an issue for good: any running stage is cancelled, its
+// pending decisions are closed, and the lane disappears from every surface
+// via EvIssueAbandoned. Abandon is a state, not a purge — rows, events, and
+// artifacts stay in the store.
+func (e *Engine) Abandon(issueID string) error {
+	e.mu.Lock()
+	is, ok := e.issues[issueID]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", issueID)
+	}
+	is.killRequested = true
+	cancel := is.stageCancel
+	killed := e.dropPendingDecisions(issueID)
+	delete(e.issues, issueID)
+	e.mu.Unlock()
+	e.markDecisionsKilled(killed)
+	if cancel != nil {
+		cancel()
+	}
+	e.emit(core.EvIssueAbandoned, issueID, nil)
 	return nil
 }
 

@@ -156,6 +156,17 @@ func (s *State) Apply(ev core.Event) {
 			iv.Paused = false
 			iv.State = "running"
 		}
+	case core.EvIssueAbandoned:
+		// An abandoned lane leaves every surface: grid, shelves, and queue.
+		delete(s.Issues, ev.IssueID)
+		removeString(&s.Order, ev.IssueID)
+		removeString(&s.ShippedToday, ev.IssueID)
+		removeString(&s.Parked, ev.IssueID)
+		for id, d := range s.Decisions {
+			if d.IssueID == ev.IssueID {
+				delete(s.Decisions, id)
+			}
+		}
 	case core.EvStageKilled:
 		if iv != nil {
 			iv.Killed = true
@@ -217,4 +228,14 @@ func appendUnique(items *[]string, value string) {
 		}
 	}
 	*items = append(*items, value)
+}
+
+func removeString(items *[]string, value string) {
+	kept := (*items)[:0]
+	for _, item := range *items {
+		if item != value {
+			kept = append(kept, item)
+		}
+	}
+	*items = kept
 }

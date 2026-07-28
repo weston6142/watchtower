@@ -31,6 +31,7 @@ const (
 	EvBudgetExceeded       EventType = "budget_exceeded"
 	EvIssuePaused          EventType = "issue_paused"
 	EvIssueResumed         EventType = "issue_resumed"
+	EvIssueAbandoned       EventType = "issue_abandoned"
 	EvStageKilled          EventType = "stage_killed"
 	EvLeverChanged         EventType = "lever_changed"
 )

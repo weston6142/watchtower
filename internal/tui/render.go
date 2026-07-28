@@ -434,6 +434,7 @@ var helpGroups = [][]helpGroup{
 		{"CONTROL", [][2]string{
 			{"p", "pause / resume"},
 			{"x", "kill stage"},
+			{"X", "abandon lane"},
 			{"R", "retry failed stage"},
 			{"L", "lever editor"},
 			{"n", "new issue"},

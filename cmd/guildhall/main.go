@@ -40,7 +40,7 @@ func defaultData() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|init|repos|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|init|repos|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -239,7 +239,7 @@ func main() {
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "overview"})
 		fmt.Println(statusSentence(r.Overview))
-	case "pause", "resume", "kill", "retry":
+	case "pause", "resume", "kill", "retry", "abandon":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
@@ -253,6 +253,7 @@ func main() {
 		ops := map[string]string{
 			"pause": "pause_issue", "resume": "resume_issue",
 			"kill": "kill_stage", "retry": "retry_stage",
+			"abandon": "abandon_issue",
 		}
 		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0]})
 		fmt.Println(cmd, fs.Args()[0])

@@ -139,6 +139,11 @@ func (sv *Server) exec(cmd Command) Response {
 	case "retry_stage":
 		go sv.eng.RetryStage(context.Background(), cmd.IssueID)
 		return Response{OK: true, IssueID: cmd.IssueID}
+	case "abandon_issue":
+		if err := sv.eng.Abandon(cmd.IssueID); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
 	case "set_lever":
 		if err := sv.eng.SetLever(cmd.IssueID, cmd.Stage, flow.Lever(cmd.Lever)); err != nil {
 			return Response{Error: err.Error()}
@@ -259,7 +264,7 @@ func (sv *Server) overview() (Overview, error) {
 			case core.EvStageFailed:
 				out.Failing++
 				continue
-			case core.EvDecisionRequired, core.EvIssueCompleted, core.EvIssueMerged:
+			case core.EvDecisionRequired, core.EvIssueCompleted, core.EvIssueMerged, core.EvIssueAbandoned:
 				continue
 			}
 		}
