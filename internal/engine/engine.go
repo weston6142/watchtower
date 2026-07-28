@@ -136,7 +136,6 @@ func (e *Engine) Rehydrate() error {
 	if err != nil {
 		return err
 	}
-	orphanedByIssue := map[string]bool{}
 	for _, row := range prows {
 		e.mu.Lock()
 		_, alive := e.pend[row.ID]
@@ -147,7 +146,6 @@ func (e *Engine) Rehydrate() error {
 		_ = e.cfg.Store.AnswerDecision(row.ID, -1, "orphaned")
 		e.emit(core.EvDecisionAnswered, row.IssueID, map[string]any{
 			"decision_id": row.ID, "option": -1, "orphaned": true})
-		orphanedByIssue[row.IssueID] = true
 	}
 
 	for _, row := range rows {
@@ -160,6 +158,8 @@ func (e *Engine) Rehydrate() error {
 		if known {
 			continue
 		}
+		// Best-effort: on error or missing events the zero values fall back
+		// to the flow's first stage below.
 		stage, attempt, of, _, _ := e.cfg.Store.LastStageEvents(row.ID)
 		f, ok := e.cfg.Flows[row.Flow]
 		if !ok || len(f.Stages) == 0 {
