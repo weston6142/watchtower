@@ -67,6 +67,7 @@ type Model struct {
 	archFilter       string
 	help             bool
 	rows             bool
+	warExpanded      bool
 	retireAfter      time.Duration
 	retired          map[string]bool
 	shelfSel         int
@@ -560,6 +561,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if key == "g" {
+			m.warExpanded = !m.warExpanded
+			return m, nil
+		}
 		if key == "a" {
 			m.archMode = "pane"
 			return m, m.fetchArch()
@@ -572,6 +577,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if moved != m.Focus {
 			m.Err = ""
 			m.Focus = moved
+			m.warExpanded = false
 			m.Detail = nil
 			m.openArtifacts = false
 			if m.Focus.Issue != "" {
@@ -1169,7 +1175,7 @@ func (m Model) View() string {
 	}
 	railWidth := max(24, min(40, layoutWidth/3))
 	towerWidth := max(1, layoutWidth-railWidth-1)
-	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth)
+	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth, m.warExpanded)
 	if m.rows {
 		tower = renderRowsConfigured(m.State, m.stages, m.Ids, m.Focus, m.reducedMotion, m.ticks, towerWidth)
 	}

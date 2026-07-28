@@ -148,6 +148,21 @@ func TestRenderTowerPlacesCards(t *testing.T) {
 	}
 }
 
+func TestWarRoomExpanded(t *testing.T) {
+	st := projection.NewState()
+	collapsed := warRoomLines(st, nil, false)
+	if len(collapsed) != 1 {
+		t.Fatalf("collapsed war room = %d lines, want 1", len(collapsed))
+	}
+	expanded := warRoomLines(st, nil, true)
+	if len(expanded) != 2 {
+		t.Fatalf("expanded war room = %d lines, want 2", len(expanded))
+	}
+	if !strings.Contains(expanded[1], "shipping order") {
+		t.Fatalf("breakout line missing detail: %q", expanded[1])
+	}
+}
+
 func TestCellWordsAndStates(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	m := NewModel(nil, []string{"brainstorm", "spec", "execute", "review", "merge"})
@@ -183,7 +198,7 @@ func TestStageAliases(t *testing.T) {
 		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
 		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
 	})
-	out := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, false, 0, 100)
+	out := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, false, 0, 100, false)
 	if !strings.Contains(out, "AGREE") || strings.Contains(out, "SPEC") {
 		t.Fatalf("aliases not applied:\n%s", out)
 	}

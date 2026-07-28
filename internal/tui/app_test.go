@@ -194,6 +194,18 @@ func TestTranscriptKeyOpensDoorWhenFocused(t *testing.T) {
 	}
 }
 
+func TestWarRoomKeyToggles(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm", "spec"})
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	if !next.(Model).warExpanded {
+		t.Fatal("g did not expand the war room")
+	}
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	if next.(Model).warExpanded {
+		t.Fatal("second g did not collapse the war room")
+	}
+}
+
 // The overlay paints over the grid, so it has to swallow the grid's keys.
 // Driving a lane you cannot see is worse than the key doing nothing.
 func TestHelpOverlaySwallowsIssueKeys(t *testing.T) {

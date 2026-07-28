@@ -300,14 +300,14 @@ func withEdgeGutters(content string, left, right []string) string {
 }
 
 func renderTower(st *projection.State, stages []string, ids map[string]Identity, focus Focus, tick, width int) string {
-	return renderTowerConfigured(st, stages, ids, focus, nil, false, tick, width)
+	return renderTowerConfigured(st, stages, ids, focus, nil, false, tick, width, false)
 }
 
-func renderTowerConfigured(st *projection.State, stages []string, ids map[string]Identity, focus Focus, aliases map[string]string, reducedMotion bool, tick, width int) string {
+func renderTowerConfigured(st *projection.State, stages []string, ids map[string]Identity, focus Focus, aliases map[string]string, reducedMotion bool, tick, width int, warExpanded bool) string {
 	if st == nil {
 		st = projection.NewState()
 	}
-	lines := []string{warRoom(st, ids), "MAP · " + mapInsight(st.Issues) + " · a full map"}
+	lines := append(warRoomLines(st, ids, warExpanded), "MAP · "+mapInsight(st.Issues)+" · a full map")
 	if len(st.Order) == 0 {
 		for _, stage := range stages {
 			lines = append(lines, stageLabel(aliases, stage)+"  "+themeDim.Render("—"))
@@ -579,4 +579,41 @@ func warRoom(st *projection.State, ids map[string]Identity) string {
 	}
 	return fmt.Sprintf("shipping order: %s · builders %d/4 busy · ideas %d · questions %d",
 		strings.Join(lane, "→"), busy, st.ProposalCount, len(st.Decisions))
+}
+
+// warRoomLines renders the war-room strip: the summary line, plus a breakout
+// line when expanded via the g key.
+func warRoomLines(st *projection.State, ids map[string]Identity, expanded bool) []string {
+	summary := warRoom(st, ids)
+	if !expanded {
+		return []string{summary}
+	}
+	t := activeTheme
+	head := lipgloss.NewStyle().Foreground(t.Bright).Background(t.Bg2).Bold(true).Render(summary)
+	var lane []string
+	busy := 0
+	if st != nil {
+		for _, id := range st.Order {
+			iv := st.Issues[id]
+			if iv == nil {
+				continue
+			}
+			if iv.Merged || iv.CurrentStage == "merge" || iv.Behind != "" || iv.State == "done" {
+				tag := id
+				if identity, ok := ids[id]; ok {
+					tag = identity.Tag
+				}
+				lane = append(lane, tag)
+			}
+			if iv.State == "running" && iv.CurrentStage != "" {
+				busy++
+			}
+		}
+	}
+	order := "—"
+	if len(lane) > 0 {
+		order = strings.Join(lane, " → ") // full order, no +n cap
+	}
+	detail := fmt.Sprintf("shipping order %s · %d building · g collapse", order, busy)
+	return []string{head, themeDim.Render(detail)}
 }
