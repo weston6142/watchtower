@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -95,37 +94,48 @@ func renderModal(m modalState, width int) string {
 	if preset == "" {
 		preset = string(flow.LeverRegular)
 	}
-	t := activeTheme
-	key := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(t.Dim)
+	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
 	lines := []string{
 		modalField(m.Field == 0, "title", m.Title, true),
 		modalField(m.Field == 1, "body", m.Body, false),
 		modalField(m.Field == 2, "flow", flowName, false),
 		modalField(m.Field == 3, "preset", preset, false),
 		"",
-		key.Render("tab") + dim.Render(" next field · ") + key.Render("enter") + dim.Render(" create"),
+		keyChip("tab") + dim.Render(" next field  ") + keyChip("enter") + dim.Render(" create"),
 	}
 	return renderBox("new issue", "", " esc cancel ", boundedLines(lines, max(1, width-6)))
 }
 
+const modalFieldWidth = 44
+
+// modalField renders a labelled input: dim uppercase label over a bordered
+// value box; the active field gets an accent border and a block caret.
 func modalField(selected bool, name, value string, required bool) string {
-	mark := "  "
-	if selected {
-		mark = "▸ "
-	}
-	requiredMark := ""
+	t := activeTheme
+	label := strings.ToUpper(name)
 	if required {
-		requiredMark = " *"
+		label += " *"
 	}
-	return fmt.Sprintf("%s%s%s: %s", mark, name, requiredMark, value)
+	labelLine := lipgloss.NewStyle().Foreground(t.Dim).Render(label)
+	border := t.Dimmer
+	body := lipgloss.NewStyle().Foreground(t.Text).Render(value)
+	if value == "" {
+		body = lipgloss.NewStyle().Foreground(t.Dimmer).Render("…")
+	}
+	if selected {
+		border = t.Accent
+		body = lipgloss.NewStyle().Foreground(t.Bright).Render(value) +
+			lipgloss.NewStyle().Foreground(t.Accent).Render("▏")
+	}
+	field := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(modalFieldWidth).Render(body)
+	return labelLine + "\n" + field
 }
 
 func renderConfirm(prompt string, width int) string {
-	t := activeTheme
-	key := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(t.Dim)
-	hint := key.Render("y") + dim.Render(" confirm")
+	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
+	hint := keyChip("y") + dim.Render(" confirm")
 	content := boundedLines([]string{prompt, "", hint}, max(1, width-6))
 	return renderBox("confirm", "", " n cancel ", content)
 }
@@ -155,18 +165,27 @@ func newLeverEditor(issueID string, stages []string, values map[string]string) *
 }
 
 func renderLeverEditor(stages []string, matrix map[string]string, sel int) string {
-	lines := []string{"LEVERS · j/k row · h/l value · enter apply · esc cancel"}
+	t := activeTheme
+	dim := lipgloss.NewStyle().Foreground(t.Dim)
+	const rowWidth = 40
+	var lines []string
 	for i, stage := range stages {
-		mark := "  "
-		if i == sel {
-			mark = "▸ "
-		}
 		value := matrix[stage]
 		if value == "" {
 			value = string(flow.LeverRegular)
 		}
-		lines = append(lines, fmt.Sprintf("%s%-12s %s", mark, stage, value))
+		// Values are nouns, not states: Structure cyan-blue; the selected
+		// lever's value becomes an adjustable ◂ value ▸ control.
+		styled := lipgloss.NewStyle().Foreground(t.Structure).Render(value)
+		if i == sel {
+			arrow := lipgloss.NewStyle().Foreground(t.Accent)
+			styled = arrow.Render("◂ ") + lipgloss.NewStyle().Foreground(t.Bright).Render(value) + arrow.Render(" ▸")
+		}
+		name := padCell(stage, 14)
+		pad := max(1, rowWidth-lipgloss.Width(name)-lipgloss.Width(styled))
+		lines = append(lines, cursorRow(i == sel, name+strings.Repeat(" ", pad)+styled, rowWidth+4))
 	}
+	lines = append(lines, "", keyChip("j/k")+dim.Render(" lever  ")+keyChip("h/l")+dim.Render(" adjust  ")+keyChip("enter")+dim.Render(" apply"))
 	return renderBox("levers", "per-stage autonomy", " esc close ", strings.Join(lines, "\n"))
 }
 
