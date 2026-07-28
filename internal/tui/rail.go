@@ -178,54 +178,86 @@ func orderedLeverStages(levers map[string]string) []string {
 	return append(stages, remaining...)
 }
 
-// renderToast draws the raised decision as a self-contained modal string.
+// renderToast draws the raised decision as a self-contained card: banded
+// header (tag, title, reversibility verdict), question + why, bordered
+// selectable option rows with the ★ recommendation, and a chip keybar.
 // sel is the option the j/k cursor is on.
 func renderToast(d projection.DecisionView, id Identity, sel, streak, width int) string {
-	inner := max(1, width-4)
+	inner := max(20, width-8)
 	t := activeTheme
 	dim := lipgloss.NewStyle().Foreground(t.Dim)
-	heading := lipgloss.NewStyle().Foreground(t.Structure).Bold(true)
-	key := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
-	lines := []string{heading.Render(fmt.Sprintf("DECISION [%d] %s %s", d.ID, id.Tag, d.Stage)), ""}
+	lines := []string{}
 	lines = append(lines, wrapIndent(d.Question, inner, "")...)
 	if d.Why != "" {
-		for _, line := range wrapIndent(d.Why, inner, "why: ") {
+		for _, line := range wrapIndent(d.Why, inner, "why · ") {
 			lines = append(lines, dim.Render(line))
 		}
 	}
 	lines = append(lines, "")
 	for i, option := range d.Options {
-		cursor, star := " ", " "
-		if i == sel {
-			cursor = key.Render("▸")
+		consequence := ""
+		if i < len(d.Consequences) {
+			consequence = d.Consequences[i]
 		}
-		if i == d.Recommended {
-			star = "★"
-		}
-		text := option
-		if i < len(d.Consequences) && d.Consequences[i] != "" {
-			text += " → " + d.Consequences[i]
-		}
-		lines = append(lines, wrapIndent(text, inner, cursor+star+" ")...)
-	}
-	if d.Reversible != "" {
-		lines = append(lines, "")
-		for _, line := range wrapIndent(d.Reversible, inner, "reversible: ") {
-			lines = append(lines, dim.Render(line))
-		}
+		lines = append(lines, strings.Split(renderOption(option, consequence, i == sel, i == d.Recommended, inner), "\n")...)
 	}
 	if streak >= 3 {
-		lines = append(lines, "", fmt.Sprintf("you've accepted %d recommendations in a row without opening evidence", streak))
+		lines = append(lines, "", dim.Render(fmt.Sprintf("you've accepted %d recommendations in a row without opening evidence", streak)))
 	}
-	hint := key.Render("j/k") + dim.Render(" choose · ") +
-		key.Render("enter") + dim.Render(" select · ") +
-		key.Render("y") + dim.Render(" accept ") +
-		dim.Render("★ · ") + key.Render("o") + dim.Render(" evidence · ") +
-		key.Render("esc") + dim.Render(" dismiss")
+	hint := keyChip("j/k") + dim.Render(" choose  ") +
+		keyChip("enter") + dim.Render(" select  ") +
+		keyChip("y") + dim.Render(" accept ★  ") +
+		keyChip("o") + dim.Render(" evidence  ") +
+		keyChip("1..9") + dim.Render(" by number  ") +
+		keyChip("esc") + dim.Render(" dismiss")
 	lines = append(lines, "", hint)
-	content := strings.Join(lines, "\n")
-	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Accent).Padding(1)
-	return style.Render(content)
+	verdict := reversibleVerdict(d.Reversible)
+	title := fmt.Sprintf("DECISION %d · %s %s", d.ID, id.Tag, d.Stage)
+	return renderBox(title, verdict, " esc dismiss ", strings.Join(lines, "\n"))
+}
+
+// reversibleVerdict compresses the reversibility text for the card band,
+// colored Ok when reversal is cheap and Warn otherwise.
+func reversibleVerdict(reversible string) string {
+	if reversible == "" {
+		return ""
+	}
+	t := activeTheme
+	style := lipgloss.NewStyle().Foreground(t.Warn).Background(t.Bg2)
+	lower := strings.ToLower(reversible)
+	if strings.Contains(lower, "cheap") || strings.Contains(lower, "easy") {
+		style = style.Foreground(t.Ok)
+	}
+	return style.Render("↺ " + truncate(reversible, 48))
+}
+
+// renderOption is one bordered selectable decision row: radio glyph,
+// headline (★ when recommended), dim consequence line inside the border.
+func renderOption(text, consequence string, selected, recommended bool, width int) string {
+	t := activeTheme
+	radio := glyphWaiting
+	border := t.Dimmer
+	head := lipgloss.NewStyle().Foreground(t.Text)
+	if selected {
+		radio = "◉"
+		border = t.Accent
+		head = lipgloss.NewStyle().Foreground(t.Bright)
+	}
+	headline := head.Render(text)
+	if recommended {
+		headline += " " + lipgloss.NewStyle().Foreground(t.Warn).Render("★")
+	}
+	body := lipgloss.NewStyle().Foreground(border).Render(radio) + " " + headline
+	if consequence != "" {
+		dim := lipgloss.NewStyle().Foreground(t.Dim)
+		for _, line := range wrapIndent(consequence, max(10, width-6), "") {
+			body += "\n  " + dim.Render(line)
+		}
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(max(10, width-2)).
+		Render(body)
 }
 
 func renderEvidence(b evidence.Bundle, title string, width int) string {

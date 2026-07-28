@@ -13,19 +13,22 @@ import (
 )
 
 func renderDecisionsDoor(ds []projection.DecisionView, ids map[string]Identity, sel, width int) string {
-	lines := []string{"DECISIONS · worst first · enter open · esc back"}
+	t := activeTheme
+	title := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render("Decisions")
+	subtitle := lipgloss.NewStyle().Foreground(t.Dim).Render(fmt.Sprintf("  worst first · %d open", len(ds)))
+	lines := []string{title + subtitle, ""}
 	if len(ds) == 0 {
-		return boundedLines(append(lines, themeDim.Render("—")), width)
+		lines = append(lines, lipgloss.NewStyle().Foreground(t.Dimmer).Render("  —"))
+		return boundedLines(lines, width)
 	}
 	sel = min(max(sel, 0), len(ds)-1)
 	for i, d := range ds {
-		mark := "  "
-		if i == sel {
-			mark = "▸ "
-		}
-		identity := ids[d.IssueID]
-		line := fmt.Sprintf("%s[%d] %s %s · %s", mark, d.ID, identity.Tag, d.Stage, d.Question)
-		lines = append(lines, lipglossIdentity(identity, line))
+		num := lipgloss.NewStyle().Foreground(t.Warn).Render(fmt.Sprintf("[%d]", d.ID))
+		// Identity color stays on the tag only; the row body reads in Text.
+		tag := lipglossIdentity(ids[d.IssueID], ids[d.IssueID].Tag)
+		body := lipgloss.NewStyle().Foreground(t.Text).Render(d.Stage + " · " + d.Question)
+		row := num + " " + tag + " " + body
+		lines = append(lines, cursorRow(i == sel, truncate(row, max(1, width-4)), width))
 	}
 	return boundedLines(lines, width)
 }

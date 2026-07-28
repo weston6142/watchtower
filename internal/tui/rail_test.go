@@ -18,10 +18,10 @@ func TestRenderToastMarksRecommended(t *testing.T) {
 	d := projection.DecisionView{ID: 4, IssueID: "GH-1", Stage: "spec",
 		Question: "Approve spec artifacts?", Options: []string{"approve", "reject"}, Recommended: 0}
 	out := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 0, 0, 60)
-	if !strings.Contains(out, "Approve spec artifacts?") || !strings.Contains(out, "★ approve") {
+	if !strings.Contains(out, "Approve spec artifacts?") || !strings.Contains(out, "approve ★") {
 		t.Fatalf("toast:\n%s", out)
 	}
-	if !strings.Contains(out, "y accept") {
+	if !strings.Contains(out, "accept ★") {
 		t.Fatalf("keys missing:\n%s", out)
 	}
 }
@@ -64,11 +64,11 @@ func TestRenderToastShowsSelectionCursor(t *testing.T) {
 		Question: "Approve the spec?", Options: []string{"approve", "reject"}, Recommended: 0}
 	out := renderToast(d, Identity{Color: "#61afef", Tag: "PA"}, 1, 0, 60)
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "reject") && !strings.Contains(line, "▸") {
-			t.Fatalf("selected option missing cursor:\n%s", out)
+		if strings.Contains(line, "reject") && !strings.Contains(line, "◉") {
+			t.Fatalf("selected option missing radio:\n%s", out)
 		}
-		if strings.Contains(line, "approve") && strings.Contains(line, "▸") {
-			t.Fatalf("cursor on unselected option:\n%s", out)
+		if strings.Contains(line, "approve") && strings.Contains(line, "◉") {
+			t.Fatalf("radio on unselected option:\n%s", out)
 		}
 	}
 	if !strings.Contains(out, "j/k") || !strings.Contains(out, "enter") {
