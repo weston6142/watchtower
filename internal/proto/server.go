@@ -259,7 +259,7 @@ func (sv *Server) overview() (Overview, error) {
 			case core.EvStageFailed:
 				out.Failing++
 				continue
-			case core.EvDecisionRequired, core.EvIssueCompleted, core.EvIssueMerged:
+			case core.EvDecisionRequired, core.EvIssueCompleted, core.EvIssueMerged, core.EvIssueAbandoned:
 				continue
 			}
 		}

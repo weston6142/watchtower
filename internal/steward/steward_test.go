@@ -32,3 +32,16 @@ func TestStewardProjectsIssueTable(t *testing.T) {
 		t.Fatalf("state: %s", rows[0].State)
 	}
 }
+
+func TestStewardMarksAbandoned(t *testing.T) {
+	s, _ := store.Open("file:st_abandon?mode=memory&cache=shared")
+	defer s.Close()
+	st := &Steward{Store: s}
+	st.Observe(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "doomed", "flow": "default"}))
+	st.Observe(ev(t, core.EvStageFailed, "GH-1", map[string]any{"stage": "spec"}))
+	st.Observe(ev(t, core.EvIssueAbandoned, "GH-1", map[string]any{}))
+	rows, _ := s.Issues()
+	if len(rows) != 1 || rows[0].State != "abandoned" {
+		t.Fatalf("rows: %+v", rows)
+	}
+}

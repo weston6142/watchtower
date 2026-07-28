@@ -54,5 +54,7 @@ func (st *Steward) Observe(ev core.Event) {
 		}
 	case core.EvIssueMerged:
 		setState("merged")
+	case core.EvIssueAbandoned:
+		setState("abandoned")
 	}
 }
