@@ -78,3 +78,29 @@ func TestLandTestFailureRollsBack(t *testing.T) {
 		t.Fatalf("main moved despite failing tests: %s -> %s", pre, post)
 	}
 }
+
+func TestLandRejectsDetachedHead(t *testing.T) {
+	repo, _ := repoWithBranch(t, false)
+	tr := &Train{Repo: repo}
+	for _, branch := range []string{"HEAD", ""} {
+		if err := tr.Land(context.Background(), "GH-1", branch); err == nil {
+			t.Fatalf("Land(%q) succeeded; want detached-head error", branch)
+		}
+	}
+	log := git(t, repo, "log", "--oneline", "main")
+	if strings.Contains(log, "branch work") {
+		t.Fatalf("main moved on rejected branch: %s", log)
+	}
+}
+
+func TestLandVerifiesBranchIsAncestor(t *testing.T) {
+	repo, branch := repoWithBranch(t, false)
+	tr := &Train{Repo: repo}
+	if err := tr.Land(context.Background(), "GH-1", branch); err != nil {
+		t.Fatal(err)
+	}
+	// the branch tip must now be reachable from main
+	if _, err := exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", branch, "main").CombinedOutput(); err != nil {
+		t.Fatalf("branch not ancestor of main after Land: %v", err)
+	}
+}

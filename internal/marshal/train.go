@@ -36,6 +36,9 @@ func (tr *Train) defaultBranch() (string, error) {
 }
 
 func (tr *Train) Land(ctx context.Context, issueID, branch string) error {
+	if branch == "" || branch == "HEAD" {
+		return fmt.Errorf("no branch to merge: worktree is detached (HEAD); commits were not landed")
+	}
 	def, err := tr.defaultBranch()
 	if err != nil {
 		return err
@@ -48,6 +51,10 @@ func (tr *Train) Land(ctx context.Context, issueID, branch string) error {
 		if out, err := tr.git("merge", "--no-ff", "--no-edit", branch); err != nil {
 			_, _ = tr.git("merge", "--abort")
 			return fmt.Errorf("%w: %s", errMergeConflict, out)
+		}
+		if _, err := tr.git("merge-base", "--is-ancestor", branch, def); err != nil {
+			_, _ = tr.git("reset", "--hard", pre)
+			return fmt.Errorf("merge did not land: %s is not reachable from %s after merge", branch, def)
 		}
 		if len(tr.TestCmd) > 0 {
 			cmd := exec.CommandContext(ctx, tr.TestCmd[0], tr.TestCmd[1:]...)
