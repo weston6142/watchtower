@@ -1,7 +1,7 @@
 # Abandon Issue + Kill Guard — Design
 
 **Date:** 2026-07-28
-**Status:** Approved
+**Status:** Shipped — GH-2, merged to `develop` 2026-07-28 (PR #2)
 
 ## Problem
 
