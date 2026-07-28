@@ -139,3 +139,28 @@ func TestProjectionTracksShippedAndParked(t *testing.T) {
 		t.Fatalf("parked kill: %v", s.Parked)
 	}
 }
+
+func TestAbandonRemovesLaneEverywhere(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "doomed", "flow": "default"}))
+	s.Apply(ev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "keeper", "flow": "default"}))
+	s.Apply(ev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}))
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+		"decision_id": float64(3), "stage": "spec", "question": "q",
+		"options": []any{"a"}, "recommended": float64(0)}))
+	s.Apply(ev(t, core.EvStageFailed, "GH-1", map[string]any{"stage": "spec", "error": "boom", "final": true}))
+	s.Apply(ev(t, core.EvIssueAbandoned, "GH-1", map[string]any{}))
+
+	if s.Issues["GH-1"] != nil {
+		t.Fatal("issue survived abandon")
+	}
+	if len(s.Order) != 1 || s.Order[0] != "GH-2" {
+		t.Fatalf("order not cleaned: %v", s.Order)
+	}
+	if len(s.Parked) != 0 || len(s.ShippedToday) != 0 {
+		t.Fatalf("shelf not cleaned: parked=%v shipped=%v", s.Parked, s.ShippedToday)
+	}
+	if len(s.Decisions) != 0 {
+		t.Fatalf("decisions survived abandon: %v", s.Decisions)
+	}
+}
