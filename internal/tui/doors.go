@@ -162,7 +162,7 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 	t := activeTheme
 	gutter := lipgloss.NewStyle().Foreground(t.Dimmer)
 	prose := lipgloss.NewStyle().Foreground(t.Text)
-	tool := lipgloss.NewStyle().Foreground(t.Dim)
+	dim := lipgloss.NewStyle().Foreground(t.Dim)
 	inner := max(20, width-8) // border, padding, and the gutter's own width
 
 	var body []string
@@ -181,7 +181,7 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 		}
 		style := prose
 		if strings.HasPrefix(text, "↳ ") {
-			style = tool
+			style = dim
 		}
 		lead := ""
 		if stage != "" {
@@ -197,8 +197,7 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 			body = append(body, gutter.Render(marker)+style.Render(wrapped))
 		}
 	}
-	foot := keyChip("esc") + lipgloss.NewStyle().Foreground(t.Dim).Render(" close  ") +
-		keyChip("q") + lipgloss.NewStyle().Foreground(t.Dim).Render(" quit")
+	foot := keyChip("esc") + dim.Render(" close  ") + keyChip("q") + dim.Render(" quit")
 	return renderBox("stream", subtitle, " esc close ", strings.Join(append(body, "", foot), "\n"))
 }
 

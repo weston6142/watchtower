@@ -21,6 +21,9 @@ import (
 	"github.com/weston6142/watchtower/internal/store"
 )
 
+// msgNoLaneFocused is what every issue-scoped key says when nothing is focused.
+const msgNoLaneFocused = "no lane focused — press j or 1-9 to focus"
+
 type Focus struct {
 	Floor int
 	Card  int
@@ -440,7 +443,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Issue-scoped like p and R: without focus fetchTranscript returns
 			// nil and the door opens empty, which reads as broken.
 			if m.Focus.Issue == "" {
-				m.Err = "no lane focused — press j or 1-9 to focus"
+				m.Err = msgNoLaneFocused
 				return m, nil
 			}
 			m.modes = append(m.modes, "transcript")
@@ -553,7 +556,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// they would silently no-op, which reads as broken.
 			switch key {
 			case "p", "x", "X", "R", "L", "c", "o", "enter":
-				m.Err = "no lane focused — press j or 1-9 to focus"
+				m.Err = msgNoLaneFocused
 				return m, nil
 			}
 		}

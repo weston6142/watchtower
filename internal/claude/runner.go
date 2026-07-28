@@ -93,23 +93,23 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	repliedThisTurn := false
 	sessionDone := false
 	coachCount := 0
-	for sc.Scan() {
-		ev := ParseLine(sc.Bytes())
-		// Prose first, then the tool calls it introduced: that is the order the
-		// agent produced them, and a tool-only message must not write a blank.
-		emit := func(ev StreamEvent) {
-			if c.OnLine == nil {
-				return
-			}
-			if ev.Text != "" {
-				for _, line := range strings.Split(ev.Text, "\n") {
-					c.OnLine(issueID, stage, line)
-				}
-			}
-			for _, tool := range ev.Tools {
-				c.OnLine(issueID, stage, tool)
+	// Prose first, then the tool calls it introduced: that is the order the
+	// agent produced them, and a tool-only message must not write a blank.
+	emit := func(ev StreamEvent) {
+		if c.OnLine == nil {
+			return
+		}
+		if ev.Text != "" {
+			for _, line := range strings.Split(ev.Text, "\n") {
+				c.OnLine(issueID, stage, line)
 			}
 		}
+		for _, tool := range ev.Tools {
+			c.OnLine(issueID, stage, tool)
+		}
+	}
+	for sc.Scan() {
+		ev := ParseLine(sc.Bytes())
 		switch ev.Kind {
 		case KindInit:
 			res.SessionID = ev.SessionID

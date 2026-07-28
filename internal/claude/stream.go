@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -70,7 +71,7 @@ func ParseLine(line []byte) StreamEvent {
 			case c.Type == "text" && c.Text != "":
 				parts = append(parts, c.Text)
 			case c.Type == "tool_use" && c.Name != "":
-				tools = append(tools, "↳ "+toolSummary(c.Name, c.Input))
+				tools = append(tools, toolLinePrefix+toolSummary(c.Name, c.Input))
 			}
 		}
 		text := strings.Join(parts, "\n")
@@ -95,12 +96,18 @@ func ParseLine(line []byte) StreamEvent {
 	}
 }
 
+const (
+	// toolLinePrefix marks a tool call apart from prose in the stream door.
+	toolLinePrefix = "↳ "
+	// maxToolLineRunes bounds the whole emitted line, prefix included.
+	maxToolLineRunes = 120
+)
+
 // toolSummary renders one tool_use block as a single transcript line: the tool
 // name plus its most identifying argument. Unrecognized tools and unparseable
 // inputs degrade to the bare name — raw JSON in the stream door is noise.
 func toolSummary(name string, input json.RawMessage) string {
-	// The public line adds the two-rune "↳ " prefix after this helper returns.
-	const maxRunes = 118
+	maxRunes := maxToolLineRunes - utf8.RuneCountInString(toolLinePrefix)
 	var fields map[string]json.RawMessage
 	if len(input) == 0 || json.Unmarshal(input, &fields) != nil {
 		return name
