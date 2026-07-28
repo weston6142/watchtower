@@ -4,7 +4,7 @@
 
 **Goal:** Restyle every control-room flow onto one shared design system (13-token theme, glyph language, chrome header/keybar, one overlay box) and build a self-serve visual verification harness (fixture snapshots → ANSI goldens + freeze PNGs, plus a tmux capture script).
 
-**Architecture:** Extend `internal/tui` in place: `theme.go` grows to 13 tokens, a new `chrome.go` holds shared components (glyphs, header, keybar, key chips, cursor rows, boxed overlays), and each renderer migrates flow-by-flow. A hidden `guildhall snap` subcommand renders each flow from fixture state through the real `Model.View()`; golden ANSI files under `internal/tui/testdata/` are the regression net and freeze-generated PNGs are the visual check.
+**Architecture:** Extend `internal/tui` in place: `theme.go` grows to 13 tokens, a new `chrome.go` holds shared components (glyphs, header, keybar, key chips, cursor rows, boxed overlays), and each renderer migrates flow-by-flow. A hidden `watchtower snap` subcommand renders each flow from fixture state through the real `Model.View()`; golden ANSI files under `internal/tui/testdata/` are the regression net and freeze-generated PNGs are the visual check.
 
 **Tech Stack:** Go, bubbletea/lipgloss, charmbracelet `freeze` CLI (dev-only), tmux (dev-only).
 
@@ -26,13 +26,13 @@
 **Files:**
 - Create: `internal/tui/fixtures.go`
 - Create: `internal/tui/snapshot_test.go`
-- Modify: `cmd/guildhall/main.go` (add hidden `snap` case to the command switch)
+- Modify: `cmd/watchtower/main.go` (add hidden `snap` case to the command switch)
 - Create: `scripts/snap.sh`
 - Modify: `.gitignore` (add `/tmp-snaps/`)
 
 **Interfaces:**
 - Produces: `FixtureModel(flow string, width, height int) Model` and `FixtureFlows() []string` in package `tui` — every later task regenerates goldens through these.
-- Produces: CLI `guildhall snap [--out DIR] [--width N] [--height N] [--flow NAME]` writing `DIR/<flow>.txt` ANSI dumps.
+- Produces: CLI `watchtower snap [--out DIR] [--width N] [--height N] [--flow NAME]` writing `DIR/<flow>.txt` ANSI dumps.
 - Produces: `scripts/snap.sh [flow]` → builds, runs snap, converts each `.txt` to `.png` with freeze when installed.
 
 - [ ] **Step 1: Install freeze (dev machine)**
@@ -67,7 +67,7 @@ func fixtureState() *projection.State {
 		CurrentStage: "brainstorm", State: "need-you", Tokens: 12000,
 	}
 	st.Issues["gh-importer"] = &projection.IssueView{
-		ID: "gh-importer", Title: "issue importer — GitHub → guildhall", Flow: "default",
+		ID: "gh-importer", Title: "issue importer — GitHub → watchtower", Flow: "default",
 		CurrentStage: "execute", State: "running", Tokens: 96000,
 		Completed: []string{"brainstorm", "spec", "plan"},
 	}
@@ -243,7 +243,7 @@ lipgloss.SetColorProfile(termenv.TrueColor) // import "github.com/muesli/termenv
 
 Only add this if needed; keep it inside the fixtures file so production behavior is unchanged.
 
-- [ ] **Step 6: Add the `snap` subcommand to `cmd/guildhall/main.go`**
+- [ ] **Step 6: Add the `snap` subcommand to `cmd/watchtower/main.go`**
 
 In the command switch (alongside `case "tower":`), add — do NOT add it to any usage/help output:
 
@@ -281,7 +281,7 @@ Match the file's existing error-handling helper (check how other cases report er
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=tmp-snaps
-go run ./cmd/guildhall snap --out "$out" ${1:+--flow "$1"}
+go run ./cmd/watchtower snap --out "$out" ${1:+--flow "$1"}
 if command -v freeze >/dev/null; then
   for f in "$out"/*.txt; do
     freeze "$f" --output "${f%.txt}.png"
@@ -305,8 +305,8 @@ Run: `go test ./...`
 Expected: PASS.
 
 ```bash
-git add internal/tui/fixtures.go internal/tui/snapshot_test.go internal/tui/testdata cmd/guildhall/main.go scripts/snap.sh .gitignore
-git commit -m "feat: fixture snapshot harness for TUI flows (guildhall snap + goldens)"
+git add internal/tui/fixtures.go internal/tui/snapshot_test.go internal/tui/testdata cmd/watchtower/main.go scripts/snap.sh .gitignore
+git commit -m "feat: fixture snapshot harness for TUI flows (watchtower snap + goldens)"
 ```
 
 ---
@@ -323,7 +323,7 @@ git commit -m "feat: fixture snapshot harness for TUI flows (guildhall snap + go
 
 ```bash
 #!/usr/bin/env bash
-# Capture the REAL guildhall TUI in tmux against a seeded temp daemon.
+# Capture the REAL watchtower TUI in tmux against a seeded temp daemon.
 # Usage: scripts/tui-capture.sh <floor|decision|tray|modal|levers|arch|help>
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -332,8 +332,8 @@ sess="ghsnap-$$"
 dir="$(mktemp -d)"
 out=tmp-snaps
 mkdir -p "$out"
-bin="$dir/guildhall"
-go build -o "$bin" ./cmd/guildhall
+bin="$dir/watchtower"
+go build -o "$bin" ./cmd/watchtower
 
 cleanup() { tmux kill-session -t "$sess" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -372,7 +372,7 @@ else
 fi
 ```
 
-Check the real `init`/`new` flag names in `cmd/guildhall/main.go` (Step 1 of implementing this: `go run ./cmd/guildhall new -h`) and fix the seeding lines to match. If `tower` needs a daemon flag or the init needs `--repo`, mirror how `cmd/guildhall/integration_test.go` boots things.
+Check the real `init`/`new` flag names in `cmd/watchtower/main.go` (Step 1 of implementing this: `go run ./cmd/watchtower new -h`) and fix the seeding lines to match. If `tower` needs a daemon flag or the init needs `--repo`, mirror how `cmd/watchtower/integration_test.go` boots things.
 
 - [ ] **Step 2: Verify it captures**
 
@@ -834,7 +834,7 @@ and delete the `if m.Err != ""` block (the error now docks in the keybar's right
 
 Run: `go test ./internal/tui` — update `render_test.go` expectations that assert old header/footer text (keep semantic assertions: counts, titles; drop exact-styling asserts where they fight the redesign).
 Run: `go test ./internal/tui -run TestSnapshots -update && scripts/snap.sh`
-**Read `tmp-snaps/floor.png`, `tmp-snaps/rows.png` at both widths** (`go run ./cmd/guildhall snap --width 100` for narrow). Check against the artifact: chrome bars span full width, glyph column aligns, focused lane reads, no legend, error docked right.
+**Read `tmp-snaps/floor.png`, `tmp-snaps/rows.png` at both widths** (`go run ./cmd/watchtower snap --width 100` for narrow). Check against the artifact: chrome bars span full width, glyph column aligns, focused lane reads, no legend, error docked right.
 
 - [ ] **Step 5: Full suite + commit**
 
@@ -1171,4 +1171,4 @@ git commit -m "feat: help overlay on shared chrome; glyph/hex audit; retire lege
 2. `scripts/snap.sh` → Read all PNGs against the artifact (https://claude.ai/code/artifact/57ffbac8-8a80-4d24-970a-247a5420aa40).
 3. `scripts/tui-capture.sh floor` (+ decision, help) → real binary matches fixtures structurally.
 4. Contract audit greps from Task 11 Step 2 return no hits.
-5. `guildhall tower` run by the user in their real workspace for final sign-off.
+5. `watchtower tower` run by the user in their real workspace for final sign-off.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `guildhall tower` — the cell-based Bubble Tea client: stage floors with issue cards in per-issue identity colors, a war room floor (merge lane, slot gauge, triage count), decision toasts with `y/n/o`, flip navigation with attention cycling, in-app drill-down (issue detail → artifacts → pager), and a cell-based architecture map with per-issue ghost overlays.
+**Goal:** `watchtower tower` — the cell-based Bubble Tea client: stage floors with issue cards in per-issue identity colors, a war room floor (merge lane, slot gauge, triage count), decision toasts with `y/n/o`, flip navigation with attention cycling, in-app drill-down (issue detail → artifacts → pager), and a cell-based architecture map with per-issue ghost overlays.
 
 **Architecture:** The TUI is a pure client of the existing socket protocol. A poll loop (`tail` every 500ms) feeds events into an extended projection; every view is a pure function `func(...) string` over that state, so rendering is tested with plain string assertions — no TTY needed. Bubble Tea owns only the event loop, keys, and terminal lifecycle. v2 (sprites/kitty graphics) later replaces the tower pane's renderer without touching state or navigation.
 
@@ -207,7 +207,7 @@ git commit -m "feat: issue identity palette and issue_detail protocol op"
 
 **Files:**
 - Create: `internal/tui/app.go`
-- Modify: `cmd/guildhall/main.go` (add `tower` subcommand)
+- Modify: `cmd/watchtower/main.go` (add `tower` subcommand)
 - Test: `internal/tui/app_test.go`
 
 **Interfaces:**
@@ -243,7 +243,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/wbushyeager/watchtower/internal/core"
 )
 
 func mkev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -296,7 +296,7 @@ go get github.com/charmbracelet/bubbletea@latest github.com/charmbracelet/lipglo
 
 - [ ] **Step 4: Run the full suite + manual check**
 
-Run: `go test ./... -race`, then the stub smoke daemon + `go run ./cmd/guildhall tower --data /tmp/gh-smoke3` in a real terminal: issues appear as lines; `q` quits.
+Run: `go test ./... -race`, then the stub smoke daemon + `go run ./cmd/watchtower tower --data /tmp/gh-smoke3` in a real terminal: issues appear as lines; `q` quits.
 Expected: PASS + visible issue lines.
 
 - [ ] **Step 5: Commit**
@@ -339,7 +339,7 @@ import (
 
 	"github.com/muesli/termenv"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/wbushyeager/watchtower/internal/core"
 )
 
 func TestRenderTowerPlacesCards(t *testing.T) {
@@ -441,7 +441,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/wbushyeager/watchtower/internal/core"
 )
 
 func navModel(t *testing.T) Model {
@@ -555,7 +555,7 @@ import (
 
 	"github.com/muesli/termenv"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wbushyeager/guildhall/internal/projection"
+	"github.com/wbushyeager/watchtower/internal/projection"
 )
 
 func TestRenderToastMarksRecommended(t *testing.T) {
@@ -716,7 +716,7 @@ git commit -m "feat: in-app artifact list and pager drill-down"
 
 **Files:**
 - Create: `internal/archmap/archmap.go`, `internal/tui/arch.go`
-- Modify: `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/guildhall/main.go`, `internal/tui/app.go`
+- Modify: `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/watchtower/main.go`, `internal/tui/app.go`
 - Test: `internal/archmap/archmap_test.go`
 
 **Interfaces:**

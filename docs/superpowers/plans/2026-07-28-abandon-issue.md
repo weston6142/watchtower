@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Worktree: `/Users/weston.bushyeager/.treehouse/guildhall-2253b2/1/guildhall`. First merge `weston/daemon-rehydration` → `develop` (tests green already), delete it, then branch `weston/abandon-issue` off `develop`.
+- Worktree: `/Users/weston.bushyeager/.treehouse/watchtower-2253b2/1/watchtower`. First merge `weston/daemon-rehydration` → `develop` (tests green already), delete it, then branch `weston/abandon-issue` off `develop`.
 - Every task ends with `go test ./...` green; golden snapshots (`go test ./internal/tui -run TestSnapshots`) must pass WITHOUT `-update` unless a fixture visibly changes (only Task 5's help overlay changes goldens — regenerate intentionally there).
 - Abandon is a state, not a purge: no DB row deletion, no artifact/worktree cleanup.
 - Commit at the end of each task with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
@@ -21,7 +21,7 @@
 
 ### Task 0: Branch setup
 
-- [ ] From the main repo (`/Users/weston.bushyeager/guildhall`): `git checkout develop && git merge weston/daemon-rehydration --no-edit && go test ./... && git branch -d weston/daemon-rehydration`
+- [ ] From the main repo (`/Users/weston.bushyeager/watchtower`): `git checkout develop && git merge weston/daemon-rehydration --no-edit && go test ./... && git branch -d weston/daemon-rehydration`
 - [ ] In the worktree: `git checkout -b weston/abandon-issue develop`
 
 ---
@@ -341,10 +341,10 @@ git commit -m "feat: projection drops abandoned lanes from every surface"
 
 **Files:**
 - Modify: `internal/proto/server.go` (op switch, after `"retry_stage"` ~line 141)
-- Modify: `cmd/guildhall/main.go` (the `case "pause", "resume", "kill", "retry":` block, ~line 220, and the usage string ~line 44)
+- Modify: `cmd/watchtower/main.go` (the `case "pause", "resume", "kill", "retry":` block, ~line 220, and the usage string ~line 44)
 
 **Interfaces:**
-- Produces: op `"abandon_issue"` (synchronous, errors surfaced) and CLI `guildhall abandon <issue-id>`.
+- Produces: op `"abandon_issue"` (synchronous, errors surfaced) and CLI `watchtower abandon <issue-id>`.
 
 - [ ] **Step 1: Server op** (synchronous like kill, not fire-and-forget like retry):
 
@@ -360,11 +360,11 @@ case "abandon_issue":
 
 - [ ] **Step 3: Verify + commit**
 
-Run: `go test ./... ` → PASS. Manual sanity: `go build ./cmd/guildhall`.
+Run: `go test ./... ` → PASS. Manual sanity: `go build ./cmd/watchtower`.
 
 ```bash
-git add internal/proto cmd/guildhall
-git commit -m "feat: abandon_issue op and guildhall abandon verb"
+git add internal/proto cmd/watchtower
+git commit -m "feat: abandon_issue op and watchtower abandon verb"
 ```
 
 ---
@@ -497,8 +497,8 @@ git commit -m "feat: kill guard on idle lanes; X abandons a lane with confirm"
 
 ### Task 6: Live verification + install
 
-- [ ] `go install ./cmd/guildhall`; `kill $(cat ~/.local/share/guildhall/repos/*/daemon.pid 2>/dev/null)`; from the main repo run `guildhall issues` (respawns daemon).
-- [ ] `guildhall issues` shows GH-1 `failed`. Run `guildhall abandon GH-1`; then `guildhall issues` no longer lists it as active (state `abandoned`) and the overview drops the failing count (`guildhall status`).
+- [ ] `go install ./cmd/watchtower`; `kill $(cat ~/.local/share/watchtower/repos/*/daemon.pid 2>/dev/null)`; from the main repo run `watchtower issues` (respawns daemon).
+- [ ] `watchtower issues` shows GH-1 `failed`. Run `watchtower abandon GH-1`; then `watchtower issues` no longer lists it as active (state `abandoned`) and the overview drops the failing count (`watchtower status`).
 - [ ] `scripts/tui-capture.sh floor` → **Read the PNG**: no GH-1 lane, no parked entry. (Do this only if the user confirms abandoning the real GH-1 is desired — it was created as a test issue; ask first if unclear.)
 - [ ] Report results to the user; then superpowers:finishing-a-development-branch for `weston/abandon-issue`.
 
@@ -506,4 +506,4 @@ git commit -m "feat: kill guard on idle lanes; X abandons a lane with confirm"
 
 1. `go test ./...` green; goldens updated only for the help overlay.
 2. Engine: abandon works on rehydrated, running, and unknown issues per tests.
-3. Live: abandoned lane vanishes from tower/parked/overview and stays gone after another daemon restart (`kill` pidfile + `guildhall issues` twice).
+3. Live: abandoned lane vanishes from tower/parked/overview and stays gone after another daemon restart (`kill` pidfile + `watchtower issues` twice).

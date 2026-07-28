@@ -203,7 +203,7 @@ git commit -m "feat: status sentence header, outcome-worded war room, reserved n
 ### Task 4: Grid v2 — titled lanes, words-in-cells, motion inversion, legend
 
 **Files:**
-- Modify: `internal/tui/render.go`, `internal/tui/app.go` (tick), `cmd/guildhall/main.go` (tower flags: `--stage-aliases`, `--reduced-motion`)
+- Modify: `internal/tui/render.go`, `internal/tui/app.go` (tick), `cmd/watchtower/main.go` (tower flags: `--stage-aliases`, `--reduced-motion`)
 - Test: `internal/tui/render_test.go` (extend)
 
 **Interfaces:**
@@ -371,7 +371,7 @@ import (
 
 	"github.com/muesli/termenv"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/wbushyeager/guildhall/internal/projection"
+	"github.com/wbushyeager/watchtower/internal/projection"
 )
 
 func TestDecisionsDoorSelectable(t *testing.T) {

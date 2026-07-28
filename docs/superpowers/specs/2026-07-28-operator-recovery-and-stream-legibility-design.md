@@ -62,7 +62,7 @@ exact case where an operator reaches for it.
 
 ## Non-goals
 
-- A raw stream-json firehose viewer. `guildhall transcript` and `daemon.log`
+- A raw stream-json firehose viewer. `watchtower transcript` and `daemon.log`
   remain the unfiltered sources.
 - Converting the transcript door into a centered overlay. It stays a door.
 - Any change to pause semantics. Pausing still takes effect at the next gate.

@@ -125,7 +125,7 @@ spacing.
 
 ### Snapshot command (iteration loop)
 
-`guildhall snap [--out DIR] [--width N] [--flow NAME]` — hidden subcommand (excluded
+`watchtower snap [--out DIR] [--width N] [--flow NAME]` — hidden subcommand (excluded
 from help text). Renders every flow from canned fixture state to `DIR/<flow>.txt`
 (ANSI, via the real render functions at a fixed width, default 200) and, when the
 `freeze` CLI is on PATH, also `DIR/<flow>.png`. Fixtures live in
@@ -141,7 +141,7 @@ regression net; PNGs are for eyes only and are never committed.
 ### tmux capture (acceptance pass)
 
 `scripts/tui-capture.sh <flow>`: starts a daemon against a temp dir, seeds it through the
-existing CLI (`guildhall new`, `proposals`, etc.), runs `tower` in a detached tmux
+existing CLI (`watchtower new`, `proposals`, etc.), runs `tower` in a detached tmux
 session at a pinned size, sends the flow's key sequence, polls `capture-pane -e` until
 painted, writes ANSI + freeze PNG, kills the session. Used at the end of implementation
 and for any real-daemon-only doubt; not part of CI.
