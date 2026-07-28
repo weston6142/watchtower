@@ -79,7 +79,7 @@ func TestCellWordsAndStates(t *testing.T) {
 		mkev(t, core.EvStageFailed, "GH-3", map[string]any{"stage": "execute", "error": "boom", "attempt": float64(2), "of": float64(2), "final": true}),
 	})
 	out := renderTower(m.State, m.stages, m.Ids, m.Focus, 0, 120)
-	for _, want := range []string{"NEED-YOU", "FAILED", "after", "payment", "search fix"} {
+	for _, want := range []string{"need-you", "failed", "after", "payment", "search fix"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}
@@ -139,7 +139,7 @@ func TestRowsReuseStateWords(t *testing.T) {
 	st.Issues["GH-1"] = &projection.IssueView{ID: "GH-1", Title: "broken", CurrentStage: "execute", State: "failed"}
 	st.Order = []string{"GH-1"}
 	out := renderRows(st, []string{"spec", "execute"}, map[string]Identity{"GH-1": {Tag: "BR", Color: "#61afef"}}, Focus{Issue: "GH-1"}, 1, 100)
-	if !strings.Contains(out, "FAILED") {
+	if !strings.Contains(out, "failed") {
 		t.Fatalf("rows did not reuse failed cell:\n%s", out)
 	}
 }

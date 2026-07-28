@@ -28,16 +28,6 @@ func renderHeader(ov *proto.Overview, width int) string {
 	if ov == nil {
 		ov = &proto.Overview{}
 	}
-	var attention []string
-	if ov.Failing > 0 {
-		attention = append(attention, fmt.Sprintf("%d build%s failing", ov.Failing, pluralSuffix(ov.Failing)))
-	}
-	if ov.NeedYou > 0 {
-		attention = append(attention, fmt.Sprintf("%d question%s for you", ov.NeedYou, pluralSuffix(ov.NeedYou)))
-	}
-	if len(attention) == 0 {
-		attention = append(attention, "all clear")
-	}
 	var details []string
 	if ov.Building > 0 {
 		details = append(details, fmt.Sprintf("%d building", ov.Building))
@@ -51,17 +41,17 @@ func renderHeader(ov *proto.Overview, width int) string {
 	if ov.DollarsTotal > 0 {
 		details = append(details, fmt.Sprintf("~$%.2f", ov.DollarsTotal))
 	}
-	text := strings.Join(attention, ", ")
-	if len(details) > 0 {
-		text += " — " + strings.Join(details, ", ")
+	var badges []badge
+	if ov.NeedYou > 0 {
+		badges = append(badges, badge{Text: fmt.Sprintf("%d question%s for you", ov.NeedYou, pluralSuffix(ov.NeedYou)), Kind: badgeWarn})
 	}
-	style := styleStatusOk()
 	if ov.Failing > 0 {
-		style = styleStatusBad()
-	} else if ov.NeedYou > 0 {
-		style = styleStatusWarn()
+		badges = append(badges, badge{Text: fmt.Sprintf("%d build%s failing", ov.Failing, pluralSuffix(ov.Failing)), Kind: badgeErr})
 	}
-	return truncate(style.Render("●")+" "+text, width)
+	if len(badges) == 0 {
+		badges = append(badges, badge{Text: "all clear", Kind: badgeOk})
+	}
+	return renderChromeHeader(width, badges, strings.Join(details, " · "))
 }
 
 func pluralSuffix(n int) string {
@@ -177,13 +167,8 @@ func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stag
 	if iv == nil {
 		return ""
 	}
-	identity := ids[iv.ID]
-	laneStyle := identityStyle(identity)
-	if focused {
-		laneStyle = laneStyle.Bold(true)
-	}
 	if iv.Merged && (stage == "merge" || stageIdx == len(iv.Completed)) {
-		return laneStyle.Render("⇡")
+		return styleStatusOk().Render(glyphShipped + " shipped")
 	}
 	if iv.Behind != "" && stage == "merge" {
 		blocker := iv.Behind
@@ -193,38 +178,45 @@ func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stag
 		return themeDim.Render("after " + blocker)
 	}
 	if iv.Paused || iv.Killed || iv.State == "paused" {
-		return themeDim.Render("paused ⏸")
+		return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render(glyphParked + " paused")
 	}
 	if iv.CurrentStage == stage && iv.State == "waiting_decision" {
-		return styleStatusWarn().Render("NEED-YOU ◔")
+		return styleStatusWarn().Render(glyphNeedYou + " need-you")
 	}
 	if iv.CurrentStage == stage && iv.State == "failed" {
 		style := styleStatusBad()
 		if !reducedMotion && tick%2 == 1 {
 			style = style.Reverse(true)
 		}
-		return style.Render("FAILED ✗")
+		return style.Render(glyphFailed + " failed")
 	}
 	if iv.State == "queued_for_slot" && iv.CurrentStage == stage {
-		return themeDim.Render("queued ⧗")
+		return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render("⧗ queued")
 	}
 	if iv.CurrentStage == stage && iv.State == "running" {
-		spinner := "◌"
+		// Working is Structure blue — an agent doing its job needs nothing
+		// from you. The glyph alternates for motion; the word stays put.
+		spinner := glyphWorking
 		if !reducedMotion && (tick/2)%2 == 1 {
-			spinner = "○"
+			spinner = "◓"
 		}
-		return themeDim.Render(spinner)
+		working := lipgloss.NewStyle().Foreground(activeTheme.Structure).Render(spinner + " working")
+		if iv.Tokens > 0 {
+			working += lipgloss.NewStyle().Foreground(activeTheme.Dim).Render(" " + compactTokens(iv.Tokens))
+		}
+		return working
 	}
 	if completedStage(iv, stage) {
-		return laneStyle.Render("✓")
+		return styleStatusOk().Render(glyphDone)
 	}
-	return themeDim.Render("·")
+	return lipgloss.NewStyle().Foreground(activeTheme.Dimmer).Render(glyphWaiting)
 }
 
 func headerCell(content string, identity Identity, focused bool) string {
 	style := identityStyle(identity)
 	if focused {
-		style = style.Bold(true)
+		// The focused lane's header sits on the selection ground.
+		style = style.Bold(true).Background(activeTheme.Bg2)
 	}
 	return padCell(style.Render(content), laneWidth)
 }
@@ -280,9 +272,8 @@ func renderTowerConfigured(st *projection.State, stages []string, ids map[string
 	lines := []string{warRoom(st, ids), "MAP · " + mapInsight(st.Issues) + " · a full map"}
 	if len(st.Order) == 0 {
 		for _, stage := range stages {
-			lines = append(lines, themeLabel.Render(strings.ToUpper(stageName(aliases, stage)))+"  "+themeDim.Render("—"))
+			lines = append(lines, stageLabel(aliases, stage)+"  "+themeDim.Render("—"))
 		}
-		lines = append(lines, themeDim.Render("◌ working · ✓ done · ✗ FAILED · ◔ your turn · ▼ merging · ⇡ shipped · ? help"))
 		return boundedLines(lines, width)
 	}
 	var allIssueIDs []string
@@ -326,15 +317,20 @@ func renderTowerConfigured(st *projection.State, stages []string, ids map[string
 	}
 	lines = append(lines, withEdgeGutters(padCell("", stageGutterWidth)+" "+strings.Join(idRow, ""), compactLeft, compactRight))
 	for stageIdx, stage := range stages {
-		label := padCell(strings.ToUpper(stageName(aliases, stage)), stageGutterWidth) + " "
+		label := stageLabel(aliases, stage) + " "
 		var cells []string
 		for _, id := range issueIDs {
 			cells = append(cells, padCell(cellContentForStage(st.Issues[id], ids, stage, stageIdx, tick, focus.Issue == id, reducedMotion), laneWidth))
 		}
 		lines = append(lines, withEdgeGutters(label+strings.Join(cells, ""), compactLeft, compactRight))
 	}
-	lines = append(lines, themeDim.Render("◌ working · ✓ done · ✗ FAILED · ◔ your turn · ▼ merging · ⇡ shipped · ? help"))
 	return boundedLines(lines, width)
+}
+
+// stageLabel renders the fixed-width dim stage name for the left gutter.
+func stageLabel(aliases map[string]string, stage string) string {
+	return lipgloss.NewStyle().Foreground(activeTheme.Dim).
+		Render(padCell(strings.ToUpper(stageName(aliases, stage)), stageGutterWidth))
 }
 
 // renderRows is the wide, one-row-per-issue orientation. It calls the same
@@ -388,20 +384,22 @@ func renderShelf(items []shelfItem, ids map[string]Identity, width int) string {
 			shipped = append(shipped, item)
 		}
 	}
+	t := activeTheme
+	label := lipgloss.NewStyle().Foreground(t.Dim)
 	lines := []string{}
 	if len(shipped) > 0 {
-		lines = append(lines, "SHIPPED today")
+		lines = append(lines, label.Render("SHIPPED today"))
 		for _, item := range shipped {
-			lines = append(lines, shelfLine(item, ids[item.ID], "⇡"))
+			lines = append(lines, shelfLine(item, ids[item.ID], lipgloss.NewStyle().Foreground(t.Ok).Render(glyphShipped)))
 		}
 	}
 	if len(parked) > 0 {
 		if len(lines) > 0 {
 			lines = append(lines, "")
 		}
-		lines = append(lines, "PARKED")
+		lines = append(lines, label.Render("PARKED"))
 		for _, item := range parked {
-			lines = append(lines, shelfLine(item, ids[item.ID], "⏸"))
+			lines = append(lines, shelfLine(item, ids[item.ID], label.Render(glyphParked)))
 		}
 	}
 	if len(lines) == 0 {
@@ -411,11 +409,12 @@ func renderShelf(items []shelfItem, ids map[string]Identity, width int) string {
 }
 
 func shelfLine(item shelfItem, identity Identity, status string) string {
-	line := fmt.Sprintf("▓ %s %s %s", identity.Tag, item.Title, status)
+	tag := "▓ " + identity.Tag
 	if identity.Color != "" {
-		line = identityStyle(identity).Render("▓ "+identity.Tag) + " " + item.Title + " " + status
+		tag = identityStyle(identity).Render(tag)
 	}
-	return line
+	title := lipgloss.NewStyle().Foreground(activeTheme.Text).Render(item.Title)
+	return status + " " + tag + " " + title
 }
 
 type helpGroup struct {

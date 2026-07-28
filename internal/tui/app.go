@@ -1134,7 +1134,9 @@ func (m Model) View() string {
 		m.writeHeaderRows(&b, layoutWidth)
 		b.WriteString(tower)
 		b.WriteString("\n\n")
-		b.WriteString("j/k select · enter open · esc back · q quit")
+		b.WriteString(renderKeybar(layoutWidth, [][2]string{
+			{"j/k", "select"}, {"enter", "open"}, {"esc", "back"}, {"q", "quit"},
+		}, errText(m.Err)))
 		screen := b.String()
 		if m.help {
 			return m.composite(screen, renderHelpOverlay(layoutWidth), layoutWidth)
@@ -1176,6 +1178,9 @@ func (m Model) View() string {
 		if m.archMode == "pane" {
 			right = renderArchWithState(m.Arch, m.State, m.Ids, railWidth, m.Height, m.archSel, m.archFilter)
 		}
+		// Pad the tower block to its full column so the rail starts at a
+		// fixed x regardless of the longest tower line.
+		tower = lipgloss.NewStyle().Width(towerWidth).Render(tower)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, tower, right)
 	}
 	var b strings.Builder
@@ -1185,10 +1190,11 @@ func (m Model) View() string {
 		b.WriteString("\n\n")
 		b.WriteString(shelf)
 	}
-	b.WriteString("\n\nj/k floors · tab attention · p pause · x kill · R retry · L levers · ? help · q quit")
-	if m.Err != "" {
-		fmt.Fprintf(&b, "\nerror: %s", m.Err)
-	}
+	b.WriteString("\n\n")
+	b.WriteString(renderKeybar(layoutWidth, [][2]string{
+		{"j/k", "floors"}, {"tab", "attention"}, {"p", "pause"}, {"x", "kill"},
+		{"R", "retry"}, {"L", "levers"}, {"?", "help"}, {"q", "quit"},
+	}, errText(m.Err)))
 	screen := b.String()
 	switch {
 	case m.help:

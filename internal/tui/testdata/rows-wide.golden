@@ -1,14 +1,14 @@
-[38;2;247;118;142m●[0m 1 build failing, 1 question for you — 2 building, 1 shipped today, 412k tokens, ~$6.18
+[48;2;26;27;38m  [1;38;2;224;175;104m● 1 question for you[0m  [1;38;2;247;118;142m● 1 build failing[0m                                                                                                          [38;2;86;95;137m2 building · 1 shipped today · 412k tokens · ~$6.18[0m  [0m
                                                                                                                                                                                                         
-ROWS · z tower                                                                                                                                         FOCUS                                   
-[38;2;187;154;247mCA create a repo for GH-1 · [0mbrainstorm:[38;2;224;175;104mNEED-YOU ◔[0m  spec:[2m·[0m  plan:[2m·[0m  execute:[2m·[0m  review:[2m·[0m  merge:[2m·[0m                                                                                                
-[38;2;121;162;247mGH issue importer — GitHub → guildhall · [0mbrainstorm:[38;2;121;162;247m✓[0m  spec:[38;2;121;162;247m✓[0m  plan:[38;2;121;162;247m✓[0m  execute:[2m◌[0m  review:[2m·[0m  merge:[2m·[0m                                                    DECISION QUEUE                          
-[38;2;125;207;255mFX flaky e2e fix — «unicode» plus a deliberately very long title to test truncation · [0mbrainstorm:[38;2;125;207;255m✓[0m  spec:[38;2;125;207;255m✓[0m  plan:[38;2;125;207;255m✓[0m  execute:[38;2;247;118;142mFAILED ✗[0m  review:[2m·[0m  merge:[2m·[0m▶ [1] CA brainstorm — Should creating t…
+ROWS · z tower                                                                                                                                                 FOCUS                                   
+[38;2;187;154;247mCA create a repo for GH-1 · [0mbrainstorm:[38;2;224;175;104m◔ need-you[0m  spec:[38;2;59;65;97m○[0m  plan:[38;2;59;65;97m○[0m  execute:[38;2;59;65;97m○[0m  review:[38;2;59;65;97m○[0m  merge:[38;2;59;65;97m○[0m                                                                                                        
+[38;2;121;162;247mGH issue importer — GitHub → guildhall · [0mbrainstorm:[38;2;158;206;105m●[0m  spec:[38;2;158;206;105m●[0m  plan:[38;2;158;206;105m●[0m  execute:[38;2;121;162;247m◐ working[0m[38;2;86;95;137m 96k[0m  review:[38;2;59;65;97m○[0m  merge:[38;2;59;65;97m○[0m                                                DECISION QUEUE                          
+[38;2;125;207;255mFX flaky e2e fix — «unicode» plus a deliberately very long title to test truncation · [0mbrainstorm:[38;2;158;206;105m●[0m  spec:[38;2;158;206;105m●[0m  plan:[38;2;158;206;105m●[0m  execute:[38;2;247;118;142m✕ failed[0m  review:[38;2;59;65;97m○[0m  merge:[38;2;59;65;97m○[0m        ▶ [1] CA brainstorm — Should creating t…
 
-SHIPPED today
-[38;2;158;206;105m▓ ML[0m retry budget for marshal ⇡
+[38;2;86;95;137mSHIPPED today[0m
+[38;2;158;206;105m⇡[0m [38;2;158;206;105m▓ ML[0m [38;2;192;202;245mretry budget for marshal[0m
 
-PARKED
-[38;2;125;207;255m▓ FX[0m dark-mode audit ⏸
+[38;2;86;95;137mPARKED[0m
+[38;2;86;95;137m⏸[0m [38;2;125;207;255m▓ FX[0m [38;2;192;202;245mdark-mode audit[0m
 
-j/k floors · tab attention · p pause · x kill · R retry · L levers · ? help · q quit
+[48;2;26;27;38m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mj/k[0m[48;2;40;46;65m [0m[38;2;86;95;137m floors[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mtab[0m[48;2;40;46;65m [0m[38;2;86;95;137m attention[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mp[0m[48;2;40;46;65m [0m[38;2;86;95;137m pause[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mx[0m[48;2;40;46;65m [0m[38;2;86;95;137m kill[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mR[0m[48;2;40;46;65m [0m[38;2;86;95;137m retry[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mL[0m[48;2;40;46;65m [0m[38;2;86;95;137m levers[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65m?[0m[48;2;40;46;65m [0m[38;2;86;95;137m help[0m  [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mq[0m[48;2;40;46;65m [0m[38;2;86;95;137m quit[0m                                                                                                         [0m
