@@ -33,14 +33,14 @@
   ```
 - Marker v2 (exact):
   ```json
-  {"guildhall_decision": {"question": "...", "options": ["a","b"], "recommended": 0,
+  {"watchtower_decision": {"question": "...", "options": ["a","b"], "recommended": 0,
    "importance": 0.6, "paths": [], "why": "...",
    "consequences": ["...","..."], "reversible": "..."}}
   ```
 - `ExtractDecision` parses the new fields (absent → zero values; still returns ok if question+options present — validation is the runner's job).
 - Runner enforcement: when a decision marker is found but `Why == ""` or `len(Consequences) != len(Options)`, the runner does NOT raise an Ask; it sends a coaching user message and lets the agent re-emit (max 2 coach attempts per session, then pass the decision through as-is — a weak decision beats a stuck session):
   ```
-  Your guildhall_decision is missing required fields. Re-emit the SAME decision
+  Your watchtower_decision is missing required fields. Re-emit the SAME decision
   as one JSON line including: "why" (one line: why you recommend option N) and
   "consequences" (one line per option, same order as options). Nothing else.
   ```
@@ -54,7 +54,7 @@ Append to `internal/claude/stream_test.go`:
 
 ```go
 func TestExtractDecisionV2Fields(t *testing.T) {
-	text := `{"guildhall_decision": {"question": "Q?", "options": ["a","b"], "recommended": 1, "importance": 0.5, "paths": [], "why": "b is safer", "consequences": ["fast but risky", "slower, safe"], "reversible": "until execute"}}`
+	text := `{"watchtower_decision": {"question": "Q?", "options": ["a","b"], "recommended": 1, "importance": 0.5, "paths": [], "why": "b is safer", "consequences": ["fast but risky", "slower, safe"], "reversible": "until execute"}}`
 	d, ok := ExtractDecision(text)
 	if !ok || d.Why != "b is safer" || len(d.Consequences) != 2 || d.Reversible != "until execute" {
 		t.Fatalf("v2 fields: %+v ok=%v", d, ok)
@@ -68,12 +68,12 @@ Add stub + test for coaching in `internal/claude/runner_test.go` — new stub `t
 #!/bin/sh
 # Emits a v1 (incomplete) decision, expects a coaching message, then emits v2.
 echo '{"type":"system","subtype":"init","session_id":"s-coach"}'
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"guildhall_decision\": {\"question\": \"Q?\", \"options\": [\"a\",\"b\"], \"recommended\": 0, \"importance\": 0.5, \"paths\": []}}"}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"watchtower_decision\": {\"question\": \"Q?\", \"options\": [\"a\",\"b\"], \"recommended\": 0, \"importance\": 0.5, \"paths\": []}}"}]}}'
 read _task
 read coach
 case "$coach" in
   *"missing required fields"*)
-    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"guildhall_decision\": {\"question\": \"Q?\", \"options\": [\"a\",\"b\"], \"recommended\": 0, \"importance\": 0.5, \"paths\": [], \"why\": \"a is standard\", \"consequences\": [\"done now\", \"more work\"], \"reversible\": \"anytime\"}}"}]}}' ;;
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"watchtower_decision\": {\"question\": \"Q?\", \"options\": [\"a\",\"b\"], \"recommended\": 0, \"importance\": 0.5, \"paths\": [], \"why\": \"a is standard\", \"consequences\": [\"done now\", \"more work\"], \"reversible\": \"anytime\"}}"}]}}' ;;
   *) echo '{"type":"assistant","message":{"content":[{"type":"text","text":"no coaching received"}]}}' ;;
 esac
 read reply
@@ -319,7 +319,7 @@ git commit -m "feat: stage attempt counters and last-error surfacing"
 ### Task 4: Pause/resume and kill-stage
 
 **Files:**
-- Modify: `internal/engine/engine.go`, `internal/core/event.go`, `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/guildhall/main.go`
+- Modify: `internal/engine/engine.go`, `internal/core/event.go`, `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/watchtower/main.go`
 - Test: `internal/engine/engine_test.go` (extend)
 
 **Interfaces:**
@@ -346,7 +346,7 @@ git commit -m "feat: stage attempt counters and last-error surfacing"
   	}
   ```
   `Pause` sets `pauseGate = make(chan struct{})`; `Resume` closes it and nils it. `KillStage` calls `stageCancel()`; the killed stage's error is labeled: wrap `runStage`'s context with `context.WithCancel`, and when the stage returns a context.Canceled error AND a kill was requested (flag on issueState), emit `stage_killed` instead of `stage_failed`, do not consume a retry, leave the issue paused (killing implies "I want to intervene").
-- Proto ops: `pause_issue`, `resume_issue`, `kill_stage` (field `IssueID`). CLI: `guildhall pause|resume|kill <issue-id>`.
+- Proto ops: `pause_issue`, `resume_issue`, `kill_stage` (field `IssueID`). CLI: `watchtower pause|resume|kill <issue-id>`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -452,7 +452,7 @@ git commit -m "feat: pause/resume issues and kill running stages"
 ### Task 5: Retry failed stage + set-lever
 
 **Files:**
-- Modify: `internal/engine/engine.go`, `internal/core/event.go`, `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/guildhall/main.go`
+- Modify: `internal/engine/engine.go`, `internal/core/event.go`, `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/watchtower/main.go`
 - Test: `internal/engine/engine_test.go` (extend)
 
 **Interfaces:**
@@ -465,7 +465,7 @@ git commit -m "feat: pause/resume issues and kill running stages"
   ```
   Implementation: `issueState` gains `stageIdx int` (advanced by the loop) and `terminal bool` (set when StartIssue returns error). `StartIssue` refactors its loop body into `runFrom(ctx, is, startIdx)`; `RetryStage` validates `terminal`, clears it, and calls `runFrom(ctx, is, is.stageIdx)` (same goroutine semantics as start: server runs it in a goroutine).
 - Event: `EvLeverChanged "lever_changed"` payload `{stage, lever}`.
-- Proto ops: `retry_stage` (IssueID), `set_lever` (IssueID, Stage, Lever string — validated). CLI: `guildhall retry <id>`, `guildhall lever <id> <stage> <yolo|regular|strict>`.
+- Proto ops: `retry_stage` (IssueID), `set_lever` (IssueID, Stage, Lever string — validated). CLI: `watchtower retry <id>`, `watchtower lever <id> <stage> <yolo|regular|strict>`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -566,7 +566,7 @@ git commit -m "feat: retry failed stages and change levers mid-flight"
 
 **Files:**
 - Create: `internal/transcript/transcript.go`
-- Modify: `internal/claude/runner.go`, `internal/runner/fake.go` (optional lines), `internal/engine/engine.go` (plumb sink), `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/guildhall/main.go`
+- Modify: `internal/claude/runner.go`, `internal/runner/fake.go` (optional lines), `internal/engine/engine.go` (plumb sink), `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/watchtower/main.go`
 - Test: `internal/transcript/transcript_test.go`
 
 **Interfaces:**
@@ -580,7 +580,7 @@ git commit -m "feat: retry failed stages and change levers mid-flight"
   ```
 - `claude.CodeRunner` gains `OnLine func(issueID, stage, line string)` — called with a human-readable line per stream event: assistant text lines verbatim; tool-ish/other lines skipped; result → `"— turn complete (N tokens) —"`. (Raw JSON is NOT stored — the tail is for humans.)
 - `runner.FakeRunner` Script gains `Lines []string`, emitted via the same callback (for tests/demo).
-- Daemon: constructs one Buffer, sets `OnLine` on the runner to `buf.Add`, server gains op `transcript_tail` (IssueID, N) → `Lines []string` on Response. CLI: `guildhall transcript <id> [-n 50]`.
+- Daemon: constructs one Buffer, sets `OnLine` on the runner to `buf.Add`, server gains op `transcript_tail` (IssueID, N) → `Lines []string` on Response. CLI: `watchtower transcript <id> [-n 50]`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -643,7 +643,7 @@ git commit -m "feat: per-issue transcript ring buffer with tail op"
 ### Task 7: Overview op — the status sentence's data
 
 **Files:**
-- Modify: `internal/proto/proto.go`, `internal/proto/server.go`, `internal/store/store.go`, `cmd/guildhall/main.go`
+- Modify: `internal/proto/proto.go`, `internal/proto/server.go`, `internal/store/store.go`, `cmd/watchtower/main.go`
 - Test: `internal/proto/proto_test.go` (extend)
 
 **Interfaces:**
@@ -662,7 +662,7 @@ git commit -m "feat: per-issue transcript ring buffer with tail op"
   ```
   Computed server-side from `Store.Issues()` states + `PendingDecisionRows()` + events since midnight (`func (s *Store) EventsSinceTime(t time.Time) ([]core.Event, error)` — add it) + `stage_runs` token sums for runs whose issues had events today (approximation: total tokens of all stage_runs is fine for v1 IF labeled "total"; choose: `TokensTotal`/`DollarsTotal` — honest and simpler. Rename fields Total, not Today, and compute ShippedToday from events since midnight which IS cheap and exact).
 - Final shape (use this): `Building, NeedYou, Failing, Queued, ShippedToday int; TokensTotal int; DollarsTotal float64`.
-- CLI: `guildhall status` printing the sentence: `● 1 failing, 1 question for you — 3 building, 2 shipped today · 41k tokens (~$0.35)` with ● red when Failing>0, gold when NeedYou>0, green otherwise.
+- CLI: `watchtower status` printing the sentence: `● 1 failing, 1 question for you — 3 building, 2 shipped today · 41k tokens (~$0.35)` with ● red when Failing>0, gold when NeedYou>0, green otherwise.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -689,7 +689,7 @@ Expected: FAIL.
 
 - [ ] **Step 4: Run the full suite + smoke**
 
-Run: `go test ./... -race && go build ./...`; then the Plan 2 stub smoke plus `guildhall status`, `guildhall pause GH-1`/`resume`, `guildhall transcript GH-1` against a live fake daemon.
+Run: `go test ./... -race && go build ./...`; then the Plan 2 stub smoke plus `watchtower status`, `watchtower pause GH-1`/`resume`, `watchtower transcript GH-1` against a live fake daemon.
 Expected: PASS; status sentence prints; pause visibly delays the next stage.
 
 - [ ] **Step 5: Commit**

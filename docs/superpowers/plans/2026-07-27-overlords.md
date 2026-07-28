@@ -4,7 +4,7 @@
 
 **Goal:** The three overlords — Merge Marshal (overlap prediction, merge sequencing, the real merge train), Librarian (context injection + doc reconciliation), Issue Steward (issue sync + proposal triage) — plus decision persistence with blocking-cost ordering and the reviewer spec-conformance fix from the live smoke.
 
-**Architecture:** Overlords are engine-owned components woken by events, not always-on processes. The Marshal's prediction core is deterministic (planner now emits `touchset.json`; overlap = glob intersection) — LLM agents are dispatched only for conflict repair and doc reconciliation through the existing Runner. Proposals ride the same marker protocol as decisions (`guildhall_proposal`).
+**Architecture:** Overlords are engine-owned components woken by events, not always-on processes. The Marshal's prediction core is deterministic (planner now emits `touchset.json`; overlap = glob intersection) — LLM agents are dispatched only for conflict repair and doc reconciliation through the existing Runner. Proposals ride the same marker protocol as decisions (`watchtower_proposal`).
 
 **Tech Stack:** unchanged (Go, existing internal packages, stub-script runner tests).
 
@@ -12,7 +12,7 @@
 
 - All Plan 1/2 global constraints apply. Runner interface stays frozen.
 - New events: `merge_sequenced`, `merge_started`, `issue_merged`, `merge_conflict`, `proposal_accepted`, `proposal_rejected`, `docs_reconciled`. (`proposal_filed` exists since Plan 1.)
-- Decision marker protocol is frozen; the proposal marker mirrors it exactly: a line starting `{"guildhall_proposal":` with `{"title": string, "body": string}`.
+- Decision marker protocol is frozen; the proposal marker mirrors it exactly: a line starting `{"watchtower_proposal":` with `{"title": string, "body": string}`.
 - Deterministic overlord logic is unit-tested; LLM dispatches are tested with stub scripts only.
 - The Marshal is the ONLY component that writes to the target repo's default branch.
 
@@ -246,16 +246,16 @@ git commit -m "feat: persist decisions with blocking-cost ordering and auto-reso
 ### Task 2: Proposal marker → triage tray → CLI
 
 **Files:**
-- Modify: `internal/claude/stream.go`, `internal/claude/runner.go`, `internal/runner/runner.go`, `internal/runner/fake.go`, `internal/engine/engine.go`, `internal/store/store.go`, `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/guildhall/main.go`
+- Modify: `internal/claude/stream.go`, `internal/claude/runner.go`, `internal/runner/runner.go`, `internal/runner/fake.go`, `internal/engine/engine.go`, `internal/store/store.go`, `internal/proto/proto.go`, `internal/proto/server.go`, `cmd/watchtower/main.go`
 - Test: `internal/claude/stream_test.go`, `internal/engine/engine_test.go`, `internal/store/store_test.go` (extend each)
 
 **Interfaces:**
-- Codec: `type Proposal struct { Title, Body string }`; `func ExtractProposal(text string) (Proposal, bool)` — mirrors `ExtractDecision` for lines starting `{"guildhall_proposal":`.
+- Codec: `type Proposal struct { Title, Body string }`; `func ExtractProposal(text string) (Proposal, bool)` — mirrors `ExtractDecision` for lines starting `{"watchtower_proposal":`.
 - Runner contract: `runner.Ask` gains sibling — `Run`'s `asks` channel stays decisions-only; proposals are fire-and-forget, so `runner.Result` is unchanged and instead the `Run` signature does NOT change: the ClaudeCodeRunner surfaces proposals through a new optional callback field `OnProposal func(issueID string, p Proposal)` on `CodeRunner` (set by the daemon at construction). FakeRunner gains the same field plus `Proposals []claude.Proposal` per Script — wait, that would import claude from runner; instead define `Proposal` in `internal/runner/runner.go` (`type Proposal struct{ Title, Body string }`) and have the claude codec return `runner.Proposal`. FakeRunner Script gains `Proposals []runner.Proposal`, emitted via the callback before artifacts.
 - Store: `func (s *Store) InsertProposal(issueID, title, body string) (int64, error)`, `func (s *Store) SetProposalStatus(id int64, status string) error`, `func (s *Store) PendingProposals() ([]ProposalRow, error)` with `type ProposalRow struct{ ID int64; IssueID, Title, Body, Status string }`.
 - Engine: `func (e *Engine) FileProposal(issueID, title, body string)` — inserts + emits `proposal_filed`; `func (e *Engine) ResolveProposal(id int64, accept bool, flowName, preset string) (string, error)` — accept: creates a real issue via `CreateIssue` (regular-preset matrix from the named flow), sets status "accepted", emits `proposal_accepted`, returns new issue ID (caller starts it explicitly); reject: status "rejected" + `proposal_rejected`.
 - Proto: ops `list_proposals` (→ `Proposals []store.ProposalRow` on Response) and `resolve_proposal` (fields `ProposalID int64`, `Accept bool`; returns `IssueID` when accepted).
-- CLI: `guildhall proposals`, `guildhall accept-proposal <id>`, `guildhall reject-proposal <id>`.
+- CLI: `watchtower proposals`, `watchtower accept-proposal <id>`, `watchtower reject-proposal <id>`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -263,7 +263,7 @@ Codec test (append to `internal/claude/stream_test.go`):
 
 ```go
 func TestExtractProposal(t *testing.T) {
-	text := "found something\n{\"guildhall_proposal\": {\"title\": \"Refactor refunds\", \"body\": \"3 call sites entangled\"}}"
+	text := "found something\n{\"watchtower_proposal\": {\"title\": \"Refactor refunds\", \"body\": \"3 call sites entangled\"}}"
 	p, ok := ExtractProposal(text)
 	if !ok || p.Title != "Refactor refunds" || p.Body != "3 call sites entangled" {
 		t.Fatalf("proposal: %+v ok=%v", p, ok)
@@ -351,14 +351,14 @@ type proposalMarker struct {
 	P struct {
 		Title string `json:"title"`
 		Body  string `json:"body"`
-	} `json:"guildhall_proposal"`
+	} `json:"watchtower_proposal"`
 }
 
-// ExtractProposal scans assistant text for the guildhall_proposal marker.
+// ExtractProposal scans assistant text for the watchtower_proposal marker.
 func ExtractProposal(text string) (runner.Proposal, bool) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, `{"guildhall_proposal":`) {
+		if !strings.HasPrefix(line, `{"watchtower_proposal":`) {
 			continue
 		}
 		var m proposalMarker
@@ -448,7 +448,7 @@ Add event constants `EvProposalAccepted EventType = "proposal_accepted"`, `EvPro
 
 Proto + CLI: `list_proposals` / `resolve_proposal` ops in `server.go` `exec` switch (calling the engine methods), `Proposals []store.ProposalRow` + `ProposalID`/`Accept` fields on the wire types, and the three CLI subcommands printing `[id] (from ISSUE) title — body`.
 
-Daemon (`cmd/guildhall/main.go`): construct runners with `OnProposal: eng.FileProposal` — note engine is created after the runner today; reorder so the engine is constructed first with a nil runner, then set — simplest: give `CodeRunner`/`FakeRunner` the callback after `engine.New` (`run` is stored by pointer in both cases; set the field post-construction before `Serve`).
+Daemon (`cmd/watchtower/main.go`): construct runners with `OnProposal: eng.FileProposal` — note engine is created after the runner today; reorder so the engine is constructed first with a nil runner, then set — simplest: give `CodeRunner`/`FakeRunner` the callback after `engine.New` (`run` is stored by pointer in both cases; set the field post-construction before `Serve`).
 
 - [ ] **Step 4: Run the full suite**
 
@@ -468,7 +468,7 @@ git commit -m "feat: proposal marker, triage tray, and accept/reject CLI"
 
 **Files:**
 - Create: `internal/steward/steward.go`
-- Modify: `internal/store/store.go`, `internal/engine/engine.go` (emit hook), `cmd/guildhall/main.go`, `internal/proto/proto.go`, `internal/proto/server.go`
+- Modify: `internal/store/store.go`, `internal/engine/engine.go` (emit hook), `cmd/watchtower/main.go`, `internal/proto/proto.go`, `internal/proto/server.go`
 - Test: `internal/steward/steward_test.go`
 
 **Interfaces:**
@@ -482,7 +482,7 @@ git commit -m "feat: proposal marker, triage tray, and accept/reject CLI"
   ```
   Semantics: `issue_created` → upsert (state "running", title/flow from payload — extend `CreateIssue`'s emit payload to include `body` and `priority`); `stage_started` → state "running:<stage>"; `decision_required` → "waiting_decision"; `decision_answered` → "running"; `stage_failed` → "failed"; `issue_completed` → "done"; `issue_merged` (Task 6) → "merged".
 - Engine: `Config` gains `Observers []func(core.Event)`; `emit` calls each observer after appending to the store. The daemon registers `steward.Observe`.
-- Proto/CLI: op `list_issues` → `Issues []store.IssueRow`; CLI `guildhall issues` printing `ID  STATE  TITLE`.
+- Proto/CLI: op `list_issues` → `Issues []store.IssueRow`; CLI `watchtower issues` printing `ID  STATE  TITLE`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -493,8 +493,8 @@ package steward
 import (
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -540,8 +540,8 @@ package steward
 import (
 	"encoding/json"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 type Steward struct {
@@ -607,7 +607,7 @@ func (e *Engine) emit(t core.EventType, issueID string, payload any) {
 }
 ```
 
-Daemon: `Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe}` in the engine config; add `list_issues` op + `guildhall issues` CLI.
+Daemon: `Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe}` in the engine config; add `list_issues` op + `watchtower issues` CLI.
 
 - [ ] **Step 4: Run the full suite**
 
@@ -803,8 +803,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/touchset"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/touchset"
 )
 
 func TestSequencingAndRelease(t *testing.T) {
@@ -884,8 +884,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/touchset"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/touchset"
 )
 
 type Emit func(t core.EventType, issueID string, payload any)
@@ -1037,7 +1037,7 @@ git commit -m "feat: merge marshal sequences overlapping plans and feeds blockin
 
 **Files:**
 - Create: `internal/marshal/train.go`
-- Modify: `internal/engine/engine.go`, `internal/core/event.go`, `cmd/guildhall/main.go`, `dist/packages/conflict-resolver/{package.yaml,prompt.md}` (new package)
+- Modify: `internal/engine/engine.go`, `internal/core/event.go`, `cmd/watchtower/main.go`, `dist/packages/conflict-resolver/{package.yaml,prompt.md}` (new package)
 - Test: `internal/marshal/train_test.go`
 
 **Interfaces:**
@@ -1322,13 +1322,13 @@ git commit -m "feat: merge train lands issue branches with tests, repair, and es
 
 **Files:**
 - Create: `internal/librarian/librarian.go`, `dist/packages/librarian/{package.yaml,prompt.md}`
-- Modify: `internal/engine/engine.go`, `cmd/guildhall/main.go`, `internal/core/event.go`
+- Modify: `internal/engine/engine.go`, `cmd/watchtower/main.go`, `internal/core/event.go`
 - Test: `internal/librarian/librarian_test.go`
 
 **Interfaces:**
 - ```go
   type Librarian struct {
-      MemoryDir string // <repo>/docs/guildhall; may not exist
+      MemoryDir string // <repo>/docs/watchtower; may not exist
   }
   // Context returns the injection block for a new issue: the concatenated
   // contents of every *.md in MemoryDir (sorted by name), each preceded by
@@ -1337,7 +1337,7 @@ git commit -m "feat: merge train lands issue branches with tests, repair, and es
   ```
 - Engine: `Config.Librarian *librarian.Librarian` (nil = skip). In `runStageOnce`, the ISSUE.md write becomes: issue header + body, then (if Librarian returns content) `\n\n# Project memory (curated by the Librarian)\n\n` + content.
 - Doc reconciliation: after a successful `Land` (Task 6's success path, before `issue_merged` is emitted), if a `librarian` agent package exists, dispatch it in the main repo (`workdir = Train.Repo`) with the drain-asks pattern; it reconciles `docs/` and the MemoryDir and commits. Emit `docs_reconciled` (`EvDocsReconciled EventType = "docs_reconciled"`) on success; on error, emit nothing fatal — log-only (doc debt must not block merges). Wire as `Config.Reconcile func(ctx context.Context, issueID string) error` built in the daemon (same closure shape as Resolve).
-- Librarian package: tools Read,Write,Edit,Glob,Grep,Bash; prompt: "You are the Guildhall librarian, sole owner of docs/ and docs/guildhall/ (project memory) on the default branch. An issue just merged. Reconcile documentation: fold any doc drafts from the merge into a single coherent voice, resolve contradictions, update stale statements, and maintain docs/guildhall/*.md as curated memory files (one topic per file) that future issues receive as context. Commit your changes with message 'docs: librarian reconcile after <issue>'. Do not modify non-documentation code."
+- Librarian package: tools Read,Write,Edit,Glob,Grep,Bash; prompt: "You are the Watchtower librarian, sole owner of docs/ and docs/watchtower/ (project memory) on the default branch. An issue just merged. Reconcile documentation: fold any doc drafts from the merge into a single coherent voice, resolve contradictions, update stale statements, and maintain docs/watchtower/*.md as curated memory files (one topic per file) that future issues receive as context. Commit your changes with message 'docs: librarian reconcile after <issue>'. Do not modify non-documentation code."
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1453,7 +1453,7 @@ Success path of the merge block (Task 6) gains, before `issue_merged`:
 		}
 ```
 
-Daemon: `Librarian: &librarian.Librarian{MemoryDir: filepath.Join(*repo, "docs", "guildhall")}` (claude mode only) and the `Reconcile` closure dispatching the `librarian` package with `workdir = *repo` and the drain-asks pattern. Write the librarian package files.
+Daemon: `Librarian: &librarian.Librarian{MemoryDir: filepath.Join(*repo, "docs", "watchtower")}` (claude mode only) and the `Reconcile` closure dispatching the `librarian` package with `workdir = *repo` and the drain-asks pattern. Write the librarian package files.
 
 - [ ] **Step 4: Run the full suite**
 
@@ -1487,29 +1487,29 @@ Spec conformance is part of your review: read spec.md (in the issue
 artifacts directory or worktree) and verify the diff actually implements
 what it specifies — including decided requirements like argument handling.
 List every deviation explicitly; fix in-scope deviations, and file
-{"guildhall_proposal": {"title": "...", "body": "..."}} for out-of-scope
+{"watchtower_proposal": {"title": "...", "body": "..."}} for out-of-scope
 ones. A diff that silently narrows the spec is a defect, not a style issue.
 ```
 
 - [ ] **Step 2: Stub smoke — two overlapping issues sequence correctly**
 
 ```bash
-cd ~/guildhall && go build -o /tmp/gh-bin/guildhall ./cmd/guildhall
+cd ~/watchtower && go build -o /tmp/gh-bin/watchtower ./cmd/watchtower
 rm -rf /tmp/gh-smoke3 && mkdir -p /tmp/gh-smoke3/flows
 cp dist/flows/default.yaml /tmp/gh-smoke3/flows/
-/tmp/gh-bin/guildhall daemon --runner fake --data /tmp/gh-smoke3 --flows /tmp/gh-smoke3/flows &
+/tmp/gh-bin/watchtower daemon --runner fake --data /tmp/gh-smoke3 --flows /tmp/gh-smoke3/flows &
 sleep 1
-/tmp/gh-bin/guildhall new --data /tmp/gh-smoke3 --title "issue A" --preset yolo
-/tmp/gh-bin/guildhall new --data /tmp/gh-smoke3 --title "issue B" --preset yolo
-# answer gates for both issues as they appear (guildhall decisions / answer <id> 0)
+/tmp/gh-bin/watchtower new --data /tmp/gh-smoke3 --title "issue A" --preset yolo
+/tmp/gh-bin/watchtower new --data /tmp/gh-smoke3 --title "issue B" --preset yolo
+# answer gates for both issues as they appear (watchtower decisions / answer <id> 0)
 # until both reach issue_completed:
-/tmp/gh-bin/guildhall tail --data /tmp/gh-smoke3 | grep -E 'issue_completed|merge_sequenced'
-/tmp/gh-bin/guildhall issues --data /tmp/gh-smoke3
-/tmp/gh-bin/guildhall proposals --data /tmp/gh-smoke3
+/tmp/gh-bin/watchtower tail --data /tmp/gh-smoke3 | grep -E 'issue_completed|merge_sequenced'
+/tmp/gh-bin/watchtower issues --data /tmp/gh-smoke3
+/tmp/gh-bin/watchtower proposals --data /tmp/gh-smoke3
 kill %1
 ```
 
-Expected: both issues complete; `guildhall issues` shows both `done`; since the fake runner writes identical touchsets only if the flow's plan stage declares touchset.json — `fakeForFlows` auto-writes every declared artifact, so both issues emit identical `touchset.json` ("fake" content — `touchset.Load` fails on non-JSON and the hook silently no-ops). To actually exercise sequencing in the smoke, either patch `fakeForFlows` to write `{"globs":["src/**"]}` for `touchset.json` specifically (do this — it is a 5-line change in `fakeForFlows`: if the artifact name is `touchset.json`, write that JSON literal instead of "fake"), then expect ONE `merge_sequenced` event for the second issue. Verify `guildhall decisions` during the run shows the second issue's gate decisions ordered ahead when it blocks others (blocking-cost ordering).
+Expected: both issues complete; `watchtower issues` shows both `done`; since the fake runner writes identical touchsets only if the flow's plan stage declares touchset.json — `fakeForFlows` auto-writes every declared artifact, so both issues emit identical `touchset.json` ("fake" content — `touchset.Load` fails on non-JSON and the hook silently no-ops). To actually exercise sequencing in the smoke, either patch `fakeForFlows` to write `{"globs":["src/**"]}` for `touchset.json` specifically (do this — it is a 5-line change in `fakeForFlows`: if the artifact name is `touchset.json`, write that JSON literal instead of "fake"), then expect ONE `merge_sequenced` event for the second issue. Verify `watchtower decisions` during the run shows the second issue's gate decisions ordered ahead when it blocks others (blocking-cost ordering).
 
 - [ ] **Step 3: Run the full suite once more**
 

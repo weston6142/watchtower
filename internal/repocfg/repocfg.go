@@ -26,8 +26,8 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		Flows:     filepath.Join(".guildhall", "flows"),
-		Packages:  filepath.Join(".guildhall", "packages"),
+		Flows:     filepath.Join(".watchtower", "flows"),
+		Packages:  filepath.Join(".watchtower", "packages"),
 		Runner:    "claude",
 		Slots:     4,
 		ClaudeBin: "claude",
@@ -36,10 +36,10 @@ func Default() Config {
 
 // ConfigPath returns the config file location under repoRoot.
 func ConfigPath(repoRoot string) string {
-	return filepath.Join(repoRoot, ".guildhall", "config.yaml")
+	return filepath.Join(repoRoot, ".watchtower", "config.yaml")
 }
 
-// Load reads .guildhall/config.yaml under repoRoot. A missing file yields
+// Load reads .watchtower/config.yaml under repoRoot. A missing file yields
 // defaults. Relative Flows/Packages are resolved against repoRoot.
 func Load(repoRoot string) (Config, error) {
 	cfg := Default()
@@ -80,19 +80,19 @@ func fillGaps(cfg *Config) {
 	}
 }
 
-// FindRepo walks up from startDir to the first directory containing .guildhall/.
+// FindRepo walks up from startDir to the first directory containing .watchtower/.
 func FindRepo(startDir string) (string, error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
 		return "", err
 	}
 	for {
-		if fi, err := os.Stat(filepath.Join(dir, ".guildhall")); err == nil && fi.IsDir() {
+		if fi, err := os.Stat(filepath.Join(dir, ".watchtower")); err == nil && fi.IsDir() {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("no .guildhall found above %s (run 'guildhall init' in your repo)", startDir)
+			return "", fmt.Errorf("no .watchtower found above %s (run 'watchtower init' in your repo)", startDir)
 		}
 		dir = parent
 	}

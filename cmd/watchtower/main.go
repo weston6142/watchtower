@@ -35,12 +35,15 @@ import (
 
 func defaultData() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "guildhall")
+	return filepath.Join(home, ".local", "share", "watchtower")
 }
 
 func main() {
+	if err := migrateStateDir(); err != nil {
+		fatal(err)
+	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|init|repos|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|repos|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -61,13 +64,13 @@ func main() {
 			fatal(err)
 		}
 		for _, p := range created {
-			fmt.Println("created .guildhall/" + p)
+			fmt.Println("created .watchtower/" + p)
 		}
 		for _, p := range skipped {
-			fmt.Println("exists  .guildhall/" + p)
+			fmt.Println("exists  .watchtower/" + p)
 		}
 		fmt.Println("registered", cwd)
-		fmt.Println("next: run 'guildhall tower' — the daemon starts automatically")
+		fmt.Println("next: run 'watchtower tower' — the daemon starts automatically")
 	case "repos":
 		fs := flag.NewFlagSet("repos", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
@@ -170,7 +173,7 @@ func main() {
 		fs.Parse(args)
 		rest := fs.Args()
 		if len(rest) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: guildhall answer <decision-id> <option>")
+			fmt.Fprintln(os.Stderr, "usage: watchtower answer <decision-id> <option>")
 			os.Exit(2)
 		}
 		id, err := strconv.ParseInt(rest[0], 10, 64)
@@ -203,7 +206,7 @@ func main() {
 		fs.Parse(args)
 		rest := fs.Args()
 		if len(rest) != 1 {
-			fmt.Fprintf(os.Stderr, "usage: guildhall %s <proposal-id>\n", cmd)
+			fmt.Fprintf(os.Stderr, "usage: watchtower %s <proposal-id>\n", cmd)
 			os.Exit(2)
 		}
 		id, err := strconv.ParseInt(rest[0], 10, 64)
@@ -245,7 +248,7 @@ func main() {
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		if len(fs.Args()) != 1 {
-			fmt.Fprintf(os.Stderr, "usage: guildhall %s <issue-id>\n", cmd)
+			fmt.Fprintf(os.Stderr, "usage: watchtower %s <issue-id>\n", cmd)
 			os.Exit(2)
 		}
 		c := mustDial(*data, *repoF)
@@ -263,7 +266,7 @@ func main() {
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		fs.Parse(args)
 		if len(fs.Args()) != 3 {
-			fmt.Fprintln(os.Stderr, "usage: guildhall lever <issue-id> <stage> <yolo|regular|strict>")
+			fmt.Fprintln(os.Stderr, "usage: watchtower lever <issue-id> <stage> <yolo|regular|strict>")
 			os.Exit(2)
 		}
 		c := mustDial(*data, *repoF)
@@ -286,7 +289,7 @@ func main() {
 			rest = rest[:1]
 		}
 		if len(rest) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: guildhall transcript <issue-id> [-n 50]")
+			fmt.Fprintln(os.Stderr, "usage: watchtower transcript <issue-id> [-n 50]")
 			os.Exit(2)
 		}
 		c := mustDial(*data, *repoF)
@@ -367,7 +370,7 @@ func runDaemon(args []string) {
 	if err := os.WriteFile(filepath.Join(data, pidFileName), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
 		fatal(err)
 	}
-	st, err := store.Open(filepath.Join(data, "guildhall.db"))
+	st, err := store.Open(filepath.Join(data, "watchtower.db"))
 	if err != nil {
 		fatal(err)
 	}
@@ -383,7 +386,7 @@ func runDaemon(args []string) {
 	if len(flows) == 0 {
 		fatal(fmt.Errorf("no flows found in %s (configured in %s)", *flowsDir, repocfg.ConfigPath(repo)))
 	}
-	if os.Getenv("GUILDHALL_FAKE") == "1" {
+	if os.Getenv("WATCHTOWER_FAKE") == "1" {
 		*runnerKind = "fake"
 	}
 	var run runner.Runner
@@ -428,7 +431,7 @@ func runDaemon(args []string) {
 			return res.Err
 		}
 		train = &marshal.Train{Repo: repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve}
-		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "guildhall")}
+		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "watchtower")}
 		reconcile = func(ctx context.Context, issueID string) error {
 			res := <-run.Run(ctx, issueID, "librarian", "librarian", repo, autoAnswerAsks())
 			return res.Err
@@ -465,7 +468,7 @@ func runDaemon(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Println("guildhall daemon listening on", sock)
+	fmt.Println("watchtower daemon listening on", sock)
 	srv := proto.NewServer(eng, st)
 	srv.SetFlows(flows)
 	srv.SetTranscript(transcriptBuffer)
@@ -573,7 +576,7 @@ func mustDo(c *proto.Client, cmd proto.Command) proto.Response {
 
 func fatal(err error) {
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "guildhall:", err)
+		fmt.Fprintln(os.Stderr, "watchtower:", err)
 		os.Exit(1)
 	}
 }

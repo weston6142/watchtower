@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The Guildhall daemon: an event-sourced flow runner that takes issues through a YAML-defined pipeline with autonomy levers, a decision queue, and a slot pool — testable end-to-end with a fake runner and a CLI client.
+**Goal:** The Watchtower daemon: an event-sourced flow runner that takes issues through a YAML-defined pipeline with autonomy levers, a decision queue, and a slot pool — testable end-to-end with a fake runner and a CLI client.
 
 **Architecture:** Single Go module. The Conductor owns SQLite state and an append-only event log; a flow engine walks stage definitions and spawns runners through a `Runner` interface (only `FakeRunner` in this plan); clients talk JSONL over a Unix socket. Every state change is an event; clients rebuild state by replay.
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Module path: `github.com/wbushyeager/guildhall` (rename later is fine; keep consistent).
+- Module path: `github.com/weston6142/watchtower` (rename later is fine; keep consistent).
 - Pure Go — no cgo (SQLite via `modernc.org/sqlite`).
 - Every state mutation MUST be expressed as an `Event` appended to the log before side effects propagate; SQLite tables are projections.
 - Events and protocol messages are JSON with `snake_case` fields.
@@ -19,7 +19,7 @@
 - Stage workspace values: `none | worktree | readonly`.
 - Auto-resolved decisions are still recorded (spec: "Auto-resolved decisions are still logged as events").
 - Multi-agent stages: one `stage_runs` row per agent; stage completes per `all`/`any` rule (spec: "Flows as data").
-- No TUI in this plan. The only client is `guildhall` CLI subcommands.
+- No TUI in this plan. The only client is `watchtower` CLI subcommands.
 
 ---
 
@@ -36,7 +36,7 @@
 - [ ] **Step 1: Init module and write the failing test**
 
 ```bash
-cd ~/guildhall && go mod init github.com/wbushyeager/guildhall
+cd ~/watchtower && go mod init github.com/weston6142/watchtower
 ```
 
 ```go
@@ -153,7 +153,7 @@ package store
 import (
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 func TestAppendAssignsSeqAndReplays(t *testing.T) {
@@ -202,7 +202,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 const schema = `
@@ -540,7 +540,7 @@ package levers
 import (
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/flow"
+	"github.com/weston6142/watchtower/internal/flow"
 )
 
 func TestRouteMatrix(t *testing.T) {
@@ -590,7 +590,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/wbushyeager/guildhall/internal/flow"
+	"github.com/weston6142/watchtower/internal/flow"
 )
 
 type Matrix map[string]flow.Lever
@@ -696,7 +696,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 func TestFakeRunnerAsksThenProduces(t *testing.T) {
@@ -745,7 +745,7 @@ package runner
 import (
 	"context"
 
-	"github.com/wbushyeager/guildhall/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 type Ask struct {
@@ -775,7 +775,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/wbushyeager/guildhall/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 type Script struct {
@@ -1086,12 +1086,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/levers"
-	"github.com/wbushyeager/guildhall/internal/runner"
-	"github.com/wbushyeager/guildhall/internal/slots"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func testFlow() flow.Flow {
@@ -1235,12 +1235,12 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/levers"
-	"github.com/wbushyeager/guildhall/internal/runner"
-	"github.com/wbushyeager/guildhall/internal/slots"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 type Config struct {
@@ -1557,13 +1557,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/engine"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/levers"
-	"github.com/wbushyeager/guildhall/internal/runner"
-	"github.com/wbushyeager/guildhall/internal/slots"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func TestCreateAnswerAndTailOverSocket(t *testing.T) {
@@ -1657,8 +1657,8 @@ Expected: FAIL (undefined symbols).
 package proto
 
 import (
-	"github.com/wbushyeager/guildhall/internal/core"
-	"github.com/wbushyeager/guildhall/internal/engine"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/engine"
 )
 
 type Command struct {
@@ -1693,10 +1693,10 @@ import (
 	"encoding/json"
 	"net"
 
-	"github.com/wbushyeager/guildhall/internal/engine"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/levers"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 type Server struct {
@@ -1848,26 +1848,26 @@ git commit -m "feat: unix socket JSONL protocol, server and client"
 
 ---
 
-### Task 9: `guildhall` binary — daemon + CLI
+### Task 9: `watchtower` binary — daemon + CLI
 
 **Files:**
-- Create: `cmd/guildhall/main.go`
+- Create: `cmd/watchtower/main.go`
 - Test: manual smoke (script below) — thin wiring layer; logic is covered by Tasks 1–8.
 
 **Interfaces:**
 - Consumes: everything above.
 - Produces a single binary with subcommands:
-  - `guildhall daemon --data DIR --flows DIR --slots N` — opens `DIR/guildhall.db`, loads every `*.yaml` in flows dir, listens on `DIR/guildhall.sock`, uses `FakeRunner` when env `GUILDHALL_FAKE=1` is set (real runner arrives in Plan 2; until then the daemon refuses to start without `GUILDHALL_FAKE=1` with error "no real runner available yet — set GUILDHALL_FAKE=1").
-  - `guildhall new --title T [--flow default] [--preset regular] [--priority 0]` — create + start an issue; prints issue ID.
-  - `guildhall decisions` — list pending decisions (ID, issue, stage, question, options with recommended marked).
-  - `guildhall answer <decision-id> <option-index>`.
-  - `guildhall tail [--since N]` — prints events as they exist (single poll).
-  - All client commands honor `--data DIR` (default `~/.local/share/guildhall`) to find the socket.
+  - `watchtower daemon --data DIR --flows DIR --slots N` — opens `DIR/watchtower.db`, loads every `*.yaml` in flows dir, listens on `DIR/watchtower.sock`, uses `FakeRunner` when env `WATCHTOWER_FAKE=1` is set (real runner arrives in Plan 2; until then the daemon refuses to start without `WATCHTOWER_FAKE=1` with error "no real runner available yet — set WATCHTOWER_FAKE=1").
+  - `watchtower new --title T [--flow default] [--preset regular] [--priority 0]` — create + start an issue; prints issue ID.
+  - `watchtower decisions` — list pending decisions (ID, issue, stage, question, options with recommended marked).
+  - `watchtower answer <decision-id> <option-index>`.
+  - `watchtower tail [--since N]` — prints events as they exist (single poll).
+  - All client commands honor `--data DIR` (default `~/.local/share/watchtower`) to find the socket.
 
 - [ ] **Step 1: Write main.go**
 
 ```go
-// cmd/guildhall/main.go
+// cmd/watchtower/main.go
 package main
 
 import (
@@ -1878,22 +1878,22 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/wbushyeager/guildhall/internal/engine"
-	"github.com/wbushyeager/guildhall/internal/flow"
-	"github.com/wbushyeager/guildhall/internal/proto"
-	"github.com/wbushyeager/guildhall/internal/runner"
-	"github.com/wbushyeager/guildhall/internal/slots"
-	"github.com/wbushyeager/guildhall/internal/store"
+	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func defaultData() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "guildhall")
+	return filepath.Join(home, ".local", "share", "watchtower")
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: guildhall <daemon|new|decisions|answer|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|new|decisions|answer|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -1936,7 +1936,7 @@ func main() {
 		fs.Parse(args)
 		rest := fs.Args()
 		if len(rest) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: guildhall answer <decision-id> <option>")
+			fmt.Fprintln(os.Stderr, "usage: watchtower answer <decision-id> <option>")
 			os.Exit(2)
 		}
 		id, _ := strconv.ParseInt(rest[0], 10, 64)
@@ -1972,14 +1972,14 @@ func runDaemon(args []string) {
 		fmt.Fprintln(os.Stderr, "daemon: --flows is required")
 		os.Exit(2)
 	}
-	if os.Getenv("GUILDHALL_FAKE") != "1" {
-		fmt.Fprintln(os.Stderr, "no real runner available yet — set GUILDHALL_FAKE=1")
+	if os.Getenv("WATCHTOWER_FAKE") != "1" {
+		fmt.Fprintln(os.Stderr, "no real runner available yet — set WATCHTOWER_FAKE=1")
 		os.Exit(1)
 	}
 	if err := os.MkdirAll(*data, 0o755); err != nil {
 		fatal(err)
 	}
-	st, err := store.Open(filepath.Join(*data, "guildhall.db"))
+	st, err := store.Open(filepath.Join(*data, "watchtower.db"))
 	if err != nil {
 		fatal(err)
 	}
@@ -1999,13 +1999,13 @@ func runDaemon(args []string) {
 		Store: st, Runner: fakeForFlows(flows), Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(*data, "issues"),
 	})
-	sock := filepath.Join(*data, "guildhall.sock")
+	sock := filepath.Join(*data, "watchtower.sock")
 	os.Remove(sock)
 	l, err := net.Listen("unix", sock)
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Println("guildhall daemon listening on", sock)
+	fmt.Println("watchtower daemon listening on", sock)
 	srv := proto.NewServer(eng, st)
 	srv.SetFlows(flows)
 	fatal(srv.Serve(l))
@@ -2030,7 +2030,7 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 }
 
 func mustDial(data string) *proto.Client {
-	c, err := proto.Dial(filepath.Join(data, "guildhall.sock"))
+	c, err := proto.Dial(filepath.Join(data, "watchtower.sock"))
 	if err != nil {
 		fatal(err)
 	}
@@ -2050,7 +2050,7 @@ func mustDo(c *proto.Client, cmd proto.Command) proto.Response {
 
 func fatal(err error) {
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "guildhall:", err)
+		fmt.Fprintln(os.Stderr, "watchtower:", err)
 		os.Exit(1)
 	}
 }
@@ -2064,18 +2064,18 @@ Expected: clean build.
 - [ ] **Step 3: Smoke test end-to-end**
 
 ```bash
-cd ~/guildhall
+cd ~/watchtower
 mkdir -p /tmp/gh-smoke/flows
 cp internal/flow/testdata/default.yaml /tmp/gh-smoke/flows/
-GUILDHALL_FAKE=1 go run ./cmd/guildhall daemon --data /tmp/gh-smoke --flows /tmp/gh-smoke/flows &
+WATCHTOWER_FAKE=1 go run ./cmd/watchtower daemon --data /tmp/gh-smoke --flows /tmp/gh-smoke/flows &
 sleep 1
-go run ./cmd/guildhall new --data /tmp/gh-smoke --title "smoke test" --preset yolo
+go run ./cmd/watchtower new --data /tmp/gh-smoke --title "smoke test" --preset yolo
 sleep 1
-go run ./cmd/guildhall decisions --data /tmp/gh-smoke
+go run ./cmd/watchtower decisions --data /tmp/gh-smoke
 # expect: [1] GH-1/spec: Approve spec artifacts?  (* 0) approve  1) reject
-go run ./cmd/guildhall answer --data /tmp/gh-smoke 1 0
+go run ./cmd/watchtower answer --data /tmp/gh-smoke 1 0
 sleep 1
-go run ./cmd/guildhall tail --data /tmp/gh-smoke
+go run ./cmd/watchtower tail --data /tmp/gh-smoke
 # expect: issue_created ... stage_completed ×4 including review's 3 agents
 kill %1
 ```
@@ -2091,7 +2091,7 @@ Expected: all packages PASS.
 
 ```bash
 git add cmd/
-git commit -m "feat: guildhall binary with daemon and CLI subcommands"
+git commit -m "feat: watchtower binary with daemon and CLI subcommands"
 ```
 
 ---
@@ -2133,7 +2133,7 @@ package projection
 import (
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -2183,7 +2183,7 @@ package projection
 import (
 	"encoding/json"
 
-	"github.com/wbushyeager/guildhall/internal/core"
+	"github.com/weston6142/watchtower/internal/core"
 )
 
 type IssueView struct {

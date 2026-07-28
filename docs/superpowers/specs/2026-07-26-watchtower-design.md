@@ -1,8 +1,13 @@
-# Guildhall — Design Spec
+# Watchtower — Design Spec
 
-*2026-07-26 · working title "Guildhall" (name subject to change)*
+*2026-07-26 · watchtower*
 
-A terminal-native orchestrator for running many AI coding agents on real software projects, rendered as a pixel-art guild tower. Visual reference for the target look and feel: the Guild Tower concept mockup at https://claude.ai/code/artifact/b736348a-1393-4d49-9d97-85942a298bc7 (stage-floors variant; v2 sprite styling), fused with the Forge Line's stage-pipeline separation (https://claude.ai/code/artifact/6bc478b0-209d-4b46-938d-56856bbc76b5). The engine runs issues through a configurable pipeline (brainstorm → spec → plan → execute → review → merge) with per-stage autonomy levers; the TUI makes 10 parallel flows legible at a glance and funnels every human call into one decision queue.
+> Renamed from guildhall. User state moved to `~/.local/share/watchtower` and
+> the repo config folder to `.watchtower/`, but the checkout path is
+> deliberately unchanged: the per-repo ID is a hash of the absolute checkout
+> path, so moving the checkout would orphan all issue state.
+
+A terminal-native orchestrator for running many AI coding agents on real software projects, rendered as a pixel-art tower. Visual reference for the target look and feel: the tower concept mockup at https://claude.ai/code/artifact/b736348a-1393-4d49-9d97-85942a298bc7 (stage-floors variant; v2 sprite styling), fused with the Forge Line's stage-pipeline separation (https://claude.ai/code/artifact/6bc478b0-209d-4b46-938d-56856bbc76b5). The engine runs issues through a configurable pipeline (brainstorm → spec → plan → execute → review → merge) with per-stage autonomy levers; the TUI makes 10 parallel flows legible at a glance and funnels every human call into one decision queue.
 
 ## Goals
 
@@ -11,7 +16,7 @@ A terminal-native orchestrator for running many AI coding agents on real softwar
 - Legible to a layman at the top level; drillable to diffs and transcripts for engineers — all in-app (no external editor required).
 - Watch the architecture actually build over time, including in-progress branch work.
 - Terminal-native: lives in tmux/SSH beside nvim and agent CLIs (herdr-adjacent workflow).
-- The pipeline is data, not code: users can swap stages or ship whole alternative flows. Guildhall provides infrastructure; the shipped flow is just the default.
+- The pipeline is data, not code: users can swap stages or ship whole alternative flows. Watchtower provides infrastructure; the shipped flow is just the default.
 
 ## Non-goals (v1)
 
@@ -39,7 +44,7 @@ A pure client: renders the tower from events, sends commands. v1 is cell-based (
 
 ## Flows as data
 
-A flow definition (`~/.config/guildhall/flows/*.yaml`, `default.yaml` shipped) is an ordered list of stages. Each stage declares:
+A flow definition (`~/.config/watchtower/flows/*.yaml`, `default.yaml` shipped) is an ordered list of stages. Each stage declares:
 
 - **`agents`** — one or more prompt packages that run it (a stage can fan out to several agents, sequentially or in parallel — e.g. the review stage runs clean-code-reviewer + general reviewer + documentation agent concurrently in the same worktree). Each package is a directory containing a system-prompt/skill markdown, allowed tools, and model/effort settings. The shipped defaults wrap the superpowers skills (brainstorming, writing-plans, executing-plans) and the reviewer/doc agents. The stage completes when all its agents complete (or per an `all`/`any` completion rule).
 - **`workspace`** — `none` (Q&A stages), `worktree` (execution; acquired via treehouse), or `readonly`.

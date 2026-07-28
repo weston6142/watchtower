@@ -4,16 +4,16 @@
 
 **Goal:** Replace the FakeRunner with a real `ClaudeCodeRunner` that drives headless Claude Code sessions, ship the default flow's agent packages, acquire real worktrees for execution stages, and close Plan 1's deferred gaps (`issue_completed` event, `stage_runs` persistence, token budgets).
 
-**Architecture:** The runner spawns `claude -p` with `--input-format stream-json --output-format stream-json` so the session stays interactive over stdio. Agents request human decisions by emitting a `guildhall_decision` JSON marker in their assistant text; the runner converts markers to engine `Ask`s and feeds the chosen option back as the next user message. Agent packages are directories (prompt + config). Workspaces come from a `Provider` interface: treehouse CLI if available, `git worktree` fallback.
+**Architecture:** The runner spawns `claude -p` with `--input-format stream-json --output-format stream-json` so the session stays interactive over stdio. Agents request human decisions by emitting a `watchtower_decision` JSON marker in their assistant text; the runner converts markers to engine `Ask`s and feeds the chosen option back as the next user message. Agent packages are directories (prompt + config). Workspaces come from a `Provider` interface: treehouse CLI if available, `git worktree` fallback.
 
 **Tech Stack:** Go 1.22+ (same module), `os/exec` for the Claude CLI, existing internal packages from Plan 1. Tests stub the Claude binary with shell scripts in `testdata/` — no real API calls in the suite.
 
 ## Global Constraints
 
-- All Plan 1 global constraints still apply (pure Go, events before side effects, snake_case JSON, module `github.com/wbushyeager/guildhall`).
+- All Plan 1 global constraints still apply (pure Go, events before side effects, snake_case JSON, module `github.com/weston6142/watchtower`).
 - Runner contract from Plan 1 is frozen: `Run(ctx, issueID, stage, agentPkg, workdir string, asks chan<- Ask) <-chan Result` — `ClaudeCodeRunner` implements it unchanged.
 - The Claude CLI is invoked as: `claude -p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions=false` plus per-package `--allowedTools`, `--model`, and `--append-system-prompt`; never hardcode a model default (empty = CLI default).
-- Decision marker (exact): an assistant text turn whose trimmed content contains a line starting with `{"guildhall_decision":` parseable as `{"guildhall_decision": {"question": string, "options": []string, "recommended": int, "importance": float, "paths": []string}}`.
+- Decision marker (exact): an assistant text turn whose trimmed content contains a line starting with `{"watchtower_decision":` parseable as `{"watchtower_decision": {"question": string, "options": []string, "recommended": int, "importance": float, "paths": []string}}`.
 - Tests never execute the real `claude` binary: `ClaudeCodeRunner.Bin` is a field, tests point it at `testdata/*.sh` stubs.
 - New events introduced here: `issue_completed`, `budget_exceeded`.
 
@@ -299,7 +299,7 @@ In `internal/engine/engine.go` `runStageOnce`, wrap `runAgent`:
 	}
 ```
 
-(Import `"github.com/wbushyeager/guildhall/internal/store"` in engine.go.)
+(Import `"github.com/weston6142/watchtower/internal/store"` in engine.go.)
 
 - [ ] **Step 4: Run the full suite**
 
@@ -346,9 +346,9 @@ max_turns: 0
 
 ```markdown
 <!-- internal/pkgs/testdata/executor/prompt.md -->
-You are the Guildhall executor. Execute the implementation plan given to you.
+You are the Watchtower executor. Execute the implementation plan given to you.
 When you need a human decision, output a single line:
-{"guildhall_decision": {"question": "...", "options": ["..."], "recommended": 0, "importance": 0.5, "paths": []}}
+{"watchtower_decision": {"question": "...", "options": ["..."], "recommended": 0, "importance": 0.5, "paths": []}}
 and wait for the reply before continuing.
 ```
 
@@ -469,7 +469,7 @@ git commit -m "feat: agent package loader (prompt.md + package.yaml dirs)"
       IsError   bool   // set on result
   }
   func ParseLine(line []byte) StreamEvent
-  // ExtractDecision scans assistant text for the guildhall_decision marker.
+  // ExtractDecision scans assistant text for the watchtower_decision marker.
   // Returns the decision and true if found.
   func ExtractDecision(text string) (levers.Decision, bool)
   // UserMessage encodes a stream-json stdin line carrying a user text turn.
@@ -507,7 +507,7 @@ func TestParseInitAssistantResult(t *testing.T) {
 }
 
 func TestExtractDecision(t *testing.T) {
-	text := "I need input.\n{\"guildhall_decision\": {\"question\": \"REST or GraphQL?\", \"options\": [\"REST\", \"GraphQL\"], \"recommended\": 0, \"importance\": 0.6, \"paths\": [\"api/routes.go\"]}}\n"
+	text := "I need input.\n{\"watchtower_decision\": {\"question\": \"REST or GraphQL?\", \"options\": [\"REST\", \"GraphQL\"], \"recommended\": 0, \"importance\": 0.6, \"paths\": [\"api/routes.go\"]}}\n"
 	d, ok := ExtractDecision(text)
 	if !ok || d.Question != "REST or GraphQL?" || len(d.Options) != 2 || d.Importance != 0.6 || d.Paths[0] != "api/routes.go" {
 		t.Fatalf("decision: %+v ok=%v", d, ok)
@@ -540,7 +540,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/wbushyeager/guildhall/internal/levers"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 type StreamEvent struct {
@@ -609,13 +609,13 @@ type decisionMarker struct {
 		Recommended int      `json:"recommended"`
 		Importance  float64  `json:"importance"`
 		Paths       []string `json:"paths"`
-	} `json:"guildhall_decision"`
+	} `json:"watchtower_decision"`
 }
 
 func ExtractDecision(text string) (levers.Decision, bool) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, `{"guildhall_decision":`) {
+		if !strings.HasPrefix(line, `{"watchtower_decision":`) {
 			continue
 		}
 		var m decisionMarker
@@ -698,7 +698,7 @@ echo '{"type":"result","is_error":false,"usage":{"input_tokens":200,"output_toke
 # internal/claude/testdata/asker.sh
 #!/bin/sh
 echo '{"type":"system","subtype":"init","session_id":"s-ask"}'
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"guildhall_decision\": {\"question\": \"Pick one\", \"options\": [\"a\",\"b\"], \"recommended\": 1, \"importance\": 0.7, \"paths\": []}}"}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"{\"watchtower_decision\": {\"question\": \"Pick one\", \"options\": [\"a\",\"b\"], \"recommended\": 1, \"importance\": 0.7, \"paths\": []}}"}]}}'
 # Wait for the reply line on stdin (the initial task line arrives first).
 read _first_line
 read reply
@@ -731,8 +731,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wbushyeager/guildhall/internal/pkgs"
-	"github.com/wbushyeager/guildhall/internal/runner"
+	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 func testPkgs() map[string]pkgs.Package {
@@ -813,8 +813,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/wbushyeager/guildhall/internal/pkgs"
-	"github.com/wbushyeager/guildhall/internal/runner"
+	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 type CodeRunner struct {
@@ -1315,12 +1315,12 @@ git commit -m "feat: engine acquires real worktrees and enforces token budgets"
 
 **Files:**
 - Create: `dist/flows/default.yaml`, `dist/packages/{brainstorm,spec-writer,planner,executor,clean-code-reviewer,reviewer,doc-writer}/{package.yaml,prompt.md}` (14 files)
-- Modify: `cmd/guildhall/main.go`
+- Modify: `cmd/watchtower/main.go`
 - Test: manual smoke (stub binary + optional real Claude).
 
 **Interfaces:**
 - Consumes: everything.
-- Produces: `guildhall daemon` gains `--runner claude|fake` (default `claude`), `--repo PATH` (target repo for worktree stages; required when `--runner claude`), `--packages DIR` (default `dist/packages` relative to the binary's working directory), `--budget N` (per-issue token budget, default 0 = off), `--claude-bin` (default `claude`). The `GUILDHALL_FAKE=1` gate is removed (`--runner fake` replaces it; keep reading the env var as a fallback alias for compatibility with Plan 1 scripts).
+- Produces: `watchtower daemon` gains `--runner claude|fake` (default `claude`), `--repo PATH` (target repo for worktree stages; required when `--runner claude`), `--packages DIR` (default `dist/packages` relative to the binary's working directory), `--budget N` (per-issue token budget, default 0 = off), `--claude-bin` (default `claude`). The `WATCHTOWER_FAKE=1` gate is removed (`--runner fake` replaces it; keep reading the env var as a fallback alias for compatibility with Plan 1 scripts).
 
 - [ ] **Step 1: Write the shipped flow**
 
@@ -1381,13 +1381,13 @@ The prompts (each `prompt.md`; write all seven, adapting the role sentence and o
 
 ```markdown
 <!-- dist/packages/brainstorm/prompt.md -->
-You are the Guildhall brainstorm agent. Your job: refine the issue you are
+You are the Watchtower brainstorm agent. Your job: refine the issue you are
 given into validated requirements by asking sharp questions and settling
 design choices.
 
 Decision protocol: whenever a choice needs human judgment, output a single
 line, alone in a message:
-{"guildhall_decision": {"question": "<plain-English question>", "options": ["<opt-a>", "<opt-b>"], "recommended": 0, "importance": <0.0-1.0>, "paths": ["<files this affects>"]}}
+{"watchtower_decision": {"question": "<plain-English question>", "options": ["<opt-a>", "<opt-b>"], "recommended": 0, "importance": <0.0-1.0>, "paths": ["<files this affects>"]}}
 Importance calibration: 1.0 = destructive/security/spend/public-API (always
 escalates); 0.6-0.8 = design choices that shape the feature; 0.3-0.5 =
 preferences with a sane default; <0.3 = trivia (avoid asking these).
@@ -1401,35 +1401,35 @@ and open risks. Then stop.
 
 ```markdown
 <!-- dist/packages/spec-writer/prompt.md -->
-You are the Guildhall spec writer. Read brainstorm.md in the current
+You are the Watchtower spec writer. Read brainstorm.md in the current
 directory and produce spec.md: goals, non-goals, architecture, data
 model, error handling, testing strategy. Be concrete; no placeholders.
-Use the same guildhall_decision protocol as other agents (single JSON line,
+Use the same watchtower_decision protocol as other agents (single JSON line,
 wait for reply) if a genuine ambiguity blocks the spec. Then stop.
 ```
 
 ```markdown
 <!-- dist/packages/planner/prompt.md -->
-You are the Guildhall planner. Read spec.md and produce plan.md: an ordered
+You are the Watchtower planner. Read spec.md and produce plan.md: an ordered
 list of bite-sized TDD tasks (write failing test, run to confirm fail,
 implement, run to confirm pass, commit) with exact file paths and real code
-in every step. No placeholders, no "TBD". Use the guildhall_decision
+in every step. No placeholders, no "TBD". Use the watchtower_decision
 protocol for genuine blockers only. Then stop.
 ```
 
 ```markdown
 <!-- dist/packages/executor/prompt.md -->
-You are the Guildhall executor working in a dedicated git worktree. Execute
+You are the Watchtower executor working in a dedicated git worktree. Execute
 plan.md task by task, in order, following each TDD step exactly. Commit
 after each task with the message the plan specifies. Run the full test
 suite before finishing; if it fails, fix it before stopping. Use the
-guildhall_decision protocol when the plan is wrong or a real choice
+watchtower_decision protocol when the plan is wrong or a real choice
 appears; importance 1.0 for anything destructive.
 ```
 
 ```markdown
 <!-- dist/packages/clean-code-reviewer/prompt.md -->
-You are the Guildhall clean-code reviewer in the issue's worktree. Review
+You are the Watchtower clean-code reviewer in the issue's worktree. Review
 the branch diff (git diff against the default branch). Apply safe
 cleanliness fixes directly (naming, dead code, comments, small
 simplifications) and commit them. Never change public interfaces or
@@ -1439,9 +1439,9 @@ end of your final message.
 
 ```markdown
 <!-- dist/packages/reviewer/prompt.md -->
-You are the Guildhall general reviewer in the issue's worktree. Hunt for
+You are the Watchtower general reviewer in the issue's worktree. Hunt for
 real defects in the branch diff: correctness, concurrency, error handling,
-edge cases. Fix what you find and commit; use the guildhall_decision
+edge cases. Fix what you find and commit; use the watchtower_decision
 protocol (importance 0.8+) when a fix requires a design call. When invoked
 at the merge stage (read-only), instead write merge-report.md: diff
 summary, test status, risks, and a merge/hold recommendation.
@@ -1449,7 +1449,7 @@ summary, test status, risks, and a merge/hold recommendation.
 
 ```markdown
 <!-- dist/packages/doc-writer/prompt.md -->
-You are the Guildhall documentation agent in the issue's worktree. Update
+You are the Watchtower documentation agent in the issue's worktree. Update
 or draft the docs this change needs (README sections, ADRs, inline doc
 comments) and commit them. Match the repository's existing documentation
 style. Do not touch non-documentation code.
@@ -1457,7 +1457,7 @@ style. Do not touch non-documentation code.
 
 - [ ] **Step 3: Wire the daemon**
 
-Modify `runDaemon` in `cmd/guildhall/main.go`: add flags and construct the runner/workspace:
+Modify `runDaemon` in `cmd/watchtower/main.go`: add flags and construct the runner/workspace:
 
 ```go
 	runnerKind := fs.String("runner", "claude", "claude|fake")
@@ -1467,10 +1467,10 @@ Modify `runDaemon` in `cmd/guildhall/main.go`: add flags and construct the runne
 	claudeBin := fs.String("claude-bin", "claude", "claude binary")
 ```
 
-After flag parsing (replacing the `GUILDHALL_FAKE` block):
+After flag parsing (replacing the `WATCHTOWER_FAKE` block):
 
 ```go
-	if os.Getenv("GUILDHALL_FAKE") == "1" {
+	if os.Getenv("WATCHTOWER_FAKE") == "1" {
 		*runnerKind = "fake"
 	}
 	var run runner.Runner
@@ -1506,21 +1506,21 @@ Stub-binary smoke (no API cost) — same flow as Plan 1's smoke but through the 
 ```bash
 rm -rf /tmp/gh-smoke2 && mkdir -p /tmp/gh-smoke2/flows
 cp dist/flows/default.yaml /tmp/gh-smoke2/flows/
-go run ./cmd/guildhall daemon --runner fake --data /tmp/gh-smoke2 --flows /tmp/gh-smoke2/flows &
+go run ./cmd/watchtower daemon --runner fake --data /tmp/gh-smoke2 --flows /tmp/gh-smoke2/flows &
 sleep 1
-go run ./cmd/guildhall new --data /tmp/gh-smoke2 --title "smoke" --preset yolo
+go run ./cmd/watchtower new --data /tmp/gh-smoke2 --title "smoke" --preset yolo
 sleep 1
-go run ./cmd/guildhall decisions --data /tmp/gh-smoke2   # spec gate, then answer; then plan gate; then merge gate
+go run ./cmd/watchtower decisions --data /tmp/gh-smoke2   # spec gate, then answer; then plan gate; then merge gate
 # answer each gate with option 0 until tail shows issue_completed (6 stage_completed events)
 ```
 
 Real-Claude smoke (manual, costs tokens — run once, against a scratch repo):
 
 ```bash
-mkdir -p /tmp/gh-target && cd /tmp/gh-target && git init -q && git commit --allow-empty -qm root && cd ~/guildhall
-go run ./cmd/guildhall daemon --runner claude --repo /tmp/gh-target --data /tmp/gh-real --flows dist/flows --packages dist/packages --budget 200000 &
-go run ./cmd/guildhall new --data /tmp/gh-real --title "Add a hello CLI in Go that prints a greeting" --preset regular
-# Watch: guildhall decisions / answer / tail. Expect brainstorm questions to
+mkdir -p /tmp/gh-target && cd /tmp/gh-target && git init -q && git commit --allow-empty -qm root && cd ~/watchtower
+go run ./cmd/watchtower daemon --runner claude --repo /tmp/gh-target --data /tmp/gh-real --flows dist/flows --packages dist/packages --budget 200000 &
+go run ./cmd/watchtower new --data /tmp/gh-real --title "Add a hello CLI in Go that prints a greeting" --preset regular
+# Watch: watchtower decisions / answer / tail. Expect brainstorm questions to
 # surface (regular preset), artifacts to appear under /tmp/gh-real/issues/GH-1/,
 # and a worktree under /tmp/gh-target/.worktrees/GH-1 during execute.
 ```
@@ -1530,7 +1530,7 @@ Expected: stub smoke reaches `issue_completed` with 6 completed stages; real smo
 - [ ] **Step 5: Commit**
 
 ```bash
-git add dist/ cmd/guildhall/
+git add dist/ cmd/watchtower/
 git commit -m "feat: shipped default flow + agent packages, claude runner wiring in daemon"
 ```
 

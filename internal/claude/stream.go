@@ -78,63 +78,87 @@ func ParseLine(line []byte) StreamEvent {
 	}
 }
 
-type decisionMarker struct {
-	D struct {
-		Question     string   `json:"question"`
-		Options      []string `json:"options"`
-		Recommended  int      `json:"recommended"`
-		Importance   float64  `json:"importance"`
-		Paths        []string `json:"paths"`
-		Why          string   `json:"why"`
-		Consequences []string `json:"consequences"`
-		Reversible   string   `json:"reversible"`
-	} `json:"guildhall_decision"`
+type decisionPayload struct {
+	Question     string   `json:"question"`
+	Options      []string `json:"options"`
+	Recommended  int      `json:"recommended"`
+	Importance   float64  `json:"importance"`
+	Paths        []string `json:"paths"`
+	Why          string   `json:"why"`
+	Consequences []string `json:"consequences"`
+	Reversible   string   `json:"reversible"`
 }
 
-// ExtractDecision scans assistant text for a guildhall_decision marker line
+// Legacy accepts the pre-rename guildhall_* marker key. Removable once no
+// in-flight agent session predates the rename — sessions carry the marker
+// spelling in their system prompt, so a session started before the rebuild
+// still emits the old key.
+type decisionMarker struct {
+	D      decisionPayload `json:"watchtower_decision"`
+	Legacy decisionPayload `json:"guildhall_decision"`
+}
+
+// ExtractDecision scans assistant text for a watchtower_decision marker line
 // and returns the parsed decision if a valid one is found.
 func ExtractDecision(text string) (levers.Decision, bool) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, `{"guildhall_decision":`) {
+		if !strings.HasPrefix(line, `{"watchtower_decision":`) &&
+			!strings.HasPrefix(line, `{"guildhall_decision":`) {
 			continue
 		}
 		var m decisionMarker
 		if err := json.Unmarshal([]byte(line), &m); err != nil {
 			continue
 		}
-		if m.D.Question == "" || len(m.D.Options) == 0 {
+		d := m.D
+		if d.Question == "" { // new key absent or empty — fall back to legacy
+			d = m.Legacy
+		}
+		if d.Question == "" || len(d.Options) == 0 {
 			continue
 		}
 		return levers.Decision{
-			Question: m.D.Question, Options: m.D.Options,
-			Recommended: m.D.Recommended, Importance: m.D.Importance,
-			Paths: m.D.Paths, Why: m.D.Why,
-			Consequences: m.D.Consequences, Reversible: m.D.Reversible,
+			Question: d.Question, Options: d.Options,
+			Recommended: d.Recommended, Importance: d.Importance,
+			Paths: d.Paths, Why: d.Why,
+			Consequences: d.Consequences, Reversible: d.Reversible,
 		}, true
 	}
 	return levers.Decision{}, false
 }
 
-type proposalMarker struct {
-	P struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
-	} `json:"guildhall_proposal"`
+type proposalPayload struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
-// ExtractProposal scans assistant text for the guildhall_proposal marker.
+// Legacy accepts the pre-rename guildhall_* marker key; see decisionMarker.
+type proposalMarker struct {
+	P      proposalPayload `json:"watchtower_proposal"`
+	Legacy proposalPayload `json:"guildhall_proposal"`
+}
+
+// ExtractProposal scans assistant text for the watchtower_proposal marker.
 func ExtractProposal(text string) (runner.Proposal, bool) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, `{"guildhall_proposal":`) {
+		if !strings.HasPrefix(line, `{"watchtower_proposal":`) &&
+			!strings.HasPrefix(line, `{"guildhall_proposal":`) {
 			continue
 		}
 		var m proposalMarker
-		if err := json.Unmarshal([]byte(line), &m); err != nil || m.P.Title == "" {
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
 			continue
 		}
-		return runner.Proposal{Title: m.P.Title, Body: m.P.Body}, true
+		p := m.P
+		if p.Title == "" { // new key absent or empty — fall back to legacy
+			p = m.Legacy
+		}
+		if p.Title == "" {
+			continue
+		}
+		return runner.Proposal{Title: p.Title, Body: p.Body}, true
 	}
 	return runner.Proposal{}, false
 }

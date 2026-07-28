@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Theme tokens (Tokyo Night default, configurable via `.guildhall/config.yaml`) plus herdr-style bordered overlays for help, modals, confirm, and lever editor, composited over the dimmed main view.
+**Goal:** Theme tokens (Tokyo Night default, configurable via `.watchtower/config.yaml`) plus herdr-style bordered overlays for help, modals, confirm, and lever editor, composited over the dimmed main view.
 
 **Architecture:** A six-token `Theme` struct with named presets lives in `internal/tui/theme.go` as a package-level `activeTheme`. A small ANSI-aware compositor (`internal/tui/overlay.go`) splices a bordered modal into the centre of the fully rendered, dimmed base view. `renderHelp` is rewritten as a grouped two-column key table; `renderModal`/`renderConfirm`/lever editor get the same box treatment and are composited instead of replacing the tower. The toast keeps its stacked position but adopts theme tokens.
 
@@ -126,11 +126,11 @@ git commit -m "feat: theme tokens with tokyo-night default and named presets"
 
 **Files:**
 - Modify: `internal/repocfg/repocfg.go` (Config struct, ~line 15)
-- Modify: `cmd/guildhall/main.go` (tower case, ~line 91-108)
+- Modify: `cmd/watchtower/main.go` (tower case, ~line 91-108)
 - Test: `internal/repocfg/repocfg_test.go`
 
 **Interfaces:**
-- Consumes: `tui.SetTheme(name string)` from Task 1; existing `resolveRepo(repoFlag string) string` in `cmd/guildhall/spawn.go`.
+- Consumes: `tui.SetTheme(name string)` from Task 1; existing `resolveRepo(repoFlag string) string` in `cmd/watchtower/spawn.go`.
 - Produces: `repocfg.Config.Theme string` (yaml key `theme`, empty means default).
 
 - [ ] **Step 1: Write the failing test** (follow the existing test style in `internal/repocfg/repocfg_test.go`)
@@ -138,10 +138,10 @@ git commit -m "feat: theme tokens with tokyo-night default and named presets"
 ```go
 func TestLoadTheme(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".guildhall"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, ".watchtower"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".guildhall", "config.yaml"), []byte("theme: gruvbox\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".watchtower", "config.yaml"), []byte("theme: gruvbox\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(dir)
@@ -177,7 +177,7 @@ Add to the `Config` struct in `internal/repocfg/repocfg.go`:
 
 No `fillGaps` entry — empty string means "use the tui default", so the tui layer owns the fallback.
 
-In `cmd/guildhall/main.go`, in the `case "tower":` block after `model.SetRetireAfter(*retireAfter)` (~line 105):
+In `cmd/watchtower/main.go`, in the `case "tower":` block after `model.SetRetireAfter(*retireAfter)` (~line 105):
 
 ```go
 		if cfg, err := repocfg.Load(resolveRepo(*repo)); err == nil {
@@ -185,7 +185,7 @@ In `cmd/guildhall/main.go`, in the `case "tower":` block after `model.SetRetireA
 		}
 ```
 
-Add `"github.com/wbushyeager/guildhall/internal/repocfg"` to main.go imports if not present (it is already imported for the daemon path — check first).
+Add `"github.com/weston6142/watchtower/internal/repocfg"` to main.go imports if not present (it is already imported for the daemon path — check first).
 
 Note: `SetTheme("")` must fall back to tokyo-night — Task 1's `themeByName` already handles any unknown key, including empty.
 
@@ -197,8 +197,8 @@ Expected: PASS, build clean
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/repocfg/repocfg.go internal/repocfg/repocfg_test.go cmd/guildhall/main.go
-git commit -m "feat: theme config key wired from .guildhall/config.yaml to the TUI"
+git add internal/repocfg/repocfg.go internal/repocfg/repocfg_test.go cmd/watchtower/main.go
+git commit -m "feat: theme config key wired from .watchtower/config.yaml to the TUI"
 ```
 
 ---
@@ -744,6 +744,6 @@ Expected: all pass.
 
 - [ ] **Step 2: Rebuild and eyeball**
 
-Use the `rebuilding-guildhall` skill to rebuild/install, then open the tower and press `?` — confirm: bordered violet help box centered over the dimmed control room, `esc close` chip top-right, aligned key columns, no duplicated `? close help · q quit` line. Press `n` for the new-issue modal and `L` for the lever editor to confirm the same chrome. Trigger nothing destructive.
+Use the `rebuilding-watchtower` skill to rebuild/install, then open the tower and press `?` — confirm: bordered violet help box centered over the dimmed control room, `esc close` chip top-right, aligned key columns, no duplicated `? close help · q quit` line. Press `n` for the new-issue modal and `L` for the lever editor to confirm the same chrome. Trigger nothing destructive.
 
 - [ ] **Step 3: Commit any polish, done**

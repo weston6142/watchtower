@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Capture the REAL guildhall TUI in tmux against a seeded temp daemon.
+# Capture the REAL watchtower TUI in tmux against a seeded temp daemon.
 # Usage: scripts/tui-capture.sh <floor|decision|tray|modal|levers|arch|help>
 #
 # Note: termenv degrades to monochrome under tmux, so live captures verify
@@ -15,8 +15,8 @@ repo="$dir/repo"
 data="$dir/data"
 out=tmp-snaps
 mkdir -p "$out" "$repo"
-bin="$dir/guildhall"
-go build -o "$bin" ./cmd/guildhall
+bin="$dir/watchtower"
+go build -o "$bin" ./cmd/watchtower
 
 cleanup() {
   tmux kill-session -t "$sess" 2>/dev/null || true
@@ -26,7 +26,7 @@ trap cleanup EXIT
 
 # Seed: init a workspace with a fake runner and create one issue (auto-spawns daemon).
 (cd "$repo" && "$bin" init --data "$data" >/dev/null)
-printf 'runner: fake\n' > "$repo/.guildhall/config.yaml"
+printf 'runner: fake\n' > "$repo/.watchtower/config.yaml"
 (cd "$repo" && "$bin" new --data "$data" --title "create a repo for GH-1" >/dev/null)
 
 tmux new-session -d -s "$sess" -x 200 -y 50 \

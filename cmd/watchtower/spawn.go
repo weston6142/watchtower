@@ -16,7 +16,7 @@ import (
 
 // Well-known filenames inside a repo's data dir.
 const (
-	sockFileName = "guildhall.sock"
+	sockFileName = "watchtower.sock"
 	pidFileName  = "daemon.pid"
 	logFileName  = "daemon.log"
 )
@@ -28,7 +28,7 @@ const (
 )
 
 // resolveRepo returns repoFlag if set, otherwise walks up from CWD to the
-// nearest .guildhall directory. Exits the process on failure.
+// nearest .watchtower directory. Exits the process on failure.
 func resolveRepo(repoFlag string) string {
 	if repoFlag != "" {
 		return repoFlag

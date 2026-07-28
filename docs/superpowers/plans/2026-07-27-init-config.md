@@ -1,10 +1,10 @@
-# guildhall init + config file Implementation Plan
+# watchtower init + config file Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add `guildhall init`, a per-repo `.guildhall/config.yaml`, per-repo data dirs (fixing the socket collision), a global repo registry with `guildhall repos`, and client auto-spawn of the daemon.
+**Goal:** Add `watchtower init`, a per-repo `.watchtower/config.yaml`, per-repo data dirs (fixing the socket collision), a global repo registry with `watchtower repos`, and client auto-spawn of the daemon.
 
-**Architecture:** A new `internal/repocfg` package owns config loading, repo discovery (CWD walk), repo IDs, per-repo data paths, and the registry. A new `internal/scaffold` package embeds default flows/packages and writes them on `init`. `cmd/guildhall/main.go` gains `init` and `repos` commands; `runDaemon` resolves its settings from config with flag override; client dialing gains stale-socket cleanup and detached daemon spawn.
+**Architecture:** A new `internal/repocfg` package owns config loading, repo discovery (CWD walk), repo IDs, per-repo data paths, and the registry. A new `internal/scaffold` package embeds default flows/packages and writes them on `init`. `cmd/watchtower/main.go` gains `init` and `repos` commands; `runDaemon` resolves its settings from config with flag override; client dialing gains stale-socket cleanup and detached daemon spawn.
 
 **Tech Stack:** Go, `gopkg.in/yaml.v3` (already a dep), `go:embed`, Unix sockets.
 
@@ -12,13 +12,13 @@
 
 ## Global Constraints
 
-- Config file path: `.guildhall/config.yaml` at the repo root; relative paths inside resolve against the repo root.
+- Config file path: `.watchtower/config.yaml` at the repo root; relative paths inside resolve against the repo root.
 - Precedence: explicit CLI flag > config file > built-in default. "Explicit" is determined via `flag.FlagSet.Visit`.
-- Built-in defaults: `flows: .guildhall/flows`, `packages: .guildhall/packages`, `runner: claude`, `slots: 4`, `budget: 0`, `price_per_mtok: 0`, `claude_bin: claude`, `test_cmd: ""`.
-- Per-repo data dir: `<base>/repos/<id>/` where `<base>` defaults to `~/.local/share/guildhall` (overridable with `--data`) and `<id>` is the first 12 hex chars of sha256 of the repo's absolute path.
+- Built-in defaults: `flows: .watchtower/flows`, `packages: .watchtower/packages`, `runner: claude`, `slots: 4`, `budget: 0`, `price_per_mtok: 0`, `claude_bin: claude`, `test_cmd: ""`.
+- Per-repo data dir: `<base>/repos/<id>/` where `<base>` defaults to `~/.local/share/watchtower` (overridable with `--data`) and `<id>` is the first 12 hex chars of sha256 of the repo's absolute path.
 - Registry entries: `<base>/repos.d/<id>.yaml` with fields `path` and `registered_at` (RFC3339).
 - `init` never overwrites existing files; re-running is a no-op that reports what already exists.
-- `GUILDHALL_FAKE=1` continues to force the fake runner, overriding config.
+- `WATCHTOWER_FAKE=1` continues to force the fake runner, overriding config.
 - All commit messages end with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 
 ---
@@ -33,8 +33,8 @@
 - Produces:
   - `type Config struct { Flows, Packages, Runner string; Slots, Budget int; PricePerMTok float64; ClaudeBin, TestCmd string }` (yaml tags: `flows, packages, runner, slots, budget, price_per_mtok, claude_bin, test_cmd`)
   - `func Default() Config`
-  - `func Load(repoRoot string) (Config, error)` — reads `.guildhall/config.yaml` under repoRoot, fills zero fields from `Default()`, resolves `Flows`/`Packages` to absolute paths against repoRoot. Missing file → `Default()` with resolved paths, no error.
-  - `func FindRepo(startDir string) (string, error)` — walks up from startDir to the first dir containing `.guildhall/`; error `no .guildhall found (run 'guildhall init' in your repo)` if none.
+  - `func Load(repoRoot string) (Config, error)` — reads `.watchtower/config.yaml` under repoRoot, fills zero fields from `Default()`, resolves `Flows`/`Packages` to absolute paths against repoRoot. Missing file → `Default()` with resolved paths, no error.
+  - `func FindRepo(startDir string) (string, error)` — walks up from startDir to the first dir containing `.watchtower/`; error `no .watchtower found (run 'watchtower init' in your repo)` if none.
   - `func RepoID(repoRoot string) string` — 12 hex chars of sha256 of `filepath.Abs(repoRoot)`.
   - `func RepoDataDir(base, repoRoot string) string` — `filepath.Join(base, "repos", RepoID(repoRoot))`.
 
@@ -58,17 +58,17 @@ func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	if cfg.Runner != "claude" || cfg.Slots != 4 || cfg.ClaudeBin != "claude" {
 		t.Fatalf("bad defaults: %+v", cfg)
 	}
-	if cfg.Flows != filepath.Join(root, ".guildhall", "flows") {
+	if cfg.Flows != filepath.Join(root, ".watchtower", "flows") {
 		t.Fatalf("flows not resolved: %s", cfg.Flows)
 	}
-	if cfg.Packages != filepath.Join(root, ".guildhall", "packages") {
+	if cfg.Packages != filepath.Join(root, ".watchtower", "packages") {
 		t.Fatalf("packages not resolved: %s", cfg.Packages)
 	}
 }
 
 func TestLoadReadsFileAndFillsGaps(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".guildhall")
+	dir := filepath.Join(root, ".watchtower")
 	os.MkdirAll(dir, 0o755)
 	yaml := "runner: fake\nslots: 2\nflows: myflows\ntest_cmd: \"go test ./...\"\n"
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yaml), 0o644)
@@ -89,7 +89,7 @@ func TestLoadReadsFileAndFillsGaps(t *testing.T) {
 
 func TestLoadBadYAMLErrors(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".guildhall")
+	dir := filepath.Join(root, ".watchtower")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("slots: [not an int"), 0o644)
 	if _, err := Load(root); err == nil {
@@ -99,7 +99,7 @@ func TestLoadBadYAMLErrors(t *testing.T) {
 
 func TestFindRepoWalksUp(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, ".guildhall"), 0o755)
+	os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755)
 	nested := filepath.Join(root, "a", "b")
 	os.MkdirAll(nested, 0o755)
 	got, err := FindRepo(nested)
@@ -166,8 +166,8 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		Flows:     filepath.Join(".guildhall", "flows"),
-		Packages:  filepath.Join(".guildhall", "packages"),
+		Flows:     filepath.Join(".watchtower", "flows"),
+		Packages:  filepath.Join(".watchtower", "packages"),
 		Runner:    "claude",
 		Slots:     4,
 		ClaudeBin: "claude",
@@ -176,10 +176,10 @@ func Default() Config {
 
 // ConfigPath returns the config file location under repoRoot.
 func ConfigPath(repoRoot string) string {
-	return filepath.Join(repoRoot, ".guildhall", "config.yaml")
+	return filepath.Join(repoRoot, ".watchtower", "config.yaml")
 }
 
-// Load reads .guildhall/config.yaml under repoRoot. A missing file yields
+// Load reads .watchtower/config.yaml under repoRoot. A missing file yields
 // defaults. Relative Flows/Packages are resolved against repoRoot.
 func Load(repoRoot string) (Config, error) {
 	cfg := Default()
@@ -220,19 +220,19 @@ func fillGaps(cfg *Config) {
 	}
 }
 
-// FindRepo walks up from startDir to the first directory containing .guildhall/.
+// FindRepo walks up from startDir to the first directory containing .watchtower/.
 func FindRepo(startDir string) (string, error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
 		return "", err
 	}
 	for {
-		if fi, err := os.Stat(filepath.Join(dir, ".guildhall")); err == nil && fi.IsDir() {
+		if fi, err := os.Stat(filepath.Join(dir, ".watchtower")); err == nil && fi.IsDir() {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("no .guildhall found above %s (run 'guildhall init' in your repo)", startDir)
+			return "", fmt.Errorf("no .watchtower found above %s (run 'watchtower init' in your repo)", startDir)
 		}
 		dir = parent
 	}
@@ -421,7 +421,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: nothing from other tasks (pure files).
-- Produces: `func Init(repoRoot string) ([]string, []string, error)` — copies the embedded `defaults/` tree into `<repoRoot>/.guildhall/`, returns `(created, skipped)` relative paths. Existing files are never overwritten.
+- Produces: `func Init(repoRoot string) ([]string, []string, error)` — copies the embedded `defaults/` tree into `<repoRoot>/.watchtower/`, returns `(created, skipped)` relative paths. Existing files are never overwritten.
 
 - [ ] **Step 1: Copy default assets into the package**
 
@@ -434,10 +434,10 @@ cp -R dist/packages internal/scaffold/defaults/packages
 Then create `internal/scaffold/defaults/config.yaml` with the documented defaults, commented for humans:
 
 ```yaml
-# guildhall repo configuration. All fields optional; shown values are defaults.
+# watchtower repo configuration. All fields optional; shown values are defaults.
 # Relative paths resolve against the repo root.
-flows: .guildhall/flows
-packages: .guildhall/packages
+flows: .watchtower/flows
+packages: .watchtower/packages
 runner: claude        # claude|fake
 slots: 4              # concurrent heavy slots
 budget: 0             # per-issue token budget (0=off)
@@ -470,10 +470,10 @@ func TestInitCreatesTree(t *testing.T) {
 		t.Fatal("nothing created")
 	}
 	for _, p := range []string{
-		filepath.Join(root, ".guildhall", "config.yaml"),
-		filepath.Join(root, ".guildhall", "flows", "default.yaml"),
-		filepath.Join(root, ".guildhall", "packages", "executor", "package.yaml"),
-		filepath.Join(root, ".guildhall", "packages", "executor", "prompt.md"),
+		filepath.Join(root, ".watchtower", "config.yaml"),
+		filepath.Join(root, ".watchtower", "flows", "default.yaml"),
+		filepath.Join(root, ".watchtower", "packages", "executor", "package.yaml"),
+		filepath.Join(root, ".watchtower", "packages", "executor", "prompt.md"),
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("missing %s: %v", p, err)
@@ -486,7 +486,7 @@ func TestInitIdempotentAndNonDestructive(t *testing.T) {
 	if _, _, err := Init(root); err != nil {
 		t.Fatal(err)
 	}
-	custom := filepath.Join(root, ".guildhall", "config.yaml")
+	custom := filepath.Join(root, ".watchtower", "config.yaml")
 	os.WriteFile(custom, []byte("runner: fake\n"), 0o644)
 	created, skipped, err := Init(root)
 	if err != nil {
@@ -513,7 +513,7 @@ Expected: FAIL (undefined: Init)
 - [ ] **Step 4: Write the implementation**
 
 ```go
-// Package scaffold writes the embedded default .guildhall tree into a repo.
+// Package scaffold writes the embedded default .watchtower tree into a repo.
 package scaffold
 
 import (
@@ -526,10 +526,10 @@ import (
 //go:embed all:defaults
 var defaults embed.FS
 
-// Init copies the embedded defaults into <repoRoot>/.guildhall/. It never
+// Init copies the embedded defaults into <repoRoot>/.watchtower/. It never
 // overwrites: existing files are reported in skipped instead.
 func Init(repoRoot string) (created, skipped []string, err error) {
-	dst := filepath.Join(repoRoot, ".guildhall")
+	dst := filepath.Join(repoRoot, ".watchtower")
 	err = fs.WalkDir(defaults, "defaults", func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -576,10 +576,10 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 4: `guildhall init` and `guildhall repos` commands
+### Task 4: `watchtower init` and `watchtower repos` commands
 
 **Files:**
-- Modify: `cmd/guildhall/main.go` (usage line ~42; switch ~45)
+- Modify: `cmd/watchtower/main.go` (usage line ~42; switch ~45)
 
 **Interfaces:**
 - Consumes: `scaffold.Init`, `repocfg.Register`, `repocfg.ListRegistered`, `repocfg.RepoDataDir` from Tasks 1–3.
@@ -606,13 +606,13 @@ case "init":
 		fatal(err)
 	}
 	for _, p := range created {
-		fmt.Println("created .guildhall/" + p)
+		fmt.Println("created .watchtower/" + p)
 	}
 	for _, p := range skipped {
-		fmt.Println("exists  .guildhall/" + p)
+		fmt.Println("exists  .watchtower/" + p)
 	}
 	fmt.Println("registered", cwd)
-	fmt.Println("next: run 'guildhall tower' — the daemon starts automatically")
+	fmt.Println("next: run 'watchtower tower' — the daemon starts automatically")
 case "repos":
 	fs := flag.NewFlagSet("repos", flag.ExitOnError)
 	data := fs.String("data", defaultData(), "data dir")
@@ -623,7 +623,7 @@ case "repos":
 	}
 	for _, e := range entries {
 		status := "stopped"
-		sock := filepath.Join(repocfg.RepoDataDir(*data, e.Path), "guildhall.sock")
+		sock := filepath.Join(repocfg.RepoDataDir(*data, e.Path), "watchtower.sock")
 		if conn, err := net.Dial("unix", sock); err == nil {
 			conn.Close()
 			status = "running"
@@ -632,12 +632,12 @@ case "repos":
 	}
 ```
 
-Add imports `"github.com/wbushyeager/guildhall/internal/repocfg"` and `"github.com/wbushyeager/guildhall/internal/scaffold"` (`net` is already imported).
+Add imports `"github.com/weston6142/watchtower/internal/repocfg"` and `"github.com/weston6142/watchtower/internal/scaffold"` (`net` is already imported).
 
 - [ ] **Step 2: Verify by hand in a temp repo**
 
 ```bash
-go build -o /tmp/gh-test ./cmd/guildhall
+go build -o /tmp/gh-test ./cmd/watchtower
 mkdir -p /tmp/gh-repo && cd /tmp/gh-repo
 GH_DATA=$(mktemp -d)
 /tmp/gh-test init --data "$GH_DATA"
@@ -655,8 +655,8 @@ Expected: PASS
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/guildhall/main.go
-git commit -m "feat: guildhall init and repos commands
+git add cmd/watchtower/main.go
+git commit -m "feat: watchtower init and repos commands
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -666,11 +666,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 5: Daemon reads config with flag precedence; per-repo data dir
 
 **Files:**
-- Modify: `cmd/guildhall/main.go` — `runDaemon` (~line 237)
+- Modify: `cmd/watchtower/main.go` — `runDaemon` (~line 237)
 
 **Interfaces:**
 - Consumes: `repocfg.Load`, `repocfg.FindRepo`, `repocfg.RepoDataDir` from Task 1.
-- Produces: `guildhall daemon` runs with zero flags inside an initialized repo. `--flows` no longer required. Socket/db/issues live in `<base>/repos/<id>/`. Later tasks rely on the socket path being `repocfg.RepoDataDir(base, repo) + "/guildhall.sock"` and pidfile `daemon.pid` written there.
+- Produces: `watchtower daemon` runs with zero flags inside an initialized repo. `--flows` no longer required. Socket/db/issues live in `<base>/repos/<id>/`. Later tasks rely on the socket path being `repocfg.RepoDataDir(base, repo) + "/watchtower.sock"` and pidfile `daemon.pid` written there.
 
 - [ ] **Step 1: Rework runDaemon**
 
@@ -744,27 +744,27 @@ func runDaemon(args []string) {
 ```
 
 Then adjust the rest of the existing body:
-- `store.Open(filepath.Join(data, "guildhall.db"))` — `data` is now the per-repo dir (variable, not flag pointer).
+- `store.Open(filepath.Join(data, "watchtower.db"))` — `data` is now the per-repo dir (variable, not flag pointer).
 - Flows glob: `filepath.Glob(filepath.Join(*flowsDir, "*.yaml"))`; change the empty-flows error to name the config: `fatal(fmt.Errorf("no flows found in %s (configured in %s)", *flowsDir, repocfg.ConfigPath(repo)))`.
 - Remove the old `if *repo == ""` check inside `case "claude":` (repo is always resolved now); replace all `*repo` references with `repo`.
 - Engine `DataDir: filepath.Join(data, "issues")`.
-- Socket: `sock := filepath.Join(data, "guildhall.sock")` (rest unchanged).
-- The `GUILDHALL_FAKE=1` override stays where it is, after the precedence block.
+- Socket: `sock := filepath.Join(data, "watchtower.sock")` (rest unchanged).
+- The `WATCHTOWER_FAKE=1` override stays where it is, after the precedence block.
 
 - [ ] **Step 2: Verify by hand with the fake runner**
 
 ```bash
-go build -o /tmp/gh-test ./cmd/guildhall
-cd /tmp/gh-repo   # from Task 4; has .guildhall/ scaffolded
-printf 'runner: fake\n' > .guildhall/config.yaml
+go build -o /tmp/gh-test ./cmd/watchtower
+cd /tmp/gh-repo   # from Task 4; has .watchtower/ scaffolded
+printf 'runner: fake\n' > .watchtower/config.yaml
 /tmp/gh-test daemon --data "$GH_DATA" &
 sleep 1
-ls "$GH_DATA"/repos/*/guildhall.sock "$GH_DATA"/repos/*/daemon.pid
+ls "$GH_DATA"/repos/*/watchtower.sock "$GH_DATA"/repos/*/daemon.pid
 /tmp/gh-test repos --data "$GH_DATA"   # now shows "running"
 kill %1
 ```
 
-Expected: daemon prints `guildhall daemon listening on <base>/repos/<id>/guildhall.sock`; socket and pidfile exist; repos shows running.
+Expected: daemon prints `watchtower daemon listening on <base>/repos/<id>/watchtower.sock`; socket and pidfile exist; repos shows running.
 
 - [ ] **Step 3: Run the full test suite**
 
@@ -774,8 +774,8 @@ Expected: PASS
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/guildhall/main.go
-git commit -m "feat: daemon reads .guildhall/config.yaml, per-repo data dir
+git add cmd/watchtower/main.go
+git commit -m "feat: daemon reads .watchtower/config.yaml, per-repo data dir
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -785,8 +785,8 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 6: Client repo resolution + auto-spawn
 
 **Files:**
-- Create: `cmd/guildhall/spawn.go`
-- Modify: `cmd/guildhall/main.go` — `mustDial` (~line 448) and every client case (`tower, new, decisions, answer, proposals, accept-proposal, reject-proposal, issues, status, pause, resume, kill, retry, lever, transcript, tail`)
+- Create: `cmd/watchtower/spawn.go`
+- Modify: `cmd/watchtower/main.go` — `mustDial` (~line 448) and every client case (`tower, new, decisions, answer, proposals, accept-proposal, reject-proposal, issues, status, pause, resume, kill, retry, lever, transcript, tail`)
 
 **Interfaces:**
 - Consumes: `repocfg.FindRepo`, `repocfg.RepoDataDir` (Task 1); daemon pidfile/socket layout (Task 5).
@@ -807,8 +807,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wbushyeager/guildhall/internal/proto"
-	"github.com/wbushyeager/guildhall/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/repocfg"
 )
 
 // mustDial resolves the target repo, connects to its daemon socket, and
@@ -826,7 +826,7 @@ func mustDial(base, repoFlag string) *proto.Client {
 		}
 	}
 	dataDir := repocfg.RepoDataDir(base, repo)
-	sock := filepath.Join(dataDir, "guildhall.sock")
+	sock := filepath.Join(dataDir, "watchtower.sock")
 	if c, err := proto.Dial(sock); err == nil {
 		return c
 	}
@@ -925,7 +925,7 @@ Remove the old `mustDial(data string)` from `main.go` (it moves to `spawn.go` wi
 - [ ] **Step 3: Verify auto-spawn by hand**
 
 ```bash
-go build -o /tmp/gh-test ./cmd/guildhall
+go build -o /tmp/gh-test ./cmd/watchtower
 cd /tmp/gh-repo
 pkill -f 'gh-test daemon' || true
 /tmp/gh-test status --data "$GH_DATA"
@@ -944,7 +944,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/guildhall/spawn.go cmd/guildhall/main.go
+git add cmd/watchtower/spawn.go cmd/watchtower/main.go
 git commit -m "feat: clients resolve repo from CWD and auto-spawn the daemon
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -955,7 +955,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 7: Integration test — two repos, no collision, auto-spawn end to end
 
 **Files:**
-- Create: `cmd/guildhall/integration_test.go`
+- Create: `cmd/watchtower/integration_test.go`
 
 **Interfaces:**
 - Consumes: the built binary's `init`, `new`, `issues` commands; `runner: fake` config (Task 5); auto-spawn (Task 6).
@@ -973,10 +973,10 @@ import (
 	"testing"
 )
 
-// buildBinary compiles guildhall once into a temp dir.
+// buildBinary compiles watchtower once into a temp dir.
 func buildBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "guildhall")
+	bin := filepath.Join(t.TempDir(), "watchtower")
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	cmd.Env = os.Environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -1000,7 +1000,7 @@ func initRepo(t *testing.T, bin, base string) string {
 	t.Helper()
 	repo := t.TempDir()
 	run(t, bin, repo, "init", "--data", base)
-	cfg := filepath.Join(repo, ".guildhall", "config.yaml")
+	cfg := filepath.Join(repo, ".watchtower", "config.yaml")
 	if err := os.WriteFile(cfg, []byte("runner: fake\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1049,7 +1049,7 @@ func lastLine(s string) string {
 
 - [ ] **Step 2: Run it**
 
-Run: `go test ./cmd/guildhall/ -run TestTwoRepos -v -timeout 120s`
+Run: `go test ./cmd/watchtower/ -run TestTwoRepos -v -timeout 120s`
 Expected: PASS. If it fails on the spawn notice polluting stdout parsing, check `lastLine` — the issue ID is the last stdout line from `new`.
 
 - [ ] **Step 3: Run the full test suite**
@@ -1060,7 +1060,7 @@ Expected: PASS
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/guildhall/integration_test.go
+git add cmd/watchtower/integration_test.go
 git commit -m "test: two-repo auto-spawn integration test
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"

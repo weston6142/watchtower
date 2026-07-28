@@ -43,7 +43,7 @@ slot: `nothing running — R retries · X abandons`. No daemon round-trip.
   remove it from `Order`, `ShippedToday`, and `Parked`, and drop its
   decisions — the lane disappears from every surface.
 - **Proto/CLI:** op `"abandon_issue"` on the server; CLI verb
-  `guildhall abandon <issue-id>` alongside pause/resume/kill/retry.
+  `watchtower abandon <issue-id>` alongside pause/resume/kill/retry.
 - **TUI:** `X` on a focused lane opens the existing confirm box —
   `abandon <title>? the lane is removed for good` — and on `y` sends
   `abandon_issue`. Help overlay CONTROL group gains `X abandon lane`.
