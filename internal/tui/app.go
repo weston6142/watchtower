@@ -1137,7 +1137,7 @@ func (m Model) View() string {
 		b.WriteString("j/k select · enter open · esc back · q quit")
 		screen := b.String()
 		if m.help {
-			return overlayCenter(screen, renderHelpOverlay(layoutWidth), layoutWidth, max(m.Height, lipgloss.Height(screen)))
+			return m.composite(screen, renderHelpOverlay(layoutWidth), layoutWidth)
 		}
 		return screen
 	}
@@ -1192,9 +1192,15 @@ func (m Model) View() string {
 	screen := b.String()
 	switch {
 	case m.help:
-		return overlayCenter(screen, renderHelpOverlay(layoutWidth), layoutWidth, max(m.Height, lipgloss.Height(screen)))
+		return m.composite(screen, renderHelpOverlay(layoutWidth), layoutWidth)
 	case overlayBox != "":
-		return overlayCenter(screen, overlayBox, layoutWidth, max(m.Height, lipgloss.Height(screen)))
+		return m.composite(screen, overlayBox, layoutWidth)
 	}
 	return screen
+}
+
+// composite centers box over screen, dimming the base to the full terminal
+// height (or the screen's own height if it is taller).
+func (m Model) composite(screen, box string, width int) string {
+	return overlayCenter(screen, box, width, max(m.Height, lipgloss.Height(screen)))
 }

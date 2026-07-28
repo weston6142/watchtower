@@ -485,30 +485,17 @@ func renderHelpOverlay(width int) string {
 		cols = append(cols, strings.Join(blocks, "\n\n"))
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, cols[0], "    ", cols[1])
-	inner := lipgloss.Width(body)
-
-	title := lipgloss.NewStyle().Foreground(t.Bright).Bold(true).Render("help")
-	sub := lipgloss.NewStyle().Foreground(t.Dim).Render(" every key in the control room")
-	chip := lipgloss.NewStyle().Foreground(t.Panel).Background(t.Accent).Bold(true).Render(" esc close ")
-	gap := max(1, inner-lipgloss.Width(title)-lipgloss.Width(sub)-lipgloss.Width(chip))
-	header := title + sub + strings.Repeat(" ", gap) + chip
 
 	foot := lipgloss.NewStyle().Foreground(t.Heading).Render("close ") + descStyle.Render("? / esc") +
 		lipgloss.NewStyle().Foreground(t.Dim).Render("  ·  ") +
 		lipgloss.NewStyle().Foreground(t.Heading).Render("quit ") + descStyle.Render("q / ctrl+c")
-	rule := lipgloss.NewStyle().Foreground(t.Dim).Render(strings.Repeat("─", inner))
+	rule := lipgloss.NewStyle().Foreground(t.Dim).Render(strings.Repeat("─", lipgloss.Width(body)))
 
-	content := strings.Join([]string{header, "", body, rule, foot}, "\n")
-	box := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(t.Accent).
-		Padding(0, 1).
-		Render(content)
+	const subtitle = "every key in the control room"
+	box := renderBox("help", subtitle, " esc close ", strings.Join([]string{body, rule, foot}, "\n"))
 	if lipgloss.Width(box) >= width {
 		// narrow terminal: stack the two columns
-		body = cols[0] + "\n\n" + cols[1]
-		content = strings.Join([]string{header, "", body, foot}, "\n")
-		box = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(t.Accent).Padding(0, 1).Render(content)
+		box = renderBox("help", subtitle, " esc close ", strings.Join([]string{cols[0] + "\n\n" + cols[1], foot}, "\n"))
 	}
 	return box
 }
