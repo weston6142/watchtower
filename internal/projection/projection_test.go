@@ -164,3 +164,52 @@ func TestAbandonRemovesLaneEverywhere(t *testing.T) {
 		t.Fatalf("decisions survived abandon: %v", s.Decisions)
 	}
 }
+
+// A resumed lane has recovered from its kill; leaving Killed set keeps the
+// TUI's retry affordance armed for a stage that is running again.
+func TestResumeClearsKilled(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t"}))
+	s.Apply(ev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "execute"}))
+	s.Apply(ev(t, core.EvStageKilled, "GH-1", map[string]any{"stage": "execute"}))
+	if !s.Issues["GH-1"].Killed {
+		t.Fatal("expected Killed after stage_killed")
+	}
+
+	s.Apply(ev(t, core.EvIssueResumed, "GH-1", nil))
+	iv := s.Issues["GH-1"]
+	if iv.Killed {
+		t.Fatal("resume left Killed set")
+	}
+	if iv.Paused || iv.State != "running" {
+		t.Fatalf("resume state: paused=%v state=%q", iv.Paused, iv.State)
+	}
+}
+
+// The paused marker has to land on the stage the lane will resume into, not
+// the one that just finished — otherwise it collides with that stage's tick.
+func TestPausedEventAdvancesCurrentStage(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t"}))
+	s.Apply(ev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}))
+	s.Apply(ev(t, core.EvStageCompleted, "GH-1", map[string]any{"stage": "brainstorm"}))
+	s.Apply(ev(t, core.EvIssuePaused, "GH-1", map[string]any{"stage": "spec"}))
+	if got := s.Issues["GH-1"].CurrentStage; got != "spec" {
+		t.Fatalf("CurrentStage = %q, want spec", got)
+	}
+}
+
+// Events already in the store carry no payload; they must not blank the stage.
+func TestPausedEventWithoutStageLeavesCurrentStage(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t"}))
+	s.Apply(ev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}))
+	s.Apply(ev(t, core.EvIssuePaused, "GH-1", nil))
+	iv := s.Issues["GH-1"]
+	if iv.CurrentStage != "brainstorm" {
+		t.Fatalf("CurrentStage = %q, want brainstorm", iv.CurrentStage)
+	}
+	if !iv.Paused || iv.State != "paused" {
+		t.Fatalf("paused=%v state=%q", iv.Paused, iv.State)
+	}
+}

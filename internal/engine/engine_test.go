@@ -108,6 +108,39 @@ func TestYoloRunEscalatesOnlyGate(t *testing.T) {
 	}
 }
 
+// The pause gate parks a lane before a stage; the event has to name it so the
+// grid can mark one cell instead of the whole column.
+func TestPausedEventNamesUpcomingStage(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, _ := e.CreateIssue("p", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	if err := e.Pause(id); err != nil {
+		t.Fatal(err)
+	}
+	go e.StartIssue(context.Background(), id)
+	deadline := time.After(5 * time.Second)
+	for {
+		evs, _ := s.EventsSince(0)
+		for _, event := range evs {
+			if event.Type != core.EvIssuePaused {
+				continue
+			}
+			var p map[string]any
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["stage"] != "brainstorm" {
+				t.Fatalf("paused payload stage = %v, want brainstorm", p["stage"])
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("no issue_paused event")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func TestFailedAgentRetriesThenFails(t *testing.T) {
 	sc := scripts()
 	sc["execute/executor"] = runner.Script{Fail: true}

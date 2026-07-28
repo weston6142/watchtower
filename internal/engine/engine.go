@@ -763,7 +763,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 		gate := is.pauseGate
 		e.mu.Unlock()
 		if gate != nil {
-			e.emit(core.EvIssuePaused, is.id, nil)
+			e.emit(core.EvIssuePaused, is.id, map[string]string{"stage": st.Name})
 			select {
 			case <-gate:
 				e.emit(core.EvIssueResumed, is.id, nil)
