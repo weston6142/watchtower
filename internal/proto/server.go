@@ -192,7 +192,7 @@ func (sv *Server) exec(cmd Command) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		attempt, attemptOf, lastError, err := sv.st.LastStageEvents(cmd.IssueID)
+		_, attempt, attemptOf, lastError, err := sv.st.LastStageEvents(cmd.IssueID)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
