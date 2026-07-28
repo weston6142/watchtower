@@ -188,6 +188,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.ticks++
 		m.autoRetire(time.Now())
+		if m.currentMode() == "timeline" {
+			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
+		}
 		if m.client == nil {
 			return m, m.tick()
 		}
@@ -198,6 +201,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	case Msg:
 		m = m.applyEvents(msg.Events)
+		if m.currentMode() == "timeline" {
+			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
+		}
 		if m.currentMode() == "transcript" {
 			return m, tea.Batch(m.tick(), m.fetchTranscript())
 		}
@@ -437,6 +443,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.doorSel = 0
 			return m, m.fetchProposals()
 		case "e":
+			if m.Focus.Issue == "" {
+				m.Err = msgNoLaneFocused
+				return m, nil
+			}
 			m.modes = append(m.modes, "timeline")
 			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
 			return m, nil

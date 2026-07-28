@@ -194,6 +194,32 @@ func TestTranscriptKeyOpensDoorWhenFocused(t *testing.T) {
 	}
 }
 
+func TestTimelineRequiresFocus(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm", "spec"})
+	m.Focus = Focus{}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	nm := next.(Model)
+	if nm.currentMode() == "timeline" {
+		t.Fatal("timeline opened with no lane focused")
+	}
+	if nm.Err != msgNoLaneFocused {
+		t.Fatalf("Err = %q, want no-lane message", nm.Err)
+	}
+}
+
+func TestTimelineRefreshesOnEvents(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm", "plan"})
+	m.Focus.Issue = "GH-1"
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	nm := next.(Model)
+	ev := mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "plan"})
+	next, _ = nm.Update(Msg{Events: []core.Event{ev}})
+	nm = next.(Model)
+	if len(nm.doorLines) == 0 || !strings.Contains(nm.doorLines[len(nm.doorLines)-1], "plan started") {
+		t.Fatalf("timeline did not pick up new event: %v", nm.doorLines)
+	}
+}
+
 func TestWarRoomKeyToggles(t *testing.T) {
 	m := NewModel(nil, []string{"brainstorm", "spec"})
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
