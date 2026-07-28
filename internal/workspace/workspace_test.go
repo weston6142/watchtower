@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +45,38 @@ func TestGitWorktreeAcquireRelease(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("worktree not removed")
+	}
+}
+
+func TestTreehouseAcquireChecksOutBranch(t *testing.T) {
+	repo := initRepo(t)
+	wt := filepath.Join(t.TempDir(), "leased")
+	head, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("git", "-C", repo, "worktree", "add", "--detach", wt, strings.TrimSpace(string(head))).CombinedOutput()
+	if err != nil {
+		t.Fatalf("worktree add: %v %s", err, out)
+	}
+
+	binDir := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = get ]; then echo " + wt + "; fi\n"
+	if err := os.WriteFile(filepath.Join(binDir, "treehouse"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	p := Treehouse{Repo: repo}
+	path, _, err := p.Acquire("GH-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(branch)); got != "issue/GH-7" {
+		t.Fatalf("worktree on %q, want issue/GH-7", got)
 	}
 }
