@@ -1,0 +1,35 @@
+name: default
+stages:
+  - name: brainstorm
+    agents: [{package: brainstorm}]
+    gate: decision_queue
+    artifacts: [brainstorm.md]
+  - name: spec
+    agents: [{package: spec-writer}]
+    gate: approve_artifact
+    artifacts: [spec.md]
+  - name: plan
+    agents: [{package: planner}]
+    gate: approve_artifact
+    artifacts: [plan.md, touchset.json]
+  - name: execute
+    agents: [{package: executor}]
+    workspace: worktree
+    gate: auto
+    heavy_slot: true
+    retries: 1
+    artifacts: []
+  - name: review
+    agents: [{package: clean-code-reviewer}, {package: reviewer}, {package: doc-writer}]
+    parallel: true
+    completion: all
+    workspace: worktree
+    gate: auto
+    heavy_slot: true
+    artifacts: []
+  - name: merge
+    agents: [{package: reviewer}]
+    workspace: readonly
+    merge_barrier: true
+    gate: approve_artifact
+    artifacts: [merge-report.md]
