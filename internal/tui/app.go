@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/priority"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/store"
@@ -391,10 +391,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.Err = "title is required"
 					return m, nil
 				}
-				if _, err := modalPriority(*m.modal); err != nil {
-					m.Err = "priority must be a number"
-					return m, nil
-				}
 				if m.client == nil {
 					m.modal = nil
 					return m, nil
@@ -408,6 +404,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.createIssue(*m.modal)
 				}
 			default:
+				// h/l cycle the priority chooser, but only while it is focused:
+				// with the title focused, typing "hello" must still insert h
+				// and l. left/right are handled here too — the arrow→vim
+				// aliasing below runs after this branch returns, so it never
+				// reaches the cycler.
+				if m.modal.Field == priorityField {
+					switch key {
+					case "h", "left":
+						m.modal.Priority = priority.Cycle(m.modal.Priority, -1)
+						return m, nil
+					case "l", "right":
+						m.modal.Priority = priority.Cycle(m.modal.Priority, 1)
+						return m, nil
+					}
+				}
 				updated := m.modal.input(key)
 				m.modal = &updated
 			}
@@ -449,12 +460,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.backlog.Sel < len(entries) {
 					iv := entries[m.backlog.Sel]
 					m.Err = ""
-					// Clamp on open: the CLI's -priority takes any int, and the
-					// modal can only show four. Clamping here keeps the field
-					// honest — what it displays is what saving writes back.
+					// The stored int is shown as-is, even when it falls outside
+					// the named levels: renumbering an issue just because
+					// someone opened it would lose data silently. The first
+					// h/l moves it into the set.
 					m.modal = &modalState{EditID: iv.ID, Title: iv.Title, Body: iv.Body,
-						FlowName: iv.Flow, Preset: iv.Preset,
-						Priority: strconv.Itoa(clampPriority(iv.Priority))}
+						FlowName: iv.Flow, Preset: iv.Preset, Priority: iv.Priority}
 					m.backlog = nil
 				}
 			case "l":
@@ -810,8 +821,7 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 	}
 	client := m.client
 	return func() tea.Msg {
-		priority, _ := modalPriority(modal)
-		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title, Body: modal.Body, Flow: flowName, Preset: preset, Priority: priority})
+		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title, Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority})
 		if err != nil {
 			return createIssueMsg{err: err}
 		}
@@ -827,15 +837,6 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 		}
 		return createIssueMsg{response: r}
 	}
-}
-
-// modalPriority parses the modal's priority text; empty means 0.
-func modalPriority(modal modalState) (int, error) {
-	value := strings.TrimSpace(modal.Priority)
-	if value == "" {
-		return 0, nil
-	}
-	return strconv.Atoi(value)
 }
 
 func (m Model) draftIssue(modal modalState) tea.Cmd {
@@ -859,11 +860,10 @@ func (m Model) modalCommand(modal modalState, op, issueID string) tea.Cmd {
 	if preset == "" {
 		preset = "regular"
 	}
-	priority, _ := modalPriority(modal)
 	client := m.client
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: op, IssueID: issueID, Title: modal.Title,
-			Body: modal.Body, Flow: flowName, Preset: preset, Priority: priority})
+			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority})
 		return createIssueMsg{response: r, err: err}
 	}
 }

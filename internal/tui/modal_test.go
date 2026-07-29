@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+	"github.com/weston6142/watchtower/internal/projection"
 )
 
 func TestModalTyping(t *testing.T) {
@@ -56,45 +57,39 @@ func TestModalPriorityField(t *testing.T) {
 	}
 }
 
-// Priority is a fixed set, so the field is a selector: h/l pick an option,
-// clamped at both ends, and stray text can never land a bad value in it.
-func TestModalPriorityIsSelector(t *testing.T) {
-	m := modalState{Field: priorityField}
-	for _, key := range []string{"7", "x", "backspace"} {
-		m = m.input(key)
-		if m.Priority != "" {
-			t.Fatalf("input(%q) leaked into priority: %q", key, m.Priority)
-		}
-	}
-	m = m.input("l")
-	if m.Priority != "1" {
-		t.Fatalf("after l: Priority = %q, want 1", m.Priority)
-	}
-	for i := 0; i < 5; i++ {
-		m = m.input("right")
-	}
-	if m.Priority != "3" {
-		t.Fatalf("clamp high: Priority = %q, want 3", m.Priority)
-	}
-	m = m.input("h")
-	if m.Priority != "2" {
-		t.Fatalf("after h: Priority = %q, want 2", m.Priority)
-	}
-	for i := 0; i < 5; i++ {
-		m = m.input("left")
-	}
-	if m.Priority != "0" {
-		t.Fatalf("clamp low: Priority = %q, want 0", m.Priority)
-	}
-}
-
-func TestRenderModalShowsPriorityOptions(t *testing.T) {
+// The field shows the level name, not a number, and advertises the adjust keys
+// so the option set is not something the operator has to guess.
+func TestRenderModalShowsPriorityLevel(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	out := ansi.Strip(renderModal(modalState{Field: priorityField, Priority: "2"}, 80))
-	for _, want := range []string{"p0", "p1", "p2", "p3", "h/l"} {
+	out := ansi.Strip(renderModal(modalState{Field: priorityField, Priority: 2}, 80))
+	for _, want := range []string{"urgent", "h/l", "adjust", "\u25c2"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+// An out-of-set priority renders as its number, and the padding keeps the title
+// column fixed — padCell truncates, so the label must be padded before styling.
+func TestBacklogRendersOutOfSetPriority(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	row := func(p int) string {
+		out := ansi.Strip(renderBacklog([]*projection.IssueView{
+			{ID: "GH-9", Title: "stale", Priority: p}}, 0, 80))
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "GH-9") {
+				return line
+			}
+		}
+		t.Fatalf("no GH-9 row in:\n%s", out)
+		return ""
+	}
+	odd := row(5)
+	if !strings.Contains(odd, "5") || strings.Contains(odd, "p5") {
+		t.Fatalf("out-of-set priority not shown bare: %q", odd)
+	}
+	if got, want := strings.Index(odd, "stale"), strings.Index(row(0), "stale"); got != want {
+		t.Fatalf("title column moved: %d vs %d\n%q\n%q", got, want, odd, row(0))
 	}
 }
 

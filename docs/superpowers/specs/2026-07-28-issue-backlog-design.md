@@ -67,7 +67,7 @@ a pure client.
 - Ops: `draft_issue`, `update_issue`, `launch_issue` alongside the existing
   verbs. `abandon_issue` already exists.
 - CLI: `watchtower new --draft …` (same flags as `new`), `watchtower backlog`
-  (list drafts: id, priority, flow, title), `watchtower launch <id>`,
+  (list drafts: id, priority level name, flow, title), `watchtower launch <id>`,
   `watchtower abandon <id>` (existing).
 
 ### TUI
@@ -77,7 +77,8 @@ a pure client.
   hint line.
 - **Backlog view:** a new key on the tower (`b`) opens a centered modal-style
   box styled like the new-issue modal (same border/title chrome as
-  `renderModal`), listing drafts by priority with cursor rows. Keys inside:
+  `renderModal`), listing drafts by priority — shown as the level name, not a
+  number — with cursor rows. Keys inside:
   - `enter` — edit: reopen the same modal pre-filled; Enter re-saves the
     draft (it does NOT start the lane from the edit context — the hint line
     says so), `ctrl+s` also saves.
@@ -90,7 +91,12 @@ a pure client.
 - No hard delete or purge of rows; abandon is the removal path.
 - No import from GitHub/Linear (separate future feature).
 - No editing of issues after launch.
-- No reordering UI beyond the priority field.
+- No reordering UI beyond the priority field. Priority persists as an `int`
+  everywhere (store, proto, projection, both sorts); the names are a render
+  concern only, with `low/normal/high/urgent` = `-1/0/1/2`. The modal's priority
+  field is a chooser over those four, so an unnamed value can only arrive from
+  `watchtower new -priority` or a legacy row — it is rendered as its number,
+  never silently renumbered.
 
 ## Testing
 
