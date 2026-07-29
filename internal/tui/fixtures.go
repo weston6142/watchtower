@@ -136,7 +136,7 @@ func FixtureModel(flowName string, width, height int) Model {
 		m.modes = []string{"tray"}
 		m.proposals = fixtureProposals()
 	case "modal":
-		m.modal = &modalState{Title: "Wire importer smoke test into CI", Field: 0}
+		m.modal = &modalState{Title: "Wire importer smoke test into CI", Field: 0, Priority: "2"}
 	case "backlog":
 		applyBacklogDrafts(m.State)
 		m.backlog = &backlogState{}

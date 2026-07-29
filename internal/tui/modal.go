@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -22,6 +23,18 @@ type modalState struct {
 }
 
 func (m modalState) input(key string) modalState {
+	if m.Field == priorityField && key != "tab" {
+		// Priority is a fixed set, so the field is a selector, not an input:
+		// h/l walk the options and everything else is dropped, which is how a
+		// bad priority becomes unreachable rather than merely rejected.
+		switch key {
+		case "h", "left":
+			m.Priority = strconv.Itoa(max(priorityIndex(m.Priority)-1, 0))
+		case "l", "right":
+			m.Priority = strconv.Itoa(min(priorityIndex(m.Priority)+1, len(priorityOptions)-1))
+		}
+		return m
+	}
 	switch key {
 	case "backspace":
 		value := m.fieldValue()
@@ -114,14 +127,58 @@ func renderModal(m modalState, width int) string {
 		modalField(m.Field == 1, "body", m.Body, false),
 		modalField(m.Field == 2, "flow", flowName, false),
 		modalField(m.Field == 3, "preset", preset, false),
-		modalField(m.Field == 4, "priority", m.Priority, false),
+		modalSelectField(m.Field == priorityField, "priority", priorityOptions, priorityIndex(m.Priority)),
 		"",
-		keyChip("tab") + dim.Render(" next field  ") + submit,
+		keyChip("tab") + dim.Render(" next field  ") + keyChip("h/l") + dim.Render(" priority  ") + submit,
 	}
 	return renderBox(boxTitle, "", " esc cancel ", boundedLines(lines, max(1, width-6)))
 }
 
 const modalFieldWidth = 44
+
+// priorityField is the modal's priority slot; it is a selector, not an input.
+const priorityField = 4
+
+// priorityOptions wears the backlog's vocabulary (renderBacklog prints p%d) so
+// the field and the list it feeds read as the same scale. Higher is more
+// urgent — the backlog and the slot pool both sort descending.
+var priorityOptions = []string{"p0", "p1", "p2", "p3"}
+
+// priorityIndex maps the stored priority text onto an option, clamping so a
+// value filed before this field was constrained still renders.
+func priorityIndex(value string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return min(n, len(priorityOptions)-1)
+}
+
+// modalSelectField renders a fixed-choice field: every option is on screen at
+// once, the current one lit, so the operator never has to guess the set.
+func modalSelectField(selected bool, name string, options []string, index int) string {
+	t := activeTheme
+	labelLine := lipgloss.NewStyle().Foreground(t.Dim).Render(strings.ToUpper(name))
+	border := t.Dimmer
+	if selected {
+		border = t.Accent
+	}
+	var body strings.Builder
+	for i, option := range options {
+		style := lipgloss.NewStyle().Foreground(t.Dimmer)
+		switch {
+		case i == index && selected:
+			style = lipgloss.NewStyle().Foreground(t.Bg0).Background(t.Accent).Bold(true)
+		case i == index:
+			style = lipgloss.NewStyle().Foreground(t.Structure)
+		}
+		body.WriteString(style.Render(" " + option + " "))
+	}
+	field := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(modalFieldWidth).Render(body.String())
+	return labelLine + "\n" + field
+}
 
 // modalField renders a labelled input: dim uppercase label over a bordered
 // value box; the active field gets an accent border and a block caret.
