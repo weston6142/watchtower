@@ -1,25 +1,28 @@
-Priority is not a text field anywhere in the TUI, and the number does not mean
-what the `p0`-is-hottest convention suggests.
+Priority is not a text field anywhere in the TUI, and the stored int is not what
+the UI shows.
 
 - **Higher number = more urgent.** Both consumers sort *descending*: the slot
   queue (`internal/slots/slots.go`, ties broken by arrival order) and the
-  backlog list (`internal/tui/app.go`, ties broken by id). So `p3` outranks
-  `p0` — the inverse of the usual industry reading of those labels.
-- **The modal's priority slot is a selector, not an input.** In
-  `handleModalKey`, the priority field intercepts every key except `tab`: `h`
-  /`left` and `l`/`right` walk the options and clamp at the ends, and all other
-  keystrokes are *dropped* rather than rejected. A bad priority is unreachable,
-  not validated — don't add validation for one, and don't assume typing digits
-  into that field does anything.
-- **Only `p0`–`p3` are reachable in the TUI**, but the wire and CLI are wider:
-  `Command.Priority` and `watchtower`'s `-priority` flag take any int, and store rows
-  hold it verbatim. Tests and fixtures elsewhere legitimately use values like
-  `5` and `9`.
-- **Opening the edit modal clamps silently.** `m.modal` is built with
-  `priorityIndex(iv.Priority)`, so a draft filed at prio 9 shows `p3` and saves
-  back as `3`. This is deliberate — the field displays what saving will
-  write — but it means the modal is a lossy round-trip for out-of-range
-  priorities filed by the CLI.
+  backlog list (`internal/tui/app.go`, ties broken by id).
+- **The vocabulary lives in `internal/priority`.** Four named levels,
+  `low/normal/high/urgent` = `-1/0/1/2`, shared by the TUI and the CLI backlog
+  listing so there is one definition rather than two. `normal` is anchored at
+  `0` so rows stored at the old default read correctly and the CLI's
+  `-priority` default still agrees with the modal default.
+- **Nothing persists a name.** `store.IssueRow`, `proto.Command`, and
+  `projection.IssueView` all keep a plain `int`; the names are a render concern.
+- **The modal's priority slot is a chooser, not an input.** `h`/`left` and
+  `l`/`right` cycle it (wrapping, like the lever editor's `◂ value ▸`), and it
+  has no case in `setFieldValue`/`fieldValue` at all — backspace and rune input
+  physically cannot reach it. A bad priority is unreachable, not validated, so
+  don't add validation for one. The cycling lives in the key router and is gated
+  on the focused field, because `h` and `l` are ordinary letters everywhere else.
+- **Out-of-set ints are rendered, never renumbered.** `watchtower new -priority
+  42` and legacy rows survive: the modal, the backlog, and the CLI listing all
+  show `42`, and only a deliberate `h`/`l` moves it — onto the nearest named
+  level, never back to the raw number. Losing the odd value takes a keypress.
+- **Consequence, accepted:** a row stored above `2` outranks every `urgent`
+  issue in both sorts until someone opens it and cycles its priority.
 
 See also [[lane-ops-and-issue-states]] for the other TUI-guards-what-the-daemon
 allows split; this is the same shape (the daemon still accepts any int).
