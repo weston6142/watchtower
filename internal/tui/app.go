@@ -79,15 +79,11 @@ type Model struct {
 	leverEditor      *leverEditorState
 	wantLeverEditor  bool
 	setup            *setupState
-	// wantSetup records that f was accepted. Unlike wantLeverEditor it gates
-	// nothing — setupMsg has a single producer, so there is no second response
-	// to disambiguate — but with no daemon attached the fetch is a no-op and
-	// this is the only sign the grid handled the key rather than a door.
-	wantSetup     bool
-	aliases       map[string]string
-	reducedMotion bool
-	herdrReporter overviewReporter
-	ticks         int
+	wantSetup        bool
+	aliases          map[string]string
+	reducedMotion    bool
+	herdrReporter    overviewReporter
+	ticks            int
 }
 
 type Msg struct{ Events []core.Event }
@@ -850,6 +846,11 @@ func (m *Model) openLeverEditor(issueID string) tea.Cmd {
 // openSetup fetches the focused lane's setup outline, or the repo default when
 // nothing is focused. Same fetch-then-open shape as the lever editor: the
 // panel opens when the response lands, never before.
+//
+// wantSetup records that f was accepted. Unlike wantLeverEditor it gates
+// nothing — setupMsg has a single producer, so there is no second response to
+// disambiguate — but with no daemon attached the fetch below is a no-op, and
+// the flag is the only sign the grid handled the key rather than a door.
 func (m *Model) openSetup() tea.Cmd {
 	m.wantSetup = true
 	if m.client == nil {
