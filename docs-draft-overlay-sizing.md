@@ -17,13 +17,15 @@ way inherits the three constraints below.
   that constructs a `Model` directly. A height-aware overlay needs a fallback for
   that case, not a division by zero or a one-row box.
 
-Consequence for tests: **the backlog goldens cannot catch a height regression.**
-`TestSnapshots` renders at fixed sizes (200x50 and 100x40), and the backlog
-fixture holds few enough drafts that the panes stay content-sized at both — so
-`backlog-wide.golden` and `backlog-narrow.golden` are byte-identical whether the
-height argument arrives or is dropped on the floor. Height plumbing needs a
-separate `View()`-level assertion, which is what
-`TestViewPlumbsHeightIntoBacklog` is; deleting it as redundant with the goldens
-would leave the wiring untested. Width does move the goldens, so regenerate with
-`-update` deliberately and read the diff — the same discipline the help goldens
-need in adding-an-event.
+Consequence for tests: **a golden only catches a height regression if its
+fixture is deeper than the terminal.** `TestSnapshots` renders at fixed sizes
+(200x50 and 100x40), and the two-draft `backlog` fixture stays content-sized at
+both — so `backlog-wide.golden` and `backlog-narrow.golden` are byte-identical
+whether the height argument arrives or is dropped on the floor. The
+`backlog-long` fixture (36 drafts) does clip at 40 rows, so its narrow golden
+moves with the height; keep both kinds. Height plumbing still wants the
+separate `View()`-level assertion that `TestViewPlumbsHeightIntoBacklog` makes,
+because a golden proves the number reached the sizing arithmetic, not that
+`View()` read it from the model. Width moves every backlog golden, so
+regenerate with `-update` deliberately and read the diff — the same discipline
+the help goldens need in adding-an-event.
