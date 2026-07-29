@@ -75,7 +75,7 @@ func TestBacklogRendersOutOfSetPriority(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	row := func(p int) string {
 		out := ansi.Strip(renderBacklog([]*projection.IssueView{
-			{ID: "GH-9", Title: "stale", Priority: p}}, 0, 80))
+			{ID: "GH-9", Title: "stale", Priority: p}}, 0, 80, 40))
 		for _, line := range strings.Split(out, "\n") {
 			if strings.Contains(line, "GH-9") {
 				return line
