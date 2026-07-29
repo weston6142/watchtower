@@ -311,3 +311,54 @@ func copyFile(src, dst string) error {
 	}
 	return out.Close()
 }
+
+// ResolveEntry resolves one field entry on the client, which is the only side
+// that knows the user's cwd and home. An entry that exactly names an
+// attachment already on the issue and holds no separator passes through
+// verbatim — that is the retain signal, and it is why prefilling the edit modal
+// with stored names makes "retain everything" the default. Consequence worth
+// knowing: with app.log already attached, typing app.log retains it rather than
+// re-reading ./app.log. An empty entry resolves to "".
+func ResolveEntry(entry string, existing []string, cwd, home string) (string, error) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return "", nil
+	}
+	if !hasSeparator(entry) {
+		for _, name := range existing {
+			if name == entry {
+				return entry, nil
+			}
+		}
+	}
+	if home != "" {
+		if entry == "~" {
+			entry = home
+		} else if strings.HasPrefix(entry, "~/") {
+			entry = filepath.Join(home, entry[2:])
+		}
+	}
+	if filepath.IsAbs(entry) {
+		return filepath.Clean(entry), nil
+	}
+	if cwd == "" {
+		return "", fmt.Errorf("attachment %q: cannot resolve a relative path without a working directory", entry)
+	}
+	return filepath.Join(cwd, entry), nil
+}
+
+// Resolve splits a comma-separated field value and resolves each entry,
+// dropping empties. Comma, not space: paths may contain spaces.
+func Resolve(field string, existing []string, cwd, home string) ([]string, error) {
+	var out []string
+	for _, entry := range strings.Split(field, ",") {
+		resolved, err := ResolveEntry(entry, existing, cwd, home)
+		if err != nil {
+			return nil, err
+		}
+		if resolved != "" {
+			out = append(out, resolved)
+		}
+	}
+	return out, nil
+}

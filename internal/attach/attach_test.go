@@ -267,3 +267,47 @@ func TestRowsNumbersOrdinals(t *testing.T) {
 		t.Fatalf("rows = %+v", rows)
 	}
 }
+
+func TestResolveEntry(t *testing.T) {
+	const cwd, home = "/work/repo", "/Users/me"
+	existing := []string{"app.log"}
+	for _, tc := range []struct{ name, entry, want string }{
+		{"retain by name wins over relative read", "app.log", "app.log"},
+		{"trimmed retain", "  app.log  ", "app.log"},
+		{"tilde expands", "~/logs/a.log", "/Users/me/logs/a.log"},
+		{"bare tilde", "~", "/Users/me"},
+		{"relative becomes absolute", "logs/a.log", "/work/repo/logs/a.log"},
+		{"absolute is cleaned", "/tmp/./a.log", "/tmp/a.log"},
+		{"name with separator is a path, not a retain", "./app.log", "/work/repo/app.log"},
+		{"empty", "   ", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveEntry(tc.entry, existing, cwd, home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("ResolveEntry(%q) = %q, want %q", tc.entry, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveSplitsOnCommaAndSkipsEmpties(t *testing.T) {
+	got, err := Resolve("app.log, ~/b.log, , logs/c.log", []string{"app.log"}, "/work/repo", "/Users/me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"app.log", "/Users/me/b.log", "/work/repo/logs/c.log"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+	if out, err := Resolve("", nil, "/work/repo", "/Users/me"); err != nil || len(out) != 0 {
+		t.Fatalf("empty field: %v %v", out, err)
+	}
+}
