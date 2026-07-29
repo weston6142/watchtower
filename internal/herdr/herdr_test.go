@@ -40,29 +40,33 @@ func startFakeHerdr(t *testing.T) (*fakeHerdr, string) {
 		t.Fatal(err)
 	}
 	f := &fakeHerdr{ln: ln}
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				sc := bufio.NewScanner(c)
-				for sc.Scan() {
-					var req map[string]any
-					if json.Unmarshal(sc.Bytes(), &req) == nil {
-						f.mu.Lock()
-						f.reqs = append(f.reqs, req)
-						f.mu.Unlock()
-					}
-					c.Write([]byte(`{"ok":true}` + "\n"))
-				}
-			}(conn)
-		}
-	}()
+	go f.serve()
 	t.Cleanup(func() { ln.Close() })
 	return f, path
+}
+
+// serve accepts connections until the listener closes, recording each
+// request and replying with an ok line.
+func (f *fakeHerdr) serve() {
+	for {
+		conn, err := f.ln.Accept()
+		if err != nil {
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			sc := bufio.NewScanner(c)
+			for sc.Scan() {
+				var req map[string]any
+				if json.Unmarshal(sc.Bytes(), &req) == nil {
+					f.mu.Lock()
+					f.reqs = append(f.reqs, req)
+					f.mu.Unlock()
+				}
+				c.Write([]byte(`{"ok":true}` + "\n"))
+			}
+		}(conn)
+	}
 }
 
 func (f *fakeHerdr) requests() []map[string]any {
@@ -168,27 +172,7 @@ func TestRetriesAfterFailedWrite(t *testing.T) {
 	}
 	t.Cleanup(func() { ln.Close() })
 	f := &fakeHerdr{ln: ln}
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				sc := bufio.NewScanner(c)
-				for sc.Scan() {
-					var req map[string]any
-					if json.Unmarshal(sc.Bytes(), &req) == nil {
-						f.mu.Lock()
-						f.reqs = append(f.reqs, req)
-						f.mu.Unlock()
-					}
-					c.Write([]byte(`{"ok":true}` + "\n"))
-				}
-			}(conn)
-		}
-	}()
+	go f.serve()
 
 	r.Report(1, 0, 0)
 	deadline := time.Now().Add(2 * time.Second)
