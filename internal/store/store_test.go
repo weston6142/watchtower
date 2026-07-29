@@ -172,3 +172,88 @@ func TestIssueLeversPersistWithIssue(t *testing.T) {
 		t.Fatalf("levers were not persisted: %+v", issues)
 	}
 }
+
+func attachmentFixture(issueID string) []AttachmentRow {
+	now := time.Unix(1700000000, 0).UTC()
+	return []AttachmentRow{
+		{IssueID: issueID, Name: "app.log", Size: 2048, SourcePath: "/tmp/app.log", AddedAt: now, Ord: 0},
+		{IssueID: issueID, Name: "shot.png", Size: 4096, SourcePath: "/tmp/shot.png", AddedAt: now, Ord: 1},
+	}
+}
+
+func TestAttachmentsRoundTrip(t *testing.T) {
+	s, err := Open("file:attach1?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := attachmentFixture("GH-1")
+	if err := s.ReplaceAttachments("GH-1", want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Attachments("GH-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows", len(got))
+	}
+	for i, row := range got {
+		if row.Name != want[i].Name || row.Size != want[i].Size ||
+			row.SourcePath != want[i].SourcePath || row.Ord != i ||
+			!row.AddedAt.Equal(want[i].AddedAt) {
+			t.Fatalf("row %d = %+v, want %+v", i, row, want[i])
+		}
+	}
+}
+
+func TestReplaceAttachmentsIsFullReplacement(t *testing.T) {
+	s, _ := Open("file:attach2?mode=memory&cache=shared")
+	defer s.Close()
+	if err := s.ReplaceAttachments("GH-1", attachmentFixture("GH-1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReplaceAttachments("GH-1", attachmentFixture("GH-1")[:1]); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Attachments("GH-1")
+	if len(got) != 1 || got[0].Name != "app.log" {
+		t.Fatalf("stale rows survived replacement: %+v", got)
+	}
+}
+
+// UpsertIssue overwrites every column of issues; attachments live in their own
+// table precisely so they stay out of that blast radius.
+func TestUpsertIssueLeavesAttachments(t *testing.T) {
+	s, _ := Open("file:attach3?mode=memory&cache=shared")
+	defer s.Close()
+	if err := s.ReplaceAttachments("GH-1", attachmentFixture("GH-1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertIssue(IssueRow{ID: "GH-1", Title: "t", State: "backlog", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Attachments("GH-1"); len(got) != 2 {
+		t.Fatalf("UpsertIssue disturbed attachments: %+v", got)
+	}
+}
+
+func TestDeleteAttachments(t *testing.T) {
+	s, _ := Open("file:attach4?mode=memory&cache=shared")
+	defer s.Close()
+	if err := s.ReplaceAttachments("GH-1", attachmentFixture("GH-1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReplaceAttachments("GH-2", attachmentFixture("GH-2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteAttachments("GH-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Attachments("GH-1"); len(got) != 0 {
+		t.Fatalf("rows survived delete: %+v", got)
+	}
+	if got, _ := s.Attachments("GH-2"); len(got) != 2 {
+		t.Fatalf("delete hit the wrong issue: %+v", got)
+	}
+}
