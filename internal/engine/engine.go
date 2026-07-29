@@ -345,7 +345,8 @@ func (e *Engine) markDecisionsKilled(ids []int64) {
 // Abandon removes an issue for good: any running stage is cancelled, its
 // pending decisions are closed, and the lane disappears from every surface
 // via EvIssueAbandoned. Abandon is a state, not a purge — rows, events, and
-// artifacts stay in the store.
+// artifacts stay in the store. Attachments are the one exception: their bytes
+// and rows go, because nothing left on an abandoned lane reads them.
 func (e *Engine) Abandon(issueID string) error {
 	e.mu.Lock()
 	is, ok := e.issues[issueID]
