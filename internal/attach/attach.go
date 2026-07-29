@@ -25,7 +25,7 @@ const (
 	maxAttachments = 10
 	// dirName is the attachments directory, both canonical and per-stage.
 	dirName = "attachments"
-	// markerName is the empty file Guildhall writes into an attachments dir it
+	// markerName is the empty file watchtower writes into an attachments dir it
 	// created, so a repo's own attachments/ is never overwritten.
 	markerName = ".watchtower"
 )
@@ -227,7 +227,7 @@ func Materialize(dstDir, srcDir string, rows []store.AttachmentRow) error {
 	return nil
 }
 
-// claimDir makes dir Guildhall's or refuses loudly. A directory Guildhall
+// claimDir makes dir watchtower's or refuses loudly. A directory watchtower
 // created holds an empty marker file; a non-empty unmarked directory is the
 // repo's own, and overwriting a tracked attachments/app.log would be silent
 // data loss.
@@ -249,7 +249,7 @@ func claimDir(dir string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("%s already exists and is not Guildhall's — this repo uses its own "+
+	return fmt.Errorf("%s already exists and is not watchtower's — this repo uses its own "+
 		"attachments/ directory, so issue attachments cannot be used here", dir)
 }
 

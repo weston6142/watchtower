@@ -1273,7 +1273,7 @@ func TestMaterializeRefusesForeignAttachmentsDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = e.runStageOnce(context.Background(), is, worktreeStage(), 1, 1)
-	if err == nil || !strings.Contains(err.Error(), "is not Guildhall's") {
+	if err == nil || !strings.Contains(err.Error(), "is not watchtower's") {
 		t.Fatalf("stage did not refuse: %v", err)
 	}
 	if !strings.HasPrefix(err.Error(), "stage spec: ") {

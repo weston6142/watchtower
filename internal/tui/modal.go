@@ -62,7 +62,7 @@ func (m *modalState) setFieldValue(value string) {
 		m.FlowName = value
 	case 3:
 		m.Preset = value
-	case 4:
+	case attachField:
 		m.Attach = value
 	}
 }
@@ -77,7 +77,7 @@ func (m modalState) fieldValue() string {
 		return m.FlowName
 	case 3:
 		return m.Preset
-	case 4:
+	case attachField:
 		return m.Attach
 	default:
 		return ""

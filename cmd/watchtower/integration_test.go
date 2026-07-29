@@ -84,6 +84,19 @@ func lastLine(s string) string {
 	return lines[len(lines)-1]
 }
 
+// newRepo builds the binary, picks a data dir, and initializes one repo,
+// registering the cleanup that kills the daemons that repo's commands spawn.
+// Darwin limits Unix socket paths, hence the short TMPDIR.
+func newRepo(t *testing.T) (bin, base, repo string) {
+	t.Helper()
+	t.Setenv("TMPDIR", "/tmp")
+	bin = buildBinary(t)
+	base = t.TempDir()
+	repo = initRepo(t, bin, base)
+	t.Cleanup(func() { exec.Command("pkill", "-f", bin).Run() })
+	return bin, base, repo
+}
+
 // runErr is like run but expects failure and returns the combined output.
 func runErr(t *testing.T, bin, dir string, args ...string) string {
 	t.Helper()
@@ -97,11 +110,7 @@ func runErr(t *testing.T, bin, dir string, args ...string) string {
 }
 
 func TestNewWithAttachAndBody(t *testing.T) {
-	t.Setenv("TMPDIR", "/tmp")
-	bin := buildBinary(t)
-	base := t.TempDir()
-	repo := initRepo(t, bin, base)
-	t.Cleanup(func() { exec.Command("pkill", "-f", bin).Run() })
+	bin, base, repo := newRepo(t)
 
 	src := filepath.Join(t.TempDir(), "app.log")
 	if err := os.WriteFile(src, []byte("boom\n"), 0o644); err != nil {
@@ -133,11 +142,7 @@ func TestNewWithAttachAndBody(t *testing.T) {
 }
 
 func TestNewRefusesMissingAttachment(t *testing.T) {
-	t.Setenv("TMPDIR", "/tmp")
-	bin := buildBinary(t)
-	base := t.TempDir()
-	repo := initRepo(t, bin, base)
-	t.Cleanup(func() { exec.Command("pkill", "-f", bin).Run() })
+	bin, base, repo := newRepo(t)
 
 	out := runErr(t, bin, repo, "new", "--data", base, "--draft",
 		"--title", "bad", "--attach", "definitely-not-here.log")
@@ -152,11 +157,7 @@ func TestNewRefusesMissingAttachment(t *testing.T) {
 // The CLI forwarded no Body at all before this change, and no CLI output shows
 // one, so the proof is ISSUE.md: the file the stage agents actually read.
 func TestNewForwardsBodyIntoIssueMD(t *testing.T) {
-	t.Setenv("TMPDIR", "/tmp")
-	bin := buildBinary(t)
-	base := t.TempDir()
-	repo := initRepo(t, bin, base)
-	t.Cleanup(func() { exec.Command("pkill", "-f", bin).Run() })
+	bin, base, repo := newRepo(t)
 
 	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
 		"--title", "launched", "--body", "the body text")))

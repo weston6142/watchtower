@@ -208,7 +208,7 @@ func TestMaterializeRefusesForeignDirectory(t *testing.T) {
 	}
 	writeFile(t, foreign, "tracked.txt", 1) // the repo's own attachments/
 	err := Materialize(dst, src, []store.AttachmentRow{{Name: "app.log"}})
-	if err == nil || !strings.Contains(err.Error(), "is not Guildhall's") {
+	if err == nil || !strings.Contains(err.Error(), "is not watchtower's") {
 		t.Fatalf("foreign attachments/ not refused: %v", err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(foreign, "tracked.txt")); len(b) != 1 {
