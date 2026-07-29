@@ -59,7 +59,7 @@ func TestModalPriorityField(t *testing.T) {
 // Priority is a fixed set, so the field is a selector: h/l pick an option,
 // clamped at both ends, and stray text can never land a bad value in it.
 func TestModalPriorityIsSelector(t *testing.T) {
-	m := modalState{Field: 4}
+	m := modalState{Field: priorityField}
 	for _, key := range []string{"7", "x", "backspace"} {
 		m = m.input(key)
 		if m.Priority != "" {
@@ -90,7 +90,7 @@ func TestModalPriorityIsSelector(t *testing.T) {
 
 func TestRenderModalShowsPriorityOptions(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	out := ansi.Strip(renderModal(modalState{Field: 4, Priority: "2"}, 80))
+	out := ansi.Strip(renderModal(modalState{Field: priorityField, Priority: "2"}, 80))
 	for _, want := range []string{"p0", "p1", "p2", "p3", "h/l"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)

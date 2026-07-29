@@ -43,7 +43,7 @@ func (m modalState) input(key string) modalState {
 			m.setFieldValue(string(runes[:len(runes)-1]))
 		}
 	case "tab":
-		m.Field = (m.Field + 1) % 5
+		m.Field = (m.Field + 1) % modalFieldCount
 	default:
 		if key != "" && !strings.ContainsAny(key, "\n\r\t") {
 			m.setFieldValue(m.fieldValue() + key)
@@ -62,7 +62,7 @@ func (m *modalState) setFieldValue(value string) {
 		m.FlowName = value
 	case 3:
 		m.Preset = value
-	case 4:
+	case priorityField:
 		m.Priority = value
 	}
 }
@@ -77,7 +77,7 @@ func (m modalState) fieldValue() string {
 		return m.FlowName
 	case 3:
 		return m.Preset
-	case 4:
+	case priorityField:
 		return m.Priority
 	default:
 		return ""
@@ -137,21 +137,33 @@ func renderModal(m modalState, width int) string {
 const modalFieldWidth = 44
 
 // priorityField is the modal's priority slot; it is a selector, not an input.
-const priorityField = 4
+// It is the last field, so tab wraps after it.
+const (
+	priorityField   = 4
+	modalFieldCount = priorityField + 1
+)
 
 // priorityOptions wears the backlog's vocabulary (renderBacklog prints p%d) so
 // the field and the list it feeds read as the same scale. Higher is more
 // urgent — the backlog and the slot pool both sort descending.
 var priorityOptions = []string{"p0", "p1", "p2", "p3"}
 
-// priorityIndex maps the stored priority text onto an option, clamping so a
-// value filed before this field was constrained still renders.
-func priorityIndex(value string) int {
-	n, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil || n < 0 {
+// clampPriority folds any stored priority onto an option index, so a value
+// filed before this field was constrained still renders.
+func clampPriority(n int) int {
+	if n < 0 {
 		return 0
 	}
 	return min(n, len(priorityOptions)-1)
+}
+
+// priorityIndex maps the modal's priority text onto an option index.
+func priorityIndex(value string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0
+	}
+	return clampPriority(n)
 }
 
 // modalSelectField renders a fixed-choice field: every option is on screen at

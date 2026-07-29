@@ -454,7 +454,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// honest — what it displays is what saving writes back.
 					m.modal = &modalState{EditID: iv.ID, Title: iv.Title, Body: iv.Body,
 						FlowName: iv.Flow, Preset: iv.Preset,
-						Priority: strconv.Itoa(priorityIndex(strconv.Itoa(iv.Priority)))}
+						Priority: strconv.Itoa(clampPriority(iv.Priority))}
 					m.backlog = nil
 				}
 			case "l":
