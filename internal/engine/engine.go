@@ -715,9 +715,22 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return err
 	}
+	// Attachment state is not cached in issueState: querying it here is what
+	// lets Rehydrate stay untouched.
+	rows, err := e.cfg.Store.Attachments(is.id)
+	if err != nil {
+		return err
+	}
+	// Every stage, every run: a "none" stage's workdir already holds the files,
+	// a worktree stage's does not, and ISSUE.md must be true in both.
+	if err := attach.Materialize(workdir, e.issueDir(is.id), rows); err != nil {
+		return fmt.Errorf("stage %s: %w", st.Name, err)
+	}
 	// Materialize the issue for the agents: ISSUE.md is the contract for how
-	// a stage learns what it is working on.
+	// a stage learns what it is working on. The attachment list goes after the
+	// body and before project memory, adjacent to the issue it belongs to.
 	issueMD := fmt.Sprintf("# %s: %s\n\n%s\n", is.id, is.title, is.body)
+	issueMD += attach.Section(rows)
 	if e.cfg.Librarian != nil {
 		if mem, err := e.cfg.Librarian.Context(); err == nil && mem != "" {
 			issueMD += "\n# Project memory (curated by the Librarian)\n\n" + mem + "\n"

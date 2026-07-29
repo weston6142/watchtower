@@ -13,6 +13,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
@@ -1184,5 +1185,153 @@ func TestDraftIssueStoresAttachmentsWithoutAStageRun(t *testing.T) {
 	}
 	if rows, _ := s.Attachments(id); len(rows) != 1 {
 		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+// noneStage and worktreeStage are minimal stages that exercise the two
+// stageWorkdir branches without declaring artifacts.
+func noneStage() flow.Stage {
+	return flow.Stage{Name: "spec", Workspace: "none", Agents: []flow.AgentRef{{Package: "spec-writer"}}}
+}
+
+func worktreeStage() flow.Stage {
+	return flow.Stage{Name: "spec", Workspace: "worktree", Agents: []flow.AgentRef{{Package: "spec-writer"}}}
+}
+
+func TestAttachmentsMaterializeForNoneWorkspace(t *testing.T) {
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, err := e.CreateIssue("n", "body", "default", levers.Matrix{}, 0,
+		[]string{tempAttachment(t, "app.log", 3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	is := e.issues[id]
+	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(e.cfg.DataDir, id, "attachments")
+	if b, err := os.ReadFile(filepath.Join(dir, "app.log")); err != nil || len(b) != 3 {
+		t.Fatalf("attachment unreadable at the canonical path: %v %d", err, len(b))
+	}
+	// dst == src, so Materialize must not have written a marker: nothing was
+	// copied, because nothing needed copying.
+	if _, err := os.Stat(filepath.Join(dir, ".watchtower")); !os.IsNotExist(err) {
+		t.Fatalf("self-copy happened: %v", err)
+	}
+	md, err := os.ReadFile(filepath.Join(e.cfg.DataDir, id, "ISSUE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(md), "`attachments/app.log`") {
+		t.Fatalf("ISSUE.md does not name the attachment:\n%s", md)
+	}
+}
+
+// The regression that matters: a worktree stage must see the file too.
+func TestAttachmentsMaterializeIntoWorktree(t *testing.T) {
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, err := e.CreateIssue("w", "body", "default", levers.Matrix{}, 0,
+		[]string{tempAttachment(t, "app.log", 3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	is := e.issues[id]
+	// stageWorkdir returns is.wsPath for a non-"none" stage; assigning it
+	// directly exercises that branch without provisioning a git worktree.
+	is.wsPath = t.TempDir()
+	if err := e.runStageOnce(context.Background(), is, worktreeStage(), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(is.wsPath, "attachments", "app.log")); err != nil || len(b) != 3 {
+		t.Fatalf("worktree copy missing: %v %d", err, len(b))
+	}
+	if _, err := os.Stat(filepath.Join(e.cfg.DataDir, id, "attachments", "app.log")); err != nil {
+		t.Fatalf("canonical copy disturbed: %v", err)
+	}
+	md, _ := os.ReadFile(filepath.Join(is.wsPath, "ISSUE.md"))
+	if !strings.Contains(string(md), "`attachments/app.log`") {
+		t.Fatalf("worktree ISSUE.md does not name the attachment:\n%s", md)
+	}
+}
+
+// A repo with its own tracked attachments/ cannot use the feature, and it must
+// learn that as a loud refusal, never a silent overwrite.
+func TestMaterializeRefusesForeignAttachmentsDir(t *testing.T) {
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, err := e.CreateIssue("g", "body", "default", levers.Matrix{}, 0,
+		[]string{tempAttachment(t, "app.log", 3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	is := e.issues[id]
+	is.wsPath = t.TempDir()
+	foreign := filepath.Join(is.wsPath, "attachments")
+	if err := os.MkdirAll(foreign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foreign, "tracked.txt"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = e.runStageOnce(context.Background(), is, worktreeStage(), 1, 1)
+	if err == nil || !strings.Contains(err.Error(), "is not Guildhall's") {
+		t.Fatalf("stage did not refuse: %v", err)
+	}
+	if !strings.HasPrefix(err.Error(), "stage spec: ") {
+		t.Fatalf("refusal does not name the stage: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(foreign, "tracked.txt")); string(b) != "mine" {
+		t.Fatal("refusal was destructive")
+	}
+}
+
+// The attachment list stays next to the issue it belongs to: after the body,
+// before the Librarian's memory block.
+func TestIssueMDAttachmentSectionOrdering(t *testing.T) {
+	memory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(memory, "conventions.md"), []byte("use tabs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := newEngineCfg(t, &runner.FakeRunner{Scripts: scripts()}, func(cfg *Config) {
+		cfg.Librarian = &librarian.Librarian{MemoryDir: memory}
+	})
+	id, err := e.CreateIssue("o", "the body", "default", levers.Matrix{}, 0,
+		[]string{tempAttachment(t, "app.log", 3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	is := e.issues[id]
+	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	md, err := os.ReadFile(filepath.Join(e.cfg.DataDir, id, "ISSUE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(md)
+	body := strings.Index(text, "the body")
+	attachments := strings.Index(text, "# Attachments")
+	memoryHeading := strings.Index(text, "# Project memory")
+	if body < 0 || attachments < 0 || memoryHeading < 0 {
+		t.Fatalf("missing section:\n%s", text)
+	}
+	if !(body < attachments && attachments < memoryHeading) {
+		t.Fatalf("wrong order body=%d attachments=%d memory=%d:\n%s",
+			body, attachments, memoryHeading, text)
+	}
+}
+
+func TestIssueMDOmitsEmptyAttachmentSection(t *testing.T) {
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, err := e.CreateIssue("e", "body", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	is := e.issues[id]
+	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	md, _ := os.ReadFile(filepath.Join(e.cfg.DataDir, id, "ISSUE.md"))
+	if strings.Contains(string(md), "# Attachments") {
+		t.Fatalf("empty set produced a section:\n%s", md)
 	}
 }
