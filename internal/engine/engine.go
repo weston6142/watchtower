@@ -456,6 +456,42 @@ func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.
 	return nil
 }
 
+// LaunchIssue promotes a backlog draft into a running lane: the row flips to
+// running, the standard issue_created event fires (projection and steward
+// already treat it as the start of a lane), and the flow runs detached like
+// Resume — failures surface as stage_failed events, not in this response.
+func (e *Engine) LaunchIssue(id string) error {
+	e.mu.Lock()
+	is, ok := e.issues[id]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", id)
+	}
+	if !is.draft {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is not in the backlog", id)
+	}
+	if _, ok := e.cfg.Flows[is.flowName]; !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown flow %q", is.flowName)
+	}
+	is.draft = false
+	title, body, flowName, matrix, priority := is.title, is.body, is.flowName, is.matrix, is.priority
+	e.mu.Unlock()
+	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
+		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Levers: matrixStrings(matrix), Priority: priority,
+	}); err != nil {
+		e.mu.Lock()
+		is.draft = true
+		e.mu.Unlock()
+		return err
+	}
+	e.emit(core.EvIssueCreated, id, map[string]any{
+		"title": title, "flow": flowName, "body": body, "priority": priority})
+	go e.runAndRecord(context.Background(), is, 0)
+	return nil
+}
+
 func matrixStrings(m levers.Matrix) map[string]string {
 	values := make(map[string]string, len(m))
 	for stage, lever := range m {

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"testing"
+	"time"
 
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -71,6 +72,32 @@ func hasEvent(t *testing.T, st *store.Store, issueID string, typ core.EventType)
 		}
 	}
 	return false
+}
+
+func waitForEvent(t *testing.T, st *store.Store, issueID string, typ core.EventType) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hasEvent(t, st, issueID, typ) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("event %s for %s did not arrive", typ, issueID)
+}
+
+func useAutoLaunchFlow(e *Engine) {
+	e.cfg.Flows = map[string]flow.Flow{
+		"default": {
+			Name: "default",
+			Stages: []flow.Stage{{
+				Name:   "run",
+				Agents: []flow.AgentRef{{Package: "agent"}},
+				Gate:   flow.GateAuto,
+			}},
+		},
+	}
+	e.cfg.Runner = &runner.FakeRunner{Scripts: map[string]runner.Script{"run/agent": {}}}
 }
 
 func TestDraftIssueStaysInBacklog(t *testing.T) {
@@ -150,5 +177,32 @@ func TestRehydrateKeepsDraftsInert(t *testing.T) {
 	nid, _ := e2.CreateIssue("n", "", "default", levers.Matrix{}, 0)
 	if nid == id {
 		t.Fatal("id collision after rehydrate")
+	}
+}
+
+func TestLaunchIssueRunsDraft(t *testing.T) {
+	e, st := newTestEngine(t)
+	useAutoLaunchFlow(e)
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 1)
+	if err := e.LaunchIssue(id); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, st, id, core.EvIssueCompleted)
+	if !hasEvent(t, st, id, core.EvIssueCreated) {
+		t.Fatal("launch did not emit issue_created")
+	}
+	if err := e.UpdateIssue(id, "x", "", "default", "regular", levers.Matrix{}, 0); err == nil {
+		t.Fatal("update after launch succeeded")
+	}
+}
+
+func TestLaunchIssueRejectsNonDrafts(t *testing.T) {
+	e, _ := newTestEngine(t)
+	if err := e.LaunchIssue("GH-999"); err == nil {
+		t.Fatal("launched unknown issue")
+	}
+	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0)
+	if err := e.LaunchIssue(rid); err == nil {
+		t.Fatal("launched a non-draft issue")
 	}
 }
