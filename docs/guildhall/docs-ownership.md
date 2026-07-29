@@ -32,6 +32,7 @@ Where things live:
   instead. Plans cross-reference those exact paths, so they stay put; new specs
   go under `docs/superpowers/specs/`.
 
-`ISSUE.md` is how a stage learns what it is working on: issue header + body,
-then the injected project memory. Earlier stages' artifacts (`brainstorm.md`,
-`spec.md`, `plan.md`, …) sit alongside it in the same workdir.
+`ISSUE.md` is how a stage learns what it is working on, in three blocks: issue
+header + body, then the attachments section if the issue has any, then the
+injected project memory. Earlier stages' artifacts (`brainstorm.md`, `spec.md`,
+`plan.md`, …) sit alongside it in the same workdir.

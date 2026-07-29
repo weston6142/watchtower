@@ -21,7 +21,8 @@ Layout:
   rehydration.
 - `internal/flow/`, `internal/levers/` — flows-as-data (stages, completion
   rules) and the autonomy lever matrix, presets, and escalation routing.
-- `internal/store/` — SQLite issue rows + append-only event log.
+- `internal/store/` — SQLite issue rows, append-only event log, attachment
+  metadata.
 - `internal/steward/`, `internal/librarian/`, `internal/marshal/` — the three
   overlords (issue state, project memory, merge train), woken on events.
 - `internal/projection/` — event log → renderable `State`.
@@ -35,7 +36,9 @@ Layout:
 - `internal/archmap/` (repo paths → architecture areas), `internal/touchset/`
   (the file globs a plan expects to touch — the Marshal's overlap input),
   `internal/evidence/` (worktree diffs → `evidence.json` for gates),
-  `internal/transcript/` (bounded per-stage agent output for the TUI's doors).
+  `internal/transcript/` (bounded per-stage agent output for the TUI's doors),
+  `internal/attach/` (issue attachments end to end — resolution, validation,
+  storage, per-stage materialization; see issue-attachments).
 - `internal/pkgs/` (agent packages: `package.yaml` + `prompt.md`),
   `internal/repocfg/` (repo registry + per-repo config),
   `internal/scaffold/` (embedded defaults written by `watchtower init`).

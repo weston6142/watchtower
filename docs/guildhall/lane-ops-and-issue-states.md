@@ -17,7 +17,9 @@ Rules that hold across the daemon:
 - **Abandon is a state, not a purge.** `Engine.Abandon` cancels any running
   stage, closes pending decisions as `killed`, drops the issue from
   `e.issues`, and emits `issue_abandoned`. Issue rows, events, and artifacts
-  stay in the store. There is no undo and no UI to resurrect a lane.
+  stay in the store, so an abandoned lane is still inspectable. There is no undo
+  and no UI to resurrect a lane. **The one exception is attachments:** their
+  bytes and rows are deleted, best-effort — see issue-attachments.
 - **Worktree/workspace cleanup for abandoned issues is not implemented** — the
   same open TODO as rehydration. Don't assume a worktree was released.
 - **Kill is guarded in the TUI, not the daemon.** `x` only opens the confirm
