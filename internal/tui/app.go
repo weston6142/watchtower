@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,6 +74,7 @@ type Model struct {
 	retired          map[string]bool
 	shelfSel         int
 	modal            *modalState
+	backlog          *backlogState
 	confirm          *confirmState
 	leverEditor      *leverEditorState
 	wantLeverEditor  bool
@@ -137,6 +140,29 @@ type leverApplyMsg struct {
 type createIssueMsg struct {
 	response proto.Response
 	err      error
+}
+
+type backlogState struct{ Sel int }
+
+// backlogEntries returns drafts for display: highest priority first, id as
+// the tiebreak so the order is stable.
+func backlogEntries(s *projection.State) []*projection.IssueView {
+	if s == nil {
+		return nil
+	}
+	var entries []*projection.IssueView
+	for _, id := range s.Backlog {
+		if iv := s.Issues[id]; iv != nil {
+			entries = append(entries, iv)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Priority != entries[j].Priority {
+			return entries[i].Priority > entries[j].Priority
+		}
+		return entries[i].ID < entries[j].ID
+	})
+	return entries
 }
 
 func NewModel(client *proto.Client, stages []string) Model {
@@ -311,6 +337,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Err = msg.response.Error
 			return m, nil
 		}
+		if m.modal != nil && m.modal.EditID != "" {
+			m.backlog = &backlogState{}
+		}
 		m.modal = nil
 		return m, nil
 	case archMsg:
@@ -344,17 +373,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.modal != nil {
 			switch key {
 			case "esc":
+				if m.modal.EditID != "" {
+					m.backlog = &backlogState{}
+				}
 				m.modal = nil
-			case "enter":
+			case "enter", "ctrl+s":
 				if strings.TrimSpace(m.modal.Title) == "" {
 					m.Err = "title is required"
+					return m, nil
+				}
+				if _, err := modalPriority(*m.modal); err != nil {
+					m.Err = "priority must be a number"
 					return m, nil
 				}
 				if m.client == nil {
 					m.modal = nil
 					return m, nil
 				}
-				return m, m.createIssue(*m.modal)
+				switch {
+				case m.modal.EditID != "":
+					return m, m.updateIssue(*m.modal)
+				case key == "ctrl+s":
+					return m, m.draftIssue(*m.modal)
+				default:
+					return m, m.createIssue(*m.modal)
+				}
 			default:
 				updated := m.modal.input(key)
 				m.modal = &updated
@@ -381,6 +424,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.issueCommand(issueID, op)
 			case "n", "esc":
 				m.confirm = nil
+			}
+			return m, nil
+		}
+		if m.backlog != nil {
+			entries := backlogEntries(m.State)
+			switch key {
+			case "esc", "b":
+				m.backlog = nil
+			case "j":
+				m.backlog.Sel = min(m.backlog.Sel+1, max(0, len(entries)-1))
+			case "k":
+				m.backlog.Sel = max(m.backlog.Sel-1, 0)
+			case "enter":
+				if m.backlog.Sel < len(entries) {
+					iv := entries[m.backlog.Sel]
+					m.Err = ""
+					m.modal = &modalState{EditID: iv.ID, Title: iv.Title, Body: iv.Body,
+						FlowName: iv.Flow, Preset: iv.Preset, Priority: strconv.Itoa(iv.Priority)}
+					m.backlog = nil
+				}
+			case "l":
+				if m.backlog.Sel < len(entries) {
+					iv := entries[m.backlog.Sel]
+					m.confirm = &confirmState{IssueID: iv.ID, Op: "launch_issue",
+						Prompt: fmt.Sprintf("launch %s? the lane starts now. y/n", iv.Title)}
+				}
+			case "X":
+				if m.backlog.Sel < len(entries) {
+					iv := entries[m.backlog.Sel]
+					m.confirm = &confirmState{IssueID: iv.ID, Op: "abandon_issue",
+						Prompt: fmt.Sprintf("delete draft %s? it is removed for good. y/n", iv.Title)}
+				}
 			}
 			return m, nil
 		}
@@ -509,6 +584,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "n" {
 			m.Err = ""
 			m.modal = &modalState{FlowName: "default", Preset: "regular"}
+			return m, nil
+		}
+		if key == "b" {
+			m.Err = ""
+			m.backlog = &backlogState{}
 			return m, nil
 		}
 		if m.Focus.Issue != "" {
@@ -717,7 +797,8 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 	}
 	client := m.client
 	return func() tea.Msg {
-		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title, Body: modal.Body, Flow: flowName, Preset: preset})
+		priority, _ := modalPriority(modal)
+		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title, Body: modal.Body, Flow: flowName, Preset: preset, Priority: priority})
 		if err != nil {
 			return createIssueMsg{err: err}
 		}
@@ -732,6 +813,45 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 			return createIssueMsg{response: started}
 		}
 		return createIssueMsg{response: r}
+	}
+}
+
+// modalPriority parses the modal's priority text; empty means 0.
+func modalPriority(modal modalState) (int, error) {
+	value := strings.TrimSpace(modal.Priority)
+	if value == "" {
+		return 0, nil
+	}
+	return strconv.Atoi(value)
+}
+
+func (m Model) draftIssue(modal modalState) tea.Cmd {
+	return m.modalCommand(modal, "draft_issue", "")
+}
+
+func (m Model) updateIssue(modal modalState) tea.Cmd {
+	return m.modalCommand(modal, "update_issue", modal.EditID)
+}
+
+// modalCommand sends one modal-backed op; createIssue keeps its own start step.
+func (m Model) modalCommand(modal modalState, op, issueID string) tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	flowName := strings.TrimSpace(modal.FlowName)
+	if flowName == "" {
+		flowName = "default"
+	}
+	preset := strings.TrimSpace(modal.Preset)
+	if preset == "" {
+		preset = "regular"
+	}
+	priority, _ := modalPriority(modal)
+	client := m.client
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: op, IssueID: issueID, Title: modal.Title,
+			Body: modal.Body, Flow: flowName, Preset: preset, Priority: priority})
+		return createIssueMsg{response: r, err: err}
 	}
 }
 
@@ -1249,6 +1369,10 @@ func (m Model) View() string {
 		overlayBox = renderModal(*m.modal, layoutWidth)
 	} else if m.confirm != nil {
 		overlayBox = renderConfirm(m.confirm.Prompt, layoutWidth)
+	} else if m.backlog != nil {
+		entries := backlogEntries(m.State)
+		m.backlog.Sel = min(m.backlog.Sel, max(0, len(entries)-1))
+		overlayBox = renderBacklog(entries, m.backlog.Sel, layoutWidth)
 	} else if m.leverEditor != nil {
 		overlayBox = renderLeverEditor(m.leverEditor.Stages, m.leverEditor.Matrix, m.leverEditor.Sel)
 	} else if m.pager.Mode == "artifacts" {

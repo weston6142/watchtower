@@ -77,6 +77,7 @@ type issueState struct {
 	stageIdx       int
 	terminal       bool
 	running        bool
+	draft          bool
 	budgetWaived   bool
 	activeTouchset *touchset.Set
 }
@@ -150,6 +151,21 @@ func (e *Engine) Rehydrate() error {
 
 	for _, row := range rows {
 		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" || row.State == "abandoned" {
+			continue
+		}
+		if row.State == "backlog" {
+			e.mu.Lock()
+			if _, known := e.issues[row.ID]; !known {
+				matrix := levers.Matrix{}
+				for st, lv := range row.Levers {
+					matrix[st] = flow.Lever(lv)
+				}
+				e.issues[row.ID] = &issueState{
+					id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+					matrix: matrix, priority: row.Priority, draft: true,
+				}
+			}
+			e.mu.Unlock()
 			continue
 		}
 		e.mu.Lock()
@@ -387,6 +403,93 @@ func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, prio
 	e.emit(core.EvIssueCreated, id, map[string]any{
 		"title": title, "flow": flowName, "body": body, "priority": priority})
 	return id, nil
+}
+
+// DraftIssue records an issue in the backlog without starting anything: no
+// flow run, no slot. The draft is durable and editable until launched.
+func (e *Engine) DraftIssue(title, body, flowName, preset string, m levers.Matrix, priority int) (string, error) {
+	if _, ok := e.cfg.Flows[flowName]; !ok {
+		return "", fmt.Errorf("unknown flow %q", flowName)
+	}
+	e.mu.Lock()
+	e.nextID++
+	id := fmt.Sprintf("GH-%d", e.nextID)
+	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority, draft: true}
+	e.mu.Unlock()
+	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
+		ID: id, Title: title, Body: body, Flow: flowName, State: "backlog", Levers: matrixStrings(m), Priority: priority,
+	}); err != nil {
+		return "", err
+	}
+	e.emit(core.EvIssueDrafted, id, map[string]any{
+		"title": title, "body": body, "flow": flowName, "preset": preset,
+		"priority": priority, "levers": matrixStrings(m)})
+	return id, nil
+}
+
+// UpdateIssue rewrites a draft's fields. Only legal while the issue is a
+// backlog draft; launched issues are immutable through this path.
+func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.Matrix, priority int) error {
+	if _, ok := e.cfg.Flows[flowName]; !ok {
+		return fmt.Errorf("unknown flow %q", flowName)
+	}
+	e.mu.Lock()
+	is, ok := e.issues[id]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", id)
+	}
+	if !is.draft {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is not in the backlog", id)
+	}
+	is.title, is.body, is.flowName, is.matrix, is.priority = title, body, flowName, m, priority
+	e.mu.Unlock()
+	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
+		ID: id, Title: title, Body: body, Flow: flowName, State: "backlog", Levers: matrixStrings(m), Priority: priority,
+	}); err != nil {
+		return err
+	}
+	e.emit(core.EvIssueUpdated, id, map[string]any{
+		"title": title, "body": body, "flow": flowName, "preset": preset,
+		"priority": priority, "levers": matrixStrings(m)})
+	return nil
+}
+
+// LaunchIssue promotes a backlog draft into a running lane: the row flips to
+// running, the standard issue_created event fires (projection and steward
+// already treat it as the start of a lane), and the flow runs detached like
+// Resume — failures surface as stage_failed events, not in this response.
+func (e *Engine) LaunchIssue(id string) error {
+	e.mu.Lock()
+	is, ok := e.issues[id]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", id)
+	}
+	if !is.draft {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is not in the backlog", id)
+	}
+	if _, ok := e.cfg.Flows[is.flowName]; !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown flow %q", is.flowName)
+	}
+	is.draft = false
+	title, body, flowName, matrix, priority := is.title, is.body, is.flowName, is.matrix, is.priority
+	e.mu.Unlock()
+	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
+		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Levers: matrixStrings(matrix), Priority: priority,
+	}); err != nil {
+		e.mu.Lock()
+		is.draft = true
+		e.mu.Unlock()
+		return err
+	}
+	e.emit(core.EvIssueCreated, id, map[string]any{
+		"title": title, "flow": flowName, "body": body, "priority": priority})
+	go e.runAndRecord(context.Background(), is, 0)
+	return nil
 }
 
 func matrixStrings(m levers.Matrix) map[string]string {

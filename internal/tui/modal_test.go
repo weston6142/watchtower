@@ -41,3 +41,35 @@ func TestLeverEditorCycles(t *testing.T) {
 		t.Fatalf("editor:\n%s", out)
 	}
 }
+
+func TestModalPriorityField(t *testing.T) {
+	m := modalState{}
+	for i := 0; i < 4; i++ {
+		m = m.input("tab")
+	}
+	if m.Field != 4 {
+		t.Fatalf("Field = %d, want 4 (priority)", m.Field)
+	}
+	m = m.input("7")
+	if m.Priority != "7" {
+		t.Fatalf("Priority = %q", m.Priority)
+	}
+	m = m.input("tab")
+	if m.Field != 0 {
+		t.Fatalf("tab wrap: Field = %d, want 0", m.Field)
+	}
+}
+
+func TestRenderModalHints(t *testing.T) {
+	create := renderModal(modalState{}, 80)
+	if !strings.Contains(create, "ctrl+s") || !strings.Contains(create, "create") {
+		t.Fatalf("create-mode hints missing:\n%s", create)
+	}
+	edit := renderModal(modalState{EditID: "GH-1", Title: "t"}, 80)
+	if !strings.Contains(edit, "save") || strings.Contains(edit, "create") {
+		t.Fatalf("edit-mode hints wrong:\n%s", edit)
+	}
+	if !strings.Contains(edit, "edit issue") {
+		t.Fatalf("edit-mode title wrong:\n%s", edit)
+	}
+}

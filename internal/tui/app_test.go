@@ -55,11 +55,74 @@ func pressKey(t *testing.T, m Model, key string) Model {
 		msg = tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
 		msg = tea.KeyMsg{Type: tea.KeyEsc}
+	case "ctrl+s":
+		msg = tea.KeyMsg{Type: tea.KeyCtrlS}
 	default:
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}
 	next, _ := m.Update(msg)
 	return next.(Model)
+}
+
+func TestModalCtrlSValidatesTitle(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "n")
+	m = pressKey(t, m, "ctrl+s")
+	if m.Err != "title is required" {
+		t.Fatalf("Err = %q", m.Err)
+	}
+}
+
+func TestModalBadPriorityKeepsModalOpen(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "n")
+	m.modal.Title = "t"
+	m.modal.Priority = "abc"
+	m = pressKey(t, m, "ctrl+s")
+	if m.modal == nil || m.Err != "priority must be a number" {
+		t.Fatalf("bad priority: modal=%v err=%q", m.modal, m.Err)
+	}
+}
+
+func backlogFixtureState() *projection.State {
+	s := projection.NewState()
+	applyBacklogDrafts(s)
+	return s
+}
+
+func TestBacklogEntriesSorted(t *testing.T) {
+	entries := backlogEntries(backlogFixtureState())
+	if len(entries) != 2 || entries[0].ID != "GH-3" || entries[1].ID != "GH-2" {
+		t.Fatalf("order wrong: %v", entries)
+	}
+}
+
+func TestBacklogViewKeys(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	if m.backlog == nil {
+		t.Fatal("b did not open the backlog view")
+	}
+	m = pressKey(t, m, "enter")
+	if m.modal == nil || m.modal.EditID != "GH-3" || m.modal.Title != "hot fix" || m.modal.Priority != "5" {
+		t.Fatalf("edit modal not prefilled: %+v", m.modal)
+	}
+	m = pressKey(t, m, "esc")
+	m = pressKey(t, m, "l")
+	if m.confirm == nil || m.confirm.Op != "launch_issue" || m.confirm.IssueID != "GH-3" {
+		t.Fatalf("launch confirm wrong: %+v", m.confirm)
+	}
+	m = pressKey(t, m, "n")
+	m = pressKey(t, m, "j")
+	m = pressKey(t, m, "X")
+	if m.confirm == nil || m.confirm.Op != "abandon_issue" || m.confirm.IssueID != "GH-2" {
+		t.Fatalf("abandon confirm wrong: %+v", m.confirm)
+	}
+	m = pressKey(t, m, "esc")
+	m = pressKey(t, m, "esc")
+	if m.backlog != nil {
+		t.Fatal("esc did not close the backlog view")
+	}
 }
 
 func toastModel(t *testing.T) Model {

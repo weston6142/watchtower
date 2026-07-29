@@ -15,6 +15,47 @@ import (
 	"github.com/weston6142/watchtower/internal/store"
 )
 
+func newTestClient(t *testing.T) *Client {
+	t.Helper()
+	f := flow.Flow{
+		Name: "default",
+		Stages: []flow.Stage{{
+			Name:   "run",
+			Agents: []flow.AgentRef{{Package: "agent"}},
+			Gate:   flow.GateAuto,
+		}},
+	}
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	e := engine.New(engine.Config{
+		Store: s,
+		Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"run/agent": {},
+		}},
+		Pool:    slots.NewPool(1),
+		Flows:   map[string]flow.Flow{"default": f},
+		DataDir: t.TempDir(),
+	})
+	sock := filepath.Join(t.TempDir(), "g.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(e, s)
+	srv.SetFlows(map[string]flow.Flow{"default": f})
+	go srv.Serve(l)
+	t.Cleanup(func() { l.Close() })
+	c, err := Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
+}
+
 func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 	f, err := flow.Load("../flow/testdata/default.yaml")
 	if err != nil {
@@ -128,5 +169,56 @@ func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 			t.Fatalf("second decision never appeared: %+v", r.Overview)
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+func TestBacklogOps(t *testing.T) {
+	c := newTestClient(t)
+	r, err := c.Do(Command{Op: "draft_issue", Title: "t", Body: "b", Flow: "default", Preset: "regular", Priority: 2})
+	if err != nil || !r.OK {
+		t.Fatalf("draft_issue: %v %+v", err, r)
+	}
+	id := r.IssueID
+
+	r, err = c.Do(Command{Op: "update_issue", IssueID: id, Title: "t2", Body: "b2", Flow: "default", Preset: "strict", Priority: 5})
+	if err != nil || !r.OK {
+		t.Fatalf("update_issue: %v %+v", err, r)
+	}
+
+	r, _ = c.Do(Command{Op: "list_issues"})
+	found := false
+	for _, row := range r.Issues {
+		if row.ID == id {
+			found = true
+			if row.State != "backlog" || row.Title != "t2" || row.Priority != 5 {
+				t.Fatalf("row wrong after update: %+v", row)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("draft missing from list_issues")
+	}
+
+	r, err = c.Do(Command{Op: "launch_issue", IssueID: id})
+	if err != nil || !r.OK {
+		t.Fatalf("launch_issue: %v %+v", err, r)
+	}
+	r, _ = c.Do(Command{Op: "launch_issue", IssueID: id})
+	if r.OK {
+		t.Fatal("second launch succeeded")
+	}
+}
+
+func TestDraftNotCountedInOverview(t *testing.T) {
+	c := newTestClient(t)
+	if r, err := c.Do(Command{Op: "draft_issue", Title: "t", Flow: "default", Preset: "regular"}); err != nil || !r.OK {
+		t.Fatalf("draft_issue: %v %+v", err, r)
+	}
+	r, err := c.Do(Command{Op: "overview"})
+	if err != nil || !r.OK {
+		t.Fatal(err)
+	}
+	if r.Overview.Building != 0 || r.Overview.Failing != 0 || r.Overview.Queued != 0 {
+		t.Fatalf("draft counted in overview: %+v", r.Overview)
 	}
 }

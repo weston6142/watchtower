@@ -9,6 +9,8 @@ type EventType string
 
 const (
 	EvIssueCreated         EventType = "issue_created"
+	EvIssueDrafted         EventType = "issue_drafted"
+	EvIssueUpdated         EventType = "issue_updated"
 	EvStageStarted         EventType = "stage_started"
 	EvStageCompleted       EventType = "stage_completed"
 	EvStageFailed          EventType = "stage_failed"

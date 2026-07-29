@@ -5,6 +5,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/weston6142/watchtower/internal/archmap"
+	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/store"
@@ -16,7 +17,7 @@ import (
 
 // FixtureFlows lists every posable flow, in spec order.
 func FixtureFlows() []string {
-	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "levers", "arch", "pager", "help", "stream"}
+	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "backlog", "levers", "arch", "pager", "help", "stream"}
 }
 
 func fixtureState() *projection.State {
@@ -62,6 +63,20 @@ func fixtureState() *projection.State {
 		Paused: true, State: "paused",
 	}
 	return st
+}
+
+// applyBacklogDrafts seeds two drafts with distinct priorities so backlog
+// ordering is visible in fixtures and tests.
+func applyBacklogDrafts(s *projection.State) {
+	for _, spec := range []struct {
+		id, title string
+		priority  int
+	}{{"GH-2", "low fix", 0}, {"GH-3", "hot fix", 5}} {
+		ev, _ := core.NewEvent(core.EvIssueDrafted, spec.id, map[string]any{
+			"title": spec.title, "body": "b", "flow": "default", "preset": "regular",
+			"priority": spec.priority})
+		s.Apply(ev)
+	}
 }
 
 func fixtureProposals() []store.ProposalRow {
@@ -122,6 +137,9 @@ func FixtureModel(flowName string, width, height int) Model {
 		m.proposals = fixtureProposals()
 	case "modal":
 		m.modal = &modalState{Title: "Wire importer smoke test into CI", Field: 0}
+	case "backlog":
+		applyBacklogDrafts(m.State)
+		m.backlog = &backlogState{}
 	case "levers":
 		m.leverEditor = newLeverEditor("ca-repo", m.stages, map[string]string{"review": "strict"})
 	case "arch":

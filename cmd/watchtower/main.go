@@ -43,7 +43,7 @@ func main() {
 		fatal(err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|repos|tower|new|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|repos|tower|new|backlog|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -142,9 +142,15 @@ func main() {
 		flowName := fs.String("flow", "default", "flow name")
 		preset := fs.String("preset", "regular", "yolo|regular|strict")
 		prio := fs.Int("priority", 0, "priority")
+		draft := fs.Bool("draft", false, "save to the backlog instead of starting")
 		fs.Parse(args)
 		c := mustDial(*data, *repoF)
 		defer c.Close()
+		if *draft {
+			r := mustDo(c, proto.Command{Op: "draft_issue", Title: *title, Flow: *flowName, Preset: *preset, Priority: *prio})
+			fmt.Println(r.IssueID)
+			break
+		}
 		r := mustDo(c, proto.Command{Op: "create_issue", Title: *title, Flow: *flowName, Preset: *preset, Priority: *prio})
 		mustDo(c, proto.Command{Op: "start_issue", IssueID: r.IssueID})
 		fmt.Println(r.IssueID)
@@ -233,6 +239,20 @@ func main() {
 		for _, issue := range r.Issues {
 			fmt.Printf("%s  %s  %s\n", issue.ID, issue.State, issue.Title)
 		}
+	case "backlog":
+		fs := flag.NewFlagSet("backlog", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		fs.Parse(args)
+		c := mustDial(*data, *repoF)
+		defer c.Close()
+		r := mustDo(c, proto.Command{Op: "list_issues"})
+		for _, issue := range r.Issues {
+			if issue.State != "backlog" {
+				continue
+			}
+			fmt.Printf("%s  p%d  %s  %s\n", issue.ID, issue.Priority, issue.Flow, issue.Title)
+		}
 	case "status":
 		fs := flag.NewFlagSet("status", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
@@ -242,7 +262,7 @@ func main() {
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "overview"})
 		fmt.Println(statusSentence(r.Overview))
-	case "pause", "resume", "kill", "retry", "abandon":
+	case "pause", "resume", "kill", "retry", "abandon", "launch":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
@@ -256,7 +276,7 @@ func main() {
 		ops := map[string]string{
 			"pause": "pause_issue", "resume": "resume_issue",
 			"kill": "kill_stage", "retry": "retry_stage",
-			"abandon": "abandon_issue",
+			"abandon": "abandon_issue", "launch": "launch_issue",
 		}
 		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0]})
 		fmt.Println(cmd, fs.Args()[0])

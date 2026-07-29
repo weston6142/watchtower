@@ -109,19 +109,39 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		return Response{OK: true, Arch: result}
 	case "create_issue":
-		fl, ok := sv.flowFor(cmd.Flow)
+		fl, lever, ok := sv.flowAndPreset(cmd)
 		if !ok {
 			return Response{Error: "unknown flow " + cmd.Flow}
-		}
-		lever := flow.Lever(cmd.Preset)
-		if lever != flow.LeverYolo && lever != flow.LeverRegular && lever != flow.LeverStrict {
-			lever = flow.LeverRegular
 		}
 		id, err := sv.eng.CreateIssue(cmd.Title, cmd.Body, cmd.Flow, levers.Preset(fl, lever), cmd.Priority)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, IssueID: id}
+	case "draft_issue":
+		fl, lever, ok := sv.flowAndPreset(cmd)
+		if !ok {
+			return Response{Error: "unknown flow " + cmd.Flow}
+		}
+		id, err := sv.eng.DraftIssue(cmd.Title, cmd.Body, cmd.Flow, string(lever), levers.Preset(fl, lever), cmd.Priority)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: id}
+	case "update_issue":
+		fl, lever, ok := sv.flowAndPreset(cmd)
+		if !ok {
+			return Response{Error: "unknown flow " + cmd.Flow}
+		}
+		if err := sv.eng.UpdateIssue(cmd.IssueID, cmd.Title, cmd.Body, cmd.Flow, string(lever), levers.Preset(fl, lever), cmd.Priority); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
+	case "launch_issue":
+		if err := sv.eng.LaunchIssue(cmd.IssueID); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
 	case "start_issue":
 		// Runs asynchronously; failures surface as stage_failed events
 		// in the log rather than in this response.
@@ -319,6 +339,20 @@ func (sv *Server) overview() (Overview, error) {
 		out.DollarsTotal = float64(out.TokensTotal) / 1_000_000 * sv.pricePerMTok
 	}
 	return out, nil
+}
+
+// flowAndPreset resolves the command's flow and clamps its preset to a
+// known lever, falling back to regular for anything unrecognized.
+func (sv *Server) flowAndPreset(cmd Command) (flow.Flow, flow.Lever, bool) {
+	fl, ok := sv.flowFor(cmd.Flow)
+	if !ok {
+		return flow.Flow{}, "", false
+	}
+	lever := flow.Lever(cmd.Preset)
+	if lever != flow.LeverYolo && lever != flow.LeverRegular && lever != flow.LeverStrict {
+		lever = flow.LeverRegular
+	}
+	return fl, lever, true
 }
 
 func (sv *Server) flowFor(name string) (flow.Flow, bool) {

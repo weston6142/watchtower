@@ -7,6 +7,31 @@ import (
 	"github.com/weston6142/watchtower/internal/store"
 )
 
+func newTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func findRow(t *testing.T, s *store.Store, id string) store.IssueRow {
+	t.Helper()
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID == id {
+			return row
+		}
+	}
+	t.Fatalf("issue %s not found", id)
+	return store.IssueRow{}
+}
+
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
 	t.Helper()
 	e, err := core.NewEvent(typ, issue, payload)
@@ -43,5 +68,26 @@ func TestStewardMarksAbandoned(t *testing.T) {
 	rows, _ := s.Issues()
 	if len(rows) != 1 || rows[0].State != "abandoned" {
 		t.Fatalf("rows: %+v", rows)
+	}
+}
+
+func TestObserveDraftAndUpdate(t *testing.T) {
+	s := newTestStore(t)
+	sw := &Steward{Store: s}
+	evDraft := ev(t, core.EvIssueDrafted, "GH-1", map[string]any{
+		"title": "t", "body": "b", "flow": "default", "preset": "regular",
+		"priority": 2, "levers": map[string]string{"impl": "yolo"}})
+	sw.Observe(evDraft)
+	row := findRow(t, s, "GH-1")
+	if row.State != "backlog" || row.Title != "t" || row.Priority != 2 || row.Levers["impl"] != "yolo" {
+		t.Fatalf("drafted row wrong: %+v", row)
+	}
+	evUpdate := ev(t, core.EvIssueUpdated, "GH-1", map[string]any{
+		"title": "t2", "body": "b2", "flow": "default", "preset": "strict",
+		"priority": 7, "levers": map[string]string{"impl": "strict"}})
+	sw.Observe(evUpdate)
+	row = findRow(t, s, "GH-1")
+	if row.State != "backlog" || row.Title != "t2" || row.Priority != 7 || row.Levers["impl"] != "strict" {
+		t.Fatalf("updated row wrong: %+v", row)
 	}
 }
