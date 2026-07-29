@@ -17,6 +17,13 @@ type modalState struct {
 	Field    int
 	FlowName string
 	Preset   string
+	// Attach is the raw field text: comma-separated paths, or the stored name
+	// of an existing attachment to retain it. Resolution happens client-side
+	// before the command is sent.
+	Attach string
+	// OrigAttach is the stored names this issue already has, so a bare name in
+	// Attach is understood as "keep that one" rather than a relative path.
+	OrigAttach []string
 	// Priority is the level's stored int, not text: the modal is a chooser, so
 	// there is nothing to parse and no way to hold an unparseable value. The
 	// zero value is priority.Levels' normal, which is what a new issue wants.
@@ -55,6 +62,8 @@ func (m *modalState) setFieldValue(value string) {
 		m.FlowName = value
 	case 3:
 		m.Preset = value
+	case 4:
+		m.Attach = value
 	}
 }
 
@@ -68,6 +77,8 @@ func (m modalState) fieldValue() string {
 		return m.FlowName
 	case 3:
 		return m.Preset
+	case 4:
+		return m.Attach
 	default:
 		return ""
 	}
@@ -116,6 +127,7 @@ func renderModal(m modalState, width int) string {
 		modalField(m.Field == 1, "body", m.Body, false),
 		modalField(m.Field == 2, "flow", flowName, false),
 		modalField(m.Field == 3, "preset", preset, false),
+		modalField(m.Field == attachField, "attach", m.Attach, false),
 		modalChoiceField(m.Field == priorityField, "priority", priority.Label(m.Priority)),
 		"",
 		keyChip("tab") + dim.Render(" next field  ") + keyChip("h/l") + dim.Render(" adjust  ") + submit,
@@ -125,10 +137,12 @@ func renderModal(m modalState, width int) string {
 
 const modalFieldWidth = 44
 
-// priorityField is the modal's priority slot; it is a selector, not an input.
-// It is the last field, so tab wraps after it.
+// attach is a text field; priority is a selector, not an input, and is last so
+// tab wraps after it. Adding attach at 4 without moving priority to 5 would
+// route typed paths into the priority chooser.
 const (
-	priorityField   = 4
+	attachField     = 4
+	priorityField   = 5
 	modalFieldCount = priorityField + 1
 )
 
