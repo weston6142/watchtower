@@ -1,9 +1,7 @@
-Overlays in `internal/tui` hug their content, with one exception. Almost every
-overlay is a prompt — a few fields you answer and dismiss — so `renderBox`
-sizing itself to its widest content line is right for them. The backlog is the
-one browsing surface, so `renderBacklog` takes width *and* height from the
-viewport and spends the space on a list pane plus a detail pane. Any future
-overlay that wants to grow inherits the three constraints below.
+Overlays in `internal/tui` hug their content because they are prompts; the
+backlog is the one browsing surface, and `renderBacklog` takes width *and*
+height from the viewport instead. Any future overlay that wants to grow the same
+way inherits the three constraints below.
 
 - **An overlay that reaches the full terminal width or height loses the overlay
   look entirely.** `overlayCenter` falls back to `lipgloss.Place` at that point,
@@ -19,8 +17,13 @@ overlay that wants to grow inherits the three constraints below.
   that constructs a `Model` directly. A height-aware overlay needs a fallback for
   that case, not a division by zero or a one-row box.
 
-Consequence for tests: `internal/tui/testdata/backlog-*.golden` now track the
-fixture's terminal dimensions rather than the drafts' content, so changing
-`FixtureModel`'s width or height rewrites them. Regenerate with `-update`
-deliberately and read the diff, the same discipline the help goldens need in
-adding-an-event.
+Consequence for tests: **the backlog goldens cannot catch a height regression.**
+`TestSnapshots` renders at fixed sizes (200x50 and 100x40), and the backlog
+fixture holds few enough drafts that the panes stay content-sized at both — so
+`backlog-wide.golden` and `backlog-narrow.golden` are byte-identical whether the
+height argument arrives or is dropped on the floor. Height plumbing needs a
+separate `View()`-level assertion, which is what
+`TestViewPlumbsHeightIntoBacklog` is; deleting it as redundant with the goldens
+would leave the wiring untested. Width does move the goldens, so regenerate with
+`-update` deliberately and read the diff — the same discipline the help goldens
+need in adding-an-event.
