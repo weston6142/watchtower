@@ -17,7 +17,7 @@ import (
 
 // FixtureFlows lists every posable flow, in spec order.
 func FixtureFlows() []string {
-	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "backlog", "levers", "arch", "pager", "help", "stream"}
+	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "backlog", "levers", "arch", "pager", "help", "stream", "setup"}
 }
 
 func fixtureState() *projection.State {
@@ -102,6 +102,53 @@ func fixtureArch() *archmap.Map {
 }
 
 // FixtureModel returns a Model posed for the named flow at the given size.
+// fixtureSetup poses the setup inspector against the shape of
+// .watchtower/flows/default.yaml: six stages, review expanded with its three
+// agents, treehouse resolved, and a fixed load time — no render path may reach
+// for a clock, or the goldens stop being byte-comparable.
+func fixtureSetup() *setupState {
+	agent := func(name string, preview string) proto.AgentSetup {
+		return proto.AgentSetup{
+			Package: name, Model: "opus", Effort: "medium", ThinkingTokens: "8192",
+			AllowedTools:  []string{"Bash", "Read", "Edit", "Glob", "Grep"},
+			PromptLines:   24,
+			PromptPreview: []string{preview},
+		}
+	}
+	view := proto.SetupView{
+		Flow: "default", IssueID: "fx-e2e", IssueTitle: "flaky e2e fix",
+		Repo: proto.RepoSetup{
+			Runner: "claude", Slots: 4, ClaudeBin: "claude",
+			Pull: true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
+		},
+		Stages: []proto.StageSetup{
+			{Name: "brainstorm", Gate: "decision_queue", Workspace: "none", Completion: "all",
+				Artifacts: []string{"brainstorm.md"}, Lever: "regular",
+				Agents: []proto.AgentSetup{agent("brainstorm", "Explore the request before proposing anything.")}},
+			{Name: "spec", Gate: "approve_artifact", Workspace: "none", Completion: "all",
+				Artifacts: []string{"spec.md"}, Lever: "regular",
+				Agents: []proto.AgentSetup{agent("spec-writer", "Turn the brainstorm into a spec with resolved decisions.")}},
+			{Name: "plan", Gate: "approve_artifact", Workspace: "none", Completion: "all",
+				Artifacts: []string{"plan.md", "touchset.json"}, Lever: "regular",
+				Agents: []proto.AgentSetup{agent("planner", "Produce ordered bite-sized TDD tasks with real code.")}},
+			{Name: "execute", Gate: "auto", Workspace: "worktree", Completion: "all",
+				HeavySlot: true, Retries: 1, Lever: "regular",
+				Agents: []proto.AgentSetup{agent("executor", "Work the plan one task at a time, committing each.")}},
+			{Name: "review", Gate: "auto", Workspace: "worktree", Completion: "all",
+				Parallel: true, HeavySlot: true, Lever: "strict",
+				Agents: []proto.AgentSetup{
+					agent("clean-code-reviewer", "Light single-pass clean code review of the branch diff."),
+					agent("reviewer", "Adversarially verify each change against the spec."),
+					agent("doc-writer", "Reconcile the docs with what actually shipped."),
+				}},
+			{Name: "merge", Gate: "approve_artifact", Workspace: "readonly", Completion: "all",
+				MergeBarrier: true, Artifacts: []string{"merge-report.md"}, Lever: "regular",
+				Agents: []proto.AgentSetup{agent("reviewer", "Adversarially verify each change against the spec.")}},
+		},
+	}
+	return &setupState{View: &view, Expanded: map[string]bool{"review": true}}
+}
+
 func FixtureModel(flowName string, width, height int) Model {
 	m := Model{
 		State: fixtureState(),
@@ -166,6 +213,9 @@ func FixtureModel(flowName string, width, height int) Model {
 			"brainstorm │ The rename target is real: the remote is weston6142/watchtower and go.mod already agrees.",
 			"brainstorm │ — turn complete (13560 tokens) —",
 		}
+	case "setup":
+		m.Focus = Focus{Issue: "fx-e2e"}
+		m.setup = fixtureSetup()
 	}
 	return m
 }
