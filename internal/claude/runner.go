@@ -107,9 +107,14 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, maxLineBytes), maxLineBytes)
 	gotResult := false
-	repliedThisTurn := false
 	sessionDone := false
 	coachCount := 0
+	// Replies to the agent (decision answers, coaching) are deferred until the
+	// current turn's result event. A message written mid-turn is absorbed into
+	// the running turn as steering — it never starts a new turn — so an agent
+	// that emits a decision and keeps working would leave the runner waiting
+	// forever for a turn that never comes.
+	var pendingReplies []string
 	// Prose first, then the tool calls it introduced: that is the order the
 	// agent produced them, and a tool-only message must not write a blank.
 	emit := func(ev StreamEvent) {
@@ -135,13 +140,9 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			if d, found := ExtractDecision(ev.Text); found {
 				if (d.Why == "" || len(d.Consequences) != len(d.Options)) && coachCount < 2 {
 					coachCount++
-					if _, err := stdin.Write(UserMessage(coachMsg)); err != nil {
-						return abort(err)
-					}
-					repliedThisTurn = true
+					pendingReplies = append(pendingReplies, coachMsg)
 					continue
 				}
-				repliedThisTurn = true
 				reply := make(chan int, 1)
 				select {
 				case asks <- runner.Ask{Decision: d, Reply: reply}:
@@ -158,9 +159,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				if choice >= 0 && choice < len(d.Options) {
 					opt = d.Options[choice]
 				}
-				if _, err := stdin.Write(UserMessage("Human decision: " + opt)); err != nil {
-					return abort(err)
-				}
+				pendingReplies = append(pendingReplies, "Human decision: "+opt)
 			}
 			if p, found := ExtractProposal(ev.Text); found && c.OnProposal != nil {
 				c.OnProposal(issueID, p)
@@ -177,13 +176,20 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				res.Err = fmt.Errorf("claude session %s ended with error", res.SessionID)
 			}
 			// In stream-json input mode the CLI emits one result per turn and
-			// then waits for more input. A turn that asked a decision continues
-			// (we already sent the reply); any other completed turn is the
-			// agent's final turn — close stdin so the process exits.
-			if !repliedThisTurn || res.Err != nil {
+			// then waits for more input. Send any deferred replies now — the
+			// CLI is idle, so each starts a fresh turn. A turn with no reply
+			// owed is the agent's final turn — close stdin so the process
+			// exits.
+			if len(pendingReplies) == 0 || res.Err != nil {
 				sessionDone = true
+			} else {
+				for _, msg := range pendingReplies {
+					if _, err := stdin.Write(UserMessage(msg)); err != nil {
+						return abort(err)
+					}
+				}
+				pendingReplies = nil
 			}
-			repliedThisTurn = false
 		}
 		if sessionDone {
 			break

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -96,6 +97,24 @@ func TestRunnerCoachesIncompleteDecision(t *testing.T) {
 	a.Reply <- 0
 	if res := <-done; res.Err != nil {
 		t.Fatal(res.Err)
+	}
+}
+
+// An agent may emit a low-importance decision and keep working in the same
+// turn. The real CLI absorbs a mid-turn user message into the running turn
+// (steering) — it never starts a new turn for it — so replying immediately
+// leaves the runner waiting forever for a turn that will never come.
+func TestMidTurnDecisionReplyDoesNotDeadlock(t *testing.T) {
+	done, asks := run(t, abs(t, "testdata/midturn.sh"), t.TempDir())
+	a := <-asks
+	a.Reply <- 0
+	select {
+	case res := <-done:
+		if res.Err != nil {
+			t.Fatal(res.Err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runner deadlocked: reply sent mid-turn swallowed the final result")
 	}
 }
 
