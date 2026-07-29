@@ -75,8 +75,9 @@ a pure client.
 - **Modal double duty:** the existing new-issue modal keeps Enter = start
   now, and gains a save-to-backlog submit (`ctrl+s`), shown in the modal's
   hint line.
-- **Backlog view:** a new key on the tower (`b`) opens a backlog door/list in
-  the shared box chrome: drafts by priority, cursor rows. Keys inside:
+- **Backlog view:** a new key on the tower (`b`) opens a centered modal-style
+  box styled like the new-issue modal (same border/title chrome as
+  `renderModal`), listing drafts by priority with cursor rows. Keys inside:
   - `enter` — edit: reopen the same modal pre-filled; Enter re-saves the
     draft (it does NOT start the lane from the edit context — the hint line
     says so), `ctrl+s` also saves.
