@@ -11,6 +11,7 @@ import (
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/store"
@@ -269,5 +270,109 @@ func TestOverviewIgnoresTrailingFailureForAbandonedIssue(t *testing.T) {
 	}
 	if response.Overview.Failing != 0 || response.Overview.Building != 0 || response.Overview.NeedYou != 0 {
 		t.Fatalf("abandoned issue counted in overview: %+v", response.Overview)
+	}
+}
+
+// sockPath returns a Unix socket path short enough for macOS's 104-byte
+// sun_path limit; t.TempDir() embeds the test name and can exceed it.
+func sockPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "wt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "g.sock")
+}
+
+// newConfigClient serves one flow, one package set, and one resolved repo
+// config over a real socket. Separate from newTestClient so the setup ops can
+// pose three-agent stages, missing packages, and levers without disturbing
+// that helper's fixtures. The store is returned so a test can seed events
+// directly instead of racing the engine.
+func newConfigClient(t *testing.T, f flow.Flow, packages map[string]pkgs.Package, repo RepoSetup) (*Client, *store.Store) {
+	t.Helper()
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	scripts := map[string]runner.Script{}
+	for _, stg := range f.Stages {
+		for _, ref := range stg.Agents {
+			scripts[stg.Name+"/"+ref.Package] = runner.Script{}
+		}
+	}
+	e := engine.New(engine.Config{
+		Store: s, Runner: &runner.FakeRunner{Scripts: scripts},
+		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{f.Name: f},
+		DataDir: t.TempDir(),
+	})
+	sock := sockPath(t)
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(e, s)
+	srv.SetFlows(map[string]flow.Flow{f.Name: f})
+	srv.SetPackages(packages)
+	srv.SetRepoSetup(repo)
+	go srv.Serve(l)
+	t.Cleanup(func() { l.Close() })
+	c, err := Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c, s
+}
+
+// overrideFlow is a one-stage flow whose AgentRef.Model contradicts the
+// package's model. internal/claude/runner.go passes pkg.Model alone, so the
+// package must win everywhere.
+func overrideFlow() flow.Flow {
+	return flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name:       "run",
+		Agents:     []flow.AgentRef{{Package: "agent", Model: "sonnet"}},
+		Gate:       flow.GateAuto,
+		Completion: flow.CompletionAll,
+		Workspace:  "none",
+	}}}
+}
+
+func overridePackages() map[string]pkgs.Package {
+	return map[string]pkgs.Package{"agent": {
+		Name: "agent", Model: "opus", Effort: "medium",
+		AllowedTools: []string{"Bash", "Read"}, MaxTurns: 12,
+		Prompt: "You are the agent.\n\nDo the work.\n",
+	}}
+}
+
+// issue_detail used to let AgentRef.Model win. The runner cannot see it, so
+// the rail and the stream-door subtitle were printing a model no CLI ever
+// received.
+func TestIssueDetailReportsPackageModelNotAgentRefOverride(t *testing.T) {
+	c, s := newConfigClient(t, overrideFlow(), overridePackages(), RepoSetup{})
+	r, err := c.Do(Command{Op: "create_issue", Title: "t", Flow: "default", Preset: "regular"})
+	if err != nil || !r.OK {
+		t.Fatalf("create: %+v %v", r, err)
+	}
+	id := r.IssueID
+	ev, err := core.NewEvent(core.EvStageStarted, id, map[string]any{"stage": "run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ev); err != nil {
+		t.Fatal(err)
+	}
+	r, err = c.Do(Command{Op: "issue_detail", IssueID: id})
+	if err != nil || !r.OK || r.Detail == nil {
+		t.Fatalf("issue_detail: %+v %v", r, err)
+	}
+	if r.Detail.Model != "opus" {
+		t.Errorf("Detail.Model = %q, want opus (the package model)", r.Detail.Model)
+	}
+	if r.Detail.Effort != "medium" {
+		t.Errorf("Detail.Effort = %q, want medium", r.Detail.Effort)
 	}
 }

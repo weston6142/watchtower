@@ -27,6 +27,7 @@ type Server struct {
 	transcript   *transcript.Buffer
 	pricePerMTok float64
 	budget       int
+	repoSetup    RepoSetup
 }
 
 func NewServer(e *engine.Engine, s *store.Store) *Server {
@@ -45,6 +46,11 @@ func (sv *Server) SetTranscript(b *transcript.Buffer) { sv.transcript = b }
 func (sv *Server) SetPricePerMTok(price float64) { sv.pricePerMTok = price }
 
 func (sv *Server) SetBudget(budget int) { sv.budget = budget }
+
+// SetRepoSetup shares the resolved repo config so the setup inspector can
+// report what the daemon is running rather than what config.yaml says. One
+// setter rather than five: these values only ever travel together.
+func (sv *Server) SetRepoSetup(r RepoSetup) { sv.repoSetup = r }
 
 func (sv *Server) Serve(l net.Listener) error {
 	for {
@@ -233,12 +239,10 @@ func (sv *Server) exec(cmd Command) Response {
 				if stg.Name != stage || len(stg.Agents) == 0 {
 					continue
 				}
-				ref := stg.Agents[0]
-				if p, ok := sv.packages[ref.Package]; ok {
+				// Agents[0] only: this op reports one model for the stage, and
+				// the setup inspector is where every agent is listed.
+				if p, _, found := sv.effectiveAgent(stg.Agents[0]); found {
 					model, effort = p.Model, p.Effort
-				}
-				if ref.Model != "" {
-					model = ref.Model
 				}
 				break
 			}
@@ -364,4 +368,17 @@ func (sv *Server) flowFor(name string) (flow.Flow, bool) {
 		return f, ok
 	}
 	return flow.Flow{}, false
+}
+
+// effectiveAgent reports what the CLI actually receives for one agent ref.
+// internal/claude/runner.go passes pkg.Model alone, so the package is the
+// truth; ref.Model is returned separately as declared-but-unapplied. Shared by
+// issue_detail and setup_outline so two surfaces in one TUI cannot print
+// different models for the same stage.
+func (sv *Server) effectiveAgent(ref flow.AgentRef) (pkg pkgs.Package, declaredModel string, ok bool) {
+	pkg, ok = sv.packages[ref.Package]
+	if ref.Model != "" && ref.Model != pkg.Model {
+		declaredModel = ref.Model
+	}
+	return pkg, declaredModel, ok
 }

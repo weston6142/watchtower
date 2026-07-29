@@ -26,6 +26,7 @@ type Command struct {
 	Repo       string `json:"repo,omitempty"`
 	Stage      string `json:"stage,omitempty"`
 	Lever      string `json:"lever,omitempty"`
+	Package    string `json:"package,omitempty"` // setup_prompt: which agent package
 	N          int    `json:"n,omitempty"`
 }
 
@@ -42,6 +43,7 @@ type Response struct {
 	Detail     *IssueDetail             `json:"detail,omitempty"`
 	FlowStages []string                 `json:"flow_stages,omitempty"`
 	Arch       *archmap.Map             `json:"arch,omitempty"`
+	Setup      *SetupView               `json:"setup,omitempty"`
 }
 
 type Overview struct {
@@ -67,4 +69,69 @@ type IssueDetail struct {
 	Budget    int               `json:"budget,omitempty"`
 	Levers    map[string]string `json:"levers,omitempty"`
 	Dollars   float64           `json:"dollars,omitempty"`
+}
+
+// SetupView is the read-only picture of what the daemon is running: repo-level
+// resolved config plus the flow's stages, agents, and packages. It reports the
+// daemon's cached config, never the files on disk.
+type SetupView struct {
+	Flow       string       `json:"flow"`
+	IssueID    string       `json:"issue_id,omitempty"`
+	IssueTitle string       `json:"issue_title,omitempty"`
+	Repo       RepoSetup    `json:"repo"`
+	Stages     []StageSetup `json:"stages"`
+}
+
+// RepoSetup is the repo-level config after flag overrides — what the daemon
+// holds, not what config.yaml says.
+type RepoSetup struct {
+	Runner       string  `json:"runner"` // claude|fake
+	Slots        int     `json:"slots"`
+	Budget       int     `json:"budget"` // 0 = off
+	PricePerMTok float64 `json:"price_per_mtok"`
+	ClaudeBin    string  `json:"claude_bin"`
+	TestCmd      string  `json:"test_cmd,omitempty"`
+	Pull         bool    `json:"pull"`
+	Push         bool    `json:"push"`
+	// Workspace is the resolved provider name — "treehouse", "git worktree",
+	// or "" when the runner provisions none.
+	Workspace string `json:"workspace"`
+	// LoadedAt is pre-formatted "15:04", stamped once at daemon startup.
+	// A string, not a time.Time, so render paths never call time.Now() and
+	// the golden snapshots stay deterministic.
+	LoadedAt string `json:"loaded_at"`
+}
+
+type StageSetup struct {
+	Name         string       `json:"name"`
+	Gate         string       `json:"gate"`
+	Workspace    string       `json:"workspace"` // none|worktree|readonly
+	Parallel     bool         `json:"parallel"`
+	Completion   string       `json:"completion"` // all|any
+	HeavySlot    bool         `json:"heavy_slot"`
+	MergeBarrier bool         `json:"merge_barrier"`
+	Retries      int          `json:"retries"`
+	Artifacts    []string     `json:"artifacts,omitempty"` // declared, not produced
+	Lever        string       `json:"lever,omitempty"`     // issue-scoped only
+	Agents       []AgentSetup `json:"agents"`
+}
+
+type AgentSetup struct {
+	Package string `json:"package"`
+	// Missing: the flow names this package but it is absent from the daemon's
+	// loaded set. Every effective field below is empty when true.
+	Missing bool `json:"missing,omitempty"`
+
+	// Effective — what the CLI actually receives.
+	Model          string   `json:"model,omitempty"`
+	Effort         string   `json:"effort,omitempty"`
+	ThinkingTokens string   `json:"thinking_tokens,omitempty"` // claude.ThinkingTokens value
+	AllowedTools   []string `json:"allowed_tools,omitempty"`
+
+	// Declared but not applied — parsed by watchtower, never passed to the CLI.
+	DeclaredModel string `json:"declared_model,omitempty"` // flow.AgentRef.Model
+	MaxTurns      int    `json:"max_turns,omitempty"`      // pkgs.Package.MaxTurns
+
+	PromptPreview []string `json:"prompt_preview,omitempty"` // ≤3 non-blank lines, ≤120 runes each
+	PromptLines   int      `json:"prompt_lines,omitempty"`
 }
