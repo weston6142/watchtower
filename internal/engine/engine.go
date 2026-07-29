@@ -363,6 +363,17 @@ func (e *Engine) Abandon(issueID string) error {
 		cancel()
 	}
 	e.emit(core.EvIssueAbandoned, issueID, nil)
+	// The first on-disk deletion in Abandon, scoped deliberately: attachment
+	// bytes and rows only. The issues row, events, and stage artifacts stay so
+	// an abandoned lane is still inspectable. Failure is logged, never
+	// returned — Abandon must stay idempotent and must not half-abandon an
+	// issue because a file was locked.
+	if err := attach.DeleteAll(e.issueDir(issueID)); err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: abandon %s: remove attachments: %v\n", issueID, err)
+	}
+	if err := e.cfg.Store.DeleteAttachments(issueID); err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: abandon %s: delete attachment rows: %v\n", issueID, err)
+	}
 	return nil
 }
 

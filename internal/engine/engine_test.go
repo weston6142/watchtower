@@ -1335,3 +1335,67 @@ func TestIssueMDOmitsEmptyAttachmentSection(t *testing.T) {
 		t.Fatalf("empty set produced a section:\n%s", md)
 	}
 }
+
+// A never-started draft's bytes are reachable only through abandon, so cleanup
+// is wired there explicitly. Abandon stays a state, not a purge: the issues
+// row and stage artifacts survive so the lane stays inspectable.
+func TestAbandonDeletesAttachmentBytes(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, err := e.CreateIssue("a", "body", "default", levers.Matrix{}, 0,
+		[]string{tempAttachment(t, "app.log", 3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	is := e.issues[id]
+	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Abandon(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(e.cfg.DataDir, id, "attachments")); !os.IsNotExist(err) {
+		t.Fatalf("attachment bytes survived abandon: %v", err)
+	}
+	if rows, _ := s.Attachments(id); len(rows) != 0 {
+		t.Fatalf("attachment rows survived abandon: %+v", rows)
+	}
+	if _, err := os.Stat(filepath.Join(e.cfg.DataDir, id, "ISSUE.md")); err != nil {
+		t.Fatalf("abandon deleted stage artifacts: %v", err)
+	}
+	issues, _ := s.Issues()
+	found := false
+	for _, row := range issues {
+		if row.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("abandon deleted the issues row")
+	}
+}
+
+// Attachments are never in-memory state, so Rehydrate needs no change at all.
+func TestRehydrateIgnoresAttachments(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, err := e.DraftIssue("d", "b", "default", "regular", levers.Matrix{}, 0,
+		[]string{tempAttachment(t, "app.log", 3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2 := New(Config{Store: s, Runner: e.cfg.Runner, Pool: slots.NewPool(2),
+		Flows: map[string]flow.Flow{"default": testFlow()}, DataDir: e.cfg.DataDir})
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	is, ok := e2.issues[id]
+	if !ok || !is.draft {
+		t.Fatalf("draft did not rehydrate: %+v", is)
+	}
+	if rows, _ := s.Attachments(id); len(rows) != 1 || rows[0].Name != "app.log" {
+		t.Fatalf("rehydrate disturbed attachments: %+v", rows)
+	}
+	// The bytes are still where the next stage will look for them.
+	if _, err := os.Stat(filepath.Join(e.cfg.DataDir, id, "attachments", "app.log")); err != nil {
+		t.Fatalf("bytes lost across restart: %v", err)
+	}
+}
