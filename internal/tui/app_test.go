@@ -104,7 +104,10 @@ func TestBacklogViewKeys(t *testing.T) {
 		t.Fatal("b did not open the backlog view")
 	}
 	m = pressKey(t, m, "enter")
-	if m.modal == nil || m.modal.EditID != "GH-3" || m.modal.Title != "hot fix" || m.modal.Priority != "5" {
+	// GH-3 is filed at priority 5, above what the selector can show, so the
+	// edit modal clamps it to the top option rather than displaying one value
+	// and saving another.
+	if m.modal == nil || m.modal.EditID != "GH-3" || m.modal.Title != "hot fix" || m.modal.Priority != "3" {
 		t.Fatalf("edit modal not prefilled: %+v", m.modal)
 	}
 	m = pressKey(t, m, "esc")

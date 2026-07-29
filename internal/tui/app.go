@@ -449,8 +449,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.backlog.Sel < len(entries) {
 					iv := entries[m.backlog.Sel]
 					m.Err = ""
+					// Clamp on open: the CLI's -prio takes any int, and the
+					// modal can only show four. Clamping here keeps the field
+					// honest — what it displays is what saving writes back.
 					m.modal = &modalState{EditID: iv.ID, Title: iv.Title, Body: iv.Body,
-						FlowName: iv.Flow, Preset: iv.Preset, Priority: strconv.Itoa(iv.Priority)}
+						FlowName: iv.Flow, Preset: iv.Preset,
+						Priority: strconv.Itoa(priorityIndex(strconv.Itoa(iv.Priority)))}
 					m.backlog = nil
 				}
 			case "l":
