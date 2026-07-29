@@ -7,9 +7,11 @@ package attach
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/weston6142/watchtower/internal/store"
 )
@@ -159,4 +161,153 @@ func humanBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%d B", n)
 	}
+}
+
+// Rows converts a validated set into store rows, ord = index so display order
+// equals the order typed in the field.
+func Rows(issueID string, s Set, now time.Time) []store.AttachmentRow {
+	if len(s.Items) == 0 {
+		return nil
+	}
+	rows := make([]store.AttachmentRow, 0, len(s.Items))
+	for i, item := range s.Items {
+		rows = append(rows, store.AttachmentRow{
+			IssueID: issueID, Name: item.Name, Size: item.Size,
+			SourcePath: item.SourcePath, AddedAt: now, Ord: i,
+		})
+	}
+	return rows
+}
+
+// Save copies the set's incoming bytes into <issueDir>/attachments/, creating
+// the directory itself: a draft has an ID but no issue dir, because only
+// runStageOnce ever creates one today. Retained items are already there.
+func Save(issueDir string, s Set) error {
+	if len(s.Items) == 0 {
+		return nil
+	}
+	dir := filepath.Join(issueDir, dirName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for _, item := range s.Items {
+		if item.Retained {
+			continue
+		}
+		if err := copyFile(item.SourcePath, filepath.Join(dir, item.Name)); err != nil {
+			return fmt.Errorf("attachment %q: %w", item.Name, err)
+		}
+	}
+	return nil
+}
+
+// Materialize puts the current set where the running stage can read it. For a
+// workspace: "none" stage dstDir is the issue dir itself and the files are
+// already in place, so it is a no-op — never a self-copy. There is no cleanup
+// pass: a reused pooled worktree may keep a file dropped from the set, which is
+// harmless because ISSUE.md lists only the current set and ISSUE.md is the
+// contract.
+func Materialize(dstDir, srcDir string, rows []store.AttachmentRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if filepath.Clean(dstDir) == filepath.Clean(srcDir) {
+		return nil
+	}
+	dir := filepath.Join(dstDir, dirName)
+	if err := claimDir(dir); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		src := filepath.Join(srcDir, dirName, row.Name)
+		if err := copyFile(src, filepath.Join(dir, row.Name)); err != nil {
+			return fmt.Errorf("attachment %q: %w", row.Name, err)
+		}
+	}
+	return nil
+}
+
+// claimDir makes dir Guildhall's or refuses loudly. A directory Guildhall
+// created holds an empty marker file; a non-empty unmarked directory is the
+// repo's own, and overwriting a tracked attachments/app.log would be silent
+// data loss.
+func claimDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, markerName), nil, 0o644)
+	case err != nil:
+		return err
+	case len(entries) == 0:
+		return os.WriteFile(filepath.Join(dir, markerName), nil, 0o644)
+	}
+	for _, entry := range entries {
+		if entry.Name() == markerName {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s already exists and is not Guildhall's — this repo uses its own "+
+		"attachments/ directory, so issue attachments cannot be used here", dir)
+}
+
+// DeleteDropped removes the bytes of attachments the issue had and the new set
+// does not. Callers run it last, so a mid-sequence failure leaves extra bytes
+// rather than a missing file the table still claims.
+func DeleteDropped(issueDir string, existing []store.AttachmentRow, s Set) error {
+	keep := make(map[string]bool, len(s.Items))
+	for _, item := range s.Items {
+		keep[item.Name] = true
+	}
+	dir := filepath.Join(issueDir, dirName)
+	for _, row := range existing {
+		if keep[row.Name] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, row.Name)); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteAll reclaims every attachment byte for an issue. Missing is success.
+func DeleteAll(issueDir string) error {
+	return os.RemoveAll(filepath.Join(issueDir, dirName))
+}
+
+// Section is the ISSUE.md block that tells an agent the files exist. Empty for
+// an issue with no attachments.
+func Section(rows []store.AttachmentRow) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n# Attachments\n\n")
+	b.WriteString("The person who filed this issue attached these files. Paths are relative to\n")
+	b.WriteString("this directory.\n\n")
+	for _, row := range rows {
+		fmt.Fprintf(&b, "- `%s/%s` (%s)\n", dirName, row.Name, humanBytes(row.Size))
+	}
+	return b.String()
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
