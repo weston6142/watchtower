@@ -473,12 +473,16 @@ func (e *Engine) DraftIssue(title, body, flowName, preset string, m levers.Matri
 }
 
 // UpdateIssue rewrites a draft's fields. Only legal while the issue is a
-// backlog draft; launched issues are immutable through this path.
+// backlog draft; launched issues are immutable through this path. The
+// attachment set is replaced wholesale: whatever is in the field on save is the
+// new set. Bytes of dropped names are deleted *last*, so a mid-sequence failure
+// leaves extra bytes on disk rather than a missing file the table still claims.
 func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.Matrix, priority int, attachments []string) error {
-	_ = attachments // Task 6 replaces this body with the real attachment handling.
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return fmt.Errorf("unknown flow %q", flowName)
 	}
+	// Check draftness before touching anything: a later refusal must not leave
+	// in-memory fields rewritten.
 	e.mu.Lock()
 	is, ok := e.issues[id]
 	if !ok {
@@ -489,6 +493,21 @@ func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.
 		e.mu.Unlock()
 		return fmt.Errorf("issue %s is not in the backlog", id)
 	}
+	e.mu.Unlock()
+
+	existing, err := e.cfg.Store.Attachments(id)
+	if err != nil {
+		return err
+	}
+	set, err := attach.Plan(existing, attachments)
+	if err != nil {
+		return err
+	}
+	if err := attach.Save(e.issueDir(id), set); err != nil {
+		return err
+	}
+
+	e.mu.Lock()
 	is.title, is.body, is.flowName, is.matrix, is.priority = title, body, flowName, m, priority
 	e.mu.Unlock()
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
@@ -496,9 +515,15 @@ func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.
 	}); err != nil {
 		return err
 	}
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := attach.DeleteDropped(e.issueDir(id), existing, set); err != nil {
+		return err
+	}
 	e.emit(core.EvIssueUpdated, id, map[string]any{
 		"title": title, "body": body, "flow": flowName, "preset": preset,
-		"priority": priority, "levers": matrixStrings(m)})
+		"priority": priority, "levers": matrixStrings(m), "attachments": set.Names()})
 	return nil
 }
 

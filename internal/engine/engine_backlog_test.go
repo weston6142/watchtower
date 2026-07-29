@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -195,5 +197,56 @@ func TestLaunchIssueRejectsNonDrafts(t *testing.T) {
 	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0, nil)
 	if err := e.LaunchIssue(rid); err == nil {
 		t.Fatal("launched a non-draft issue")
+	}
+}
+
+// Whatever is in the field on save is the new set: a dropped name loses its row
+// and its bytes, a retained name keeps both.
+func TestUpdateIssueReplacesAttachmentSet(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "keep.log")
+	drop := filepath.Join(dir, "drop.log")
+	for _, p := range []string{keep, drop} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, err := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0, []string{keep, drop})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachDir := filepath.Join(e.cfg.DataDir, id, "attachments")
+
+	// Retain keep.log by name; drop.log simply is not in the field any more.
+	if err := e.UpdateIssue(id, "t", "b", "default", "regular", levers.Matrix{}, 0,
+		[]string{"keep.log"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := s.Attachments(id)
+	if len(rows) != 1 || rows[0].Name != "keep.log" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if _, err := os.Stat(filepath.Join(attachDir, "keep.log")); err != nil {
+		t.Fatalf("retained bytes deleted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(attachDir, "drop.log")); !os.IsNotExist(err) {
+		t.Fatalf("dropped bytes survived: %v", err)
+	}
+}
+
+// A refusal leaves the draft exactly as it was.
+func TestUpdateIssueRefusesBadAttachment(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.UpdateIssue(id, "t2", "b2", "default", "regular", levers.Matrix{}, 0,
+		[]string{"/nope/ghost.log"}); err == nil {
+		t.Fatal("UpdateIssue accepted a missing attachment")
+	}
+	issues, _ := s.Issues()
+	for _, row := range issues {
+		if row.ID == id && row.Title != "t" {
+			t.Fatalf("a refused update still rewrote the draft: %+v", row)
+		}
 	}
 }
