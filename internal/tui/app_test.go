@@ -609,3 +609,55 @@ func TestBacklogSwallowsQuitAndHelpKeys(t *testing.T) {
 		t.Fatal("backlog closed on ?")
 	}
 }
+
+// A refusal must leave the modal open with the typed paths intact so the typo
+// is fixed in place.
+func TestModalRefusalKeepsModalOpen(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m.modal = &modalState{Title: "t", Attach: "/tmp/ghost.log"}
+	next, _ := m.Update(createIssueMsg{response: proto.Response{
+		OK: false, Error: `attachment "/tmp/ghost.log": no such file`}})
+	m = next.(Model)
+	if m.modal == nil {
+		t.Fatal("modal closed on refusal; the typed paths are gone")
+	}
+	if m.Err == "" {
+		t.Fatal("refusal did not surface an error")
+	}
+	if m.modal.Attach != "/tmp/ghost.log" {
+		t.Fatalf("typed attach text lost: %q", m.modal.Attach)
+	}
+}
+
+// Opening a draft for edit shows its current attachments, so "retain
+// everything" is the default and needs no typing.
+func TestEditModalPrefillsAttachments(t *testing.T) {
+	s := projection.NewState()
+	s.Apply(mkev(t, core.EvIssueDrafted, "GH-4", map[string]any{
+		"title": "with files", "body": "b", "flow": "default", "preset": "regular",
+		"attachments": []string{"app.log", "shot.png"}}))
+	m := Model{State: s}
+	m = pressKey(t, m, "b")
+	m = pressKey(t, m, "enter")
+	if m.modal == nil || m.modal.EditID != "GH-4" {
+		t.Fatalf("edit modal not open: %+v", m.modal)
+	}
+	if m.modal.Attach != "app.log, shot.png" {
+		t.Fatalf("attach prefill = %q", m.modal.Attach)
+	}
+	if len(m.modal.OrigAttach) != 2 || m.modal.OrigAttach[0] != "app.log" {
+		t.Fatalf("OrigAttach = %v", m.modal.OrigAttach)
+	}
+}
+
+// Retain-by-name beats reading a file of the same name out of the cwd.
+func TestResolveModalAttachRetainsExistingNames(t *testing.T) {
+	got, err := resolveModalAttach(modalState{
+		Attach: "app.log, /tmp/new.log", OrigAttach: []string{"app.log"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "app.log" || got[1] != "/tmp/new.log" {
+		t.Fatalf("resolved = %v", got)
+	}
+}
