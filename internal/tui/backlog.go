@@ -32,11 +32,15 @@ const (
 	// for the eye on an ultrawide terminal.
 	backlogMaxInner = 132
 	backlogMinRows  = 3
+	// backlogFooterRows is the blank line plus the key/position row under the panes.
+	backlogFooterRows = 2
+	// backlogDividerCols is the " │ " between the two panes.
+	backlogDividerCols = 3
 	// backlogDetailInner is the narrowest useful detail pane, and
 	// backlogSplitInner is where that pane earns its space: the list still needs
-	// its minimum, and the divider costs three columns on top of both.
+	// its minimum, and the divider costs its columns on top of both.
 	backlogDetailInner = 40
-	backlogSplitInner  = backlogMinInner + backlogDetailInner + 3
+	backlogSplitInner  = backlogMinInner + backlogDetailInner + backlogDividerCols
 	// backlogFallbackRows stands in until the first WindowSizeMsg lands.
 	backlogFallbackRows = 32
 )
@@ -49,14 +53,14 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 		height = backlogFallbackRows
 	}
 	inner := min(max(width-backlogChromeCols, backlogMinInner), backlogMaxInner)
-	contentRows := max(height-backlogChromeRows, backlogMinRows+2)
+	paneBudget := max(height-backlogChromeRows-backlogFooterRows, backlogMinRows)
 
 	// An empty backlog has nothing to detail, so it keeps the whole width for its
 	// one line rather than ruling off a blank pane.
 	listWidth, detailWidth := inner, 0
 	if inner >= backlogSplitInner && len(entries) > 0 {
 		detailWidth = max(backlogDetailInner, inner/3)
-		listWidth = max(backlogMinInner, inner-detailWidth-3)
+		listWidth = max(backlogMinInner, inner-detailWidth-backlogDividerCols)
 	}
 
 	var detail []string
@@ -65,7 +69,7 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 	}
 	// Height is content-driven but capped: filling a tall terminal with blank
 	// rows for two drafts would be worse than the box being small.
-	paneRows := max(backlogMinRows, min(contentRows-2, max(max(len(entries), 1), len(detail))))
+	paneRows := max(backlogMinRows, min(paneBudget, max(len(entries), 1, len(detail))))
 	detail = backlogClipDetail(detail, paneRows, detailWidth)
 
 	start := backlogWindowStart(sel, len(entries), paneRows)
@@ -166,22 +170,26 @@ func backlogPane(list, detail []string, rows, listWidth, detailWidth int) string
 	divider := lipgloss.NewStyle().Foreground(activeTheme.Dimmer).Render("│")
 	out := make([]string, rows)
 	for i := range out {
-		left := padStyled(at(list, i), listWidth)
+		left := padStyled(lineAt(list, i), listWidth)
 		if detailWidth == 0 {
 			out[i] = left
 			continue
 		}
-		out[i] = left + " " + divider + " " + padStyled(at(detail, i), detailWidth)
+		out[i] = left + " " + divider + " " + padStyled(lineAt(detail, i), detailWidth)
 	}
 	return strings.Join(out, "\n")
 }
 
+// backlogFooter puts the keys on the left and, once there are drafts, how many
+// of them you are looking at on the right.
 func backlogFooter(count, start, rows, width int) string {
 	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
 	keys := keyChip("enter") + dim.Render(" edit  ") + keyChip("l") + dim.Render(" launch  ") +
 		keyChip("X") + dim.Render(" delete  ") + keyChip("j/k") + dim.Render(" move")
 	position := ""
 	switch {
+	// An empty backlog says so in the list itself; "0 drafts" here would only
+	// repeat it, and falling through to count <= rows is what would print it.
 	case count == 0:
 	case count == 1:
 		position = "1 draft"
@@ -209,7 +217,9 @@ func padStyled(s string, width int) string {
 	return s
 }
 
-func at(lines []string, i int) string {
+// lineAt returns lines[i], or "" past the end: the two panes rarely hold the
+// same number of rows, so the shorter one has to keep answering.
+func lineAt(lines []string, i int) string {
 	if i < 0 || i >= len(lines) {
 		return ""
 	}
