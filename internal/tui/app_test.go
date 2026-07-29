@@ -84,6 +84,55 @@ func TestModalBadPriorityKeepsModalOpen(t *testing.T) {
 	}
 }
 
+func backlogFixtureState() *projection.State {
+	s := projection.NewState()
+	for _, spec := range []struct {
+		id, title string
+		prio      int
+	}{{"GH-2", "low fix", 0}, {"GH-3", "hot fix", 5}} {
+		ev, _ := core.NewEvent(core.EvIssueDrafted, spec.id, map[string]any{
+			"title": spec.title, "body": "b", "flow": "default", "preset": "regular",
+			"priority": spec.prio})
+		s.Apply(ev)
+	}
+	return s
+}
+
+func TestBacklogEntriesSorted(t *testing.T) {
+	entries := backlogEntries(backlogFixtureState())
+	if len(entries) != 2 || entries[0].ID != "GH-3" || entries[1].ID != "GH-2" {
+		t.Fatalf("order wrong: %v", entries)
+	}
+}
+
+func TestBacklogViewKeys(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	if m.backlog == nil {
+		t.Fatal("b did not open the backlog view")
+	}
+	m = pressKey(t, m, "enter")
+	if m.modal == nil || m.modal.EditID != "GH-3" || m.modal.Title != "hot fix" || m.modal.Priority != "5" {
+		t.Fatalf("edit modal not prefilled: %+v", m.modal)
+	}
+	m = pressKey(t, m, "esc")
+	m = pressKey(t, m, "l")
+	if m.confirm == nil || m.confirm.Op != "launch_issue" || m.confirm.IssueID != "GH-3" {
+		t.Fatalf("launch confirm wrong: %+v", m.confirm)
+	}
+	m = pressKey(t, m, "n")
+	m = pressKey(t, m, "j")
+	m = pressKey(t, m, "X")
+	if m.confirm == nil || m.confirm.Op != "abandon_issue" || m.confirm.IssueID != "GH-2" {
+		t.Fatalf("abandon confirm wrong: %+v", m.confirm)
+	}
+	m = pressKey(t, m, "esc")
+	m = pressKey(t, m, "esc")
+	if m.backlog != nil {
+		t.Fatal("esc did not close the backlog view")
+	}
+}
+
 func toastModel(t *testing.T) Model {
 	t.Helper()
 	m := NewModel(nil, []string{"brainstorm", "spec"})

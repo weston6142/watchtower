@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -73,6 +74,7 @@ type Model struct {
 	retired          map[string]bool
 	shelfSel         int
 	modal            *modalState
+	backlog          *backlogState
 	confirm          *confirmState
 	leverEditor      *leverEditorState
 	wantLeverEditor  bool
@@ -138,6 +140,29 @@ type leverApplyMsg struct {
 type createIssueMsg struct {
 	response proto.Response
 	err      error
+}
+
+type backlogState struct{ Sel int }
+
+// backlogEntries returns drafts for display: highest priority first, id as
+// the tiebreak so the order is stable.
+func backlogEntries(s *projection.State) []*projection.IssueView {
+	if s == nil {
+		return nil
+	}
+	var entries []*projection.IssueView
+	for _, id := range s.Backlog {
+		if iv := s.Issues[id]; iv != nil {
+			entries = append(entries, iv)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Priority != entries[j].Priority {
+			return entries[i].Priority > entries[j].Priority
+		}
+		return entries[i].ID < entries[j].ID
+	})
+	return entries
 }
 
 func NewModel(client *proto.Client, stages []string) Model {
@@ -312,6 +337,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Err = msg.response.Error
 			return m, nil
 		}
+		if m.modal != nil && m.modal.EditID != "" {
+			m.backlog = &backlogState{}
+		}
 		m.modal = nil
 		return m, nil
 	case archMsg:
@@ -345,6 +373,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.modal != nil {
 			switch key {
 			case "esc":
+				if m.modal.EditID != "" {
+					m.backlog = &backlogState{}
+				}
 				m.modal = nil
 			case "enter", "ctrl+s":
 				if strings.TrimSpace(m.modal.Title) == "" {
@@ -393,6 +424,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.issueCommand(issueID, op)
 			case "n", "esc":
 				m.confirm = nil
+			}
+			return m, nil
+		}
+		if m.backlog != nil {
+			entries := backlogEntries(m.State)
+			switch key {
+			case "esc", "b":
+				m.backlog = nil
+			case "j":
+				m.backlog.Sel = min(m.backlog.Sel+1, max(0, len(entries)-1))
+			case "k":
+				m.backlog.Sel = max(m.backlog.Sel-1, 0)
+			case "enter":
+				if m.backlog.Sel < len(entries) {
+					iv := entries[m.backlog.Sel]
+					m.Err = ""
+					m.modal = &modalState{EditID: iv.ID, Title: iv.Title, Body: iv.Body,
+						FlowName: iv.Flow, Preset: iv.Preset, Priority: strconv.Itoa(iv.Priority)}
+					m.backlog = nil
+				}
+			case "l":
+				if m.backlog.Sel < len(entries) {
+					iv := entries[m.backlog.Sel]
+					m.confirm = &confirmState{IssueID: iv.ID, Op: "launch_issue",
+						Prompt: fmt.Sprintf("launch %s? the lane starts now. y/n", iv.Title)}
+				}
+			case "X":
+				if m.backlog.Sel < len(entries) {
+					iv := entries[m.backlog.Sel]
+					m.confirm = &confirmState{IssueID: iv.ID, Op: "abandon_issue",
+						Prompt: fmt.Sprintf("delete draft %s? it is removed for good. y/n", iv.Title)}
+				}
 			}
 			return m, nil
 		}
@@ -521,6 +584,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "n" {
 			m.Err = ""
 			m.modal = &modalState{FlowName: "default", Preset: "regular"}
+			return m, nil
+		}
+		if key == "b" {
+			m.Err = ""
+			m.backlog = &backlogState{}
 			return m, nil
 		}
 		if m.Focus.Issue != "" {
@@ -1301,6 +1369,10 @@ func (m Model) View() string {
 		overlayBox = renderModal(*m.modal, layoutWidth)
 	} else if m.confirm != nil {
 		overlayBox = renderConfirm(m.confirm.Prompt, layoutWidth)
+	} else if m.backlog != nil {
+		entries := backlogEntries(m.State)
+		m.backlog.Sel = min(m.backlog.Sel, max(0, len(entries)-1))
+		overlayBox = renderBacklog(entries, m.backlog.Sel, layoutWidth)
 	} else if m.leverEditor != nil {
 		overlayBox = renderLeverEditor(m.leverEditor.Stages, m.leverEditor.Matrix, m.leverEditor.Sel)
 	} else if m.pager.Mode == "artifacts" {
