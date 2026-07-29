@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"sort"
 	"strings"
@@ -282,6 +283,12 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, Setup: view}
+	case "setup_prompt":
+		lines, err := sv.setupPrompt(cmd)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Lines: lines}
 	case "overview":
 		overview, err := sv.overview()
 		if err != nil {
@@ -505,4 +512,76 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
+}
+
+// maxPromptBytes bounds a prompt body on the wire. proto's frame limit is
+// 1 MiB (maxMessageBytes, symmetric with client.go's scanner buffer), so a
+// clipped body plus its headings always fits with room to spare.
+const maxPromptBytes = 256 << 10
+
+const (
+	promptTaskHeading         = "first user message · internal/claude/runner.go"
+	promptSystemHeadingPrefix = "--append-system-prompt · .watchtower/packages/"
+	promptBaseNote            = "Claude Code's own base system prompt is added by the CLI and is not shown here."
+	// unscopedIssueID stands in for the issue id when nothing is focused, so
+	// the task line reads as a template rather than naming a lane at random.
+	unscopedIssueID = "«issue-id»"
+)
+
+// setupPrompt assembles the full prompt one agent receives: the synthesized
+// first user message, then the package's system prompt. The stage/package pair
+// is validated against the flow, so the op cannot be used to dump arbitrary
+// package bodies by guessing a name.
+func (sv *Server) setupPrompt(cmd Command) ([]string, error) {
+	view, err := sv.setupView(cmd)
+	if err != nil {
+		return nil, err
+	}
+	paired := false
+	for _, stg := range view.Stages {
+		if stg.Name != cmd.Stage {
+			continue
+		}
+		for _, ag := range stg.Agents {
+			if ag.Package == cmd.Package {
+				paired = true
+				break
+			}
+		}
+		break
+	}
+	if !paired {
+		return nil, fmt.Errorf("stage %s has no agent %s", cmd.Stage, cmd.Package)
+	}
+	pkg, ok := sv.packages[cmd.Package]
+	if !ok {
+		return nil, fmt.Errorf("package %s not loaded", cmd.Package)
+	}
+	issueID := cmd.IssueID
+	if issueID == "" {
+		issueID = unscopedIssueID
+	}
+	lines := []string{
+		promptTaskHeading, "",
+		claude.TaskMessage(cmd.Stage, issueID), "",
+		promptSystemHeadingPrefix + cmd.Package + "/prompt.md", "",
+	}
+	lines = append(lines, promptBody(pkg.Prompt)...)
+	return append(lines, "", promptBaseNote), nil
+}
+
+// promptBody splits a package prompt into wire lines, clipped on a line
+// boundary when it would blow past maxPromptBytes. Clipping mid-line would
+// misrepresent the prompt; a named truncation line does not.
+func promptBody(prompt string) []string {
+	body := strings.Split(strings.TrimSuffix(prompt, "\n"), "\n")
+	total := 0
+	for i, line := range body {
+		total += len(line) + 1
+		if total > maxPromptBytes {
+			out := append([]string(nil), body[:i]...)
+			return append(out, fmt.Sprintf("— truncated at 256 KiB (prompt is %d bytes) —", len(prompt)))
+		}
+	}
+	return body
 }

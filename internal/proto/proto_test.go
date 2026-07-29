@@ -4,9 +4,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/claude"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -601,5 +603,110 @@ func TestSetupOutlineWithoutFlowsLoaded(t *testing.T) {
 	sv := NewServer(nil, s)
 	if r := sv.exec(Command{Op: "setup_outline"}); r.OK || r.Error != "no flows loaded" {
 		t.Fatalf("got %+v, want error \"no flows loaded\"", r)
+	}
+}
+
+func TestSetupPromptIncludesTaskLineAndPrompt(t *testing.T) {
+	packages := reviewPackages()
+	c, _ := newConfigClient(t, reviewFlow(), packages, fixtureRepoSetup())
+	r, err := c.Do(Command{Op: "setup_prompt", Stage: "review", Package: "reviewer", IssueID: ""})
+	if err != nil || !r.OK {
+		t.Fatalf("setup_prompt: %+v %v", r, err)
+	}
+	joined := strings.Join(r.Lines, "\n")
+	// The synthesized first user message lives in Go source and is invisible in
+	// the package files — showing it verbatim is the point of the op.
+	if !strings.Contains(joined, claude.TaskMessage("review", unscopedIssueID)) {
+		t.Errorf("task line missing from:\n%s", joined)
+	}
+	if r.Lines[0] != promptTaskHeading {
+		t.Errorf("first line = %q, want %q", r.Lines[0], promptTaskHeading)
+	}
+	if !strings.Contains(joined, promptSystemHeadingPrefix+"reviewer/prompt.md") {
+		t.Errorf("system-prompt heading missing from:\n%s", joined)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(packages["reviewer"].Prompt, "\n"), "\n") {
+		found := false
+		for _, got := range r.Lines {
+			if got == line {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("prompt line %q missing from response", line)
+		}
+	}
+	if r.Lines[len(r.Lines)-1] != promptBaseNote {
+		t.Errorf("last line = %q, want the base-prompt note", r.Lines[len(r.Lines)-1])
+	}
+}
+
+// Scoped to an issue, the task line names that issue rather than the template
+// placeholder.
+func TestSetupPromptScopedToIssueNamesIt(t *testing.T) {
+	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureRepoSetup())
+	created, _ := c.Do(Command{Op: "create_issue", Title: "t", Flow: "default", Preset: "regular"})
+	r, _ := c.Do(Command{Op: "setup_prompt", Stage: "review", Package: "reviewer", IssueID: created.IssueID})
+	if !r.OK {
+		t.Fatalf("setup_prompt: %+v", r)
+	}
+	want := claude.TaskMessage("review", created.IssueID)
+	if !strings.Contains(strings.Join(r.Lines, "\n"), want) {
+		t.Errorf("task line does not name %s", created.IssueID)
+	}
+}
+
+// The op must not become a way to dump arbitrary package bodies by guessing a
+// name: the package has to be one this stage actually names.
+func TestSetupPromptRejectsUnpairedStagePackage(t *testing.T) {
+	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureRepoSetup())
+	r, err := c.Do(Command{Op: "setup_prompt", Stage: "spec", Package: "reviewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.OK || r.Error != "stage spec has no agent reviewer" {
+		t.Fatalf("got OK=%v err=%q, want the unpaired error", r.OK, r.Error)
+	}
+	if len(r.Lines) != 0 {
+		t.Fatalf("rejected request still returned %d lines", len(r.Lines))
+	}
+}
+
+func TestSetupPromptRejectsUnloadedPackage(t *testing.T) {
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name: "run", Agents: []flow.AgentRef{{Package: "ghost"}},
+		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
+	}}}
+	c, _ := newConfigClient(t, f, map[string]pkgs.Package{}, fixtureRepoSetup())
+	r, _ := c.Do(Command{Op: "setup_prompt", Stage: "run", Package: "ghost"})
+	if r.OK || r.Error != "package ghost not loaded" {
+		t.Fatalf("got OK=%v err=%q, want the not-loaded error", r.OK, r.Error)
+	}
+}
+
+// A 300 KiB prompt must not blow the 1 MiB frame, and the operator must be
+// told the body was clipped rather than silently shown a partial prompt.
+func TestSetupPromptTruncatesOversizePrompt(t *testing.T) {
+	big := strings.Repeat("x123456789\n", 30_000) // ~330 KiB
+	packages := map[string]pkgs.Package{"agent": {Name: "agent", Prompt: big}}
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name: "run", Agents: []flow.AgentRef{{Package: "agent"}},
+		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
+	}}}
+	c, _ := newConfigClient(t, f, packages, fixtureRepoSetup())
+	r, err := c.Do(Command{Op: "setup_prompt", Stage: "run", Package: "agent"})
+	if err != nil {
+		t.Fatalf("client could not read the frame: %v", err)
+	}
+	if !r.OK {
+		t.Fatalf("setup_prompt: %+v", r)
+	}
+	joined := strings.Join(r.Lines, "\n")
+	if !strings.Contains(joined, "— truncated at 256 KiB (prompt is") {
+		t.Fatal("no truncation line in an oversize prompt")
+	}
+	if len(joined) > maxMessageBytes {
+		t.Fatalf("response body is %d bytes, over the %d frame limit", len(joined), maxMessageBytes)
 	}
 }
