@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -19,9 +20,21 @@ type fakeHerdr struct {
 	reqs []map[string]any
 }
 
+// sockPath returns a Unix socket path short enough for macOS's 104-byte
+// sun_path limit; t.TempDir() embeds the test name and can exceed it.
+func sockPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "hd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "h.sock")
+}
+
 func startFakeHerdr(t *testing.T) (*fakeHerdr, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "herdr.sock")
+	path := sockPath(t)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +156,7 @@ func TestDedupesUnchangedState(t *testing.T) {
 }
 
 func TestRetriesAfterFailedWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "herdr.sock")
+	path := sockPath(t)
 	r := New(path, "w1:p1")
 	r.Report(1, 0, 0) // no server listening: swallowed
 
