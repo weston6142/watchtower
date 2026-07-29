@@ -29,18 +29,29 @@ func testFlow() flow.Flow {
 	return f
 }
 
-func newEngine(t *testing.T, r runner.Runner) (*Engine, *store.Store) {
+// newEngineCfg builds a test engine like newEngine but lets the caller adjust
+// the config first: attachment tests need a Librarian and a workspace path.
+func newEngineCfg(t *testing.T, r runner.Runner, adjust func(*Config)) (*Engine, *store.Store) {
 	t.Helper()
 	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return New(Config{
+	cfg := Config{
 		Store: s, Runner: r, Pool: slots.NewPool(2),
 		Flows:   map[string]flow.Flow{"default": testFlow()},
 		DataDir: t.TempDir(),
-	}), s
+	}
+	if adjust != nil {
+		adjust(&cfg)
+	}
+	return New(cfg), s
+}
+
+func newEngine(t *testing.T, r runner.Runner) (*Engine, *store.Store) {
+	t.Helper()
+	return newEngineCfg(t, r, nil)
 }
 
 func scripts() map[string]runner.Script {
@@ -59,7 +70,7 @@ func scripts() map[string]runner.Script {
 // still escalates (importance 1.0 floor), so exactly one human decision.
 func TestYoloRunEscalatesOnlyGate(t *testing.T) {
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
-	id, err := e.CreateIssue("test", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, err := e.CreateIssue("test", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +125,7 @@ func TestYoloRunEscalatesOnlyGate(t *testing.T) {
 // grid can mark one cell instead of the whole column.
 func TestPausedEventNamesUpcomingStage(t *testing.T) {
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
-	id, _ := e.CreateIssue("p", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("p", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	if err := e.Pause(id); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +158,7 @@ func TestFailedAgentRetriesThenFails(t *testing.T) {
 	sc := scripts()
 	sc["execute/executor"] = runner.Script{Fail: true}
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: sc})
-	id, _ := e.CreateIssue("boom", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("boom", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 
 	errc := make(chan error, 1)
 	go func() { errc <- e.StartIssue(context.Background(), id) }()
@@ -197,7 +208,7 @@ func TestFailedAgentRetriesThenFails(t *testing.T) {
 
 func TestEngineRecordsStageRuns(t *testing.T) {
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
-	id, _ := e.CreateIssue("t", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("t", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	for {
@@ -261,7 +272,7 @@ func TestWorktreeAcquiredOnceAndReleased(t *testing.T) {
 	sc["execute/executor"] = runner.Script{Artifacts: map[string]string{"diff": "changed\n"}}
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: sc})
 	e.cfg.Workspace = ws
-	id, _ := e.CreateIssue("w", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("w", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	for {
@@ -299,7 +310,7 @@ func TestWorktreeAcquiredOnceAndReleased(t *testing.T) {
 
 func TestPauseGatesBetweenStages(t *testing.T) {
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
-	id, _ := e.CreateIssue("p", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("p", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	if err := e.Pause(id); err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +359,7 @@ func TestKillStageEmitsKilledAndPauses(t *testing.T) {
 	sc["brainstorm/brainstorm"] = runner.Script{Asks: []levers.Decision{
 		{Question: "block forever?", Options: []string{"a"}, Recommended: 0, Importance: 1.0}}}
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: sc})
-	id, _ := e.CreateIssue("k", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("k", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	// wait until the stage is genuinely running (blocked on its ask)
@@ -389,7 +400,7 @@ func TestResumeRestartsKilledLane(t *testing.T) {
 		{Question: "block forever?", Options: []string{"a"}, Recommended: 0, Importance: 1.0}}}
 	fr := &runner.FakeRunner{Scripts: sc}
 	e, s := newEngine(t, fr)
-	id, _ := e.CreateIssue("k", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("k", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
@@ -444,7 +455,7 @@ func TestResumeRestartsKilledLane(t *testing.T) {
 // clearing the gate is all that is asked for.
 func TestResumeDoesNotStartUnstartedLane(t *testing.T) {
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
-	id, _ := e.CreateIssue("u", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("u", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	if err := e.Pause(id); err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +477,7 @@ func TestResumeRunningLaneWithNoGateErrors(t *testing.T) {
 	sc["brainstorm/brainstorm"] = runner.Script{Asks: []levers.Decision{
 		{Question: "hold", Options: []string{"a"}, Recommended: 0, Importance: 1.0}}}
 	e, _ := newEngine(t, &runner.FakeRunner{Scripts: sc})
-	id, _ := e.CreateIssue("n", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("n", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	go e.StartIssue(context.Background(), id)
 	deadline := time.After(5 * time.Second)
 	for len(e.PendingDecisions()) == 0 {
@@ -487,7 +498,7 @@ func TestRetryStageResumesFromFailure(t *testing.T) {
 	sc["execute/executor"] = runner.Script{Fail: true}
 	fr := &runner.FakeRunner{Scripts: sc}
 	e, s := newEngine(t, fr)
-	id, _ := e.CreateIssue("r", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("r", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	for {
@@ -536,7 +547,7 @@ func TestRetryStageResumesFromFailure(t *testing.T) {
 
 func TestSetLeverEmitsEvent(t *testing.T) {
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
-	id, _ := e.CreateIssue("l", "", "default", levers.Preset(testFlow(), flow.LeverStrict), 0)
+	id, _ := e.CreateIssue("l", "", "default", levers.Preset(testFlow(), flow.LeverStrict), 0, nil)
 	if err := e.SetLever(id, "execute", flow.LeverYolo); err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +572,7 @@ func TestTokenBudgetEscalates(t *testing.T) {
 	sc["brainstorm/brainstorm"] = runner.Script{Tokens: 5000}
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: sc})
 	e.cfg.TokenBudget = 1000
-	id, _ := e.CreateIssue("b", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("b", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 
@@ -600,7 +611,7 @@ func TestTokenBudgetEscalates(t *testing.T) {
 
 func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
-	id, _ := e.CreateIssue("a", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, _ := e.CreateIssue("a", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	for {
@@ -662,7 +673,7 @@ func TestMarshalReleasedAfterSuccessfulCompletionWithoutTrain(t *testing.T) {
 		}},
 		Marshal: seq, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),
 	})
-	id, err := e.CreateIssue("marshal", "", "default", levers.Preset(f, flow.LeverYolo), 0)
+	id, err := e.CreateIssue("marshal", "", "default", levers.Preset(f, flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +745,7 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 
 	// Engine 1: run until the spec approve_artifact gate parks a decision.
 	e1 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
-	id, err := e1.CreateIssue("restart me", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, err := e1.CreateIssue("restart me", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -758,7 +769,7 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	}
 
 	// nextID advanced past existing issues: no GH-1 collision.
-	id2, err := e2.CreateIssue("after restart", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id2, err := e2.CreateIssue("after restart", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +871,7 @@ func TestRehydrateSkipsUnknownFlow(t *testing.T) {
 		t.Fatalf("expected unknown issue for unloadable flow, got %v", err)
 	}
 	// nextID still advanced past GH-7.
-	id, err := e.CreateIssue("new", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, err := e.CreateIssue("new", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +888,7 @@ func TestAbandonRehydratedIssue(t *testing.T) {
 	t.Cleanup(func() { s.Close() })
 	dataDir := t.TempDir()
 	e1 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
-	id, err := e1.CreateIssue("doomed", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, err := e1.CreateIssue("doomed", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -932,7 +943,7 @@ func TestAbandonRehydratedIssue(t *testing.T) {
 
 func TestAbandonRunningIssueCancelsStage(t *testing.T) {
 	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
-	id, err := e.CreateIssue("live", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0)
+	id, err := e.CreateIssue("live", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1017,7 +1028,7 @@ func TestMergedIssueBranchIsDeleted(t *testing.T) {
 		Workspace: workspace.GitWorktree{Repo: repo},
 		Train:     &marshal.Train{Repo: repo},
 	})
-	id, err := e.CreateIssue("branch cleanup", "", "default", levers.Preset(f, flow.LeverYolo), 0)
+	id, err := e.CreateIssue("branch cleanup", "", "default", levers.Preset(f, flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1076,7 +1087,7 @@ func TestIssueStartFastForwardsBaseFromOrigin(t *testing.T) {
 		Workspace: workspace.GitWorktree{Repo: repo},
 		Train:     &marshal.Train{Repo: repo, Pull: true},
 	})
-	id, err := e.CreateIssue("freshness", "", "default", levers.Preset(f, flow.LeverYolo), 0)
+	id, err := e.CreateIssue("freshness", "", "default", levers.Preset(f, flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1085,5 +1096,93 @@ func TestIssueStartFastForwardsBaseFromOrigin(t *testing.T) {
 	}
 	if log := gitc(repo, "log", "--oneline", "main"); !strings.Contains(log, "remote work") {
 		t.Fatalf("base not fast-forwarded before issue ran: %s", log)
+	}
+}
+
+// tempAttachment writes a file and returns its absolute path.
+func tempAttachment(t *testing.T, name string, size int) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCreateIssueStoresAttachmentBytesAndRows(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	src := tempAttachment(t, "app.log", 9)
+	id, err := e.CreateIssue("a", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0,
+		[]string{src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := filepath.Join(e.cfg.DataDir, id, "attachments", "app.log")
+	if b, err := os.ReadFile(stored); err != nil || len(b) != 9 {
+		t.Fatalf("bytes not stored at %s: %v %d", stored, err, len(b))
+	}
+	rows, err := s.Attachments(id)
+	if err != nil || len(rows) != 1 || rows[0].Name != "app.log" || rows[0].Size != 9 {
+		t.Fatalf("rows = %+v err = %v", rows, err)
+	}
+	// The event carries the stored names so the projection and the log agree.
+	evs, _ := s.EventsSince(0)
+	found := false
+	for _, ev := range evs {
+		if ev.Type != core.EvIssueCreated {
+			continue
+		}
+		var p map[string]any
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		names, _ := p["attachments"].([]any)
+		if len(names) == 1 && names[0] == "app.log" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("issue_created carried no attachments")
+	}
+}
+
+// A refusal must cost nothing: no ID consumed, no issue dir created.
+func TestCreateIssueRefusesBadAttachment(t *testing.T) {
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	dir := t.TempDir()
+	oversized := filepath.Join(dir, "huge.bin")
+	if err := os.WriteFile(oversized, make([]byte, (10<<20)+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []string{filepath.Join(dir, "ghost.log"), dir, oversized} {
+		if _, err := e.CreateIssue("bad", "", "default", levers.Matrix{}, 0, []string{entry}); err == nil {
+			t.Fatalf("CreateIssue accepted %q", entry)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(e.cfg.DataDir, "GH-1")); !os.IsNotExist(err) {
+		t.Fatalf("a refused create left an issue dir: %v", err)
+	}
+	// The next successful create must still be GH-1 — nothing was burned.
+	id, err := e.CreateIssue("good", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "GH-1" {
+		t.Fatalf("refusals consumed IDs: next id = %s", id)
+	}
+}
+
+func TestDraftIssueStoresAttachmentsWithoutAStageRun(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	src := tempAttachment(t, "app.log", 4)
+	id, err := e.DraftIssue("d", "b", "default", "regular", levers.Matrix{}, 0, []string{src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(e.cfg.DataDir, id, "attachments", "app.log")); err != nil {
+		t.Fatalf("draft attach did not create the issue dir: %v", err)
+	}
+	if rows, _ := s.Attachments(id); len(rows) != 1 {
+		t.Fatalf("rows = %+v", rows)
 	}
 }

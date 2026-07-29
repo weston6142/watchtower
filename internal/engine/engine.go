@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/weston6142/watchtower/internal/attach"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -386,50 +388,94 @@ func (e *Engine) emit(t core.EventType, issueID string, payload any) {
 	}
 }
 
-func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, priority int) (string, error) {
+// issueDir is where an issue's attachments and "none"-stage artifacts live.
+func (e *Engine) issueDir(id string) string {
+	return filepath.Join(e.cfg.DataDir, id)
+}
+
+// rollbackCreate undoes a half-created issue: a failed attach must not burn an
+// ID or leave an issue in memory. nextID is deliberately not rewound — IDs stay
+// monotonic so a rehydrate can never mint a colliding GH-n.
+func (e *Engine) rollbackCreate(id string) {
+	e.mu.Lock()
+	delete(e.issues, id)
+	e.mu.Unlock()
+	_ = attach.DeleteAll(e.issueDir(id))
+}
+
+func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, priority int, attachments []string) (string, error) {
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return "", fmt.Errorf("unknown flow %q", flowName)
+	}
+	// Validate before allocating: a refusal here costs no ID and creates no dir.
+	set, err := attach.Plan(nil, attachments)
+	if err != nil {
+		return "", err
 	}
 	e.mu.Lock()
 	e.nextID++
 	id := fmt.Sprintf("GH-%d", e.nextID)
 	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority}
 	e.mu.Unlock()
+	if err := attach.Save(e.issueDir(id), set); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
 		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Levers: matrixStrings(m), Priority: priority,
 	}); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+		e.rollbackCreate(id)
 		return "", err
 	}
 	e.emit(core.EvIssueCreated, id, map[string]any{
-		"title": title, "flow": flowName, "body": body, "priority": priority})
+		"title": title, "flow": flowName, "body": body, "priority": priority,
+		"attachments": set.Names()})
 	return id, nil
 }
 
 // DraftIssue records an issue in the backlog without starting anything: no
 // flow run, no slot. The draft is durable and editable until launched.
-func (e *Engine) DraftIssue(title, body, flowName, preset string, m levers.Matrix, priority int) (string, error) {
+func (e *Engine) DraftIssue(title, body, flowName, preset string, m levers.Matrix, priority int, attachments []string) (string, error) {
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return "", fmt.Errorf("unknown flow %q", flowName)
+	}
+	set, err := attach.Plan(nil, attachments)
+	if err != nil {
+		return "", err
 	}
 	e.mu.Lock()
 	e.nextID++
 	id := fmt.Sprintf("GH-%d", e.nextID)
 	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority, draft: true}
 	e.mu.Unlock()
+	if err := attach.Save(e.issueDir(id), set); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
 		ID: id, Title: title, Body: body, Flow: flowName, State: "backlog", Levers: matrixStrings(m), Priority: priority,
 	}); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+		e.rollbackCreate(id)
 		return "", err
 	}
 	e.emit(core.EvIssueDrafted, id, map[string]any{
 		"title": title, "body": body, "flow": flowName, "preset": preset,
-		"priority": priority, "levers": matrixStrings(m)})
+		"priority": priority, "levers": matrixStrings(m), "attachments": set.Names()})
 	return id, nil
 }
 
 // UpdateIssue rewrites a draft's fields. Only legal while the issue is a
 // backlog draft; launched issues are immutable through this path.
-func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.Matrix, priority int) error {
+func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.Matrix, priority int, attachments []string) error {
+	_ = attachments // Task 6 replaces this body with the real attachment handling.
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return fmt.Errorf("unknown flow %q", flowName)
 	}
@@ -605,7 +651,7 @@ func (e *Engine) ResolveProposal(id int64, accept bool, flowName, preset string)
 	if lever != flow.LeverYolo && lever != flow.LeverRegular && lever != flow.LeverStrict {
 		lever = flow.LeverRegular
 	}
-	newID, err := e.CreateIssue(row.Title, row.Body, flowName, levers.Preset(f, lever), 0)
+	newID, err := e.CreateIssue(row.Title, row.Body, flowName, levers.Preset(f, lever), 0, nil)
 	if err != nil {
 		return "", err
 	}

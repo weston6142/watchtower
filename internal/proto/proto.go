@@ -11,22 +11,26 @@ import (
 const maxMessageBytes = 1 << 20
 
 type Command struct {
-	Op         string `json:"op"`
-	Title      string `json:"title,omitempty"`
-	Body       string `json:"body,omitempty"`
-	Flow       string `json:"flow,omitempty"`
-	Preset     string `json:"preset,omitempty"`
-	Priority   int    `json:"priority,omitempty"`
-	IssueID    string `json:"issue_id,omitempty"`
-	DecisionID int64  `json:"decision_id,omitempty"`
-	Option     int    `json:"option,omitempty"`
-	ProposalID int64  `json:"proposal_id,omitempty"`
-	Accept     bool   `json:"accept,omitempty"`
-	SinceSeq   int64  `json:"since_seq,omitempty"`
-	Repo       string `json:"repo,omitempty"`
-	Stage      string `json:"stage,omitempty"`
-	Lever      string `json:"lever,omitempty"`
-	N          int    `json:"n,omitempty"`
+	Op       string `json:"op"`
+	Title    string `json:"title,omitempty"`
+	Body     string `json:"body,omitempty"`
+	Flow     string `json:"flow,omitempty"`
+	Preset   string `json:"preset,omitempty"`
+	Priority int    `json:"priority,omitempty"`
+	// Attach carries absolute paths, never bytes: maxMessageBytes bounds a wire
+	// message well under the per-file cap, so the daemon reads the files off the
+	// shared filesystem itself. A bare name retains an existing attachment.
+	Attach     []string `json:"attach,omitempty"`
+	IssueID    string   `json:"issue_id,omitempty"`
+	DecisionID int64    `json:"decision_id,omitempty"`
+	Option     int      `json:"option,omitempty"`
+	ProposalID int64    `json:"proposal_id,omitempty"`
+	Accept     bool     `json:"accept,omitempty"`
+	SinceSeq   int64    `json:"since_seq,omitempty"`
+	Repo       string   `json:"repo,omitempty"`
+	Stage      string   `json:"stage,omitempty"`
+	Lever      string   `json:"lever,omitempty"`
+	N          int      `json:"n,omitempty"`
 }
 
 type Response struct {

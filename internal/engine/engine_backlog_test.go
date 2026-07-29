@@ -93,7 +93,7 @@ func useAutoLaunchFlow(e *Engine) {
 
 func TestDraftIssueStaysInBacklog(t *testing.T) {
 	e, st := newTestEngine(t)
-	id, err := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 2)
+	id, err := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +118,8 @@ func TestDraftIssueStaysInBacklog(t *testing.T) {
 
 func TestUpdateIssueOnlyLegalFromBacklog(t *testing.T) {
 	e, st := newTestEngine(t)
-	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0)
-	if err := e.UpdateIssue(id, "t2", "b2", "default", "strict", levers.Matrix{}, 5); err != nil {
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.UpdateIssue(id, "t2", "b2", "default", "strict", levers.Matrix{}, 5, nil); err != nil {
 		t.Fatal(err)
 	}
 	row := issueRow(t, st, id)
@@ -129,18 +129,18 @@ func TestUpdateIssueOnlyLegalFromBacklog(t *testing.T) {
 	if !hasEvent(t, st, id, core.EvIssueUpdated) {
 		t.Fatal("no issue_updated event")
 	}
-	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0)
-	if err := e.UpdateIssue(rid, "x", "", "default", "regular", levers.Matrix{}, 0); err == nil {
+	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0, nil)
+	if err := e.UpdateIssue(rid, "x", "", "default", "regular", levers.Matrix{}, 0, nil); err == nil {
 		t.Fatal("update of non-draft succeeded")
 	}
-	if err := e.UpdateIssue("GH-999", "x", "", "default", "regular", levers.Matrix{}, 0); err == nil {
+	if err := e.UpdateIssue("GH-999", "x", "", "default", "regular", levers.Matrix{}, 0, nil); err == nil {
 		t.Fatal("update of unknown issue succeeded")
 	}
 }
 
 func TestAbandonDraft(t *testing.T) {
 	e, st := newTestEngine(t)
-	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0)
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0, nil)
 	if err := e.Abandon(id); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestAbandonDraft(t *testing.T) {
 
 func TestRehydrateKeepsDraftsInert(t *testing.T) {
 	e, st := newTestEngine(t)
-	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{"impl": "yolo"}, 3)
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{"impl": "yolo"}, 3, nil)
 	e2 := newEngineOver(t, st)
 	if err := e2.Rehydrate(); err != nil {
 		t.Fatal(err)
@@ -162,10 +162,10 @@ func TestRehydrateKeepsDraftsInert(t *testing.T) {
 	if hasEvent(t, st, id, core.EvStageFailed) {
 		t.Fatal("rehydrate marked draft failed")
 	}
-	if err := e2.UpdateIssue(id, "t2", "b", "default", "regular", levers.Matrix{}, 3); err != nil {
+	if err := e2.UpdateIssue(id, "t2", "b", "default", "regular", levers.Matrix{}, 3, nil); err != nil {
 		t.Fatal(err)
 	}
-	nid, _ := e2.CreateIssue("n", "", "default", levers.Matrix{}, 0)
+	nid, _ := e2.CreateIssue("n", "", "default", levers.Matrix{}, 0, nil)
 	if nid == id {
 		t.Fatal("id collision after rehydrate")
 	}
@@ -174,7 +174,7 @@ func TestRehydrateKeepsDraftsInert(t *testing.T) {
 func TestLaunchIssueRunsDraft(t *testing.T) {
 	e, st := newTestEngine(t)
 	useAutoLaunchFlow(e)
-	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 1)
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 1, nil)
 	if err := e.LaunchIssue(id); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestLaunchIssueRunsDraft(t *testing.T) {
 	if !hasEvent(t, st, id, core.EvIssueCreated) {
 		t.Fatal("launch did not emit issue_created")
 	}
-	if err := e.UpdateIssue(id, "x", "", "default", "regular", levers.Matrix{}, 0); err == nil {
+	if err := e.UpdateIssue(id, "x", "", "default", "regular", levers.Matrix{}, 0, nil); err == nil {
 		t.Fatal("update after launch succeeded")
 	}
 }
@@ -192,7 +192,7 @@ func TestLaunchIssueRejectsNonDrafts(t *testing.T) {
 	if err := e.LaunchIssue("GH-999"); err == nil {
 		t.Fatal("launched unknown issue")
 	}
-	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0)
+	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0, nil)
 	if err := e.LaunchIssue(rid); err == nil {
 		t.Fatal("launched a non-draft issue")
 	}
