@@ -427,3 +427,57 @@ func TestAbandonConfirmSendsOp(t *testing.T) {
 		t.Fatal("confirm not cleared after y")
 	}
 }
+
+// pressKeyCmd is pressKey but surfaces the returned command so tests can
+// detect a quit.
+func pressKeyCmd(t *testing.T, m Model, key string) (Model, tea.Cmd) {
+	t.Helper()
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+	return next.(Model), cmd
+}
+
+func isQuit(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	_, ok := cmd().(tea.QuitMsg)
+	return ok
+}
+
+func TestModalSwallowsQuitAndHelpKeys(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "n")
+	m2, cmd := pressKeyCmd(t, m, "q")
+	if isQuit(cmd) {
+		t.Fatal("q quit the app while the modal was open")
+	}
+	if m2.modal == nil || m2.modal.Title != "q" {
+		t.Fatalf("q was not typed into the modal: %+v", m2.modal)
+	}
+	m3, _ := pressKeyCmd(t, m2, "?")
+	if m3.help {
+		t.Fatal("? opened help while the modal was open")
+	}
+	if m3.modal.Title != "q?" {
+		t.Fatalf("? was not typed into the modal: %+v", m3.modal)
+	}
+}
+
+func TestBacklogSwallowsQuitAndHelpKeys(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	m2, cmd := pressKeyCmd(t, m, "q")
+	if isQuit(cmd) {
+		t.Fatal("q quit the app while the backlog was open")
+	}
+	if m2.backlog == nil {
+		t.Fatal("backlog closed on q")
+	}
+	m3, _ := pressKeyCmd(t, m2, "?")
+	if m3.help {
+		t.Fatal("? opened help while the backlog was open")
+	}
+	if m3.backlog == nil {
+		t.Fatal("backlog closed on ?")
+	}
+}

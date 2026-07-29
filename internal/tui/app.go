@@ -354,7 +354,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		key := msg.String()
-		if key == "q" || key == "ctrl+c" {
+		if key == "ctrl+c" {
 			return m, tea.Quit
 		}
 		// The help overlay is modal. It paints over the grid, so it has to
@@ -366,9 +366,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if key == "?" {
-			m.help = true
-			return m, nil
+		// The issue modal takes raw text and the backlog box owns its own
+		// keys, so q and ? belong to them while they're open — quitting or
+		// opening help under a live input reads as broken. ctrl+c above
+		// stays the global escape hatch.
+		if m.modal == nil && m.backlog == nil {
+			if key == "q" {
+				return m, tea.Quit
+			}
+			if key == "?" {
+				m.help = true
+				return m, nil
+			}
 		}
 		if m.modal != nil {
 			switch key {
