@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/weston6142/watchtower/internal/attach"
 	"github.com/weston6142/watchtower/internal/claude"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/engine"
@@ -145,19 +146,25 @@ func main() {
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		title := fs.String("title", "", "issue title")
+		body := fs.String("body", "", "issue body")
 		flowName := fs.String("flow", "default", "flow name")
 		preset := fs.String("preset", "regular", "yolo|regular|strict")
 		prio := fs.Int("priority", 0, "priority")
 		draft := fs.Bool("draft", false, "save to the backlog instead of starting")
+		var attachments attachFlag
+		fs.Var(&attachments, "attach", "attach a file to the issue (repeatable)")
 		fs.Parse(args)
+		resolved := mustResolveAttach(attachments)
 		c := mustDial(*data, *repoF)
 		defer c.Close()
 		if *draft {
-			r := mustDo(c, proto.Command{Op: "draft_issue", Title: *title, Flow: *flowName, Preset: *preset, Priority: *prio})
+			r := mustDo(c, proto.Command{Op: "draft_issue", Title: *title, Body: *body,
+				Flow: *flowName, Preset: *preset, Priority: *prio, Attach: resolved})
 			fmt.Println(r.IssueID)
 			break
 		}
-		r := mustDo(c, proto.Command{Op: "create_issue", Title: *title, Flow: *flowName, Preset: *preset, Priority: *prio})
+		r := mustDo(c, proto.Command{Op: "create_issue", Title: *title, Body: *body,
+			Flow: *flowName, Preset: *preset, Priority: *prio, Attach: resolved})
 		mustDo(c, proto.Command{Op: "start_issue", IssueID: r.IssueID})
 		fmt.Println(r.IssueID)
 	case "decisions":
@@ -590,6 +597,41 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 		}
 	}
 	return &runner.FakeRunner{Scripts: scripts}
+}
+
+// attachFlag collects a repeatable --attach.
+type attachFlag []string
+
+func (a *attachFlag) String() string { return strings.Join(*a, ",") }
+
+func (a *attachFlag) Set(value string) error {
+	*a = append(*a, value)
+	return nil
+}
+
+// mustResolveAttach resolves each --attach against the user's cwd before the
+// path goes on the wire: the daemon does not run here and must not guess. A
+// new issue has no existing attachments, so every entry is a path.
+func mustResolveAttach(entries []string) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		resolved, err := attach.ResolveEntry(entry, nil, cwd, home)
+		if err != nil {
+			fatal(err)
+		}
+		if resolved != "" {
+			out = append(out, resolved)
+		}
+	}
+	return out
 }
 
 func mustDo(c *proto.Client, cmd proto.Command) proto.Response {

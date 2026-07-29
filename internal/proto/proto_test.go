@@ -191,7 +191,7 @@ func TestBacklogOps(t *testing.T) {
 	for _, row := range r.Issues {
 		if row.ID == id {
 			found = true
-			if row.State != "backlog" || row.Title != "t2" || row.Priority != 5 {
+			if row.State != "backlog" || row.Title != "t2" || row.Priority != 5 || row.Body != "b2" {
 				t.Fatalf("row wrong after update: %+v", row)
 			}
 		}
