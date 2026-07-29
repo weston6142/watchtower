@@ -376,3 +376,230 @@ func TestIssueDetailReportsPackageModelNotAgentRefOverride(t *testing.T) {
 		t.Errorf("Detail.Effort = %q, want medium", r.Detail.Effort)
 	}
 }
+
+// reviewFlow mirrors the shape of .watchtower/flows/default.yaml's review
+// stage: three agents, parallel, heavy, worktree. A stage→one-package model is
+// wrong and this is the fixture that proves it.
+func reviewFlow() flow.Flow {
+	f, err := flow.Load("../flow/testdata/default.yaml")
+	if err != nil {
+		panic(err)
+	}
+	return f
+}
+
+func reviewPackages() map[string]pkgs.Package {
+	out := map[string]pkgs.Package{}
+	for _, name := range []string{"brainstorm", "spec-writer", "executor",
+		"clean-code-reviewer", "reviewer", "doc-writer"} {
+		out[name] = pkgs.Package{
+			Name: name, Model: "opus", Effort: "medium",
+			AllowedTools: []string{"Bash", "Read", "Edit"},
+			Prompt:       "Package " + name + ".\n\nSecond line.\n\nThird line.\nFourth line.\n",
+		}
+	}
+	return out
+}
+
+func fixtureRepoSetup() RepoSetup {
+	return RepoSetup{
+		Runner: "claude", Slots: 4, Budget: 0, PricePerMTok: 15,
+		ClaudeBin: "claude", TestCmd: "go test ./...",
+		Pull: true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
+	}
+}
+
+func TestSetupOutlineReportsResolvedRepoConfig(t *testing.T) {
+	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureRepoSetup())
+	r, err := c.Do(Command{Op: "setup_outline"})
+	if err != nil || !r.OK || r.Setup == nil {
+		t.Fatalf("setup_outline: %+v %v", r, err)
+	}
+	got := r.Setup.Repo
+	want := fixtureRepoSetup()
+	if got != want {
+		t.Fatalf("Repo = %+v, want %+v", got, want)
+	}
+	if r.Setup.Flow != "default" {
+		t.Errorf("Flow = %q, want default", r.Setup.Flow)
+	}
+}
+
+// The review stage has three agents. issue_detail shipped with an Agents[0]
+// bug; this is the regression guard for the inspector.
+func TestSetupOutlineCoversEveryAgentInStage(t *testing.T) {
+	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureRepoSetup())
+	r, _ := c.Do(Command{Op: "setup_outline"})
+	if r.Setup == nil {
+		t.Fatal("no setup view")
+	}
+	var review *StageSetup
+	for i := range r.Setup.Stages {
+		if r.Setup.Stages[i].Name == "review" {
+			review = &r.Setup.Stages[i]
+		}
+	}
+	if review == nil {
+		t.Fatal("no review stage in outline")
+	}
+	if len(review.Agents) != 3 {
+		t.Fatalf("review has %d agents, want 3", len(review.Agents))
+	}
+	if !review.Parallel || review.Completion != flow.CompletionAll || review.Workspace != "worktree" {
+		t.Errorf("review knobs wrong: %+v", *review)
+	}
+	for _, ag := range review.Agents {
+		if ag.Model != "opus" || ag.Effort != "medium" || ag.ThinkingTokens != "8192" {
+			t.Errorf("agent %s: %+v", ag.Package, ag)
+		}
+		if len(ag.PromptPreview) != 3 {
+			t.Errorf("agent %s preview has %d lines, want 3", ag.Package, len(ag.PromptPreview))
+		}
+		if ag.PromptLines == 0 {
+			t.Errorf("agent %s has no prompt line count", ag.Package)
+		}
+	}
+	// Every stage in the flow is reported, in flow order.
+	if len(r.Setup.Stages) != len(reviewFlow().Stages) {
+		t.Fatalf("got %d stages, want %d", len(r.Setup.Stages), len(reviewFlow().Stages))
+	}
+	for i, stg := range reviewFlow().Stages {
+		if r.Setup.Stages[i].Name != stg.Name {
+			t.Fatalf("stage %d is %q, want %q", i, r.Setup.Stages[i].Name, stg.Name)
+		}
+	}
+}
+
+func TestSetupOutlineReportsPackageModelNotAgentRefOverride(t *testing.T) {
+	c, _ := newConfigClient(t, overrideFlow(), overridePackages(), fixtureRepoSetup())
+	r, _ := c.Do(Command{Op: "setup_outline"})
+	if r.Setup == nil || len(r.Setup.Stages) != 1 || len(r.Setup.Stages[0].Agents) != 1 {
+		t.Fatalf("outline: %+v", r.Setup)
+	}
+	ag := r.Setup.Stages[0].Agents[0]
+	if ag.Model != "opus" {
+		t.Errorf("Model = %q, want opus (the package model)", ag.Model)
+	}
+	if ag.DeclaredModel != "sonnet" {
+		t.Errorf("DeclaredModel = %q, want sonnet (declared, not applied)", ag.DeclaredModel)
+	}
+	if ag.MaxTurns != 12 {
+		t.Errorf("MaxTurns = %d, want 12 reported as declared-and-unapplied", ag.MaxTurns)
+	}
+}
+
+// D1 exists for this test: if the inspector reported runner truth while
+// issue_detail kept the override, two surfaces in one TUI would print
+// different models for the same stage.
+func TestIssueDetailAgreesWithSetupOutlineOnModel(t *testing.T) {
+	c, s := newConfigClient(t, overrideFlow(), overridePackages(), fixtureRepoSetup())
+	r, err := c.Do(Command{Op: "create_issue", Title: "t", Flow: "default", Preset: "regular"})
+	if err != nil || !r.OK {
+		t.Fatalf("create: %+v %v", r, err)
+	}
+	id := r.IssueID
+	ev, err := core.NewEvent(core.EvStageStarted, id, map[string]any{"stage": "run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ev); err != nil {
+		t.Fatal(err)
+	}
+	detail, _ := c.Do(Command{Op: "issue_detail", IssueID: id})
+	outline, _ := c.Do(Command{Op: "setup_outline", IssueID: id})
+	if detail.Detail == nil || outline.Setup == nil {
+		t.Fatalf("detail=%+v outline=%+v", detail, outline)
+	}
+	// issue_detail only ever looks at Agents[0] of the stage it resolved.
+	want := outline.Setup.Stages[0].Agents[0].Model
+	if detail.Detail.Model != want {
+		t.Fatalf("issue_detail model %q, setup_outline model %q", detail.Detail.Model, want)
+	}
+}
+
+func TestSetupOutlineMarksMissingPackage(t *testing.T) {
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name: "run", Agents: []flow.AgentRef{{Package: "ghost"}},
+		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
+	}}}
+	c, _ := newConfigClient(t, f, map[string]pkgs.Package{}, fixtureRepoSetup())
+	r, _ := c.Do(Command{Op: "setup_outline"})
+	if r.Setup == nil {
+		t.Fatal("no setup view")
+	}
+	ag := r.Setup.Stages[0].Agents[0]
+	if ag.Package != "ghost" || !ag.Missing {
+		t.Fatalf("agent = %+v, want ghost with Missing", ag)
+	}
+	if ag.Model != "" || ag.Effort != "" || len(ag.AllowedTools) != 0 || len(ag.PromptPreview) != 0 {
+		t.Errorf("missing package carries effective fields: %+v", ag)
+	}
+}
+
+func TestSetupOutlineIssueScopedLevers(t *testing.T) {
+	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureRepoSetup())
+	r, err := c.Do(Command{Op: "create_issue", Title: "t", Flow: "default", Preset: "regular"})
+	if err != nil || !r.OK {
+		t.Fatalf("create: %+v %v", r, err)
+	}
+	id := r.IssueID
+	// set_lever persists through engine.SetLever → store.SetIssueLever, so
+	// store.Issues()[].Levers — where setupView reads — reflects it.
+	if r, _ = c.Do(Command{Op: "set_lever", IssueID: id, Stage: "review", Lever: "strict"}); !r.OK {
+		t.Fatalf("set_lever: %+v", r)
+	}
+	r, _ = c.Do(Command{Op: "setup_outline", IssueID: id})
+	if r.Setup == nil {
+		t.Fatal("no setup view")
+	}
+	if r.Setup.IssueID != id {
+		t.Errorf("IssueID = %q, want %q", r.Setup.IssueID, id)
+	}
+	for _, stg := range r.Setup.Stages {
+		if stg.Name == "review" {
+			if stg.Lever != "strict" {
+				t.Errorf("review lever = %q, want strict", stg.Lever)
+			}
+			continue
+		}
+		if stg.Lever == "strict" {
+			t.Errorf("stage %s leaked the review lever", stg.Name)
+		}
+	}
+}
+
+func TestSetupOutlineUnknownFlowAndIssue(t *testing.T) {
+	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureRepoSetup())
+	for _, tc := range []struct {
+		name string
+		cmd  Command
+		want string
+	}{
+		{"unknown flow", Command{Op: "setup_outline", Flow: "nope"}, "unknown flow nope"},
+		{"unknown issue", Command{Op: "setup_outline", IssueID: "GH-404"}, "unknown issue GH-404"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := c.Do(tc.cmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.OK || r.Error != tc.want {
+				t.Fatalf("got OK=%v err=%q, want error %q", r.OK, r.Error, tc.want)
+			}
+		})
+	}
+}
+
+// A server built without SetFlows must say so rather than returning an empty
+// panel that reads as a flow with no stages.
+func TestSetupOutlineWithoutFlowsLoaded(t *testing.T) {
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	sv := NewServer(nil, s)
+	if r := sv.exec(Command{Op: "setup_outline"}); r.OK || r.Error != "no flows loaded" {
+		t.Fatalf("got %+v, want error \"no flows loaded\"", r)
+	}
+}

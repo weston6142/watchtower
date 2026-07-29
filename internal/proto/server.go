@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/weston6142/watchtower/internal/archmap"
+	"github.com/weston6142/watchtower/internal/claude"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -274,6 +276,12 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{OK: true, Lines: []string{}}
 		}
 		return Response{OK: true, Lines: sv.transcript.Tail(cmd.IssueID, n)}
+	case "setup_outline":
+		view, err := sv.setupView(cmd)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Setup: view}
 	case "overview":
 		overview, err := sv.overview()
 		if err != nil {
@@ -381,4 +389,120 @@ func (sv *Server) effectiveAgent(ref flow.AgentRef) (pkg pkgs.Package, declaredM
 		declaredModel = ref.Model
 	}
 	return pkg, declaredModel, ok
+}
+
+// promptPreviewLines and promptPreviewRunes bound the per-agent preview that
+// rides in the outline response, so its size does not grow with package count.
+const (
+	promptPreviewLines = 3
+	promptPreviewRunes = 120
+)
+
+// setupView assembles the read-only picture of what the daemon is running for
+// one flow, optionally scoped to an issue so its per-stage levers show. It
+// reads the cached flows and packages — never the files on disk.
+func (sv *Server) setupView(cmd Command) (*SetupView, error) {
+	if sv.flows == nil {
+		return nil, errors.New("no flows loaded")
+	}
+	var issue store.IssueRow
+	scoped := false
+	if cmd.IssueID != "" {
+		issues, err := sv.st.Issues()
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range issues {
+			if candidate.ID == cmd.IssueID {
+				issue, scoped = candidate, true
+				break
+			}
+		}
+		if !scoped {
+			return nil, errors.New("unknown issue " + cmd.IssueID)
+		}
+	}
+	name := cmd.Flow
+	if name == "" && scoped {
+		name = issue.Flow
+	}
+	if name == "" {
+		name = "default"
+	}
+	f, ok := sv.flows[name]
+	if !ok {
+		// An explicit flow name that does not resolve is an error. An issue's
+		// own stale flow name falls back to default so the panel still opens —
+		// and SetupView.Flow names the flow actually shown, so the fallback is
+		// visible rather than silent.
+		if cmd.Flow != "" {
+			return nil, errors.New("unknown flow " + name)
+		}
+		if f, ok = sv.flows["default"]; !ok {
+			return nil, errors.New("unknown flow " + name)
+		}
+		name = "default"
+	}
+	view := &SetupView{Flow: name, Repo: sv.repoSetup}
+	if scoped {
+		view.IssueID, view.IssueTitle = issue.ID, issue.Title
+	}
+	for _, stg := range f.Stages {
+		ss := StageSetup{
+			Name: stg.Name, Gate: string(stg.Gate), Workspace: stg.Workspace,
+			Parallel: stg.Parallel, Completion: stg.Completion,
+			HeavySlot: stg.HeavySlot, MergeBarrier: stg.MergeBarrier,
+			Retries: stg.Retries, Artifacts: append([]string(nil), stg.Artifacts...),
+		}
+		if scoped {
+			ss.Lever = issue.Levers[stg.Name]
+		}
+		for _, ref := range stg.Agents {
+			ss.Agents = append(ss.Agents, sv.agentSetup(ref))
+		}
+		view.Stages = append(view.Stages, ss)
+	}
+	return view, nil
+}
+
+// agentSetup reports one agent's effective CLI settings, the fields watchtower
+// parses but never passes, and a short prompt preview.
+func (sv *Server) agentSetup(ref flow.AgentRef) AgentSetup {
+	out := AgentSetup{Package: ref.Package}
+	pkg, declaredModel, ok := sv.effectiveAgent(ref)
+	out.DeclaredModel = declaredModel
+	if !ok {
+		out.Missing = true
+		return out
+	}
+	out.Model, out.Effort = pkg.Model, pkg.Effort
+	out.ThinkingTokens = claude.ThinkingTokens(pkg.Effort)
+	out.AllowedTools = append([]string(nil), pkg.AllowedTools...)
+	out.MaxTurns = pkg.MaxTurns
+	body := strings.TrimSuffix(pkg.Prompt, "\n")
+	if body == "" {
+		return out
+	}
+	lines := strings.Split(body, "\n")
+	out.PromptLines = len(lines)
+	for _, line := range lines {
+		if len(out.PromptPreview) == promptPreviewLines {
+			break
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out.PromptPreview = append(out.PromptPreview, truncateRunes(line, promptPreviewRunes))
+	}
+	return out
+}
+
+// truncateRunes clips s to at most n runes. The preview is a hint on the wire,
+// not a rendering, so a plain rune cut is enough — no lipgloss in the daemon.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
