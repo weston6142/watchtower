@@ -12,8 +12,8 @@ The full sweep for a new lane-affecting event:
    Deleting a lane means `Issues`, `Order`, `ShippedToday`, `Parked`, *and* its
    decisions.
 5. `internal/proto/server.go` — the op name, if operators can trigger it.
-6. `cmd/guildhall/main.go` — the CLI verb, in the `ops` map beside
-   pause/resume/kill/retry/abandon.
+6. `cmd/watchtower/main.go` — the CLI verb, in the `ops` map beside
+   pause/resume/kill/retry/abandon/launch.
 7. `internal/tui/app.go` — the key handler, and the help overlay group (help
    goldens in `internal/tui/testdata/` change when a key is added; regenerate
    deliberately, never blanket `-update`).

@@ -1,16 +1,21 @@
-**The module path is not the project name.** The Go module is
-`github.com/weston6142/watchtower` and the git remote is
-`git@github.com:weston6142/watchtower.git`, while the repo directory, the
-binary, the CLI, and the product are all `guildhall`. Every internal import is
-`github.com/weston6142/watchtower/internal/...`. Writing
-`.../guildhall/internal/...` compiles to nothing found — check `go.mod` before
-inventing an import path.
+**Everything is named `watchtower` except the checkout directory.** The Go module
+is `github.com/weston6142/watchtower`, the remote is
+`git@github.com:weston6142/watchtower.git`, and the binary, the CLI, and the
+product are `watchtower` too — only the checkout directory is still `guildhall`.
+Every internal import is
+`github.com/weston6142/watchtower/internal/...`; writing
+`.../guildhall/internal/...` compiles to nothing found.
+
+`guildhall` survives only in the directory name and in this docs path
+(`docs/guildhall/`). Anything else you remember as `guildhall` — `cmd/guildhall`,
+a `guildhall` verb, a `.guildhall/` config dir — was renamed and no longer
+exists.
 
 Default branch is `develop`, not `main`.
 
 Layout:
 
-- `cmd/guildhall/` — single binary: CLI verbs, daemon, TUI entry.
+- `cmd/watchtower/` — single binary: CLI verbs, daemon, TUI entry.
 - `internal/core/` — event types; the shared contract.
 - `internal/engine/` — the Conductor: flow execution, stage runs, decisions,
   rehydration.
@@ -33,8 +38,10 @@ Layout:
   `internal/transcript/` (bounded per-stage agent output for the TUI's doors).
 - `internal/pkgs/` (agent packages: `package.yaml` + `prompt.md`),
   `internal/repocfg/` (repo registry + per-repo config),
-  `internal/scaffold/` (embedded defaults written by `guildhall init`).
-- `.guildhall/` — this repo's own flow + prompt packages (it runs on itself);
+  `internal/scaffold/` (embedded defaults written by `watchtower init`).
+- `internal/priority/` — the shared `low/normal/high/urgent` render vocabulary
+  over the stored int; see priority-levels.
+- `.watchtower/` — this repo's own flow + prompt packages (it runs on itself);
   `dist/packages/` holds the shipped defaults.
 
 The TUI is a pure client: it renders projected state and sends ops. It must

@@ -4,6 +4,12 @@ those drafts into one voice, resolves contradictions, and curates this
 directory. If you are not the librarian stage, do not edit `docs/` — put the
 draft in your worktree and let reconciliation place it.
 
+A draft only reaches the librarian if it is committed on the issue branch, so
+commit it at the repository root as `docs-draft-<topic>.md`. That path is the
+handoff channel, not a mistake: the librarian folds the content into
+`docs/guildhall/` in house style and deletes the root file in the same reconcile
+commit. Nothing named `docs-draft-*` should ever persist on `develop`.
+
 Where things live:
 
 - `docs/guildhall/*.md` — **this directory: curated project memory.** Every
@@ -13,7 +19,10 @@ Where things live:
   file, no top-level `#` heading (it would sit redundantly under the injected
   `##`), and only facts a stage would otherwise get *wrong* — not summaries of
   code a reader can see. Filenames are user-visible; keep them descriptive and
-  skip numeric prefixes.
+  skip numeric prefixes. Cross-reference sibling files by name in prose —
+  `[[wiki-link]]` syntax belongs to a different memory system and is not house
+  style here. Every file is a standing context tax on all future issues, so
+  compress: cut anything a stage could grep.
 - `docs/superpowers/specs/` and `docs/superpowers/plans/` — dated design specs
   and implementation plans, one pair per issue. **Historical records**: they
   describe what was decided then, and are not rewritten as the code moves. Only
