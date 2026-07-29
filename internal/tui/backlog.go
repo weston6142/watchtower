@@ -70,6 +70,9 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 	if height <= 0 {
 		height = backlogFallbackRows
 	}
+	// The call site clamps sel too, but an out-of-range sel here would page the
+	// window past the end and have the footer report 37–36 of 36.
+	sel = min(max(sel, 0), len(entries)-1)
 	paneBudget := max(height-backlogChromeRows-backlogFooterRows, backlogMinRows)
 
 	listWidth, detailWidth := inner, 0

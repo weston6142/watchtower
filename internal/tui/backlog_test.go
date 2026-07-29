@@ -219,13 +219,34 @@ func TestBacklogKeepsKeyHintsAtEveryWidth(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	for _, width := range []int{20, 40, 52, 56, 60, 80, 100, 200} {
 		out := ansi.Strip(renderBacklog(backlogDrafts(40), 0, width, 24))
+		found := false
 		for _, line := range strings.Split(out, "\n") {
-			if !strings.Contains(line, "enter") || !strings.Contains(line, "j/k") {
+			if !strings.Contains(line, "enter") {
 				continue
 			}
+			found = true
 			if !strings.Contains(line, "j/k  move") {
 				t.Errorf("%d cols: key hints truncated: %q", width, line)
 			}
+		}
+		if !found {
+			t.Errorf("%d cols: no hint line at all:\n%s", width, out)
+		}
+	}
+}
+
+// sel out of range is clamped rather than paging the window past the end, which
+// would empty the list and have the footer count backwards.
+func TestBacklogClampsSelOutOfRange(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	entries := backlogDrafts(36)
+	for _, sel := range []int{-4, 36, 400} {
+		out := ansi.Strip(renderBacklog(entries, sel, 120, 24))
+		if !strings.Contains(out, "draft<") {
+			t.Errorf("sel %d emptied the list:\n%s", sel, out)
+		}
+		if strings.Contains(out, "37–36") {
+			t.Errorf("sel %d counted backwards:\n%s", sel, out)
 		}
 	}
 }
