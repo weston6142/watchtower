@@ -33,7 +33,8 @@ Consequence for tests: `internal/tui/testdata/setup-*.golden` are geometry, not
 prose. The outline's content column is pinned at `setupRowWidth = 90` so a long
 tools list can never reflow the panel, and 90 + 4 cells of box chrome is what
 keeps it inside the 100-cell `narrow` snapshot; `setupChromeRows = 10` is what
-keeps the box shorter than the terminal, which `overlayCenter` requires to stay
-an overlay at all (see overlay-sizing). `fixtureSetup` also pins the load time
+keeps the box shorter than the terminal, which matters because `overlayCenter`
+degrades to `lipgloss.Place` — dropping the dimmed base, silently — once the box
+reaches the terminal's height. `fixtureSetup` also pins the load time
 for the same reason the render paths avoid clocks. Regenerate with `-update`
 deliberately and read the diff, the discipline the help goldens already need.
