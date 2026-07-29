@@ -107,6 +107,45 @@ func TestPlanSuffixesCollidingNames(t *testing.T) {
 	}
 }
 
+// A new file listed ahead of a retain of the same name must not steal it: the
+// retain would be silently dropped and the stored bytes overwritten.
+func TestPlanReservesRetainedNamesRegardlessOfOrder(t *testing.T) {
+	dir := t.TempDir()
+	existing := []store.AttachmentRow{{Name: "app.log", Size: 42, SourcePath: "/old/app.log"}}
+	set, err := Plan(existing, []string{writeFile(t, dir, "app.log", 1), "app.log"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := set.Names(); len(got) != 2 || got[0] != "app-2.log" || got[1] != "app.log" {
+		t.Fatalf("names = %v, want [app-2.log app.log]", got)
+	}
+	if !set.Items[1].Retained || set.Items[1].Size != 42 {
+		t.Fatalf("retained item lost: %+v", set.Items[1])
+	}
+}
+
+// The attach field is comma-separated, so a stored name holding a comma could
+// never be retained through the edit modal — the draft would be unsavable.
+func TestPlanRejectsACommaInTheFileName(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Plan(nil, []string{writeFile(t, dir, "report,final.png", 1)}); err == nil ||
+		!strings.Contains(err.Error(), "must not contain a comma") {
+		t.Fatalf("comma accepted: %v", err)
+	}
+	// Only the basename matters: a comma in a parent directory is harmless.
+	sub := filepath.Join(dir, "my,dir")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	set, err := Plan(nil, []string{writeFile(t, sub, "app.log", 1)})
+	if err != nil {
+		t.Fatalf("comma in a parent directory refused: %v", err)
+	}
+	if got := set.Names(); len(got) != 1 || got[0] != "app.log" {
+		t.Fatalf("names = %v", got)
+	}
+}
+
 func TestPlanRetainsByName(t *testing.T) {
 	existing := []store.AttachmentRow{{Name: "app.log", Size: 42, SourcePath: "/old/app.log"}}
 	set, err := Plan(existing, []string{" app.log "})

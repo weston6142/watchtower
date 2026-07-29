@@ -413,6 +413,7 @@ func (e *Engine) rollbackCreate(id string) {
 	delete(e.issues, id)
 	e.mu.Unlock()
 	_ = attach.DeleteAll(e.issueDir(id))
+	_ = e.cfg.Store.DeleteAttachments(id)
 }
 
 func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, priority int, attachments []string) (string, error) {
@@ -519,7 +520,21 @@ func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.
 		return err
 	}
 
+	// Re-check under the second lock: the draftness test above was released for
+	// the disk work, and the daemon serves each connection on its own goroutine,
+	// so the issue can be launched or abandoned in that window. Writing on
+	// regardless would push a running issue's row back to "backlog" or resurrect
+	// an abandoned one. Bailing here leaves the just-copied bytes orphaned, which
+	// is the failure this path deliberately prefers.
 	e.mu.Lock()
+	if current, ok := e.issues[id]; !ok || current != is {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", id)
+	}
+	if !is.draft {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is not in the backlog", id)
+	}
 	is.title, is.body, is.flowName, is.matrix, is.priority = title, body, flowName, m, priority
 	e.mu.Unlock()
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{

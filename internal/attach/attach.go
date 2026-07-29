@@ -64,6 +64,7 @@ func (s Set) Names() []string {
 func Plan(existing []store.AttachmentRow, entries []string) (Set, error) {
 	var set Set
 	taken := map[string]bool{}
+	reserved := reservedNames(existing, entries)
 	var total int64
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)
@@ -101,7 +102,16 @@ func Plan(existing []store.AttachmentRow, entries []string) (Set, error) {
 			return Set{}, fmt.Errorf("attachment %q: %s exceeds the 10 MiB per-file limit",
 				entry, humanBytes(info.Size()))
 		}
-		name := uniqueName(filepath.Base(entry), taken)
+		base := filepath.Base(entry)
+		// A comma in the stored name would be unrecoverable in the edit modal:
+		// the attach field is comma-separated, so the prefilled name would split
+		// into two entries that match nothing and the draft could never be saved
+		// again. Refuse it here, while the person is still at the keyboard. Only
+		// the basename matters — /tmp/my,dir/app.log stores as app.log.
+		if strings.ContainsRune(base, ',') {
+			return Set{}, fmt.Errorf("attachment %q: file name must not contain a comma", entry)
+		}
+		name := uniqueName(base, taken, reserved)
 		taken[name] = true
 		total += info.Size()
 		set.Items = append(set.Items, Item{Name: name, SourcePath: entry, Size: info.Size()})
@@ -135,17 +145,32 @@ func hasSeparator(entry string) bool {
 	return strings.ContainsRune(entry, '/') || strings.ContainsRune(entry, filepath.Separator)
 }
 
+// reservedNames is every name this call will retain, collected before the main
+// loop so a new file never steals a retained name it simply happens to be
+// listed ahead of. Without it, "/tmp/x/app.log, app.log" stores the new file as
+// app.log, overwriting the retained one's bytes and dropping it from the set.
+func reservedNames(existing []store.AttachmentRow, entries []string) map[string]bool {
+	reserved := map[string]bool{}
+	for _, entry := range entries {
+		if row, ok := retainRow(existing, strings.TrimSpace(entry)); ok {
+			reserved[row.Name] = true
+		}
+	}
+	return reserved
+}
+
 // uniqueName inserts a numeric suffix before the extension until the name is
-// free: app.log -> app-2.log; Makefile -> Makefile-2.
-func uniqueName(base string, taken map[string]bool) string {
-	if !taken[base] {
+// free: app.log -> app-2.log; Makefile -> Makefile-2. A name is free when no
+// item has taken it and no retain in this same call is holding it.
+func uniqueName(base string, taken, reserved map[string]bool) string {
+	if !taken[base] && !reserved[base] {
 		return base
 	}
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 	for n := 2; ; n++ {
 		candidate := fmt.Sprintf("%s-%d%s", stem, n, ext)
-		if !taken[candidate] {
+		if !taken[candidate] && !reserved[candidate] {
 			return candidate
 		}
 	}
