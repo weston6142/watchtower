@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
 )
 
@@ -157,6 +158,39 @@ func TestBacklogNarrowTerminalDropsDetailPane(t *testing.T) {
 	}
 	if strings.Contains(out, "body-of-second") {
 		t.Fatalf("detail pane rendered at 64 cols:\n%s", out)
+	}
+}
+
+// A body too tall for the pane says it was cut, rather than stopping mid
+// sentence and passing for the whole of it.
+func TestBacklogMarksClippedBody(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	entries := []*projection.IssueView{{ID: "GH-1", Title: "long one",
+		Body: strings.Repeat("sentence of body prose ", 60)}}
+	out := ansi.Strip(renderBacklog(entries, 0, 140, 22))
+	if !strings.Contains(out, "enter to read it all") {
+		t.Fatalf("clipped body not marked:\n%s", out)
+	}
+}
+
+// The height argument has to actually reach renderBacklog. A zero there still
+// renders a plausible box, and the fixture's two drafts make the goldens
+// byte-identical either way, so only View() at two real heights catches it.
+func TestViewPlumbsHeightIntoBacklog(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	visibleDrafts := func(height int) int {
+		m := FixtureModel("backlog", 120, height)
+		for i := 0; i < 40; i++ {
+			ev, _ := core.NewEvent(core.EvIssueDrafted, fmt.Sprintf("GH-%d", 100+i),
+				map[string]any{"title": fmt.Sprintf("draft<%d>", i), "body": "b",
+					"flow": "default", "preset": "regular", "priority": 1})
+			m.State.Apply(ev)
+		}
+		return strings.Count(ansi.Strip(m.View()), "draft<")
+	}
+	short, tall := visibleDrafts(24), visibleDrafts(60)
+	if tall <= short {
+		t.Fatalf("taller terminal showed no more drafts: %d at 60 rows vs %d at 24", tall, short)
 	}
 }
 

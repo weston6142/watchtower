@@ -51,8 +51,10 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 	inner := min(max(width-backlogChromeCols, backlogMinInner), backlogMaxInner)
 	contentRows := max(height-backlogChromeRows, backlogMinRows+2)
 
+	// An empty backlog has nothing to detail, so it keeps the whole width for its
+	// one line rather than ruling off a blank pane.
 	listWidth, detailWidth := inner, 0
-	if inner >= backlogSplitInner {
+	if inner >= backlogSplitInner && len(entries) > 0 {
 		detailWidth = max(backlogDetailInner, inner/3)
 		listWidth = max(backlogMinInner, inner-detailWidth-3)
 	}
@@ -64,6 +66,7 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 	// Height is content-driven but capped: filling a tall terminal with blank
 	// rows for two drafts would be worse than the box being small.
 	paneRows := max(backlogMinRows, min(contentRows-2, max(max(len(entries), 1), len(detail))))
+	detail = backlogClipDetail(detail, paneRows, detailWidth)
 
 	start := backlogWindowStart(sel, len(entries), paneRows)
 	list := backlogRows(entries, sel, start, min(start+paneRows, len(entries)), listWidth)
@@ -80,7 +83,19 @@ func backlogWindowStart(sel, count, rows int) int {
 	if count <= rows || rows <= 0 {
 		return 0
 	}
-	return min(max(sel, 0)/rows*rows, count-1)
+	return max(sel, 0) / rows * rows
+}
+
+// backlogClipDetail trims the detail pane to the rows it has, marking the cut.
+// The list says "1–10 of 40" when it clips, so a long body must not just stop
+// mid-sentence and look like the whole of it.
+func backlogClipDetail(detail []string, rows, width int) []string {
+	if len(detail) <= rows || rows <= 0 {
+		return detail
+	}
+	clipped := append([]string(nil), detail[:rows-1]...)
+	return append(clipped, lipgloss.NewStyle().Foreground(activeTheme.Dim).
+		Render(padCell("… enter to read it all", width)))
 }
 
 // backlogRows renders entries[start:end] as cursor rows padded to width, so the
