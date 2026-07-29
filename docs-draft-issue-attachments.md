@@ -31,7 +31,7 @@ task changed.
 - **Materialization never cleans up.** A reused pooled worktree can keep a file
   that has since been dropped from the set. `ISSUE.md` lists only the current
   set and `ISSUE.md` is the contract; the directory listing is not.
-- **A repo with its own `attachments/` directory is refused loudly.** Guildhall
+- **A repo with its own `attachments/` directory is refused loudly.** Watchtower
   drops an empty `.watchtower` marker in any attachments dir it created; a
   non-empty unmarked dir makes the stage fail rather than overwrite tracked
   files.
