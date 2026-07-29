@@ -661,3 +661,28 @@ func TestResolveModalAttachRetainsExistingNames(t *testing.T) {
 		t.Fatalf("resolved = %v", got)
 	}
 }
+
+// Paths are full of h and l — /Users, .log, html — and the priority cycler
+// claims both keys. It is guarded on priorityField, so reaching attach through
+// the real key router (not modalState.input directly) must insert them as text
+// and leave the priority chooser alone.
+func TestAttachFieldTakesHAndLThroughKeyRouter(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "n")
+	for i := 0; i < attachField; i++ {
+		m = pressKey(t, m, "tab")
+	}
+	if m.modal == nil || m.modal.Field != attachField {
+		t.Fatalf("attach field not focused: %+v", m.modal)
+	}
+	const path = "/tmp/html/app.log"
+	for _, r := range path {
+		m = pressKey(t, m, string(r))
+	}
+	if m.modal.Attach != path {
+		t.Fatalf("Attach = %q, want %q", m.modal.Attach, path)
+	}
+	if m.modal.Priority != 0 {
+		t.Fatalf("typing a path cycled Priority to %d", m.modal.Priority)
+	}
+}
