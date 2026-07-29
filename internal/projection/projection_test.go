@@ -213,3 +213,47 @@ func TestPausedEventWithoutStageLeavesCurrentStage(t *testing.T) {
 		t.Fatalf("paused=%v state=%q", iv.Paused, iv.State)
 	}
 }
+
+func TestBacklogLifecycle(t *testing.T) {
+	s := NewState()
+	drafted := ev(t, core.EvIssueDrafted, "GH-1", map[string]any{
+		"title": "t", "body": "b", "flow": "default", "preset": "regular", "priority": 2})
+	s.Apply(drafted)
+	iv := s.Issues["GH-1"]
+	if iv == nil || iv.State != "backlog" || iv.Priority != 2 || iv.Body != "b" || iv.Preset != "regular" {
+		t.Fatalf("draft view wrong: %+v", iv)
+	}
+	if len(s.Order) != 0 {
+		t.Fatal("draft leaked into grid Order")
+	}
+	if len(s.Backlog) != 1 || s.Backlog[0] != "GH-1" {
+		t.Fatalf("Backlog = %v", s.Backlog)
+	}
+
+	updated := ev(t, core.EvIssueUpdated, "GH-1", map[string]any{
+		"title": "t2", "body": "b2", "flow": "default", "preset": "strict", "priority": 9})
+	s.Apply(updated)
+	iv = s.Issues["GH-1"]
+	if iv.Title != "t2" || iv.Priority != 9 || iv.Preset != "strict" || iv.Body != "b2" {
+		t.Fatalf("update not applied: %+v", iv)
+	}
+
+	created := ev(t, core.EvIssueCreated, "GH-1", map[string]any{
+		"title": "t2", "flow": "default", "body": "b2", "priority": 9})
+	s.Apply(created)
+	if len(s.Backlog) != 0 {
+		t.Fatal("launched draft still in Backlog")
+	}
+	if len(s.Order) != 1 || s.Issues["GH-1"].State != "running" {
+		t.Fatal("launched draft not on the grid")
+	}
+}
+
+func TestAbandonRemovesDraftFromBacklog(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueDrafted, "GH-1", map[string]any{"title": "t"}))
+	s.Apply(ev(t, core.EvIssueAbandoned, "GH-1", nil))
+	if len(s.Backlog) != 0 || s.Issues["GH-1"] != nil {
+		t.Fatal("abandoned draft still visible")
+	}
+}

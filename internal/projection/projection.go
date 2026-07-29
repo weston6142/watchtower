@@ -18,6 +18,9 @@ type IssueView struct {
 	LastError    string
 	Completed    []string
 	Tokens       int
+	Priority     int
+	Body         string
+	Preset       string
 	Behind       string
 	Merged       bool
 	Unmerged     bool
@@ -53,6 +56,7 @@ type State struct {
 	Notices       []Notice
 	ShippedToday  []string
 	Parked        []string
+	Backlog       []string
 }
 
 func NewState() *State {
@@ -69,9 +73,23 @@ func (s *State) Apply(ev core.Event) {
 
 	iv := s.Issues[ev.IssueID]
 	switch ev.Type {
+	case core.EvIssueDrafted, core.EvIssueUpdated:
+		view := s.Issues[ev.IssueID]
+		if view == nil {
+			view = &IssueView{ID: ev.IssueID, AreaWeights: map[string]int{}}
+			s.Issues[ev.IssueID] = view
+			appendUnique(&s.Backlog, ev.IssueID)
+		}
+		view.Title = str("title")
+		view.Flow = str("flow")
+		view.Body = str("body")
+		view.Preset = str("preset")
+		view.Priority = int(num("priority"))
+		view.State = "backlog"
 	case core.EvIssueCreated:
 		s.Issues[ev.IssueID] = &IssueView{ID: ev.IssueID, Title: str("title"), Flow: str("flow"), State: "running", AreaWeights: map[string]int{}}
 		s.Order = append(s.Order, ev.IssueID)
+		removeString(&s.Backlog, ev.IssueID)
 	case core.EvStageStarted:
 		if iv != nil {
 			iv.CurrentStage = str("stage")
@@ -170,6 +188,7 @@ func (s *State) Apply(ev core.Event) {
 		removeString(&s.Order, ev.IssueID)
 		removeString(&s.ShippedToday, ev.IssueID)
 		removeString(&s.Parked, ev.IssueID)
+		removeString(&s.Backlog, ev.IssueID)
 		for id, d := range s.Decisions {
 			if d.IssueID == ev.IssueID {
 				delete(s.Decisions, id)
