@@ -39,6 +39,13 @@ task changed.
   25 MiB per issue. Validation runs before an ID is allocated, so a rejected
   create burns nothing.
 
+Correction to docs-ownership, which describes `ISSUE.md` as issue header + body
+then the injected project memory: **there is now a third block.** The order is
+header + body, then the attachments section, then project memory — the file list
+sits adjacent to the issue it belongs to and ahead of the memory dump. This one
+matters because docs-ownership is itself injected into every stage's `ISSUE.md`,
+so the stale description ships to every future issue.
+
 Correction to lane-ops-and-issue-states, which says abandon keeps everything on
 disk: **abandon now purges attachments.** `Engine.Abandon` deletes the issue's
 attachment bytes and rows — the one on-disk deletion it performs. Issue rows,
