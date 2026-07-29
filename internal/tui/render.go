@@ -106,18 +106,30 @@ func parkedHint(st *projection.State, ids map[string]Identity) string {
 	return ""
 }
 
+// visibleOrder returns issue IDs still on the grid — retired lanes live on the shelf.
+func visibleOrder(st *projection.State, retired map[string]bool) []string {
+	if st == nil {
+		return nil
+	}
+	out := make([]string, 0, len(st.Order))
+	for _, id := range st.Order {
+		if st.Issues[id] == nil || retired[id] {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
 // floorCards returns issue IDs on a rendered stage floor in creation order.
-func floorCards(st *projection.State, stages []string, floor int) []string {
+func floorCards(st *projection.State, stages []string, floor int, retired map[string]bool) []string {
 	if st == nil || floor <= 0 || floor > len(stages) {
 		return nil
 	}
 	stage := stages[floor-1]
 	var out []string
-	for _, id := range st.Order {
+	for _, id := range visibleOrder(st, retired) {
 		iv := st.Issues[id]
-		if iv == nil {
-			continue
-		}
 		current := iv.CurrentStage
 		if iv.State == "done" || iv.Merged {
 			current = stages[len(stages)-1]
@@ -300,27 +312,20 @@ func withEdgeGutters(content string, left, right []string) string {
 }
 
 func renderTower(st *projection.State, stages []string, ids map[string]Identity, focus Focus, tick, width int) string {
-	return renderTowerConfigured(st, stages, ids, focus, nil, false, tick, width, false)
+	return renderTowerConfigured(st, stages, ids, focus, nil, false, tick, width, false, nil)
 }
 
-func renderTowerConfigured(st *projection.State, stages []string, ids map[string]Identity, focus Focus, aliases map[string]string, reducedMotion bool, tick, width int, warExpanded bool) string {
+func renderTowerConfigured(st *projection.State, stages []string, ids map[string]Identity, focus Focus, aliases map[string]string, reducedMotion bool, tick, width int, warExpanded bool, retired map[string]bool) string {
 	if st == nil {
 		st = projection.NewState()
 	}
 	lines := append(warRoomLines(st, ids, warExpanded), "MAP · "+mapInsight(st.Issues)+" · a full map")
-	if len(st.Order) == 0 {
+	allIssueIDs := visibleOrder(st, retired)
+	if len(allIssueIDs) == 0 {
 		for _, stage := range stages {
 			lines = append(lines, stageLabel(aliases, stage)+"  "+themeDim.Render("—"))
 		}
 		return boundedLines(lines, width)
-	}
-	var allIssueIDs []string
-	for _, id := range st.Order {
-		iv := st.Issues[id]
-		if iv == nil {
-			continue
-		}
-		allIssueIDs = append(allIssueIDs, id)
 	}
 	focusIndex := 0
 	for i, id := range allIssueIDs {
@@ -374,19 +379,17 @@ func stageLabel(aliases map[string]string, stage string) string {
 // renderRows is the wide, one-row-per-issue orientation. It calls the same
 // cell state renderer as the tower so wording cannot drift between views.
 func renderRows(st *projection.State, stages []string, ids map[string]Identity, focus Focus, tick, width int) string {
-	return renderRowsConfigured(st, stages, ids, focus, false, tick, width)
+	return renderRowsConfigured(st, stages, ids, focus, false, tick, width, nil)
 }
 
-func renderRowsConfigured(st *projection.State, stages []string, ids map[string]Identity, focus Focus, reducedMotion bool, tick, width int) string {
+func renderRowsConfigured(st *projection.State, stages []string, ids map[string]Identity, focus Focus, reducedMotion bool, tick, width int, retired map[string]bool) string {
 	if st == nil {
 		st = projection.NewState()
 	}
 	lines := []string{"ROWS · z tower"}
-	for _, issueID := range st.Order {
+	issueIDs := visibleOrder(st, retired)
+	for _, issueID := range issueIDs {
 		iv := st.Issues[issueID]
-		if iv == nil {
-			continue
-		}
 		identity := ids[issueID]
 		prefix := identity.Tag + " " + iv.Title + " · "
 		var cells []string
@@ -400,7 +403,7 @@ func renderRowsConfigured(st *projection.State, stages []string, ids map[string]
 		}
 		lines = append(lines, truncate(line, width))
 	}
-	if len(st.Order) == 0 {
+	if len(issueIDs) == 0 {
 		lines = append(lines, themeDim.Render("—"))
 	}
 	return boundedLines(lines, width)

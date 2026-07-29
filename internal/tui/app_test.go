@@ -125,6 +125,53 @@ func TestShelfAutoRetiresAndUnretiresMergedIssue(t *testing.T) {
 	}
 }
 
+// retireModel poses two merged lanes on the grid's last floor, both focusable.
+func retireModel(t *testing.T) Model {
+	t.Helper()
+	m := NewModel(nil, []string{"spec", "merge"})
+	m.State.Order = []string{"GH-1", "GH-2"}
+	for _, id := range m.State.Order {
+		m.State.Issues[id] = &projection.IssueView{ID: id, Title: "shipped " + id, State: "done", Merged: true, MergedAt: time.Now()}
+		m.State.ShippedToday = append(m.State.ShippedToday, id)
+	}
+	m.Ids = map[string]Identity{"GH-1": {Tag: "G1"}, "GH-2": {Tag: "G2"}}
+	m.Width, m.Height = 120, 40
+	return m
+}
+
+func TestRetireHidesLaneFromGridAndRestoresItFromShelf(t *testing.T) {
+	m := retireModel(t)
+	m = pressKey(t, m, "1")
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("expected GH-1 focused, got %q", m.Focus.Issue)
+	}
+	m = pressKey(t, m, "c")
+	if cards := floorCards(m.State, m.stages, len(m.stages), m.retired); len(cards) != 1 || cards[0] != "GH-2" {
+		t.Fatalf("retired lane still on the grid: %v", cards)
+	}
+	if strings.Contains(renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, nil, false, 0, 100, false, m.retired), "GH-1") {
+		t.Fatal("tower still renders the retired lane")
+	}
+	if m.Focus.Issue == "GH-1" {
+		t.Fatal("focus stayed on the retired lane")
+	}
+
+	m = pressKey(t, m, "u")
+	m = pressKey(t, m, "enter")
+	if cards := floorCards(m.State, m.stages, len(m.stages), m.retired); len(cards) != 2 {
+		t.Fatalf("un-retire did not restore the lane: %v", cards)
+	}
+}
+
+func TestDigitKeysSkipRetiredLanes(t *testing.T) {
+	m := retireModel(t)
+	m.retired = map[string]bool{"GH-1": true}
+	m = pressKey(t, m, "1")
+	if m.Focus.Issue != "GH-2" {
+		t.Fatalf("digit key focused a hidden lane: %q", m.Focus.Issue)
+	}
+}
+
 func TestIssueOpKeysHintWhenNothingFocused(t *testing.T) {
 	m := NewModel(nil, []string{"brainstorm", "spec", "execute", "review", "merge"})
 	m = m.applyEvents([]core.Event{

@@ -22,24 +22,24 @@ func navModel(t *testing.T) Model {
 func TestMoveFocusAndAttention(t *testing.T) {
 	m := navModel(t)
 	f := Focus{Floor: 0}
-	f = moveFocus(f, m.State, m.stages, "j")
-	f = moveFocus(f, m.State, m.stages, "j")
+	f = moveFocus(f, m.State, m.stages, "j", nil)
+	f = moveFocus(f, m.State, m.stages, "j", nil)
 	if f.Issue != "GH-1" {
 		t.Fatalf("expected GH-1 focused, got %+v", f)
 	}
-	f = moveFocus(f, m.State, m.stages, "l")
+	f = moveFocus(f, m.State, m.stages, "l", nil)
 	if f.Issue != "GH-2" {
 		t.Fatalf("l: %+v", f)
 	}
-	f = moveFocus(f, m.State, m.stages, "l")
+	f = moveFocus(f, m.State, m.stages, "l", nil)
 	if f.Issue != "GH-2" {
 		t.Fatalf("clamp: %+v", f)
 	}
-	f = moveFocus(f, m.State, m.stages, "tab")
+	f = moveFocus(f, m.State, m.stages, "tab", nil)
 	if f.Issue != "GH-3" {
 		t.Fatalf("tab: %+v", f)
 	}
-	f = moveFocus(f, m.State, m.stages, "1")
+	f = moveFocus(f, m.State, m.stages, "1", nil)
 	if f.Issue != "GH-1" {
 		t.Fatalf("jump: %+v", f)
 	}

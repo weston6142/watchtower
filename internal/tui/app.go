@@ -583,7 +583,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.archMode = "full"
 			return m, m.fetchArch()
 		}
-		moved := moveFocus(m.Focus, m.State, m.stages, key)
+		moved := moveFocus(m.Focus, m.State, m.stages, key, m.retired)
 		if moved != m.Focus {
 			m.Err = ""
 			m.Focus = moved
@@ -736,7 +736,7 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 }
 
 func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
-	m.Focus = focusIssue(m.State, m.stages, issueID)
+	m.Focus = focusIssue(m.State, m.stages, issueID, m.retired)
 	m.Detail = nil
 	m.openArtifacts = true
 	if m.Toast != nil {
@@ -746,7 +746,7 @@ func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
 }
 
 func (m *Model) openEvidenceFor(issueID string, decisionID int64) tea.Cmd {
-	m.Focus = focusIssue(m.State, m.stages, issueID)
+	m.Focus = focusIssue(m.State, m.stages, issueID, m.retired)
 	m.Detail = nil
 	m.Evidence = nil
 	m.EvidenceTitle = issueID
@@ -1056,6 +1056,15 @@ func (m *Model) autoRetire(now time.Time) {
 			m.retired[issueID] = true
 		}
 	}
+	m.refocusVisible()
+}
+
+// refocusVisible pulls focus off a lane that has just left the grid, so the
+// rail can never keep rendering a lane the tower already dropped.
+func (m *Model) refocusVisible() {
+	if m.retired[m.Focus.Issue] {
+		m.Focus = resolveFocus(m.Focus, m.State, m.stages, m.retired)
+	}
 }
 
 func (m *Model) retireFocused() {
@@ -1068,6 +1077,7 @@ func (m *Model) retireFocused() {
 			m.retired = map[string]bool{}
 		}
 		m.retired[iv.ID] = true
+		m.refocusVisible()
 	}
 }
 
@@ -1201,9 +1211,9 @@ func (m Model) View() string {
 	}
 	railWidth := max(24, min(40, layoutWidth/3))
 	towerWidth := max(1, layoutWidth-railWidth-1)
-	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth, m.warExpanded)
+	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth, m.warExpanded, m.retired)
 	if m.rows {
-		tower = renderRowsConfigured(m.State, m.stages, m.Ids, m.Focus, m.reducedMotion, m.ticks, towerWidth)
+		tower = renderRowsConfigured(m.State, m.stages, m.Ids, m.Focus, m.reducedMotion, m.ticks, towerWidth, m.retired)
 	}
 	switch m.currentMode() {
 	case "decisions":

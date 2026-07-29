@@ -198,7 +198,7 @@ func TestStageAliases(t *testing.T) {
 		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
 		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
 	})
-	out := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, false, 0, 100, false)
+	out := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, false, 0, 100, false, nil)
 	if !strings.Contains(out, "AGREE") || strings.Contains(out, "SPEC") {
 		t.Fatalf("aliases not applied:\n%s", out)
 	}

@@ -6,14 +6,14 @@ import (
 	"github.com/weston6142/watchtower/internal/projection"
 )
 
-func resolveFocus(f Focus, st *projection.State, stages []string) Focus {
+func resolveFocus(f Focus, st *projection.State, stages []string, retired map[string]bool) Focus {
 	if f.Floor < 0 {
 		f.Floor = 0
 	}
 	if f.Floor > len(stages) {
 		f.Floor = len(stages)
 	}
-	cards := floorCards(st, stages, f.Floor)
+	cards := floorCards(st, stages, f.Floor, retired)
 	if len(cards) == 0 {
 		f.Card = 0
 		f.Issue = ""
@@ -29,9 +29,9 @@ func resolveFocus(f Focus, st *projection.State, stages []string) Focus {
 	return f
 }
 
-func focusIssue(st *projection.State, stages []string, issueID string) Focus {
+func focusIssue(st *projection.State, stages []string, issueID string, retired map[string]bool) Focus {
 	for floor := 1; floor <= len(stages); floor++ {
-		for card, id := range floorCards(st, stages, floor) {
+		for card, id := range floorCards(st, stages, floor, retired) {
 			if id == issueID {
 				return Focus{Floor: floor, Card: card, Issue: issueID}
 			}
@@ -41,25 +41,25 @@ func focusIssue(st *projection.State, stages []string, issueID string) Focus {
 }
 
 // moveFocus moves one flip at a time through the rendered floors and cards.
-func moveFocus(f Focus, st *projection.State, stages []string, key string) Focus {
-	f = resolveFocus(f, st, stages)
+func moveFocus(f Focus, st *projection.State, stages []string, key string, retired map[string]bool) Focus {
+	f = resolveFocus(f, st, stages, retired)
 	switch key {
 	case "j":
 		f.Floor++
 		f.Card = 0
-		return resolveFocus(f, st, stages)
+		return resolveFocus(f, st, stages, retired)
 	case "k":
 		f.Floor--
 		f.Card = 0
-		return resolveFocus(f, st, stages)
+		return resolveFocus(f, st, stages, retired)
 	case "h":
 		f.Card--
-		return resolveFocus(f, st, stages)
+		return resolveFocus(f, st, stages, retired)
 	case "l":
 		f.Card++
-		return resolveFocus(f, st, stages)
+		return resolveFocus(f, st, stages, retired)
 	case "g":
-		return resolveFocus(Focus{Floor: 0}, st, stages)
+		return resolveFocus(Focus{Floor: 0}, st, stages, retired)
 	case "tab":
 		items := attentionList(st)
 		if len(items) == 0 {
@@ -72,12 +72,12 @@ func moveFocus(f Focus, st *projection.State, stages []string, key string) Focus
 				break
 			}
 		}
-		return focusIssue(st, stages, items[(current+1)%len(items)])
+		return focusIssue(st, stages, items[(current+1)%len(items)], retired)
 	default:
 		if len(key) == 1 && key >= "1" && key <= "9" {
 			index := int(key[0] - '1')
-			if index < len(st.Order) {
-				return focusIssue(st, stages, st.Order[index])
+			if lanes := visibleOrder(st, retired); index < len(lanes) {
+				return focusIssue(st, stages, lanes[index], retired)
 			}
 		}
 	}
