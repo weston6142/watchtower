@@ -16,18 +16,36 @@ import (
 // assistant messages that exceed bufio.Scanner's default 64KiB limit.
 const maxLineBytes = 1 << 20
 
+// ThinkingTokens is the thinking-token budget an effort level maps to, as a
+// bare number. Exported for the setup inspector, which reports the budget
+// alongside the effort name; EffortEnv wraps it for the CLI so the two can
+// never disagree. Empty or unknown levels return "" (CLI default).
+func ThinkingTokens(effort string) string {
+	switch effort {
+	case "low":
+		return "1024"
+	case "medium":
+		return "8192"
+	case "high":
+		return "32768"
+	}
+	return ""
+}
+
 // EffortEnv maps a package effort level to the CLI's thinking-budget env var.
 // Empty or unknown levels return "" (CLI default).
 func EffortEnv(effort string) string {
-	switch effort {
-	case "low":
-		return "MAX_THINKING_TOKENS=1024"
-	case "medium":
-		return "MAX_THINKING_TOKENS=8192"
-	case "high":
-		return "MAX_THINKING_TOKENS=32768"
+	if tokens := ThinkingTokens(effort); tokens != "" {
+		return "MAX_THINKING_TOKENS=" + tokens
 	}
 	return ""
+}
+
+// TaskMessage is the first user message watchtower sends an agent. Exported so
+// the setup inspector can show it verbatim: it lives in Go source and is
+// invisible in the package files.
+func TaskMessage(stage, issueID string) string {
+	return fmt.Sprintf("Task: run the %s stage for issue %s. Read ISSUE.md in the current directory for the issue description; artifacts from earlier stages are alongside it. Work in the current directory.", stage, issueID)
 }
 
 // CodeRunner drives a claude CLI subprocess in stream-json mode, translating
@@ -91,7 +109,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		return runner.Result{Err: err}
 	}
 
-	task := fmt.Sprintf("Task: run the %s stage for issue %s. Read ISSUE.md in the current directory for the issue description; artifacts from earlier stages are alongside it. Work in the current directory.", stage, issueID)
+	task := TaskMessage(stage, issueID)
 	if _, err := stdin.Write(UserMessage(task)); err != nil {
 		cmd.Process.Kill()
 		return runner.Result{Err: err}
