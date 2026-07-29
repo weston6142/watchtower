@@ -1,4 +1,4 @@
 allowed_tools: ["Read", "Glob", "Grep", "Write"]
-model: "sonnet"
+model: "opus"
 effort: "medium"
 max_turns: 0

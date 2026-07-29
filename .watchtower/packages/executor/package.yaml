@@ -1,4 +1,4 @@
 allowed_tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
-model: "sonnet"
+model: "opus"
 effort: "medium"
 max_turns: 0
