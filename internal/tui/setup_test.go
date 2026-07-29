@@ -1,12 +1,15 @@
 package tui
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/proto"
 )
 
@@ -207,5 +210,148 @@ func TestSetupEmptyArtifactsRendersDash(t *testing.T) {
 	got := ansi.Strip(renderSetup(fixtureSetupState(), 120, 50))
 	if !strings.Contains(got, setupNoArtifacts) {
 		t.Errorf("missing %q in:\n%s", setupNoArtifacts, got)
+	}
+}
+
+// f opens from the grid only. Inside a door the door's key handler consumes it
+// first — the same rule d/t/e/T/u/z follow.
+func TestSetupKeyOpensPanelFromGrid(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	m = pressKey(t, m, "f")
+	if !m.wantSetup {
+		t.Fatal("f on the grid did not request the setup outline")
+	}
+
+	// laneModel focuses GH-1, so the door model uses the same id.
+	inDoor := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	inDoor = pressKey(t, inDoor, "e") // timeline door
+	if len(inDoor.modes) == 0 {
+		t.Fatal("timeline door did not open")
+	}
+	inDoor = pressKey(t, inDoor, "f")
+	if inDoor.wantSetup {
+		t.Fatal("f inside a door opened the setup panel")
+	}
+}
+
+// The panel paints over the grid, so it has to swallow the grid's keys —
+// otherwise p pauses a lane and x arms a kill behind a screen you cannot see.
+func TestSetupPanelSwallowsGridKeys(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	state := fixtureSetupState()
+	m.setup = &state
+	for _, key := range []string{"p", "x", "n", "b", "d", "t", "u", "z"} {
+		m = pressKey(t, m, key)
+		if m.setup == nil {
+			t.Fatalf("key %q closed the panel", key)
+		}
+		if m.confirm != nil || m.modal != nil || m.backlog != nil || len(m.modes) != 0 || m.rows {
+			t.Fatalf("key %q drove the screen beneath the panel", key)
+		}
+	}
+	m = pressKey(t, m, "esc")
+	if m.setup != nil {
+		t.Fatal("esc did not close the panel")
+	}
+}
+
+func TestSetupEnterTogglesStageAndOpensAgentPrompt(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm", "spec", "plan", "execute", "review", "merge"})
+	state := setupState{View: ptrSetupView(fixtureSetupView()), Expanded: map[string]bool{}}
+	m.setup = &state
+	m.Height = 50
+	// Sel 0 is the first stage row: enter expands it.
+	m = pressKey(t, m, "enter")
+	if !m.setup.Expanded["brainstorm"] {
+		t.Fatal("enter on a stage row did not expand it")
+	}
+	m = pressKey(t, m, "enter")
+	if m.setup.Expanded["brainstorm"] {
+		t.Fatal("enter on an expanded stage row did not collapse it")
+	}
+	// Expand review, move the cursor onto one of its agents, and check enter
+	// targets that agent rather than toggling a stage.
+	m.setup.Expanded["review"] = true
+	rows := setupRows(*m.setup.View, m.setup.Expanded)
+	sel := setupSelectable(rows)
+	agentIdx := -1
+	for i, r := range sel {
+		if rows[r].Kind == setupRowAgent && rows[r].Pkg == "reviewer" {
+			agentIdx = i
+			break
+		}
+	}
+	if agentIdx < 0 {
+		t.Fatal("no reviewer agent row")
+	}
+	m.setup.Sel = agentIdx
+	stage, pkg := m.setupPromptTarget()
+	if stage != "review" || pkg != "reviewer" {
+		t.Fatalf("enter would open %s/%s, want review/reviewer", stage, pkg)
+	}
+}
+
+// The panel yields to its own prompt pager. Both the key branch and the render
+// branch are compound, and this is the guard for both: a bare m.setup != nil
+// would swallow j/k/esc and win the View() if/else-if chain outright.
+func TestSetupPromptPagerScrollsAndEscReturnsToOutline(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm", "spec", "plan", "execute", "review", "merge"})
+	state := fixtureSetupState()
+	state.Sel = 4
+	m.setup = &state
+	m.Height = 20
+	lines := make([]string, 60)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("prompt line %d", i)
+	}
+	next, _ := m.Update(setupPromptMsg{stage: "review", pkg: "reviewer", lines: lines})
+	m = next.(Model)
+	if m.pager.Mode != "pager" || m.pager.Title != "review · reviewer · prompt" {
+		t.Fatalf("pager not opened from the prompt: %+v", m.pager)
+	}
+	m = pressKey(t, m, "j")
+	if m.pager.Top != 1 {
+		t.Fatalf("j did not scroll the prompt (Top=%d) — the panel swallowed it", m.pager.Top)
+	}
+	// The prompt must render, not the outline.
+	if !strings.Contains(ansi.Strip(m.View()), "prompt line 1") {
+		t.Fatal("View() rendered the outline over the open prompt")
+	}
+	m = pressKey(t, m, "esc")
+	if m.pager.Mode != "" || len(m.pager.Lines) != 0 {
+		t.Fatalf("esc left the pager open: %+v", m.pager)
+	}
+	if m.setup == nil {
+		t.Fatal("esc closed the outline instead of returning to it")
+	}
+	if m.setup.Sel != 4 {
+		t.Fatalf("outline cursor moved to %d — it must land back on the agent row", m.setup.Sel)
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "workspace treehouse") {
+		t.Fatal("outline did not reappear after esc")
+	}
+}
+
+func TestSetupErrorSurfacesInKeybarAndPanelStaysShut(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm"})
+	next, _ := m.Update(setupMsg{err: errors.New("unknown flow nope")})
+	m = next.(Model)
+	if m.setup != nil {
+		t.Fatal("panel opened on an error response")
+	}
+	if m.Err != "unknown flow nope" {
+		t.Fatalf("Err = %q, want the daemon's error", m.Err)
+	}
+	if m.wantSetup {
+		t.Fatal("wantSetup left set after an error")
 	}
 }
