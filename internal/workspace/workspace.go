@@ -12,6 +12,11 @@ import (
 // Acquire returns the workspace path and a release func that tears it down.
 type Provider interface {
 	Acquire(issueID string) (path string, release func() error, err error)
+	// Name is the provider's operator-facing name, reported by the setup
+	// inspector: workspace choice is invisible otherwise. On the interface
+	// rather than a type switch in main.go so the compiler catches a future
+	// provider that forgets to name itself.
+	Name() string
 }
 
 // GitWorktree provisions workspaces with `git worktree` under .worktrees/,
@@ -34,6 +39,8 @@ func (g GitWorktree) Acquire(issueID string) (string, func() error, error) {
 	}
 	return path, release, nil
 }
+
+func (g GitWorktree) Name() string { return "git worktree" }
 
 // Treehouse provisions workspaces via the `treehouse` CLI's lease mechanism.
 type Treehouse struct{ Repo string }
@@ -70,6 +77,8 @@ func (t Treehouse) Acquire(issueID string) (string, func() error, error) {
 	}
 	return path, release, nil
 }
+
+func (t Treehouse) Name() string { return "treehouse" }
 
 // Detect prefers treehouse when its binary is on PATH, falling back to
 // plain git worktrees otherwise.

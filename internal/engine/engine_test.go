@@ -236,6 +236,8 @@ func (f *fakeWS) Acquire(issueID string) (string, func() error, error) {
 	return f.dir, func() error { f.released++; return nil }, nil
 }
 
+func (f *fakeWS) Name() string { return "fake" }
+
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	runGit := func(args ...string) {

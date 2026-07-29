@@ -116,3 +116,21 @@ func TestTreehouseAcquireStartsFromDefaultTip(t *testing.T) {
 		t.Fatalf("issue branch at %s, want default tip %s", got, tip)
 	}
 }
+
+// The resolved provider is invisible otherwise: Detect picks treehouse purely
+// on PATH, and the operator has no way to see which one won. Name() is what the
+// setup inspector reports.
+func TestProviderNames(t *testing.T) {
+	if got := (Treehouse{}).Name(); got != "treehouse" {
+		t.Errorf("Treehouse.Name() = %q, want treehouse", got)
+	}
+	if got := (GitWorktree{}).Name(); got != "git worktree" {
+		t.Errorf("GitWorktree.Name() = %q, want %q", got, "git worktree")
+	}
+	// Detect must return something nameable — a provider that forgets Name()
+	// should be a compile error, and this asserts the interface carries it.
+	var p Provider = Detect(t.TempDir())
+	if p.Name() == "" {
+		t.Error("Detect returned an unnamed provider")
+	}
+}
