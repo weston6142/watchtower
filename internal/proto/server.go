@@ -302,6 +302,9 @@ func (sv *Server) overview() (Overview, error) {
 	out.NeedYou = len(pending)
 	for _, issue := range issues {
 		state := issue.State
+		if state == "done" || state == "abandoned" {
+			continue
+		}
 		if ev, ok := latest[issue.ID]; ok {
 			switch ev.Type {
 			case core.EvStageFailed:

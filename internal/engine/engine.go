@@ -810,6 +810,10 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 			Importance:  1.0,
 		}
 		if e.escalate(is.id, st.Name, d) != 0 {
+			if e.wasKilled(is) {
+				e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
+				return context.Canceled
+			}
 			err := fmt.Errorf("stage %s artifacts rejected", st.Name)
 			e.emit(core.EvStageFailed, is.id, map[string]any{
 				"stage": st.Name, "error": err.Error(), "attempt": of, "of": of, "final": true})

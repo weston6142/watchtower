@@ -2,6 +2,7 @@ package proto
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -220,5 +221,53 @@ func TestDraftNotCountedInOverview(t *testing.T) {
 	}
 	if r.Overview.Building != 0 || r.Overview.Failing != 0 || r.Overview.Queued != 0 {
 		t.Fatalf("draft counted in overview: %+v", r.Overview)
+	}
+}
+
+func TestOverviewIgnoresTrailingFailureForAbandonedIssue(t *testing.T) {
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: "GH-3", Title: "abandoned", State: "abandoned", Flow: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []core.EventType{core.EvIssueAbandoned, core.EvStageFailed} {
+		event, err := core.NewEvent(typ, "GH-3", map[string]string{"stage": "merge"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	socketDir, err := os.MkdirTemp("", "overview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(socketDir) })
+	sock := filepath.Join(socketDir, "watchtower.sock")
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go NewServer(nil, s).Serve(listener)
+
+	client, err := Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close() })
+	response, err := client.Do(Command{Op: "overview"})
+	if err != nil || !response.OK || response.Overview == nil {
+		t.Fatalf("overview: %v %+v", err, response)
+	}
+	if response.Overview.Failing != 0 || response.Overview.Building != 0 || response.Overview.NeedYou != 0 {
+		t.Fatalf("abandoned issue counted in overview: %+v", response.Overview)
 	}
 }

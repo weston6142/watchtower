@@ -63,8 +63,13 @@ func (r *Reporter) Idle() {
 }
 
 func stateFor(needYou, failing, building int) (state, message string) {
-	if n := needYou + failing; n > 0 {
-		return "blocked", fmt.Sprintf("%d need you", n)
+	switch {
+	case needYou > 0 && failing > 0:
+		return "blocked", fmt.Sprintf("%d need you, %d failing", needYou, failing)
+	case needYou > 0:
+		return "blocked", fmt.Sprintf("%d need you", needYou)
+	case failing > 0:
+		return "blocked", fmt.Sprintf("%d failing", failing)
 	}
 	if building > 0 {
 		return "working", fmt.Sprintf("%d building", building)

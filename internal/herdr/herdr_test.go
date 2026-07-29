@@ -112,8 +112,8 @@ func TestReportsBlockedWithDisplayName(t *testing.T) {
 	if p["pane_id"] != "w1:p1" || p["source"] != "custom:watchtower" || p["agent"] != "watchtower" {
 		t.Fatalf("identity params = %v", p)
 	}
-	if p["state"] != "blocked" || p["message"] != "3 need you" {
-		t.Fatalf("state/message = %v/%v, want blocked/3 need you", p["state"], p["message"])
+	if p["state"] != "blocked" || p["message"] != "2 need you, 1 failing" {
+		t.Fatalf("state/message = %v/%v, want blocked/2 need you, 1 failing", p["state"], p["message"])
 	}
 }
 
@@ -123,7 +123,8 @@ func TestStateMapping(t *testing.T) {
 		state, message             string
 	}{
 		{1, 0, 0, "blocked", "1 need you"},
-		{0, 2, 5, "blocked", "2 need you"},
+		{0, 2, 5, "blocked", "2 failing"},
+		{1, 2, 5, "blocked", "1 need you, 2 failing"},
 		{0, 0, 2, "working", "2 building"},
 		{0, 0, 0, "idle", ""},
 	}

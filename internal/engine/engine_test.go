@@ -963,6 +963,15 @@ func TestAbandonRunningIssueCancelsStage(t *testing.T) {
 			t.Fatal("decision row left pending after abandon")
 		}
 	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.IssueID == id && event.Type == core.EvStageFailed {
+			t.Fatalf("abandoned issue emitted stage failure: %s", event.Payload)
+		}
+	}
 }
 
 func TestAbandonUnknownIssue(t *testing.T) {
