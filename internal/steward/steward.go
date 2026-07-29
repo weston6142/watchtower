@@ -19,6 +19,17 @@ func (st *Steward) Observe(ev core.Event) {
 		v, _ := p[k].(string)
 		return v
 	}
+	leverMap := func() map[string]string {
+		out := map[string]string{}
+		if raw, ok := p["levers"].(map[string]any); ok {
+			for k, v := range raw {
+				if s, ok := v.(string); ok {
+					out[k] = s
+				}
+			}
+		}
+		return out
+	}
 	setState := func(state string) {
 		rows, err := st.Store.Issues()
 		if err != nil {
@@ -33,6 +44,12 @@ func (st *Steward) Observe(ev core.Event) {
 		}
 	}
 	switch ev.Type {
+	case core.EvIssueDrafted, core.EvIssueUpdated:
+		prio, _ := p["priority"].(float64)
+		_ = st.Store.UpsertIssue(store.IssueRow{
+			ID: ev.IssueID, Title: str("title"), Body: str("body"),
+			Flow: str("flow"), State: "backlog", Priority: int(prio),
+			Levers: leverMap()})
 	case core.EvIssueCreated:
 		prio, _ := p["priority"].(float64)
 		_ = st.Store.UpsertIssue(store.IssueRow{
