@@ -20,6 +20,36 @@ type Train struct {
 	Repo    string
 	TestCmd []string
 	Resolve func(ctx context.Context, issueID, branch string) error
+	// Pull enables SyncBase fast-forwarding the default branch from origin
+	// before an issue starts; Push publishes the default branch after a land.
+	Pull bool
+	Push bool
+}
+
+// hasOrigin reports whether the repo has an origin remote to sync against.
+func (tr *Train) hasOrigin() bool {
+	_, err := tr.git("remote", "get-url", "origin")
+	return err == nil
+}
+
+// SyncBase fast-forwards the default branch from origin so issues start from
+// the latest shared code. Fast-forward only: local commits ahead of origin or
+// a diverged branch return an error and leave the repo untouched.
+func (tr *Train) SyncBase() error {
+	if !tr.Pull || !tr.hasOrigin() {
+		return nil
+	}
+	def, err := tr.defaultBranch()
+	if err != nil {
+		return err
+	}
+	if out, err := tr.git("fetch", "-q", "origin", def); err != nil {
+		return fmt.Errorf("fetch origin %s: %v: %s", def, err, out)
+	}
+	if out, err := tr.git("merge", "--ff-only", "origin/"+def); err != nil {
+		return fmt.Errorf("fast-forward %s from origin: %v: %s", def, err, out)
+	}
+	return nil
 }
 
 func (tr *Train) git(args ...string) (string, error) {
@@ -68,7 +98,7 @@ func (tr *Train) Land(ctx context.Context, issueID, branch string) error {
 	}
 	err = attempt()
 	if err == nil {
-		return nil
+		return tr.push(def)
 	}
 	if tr.Resolve == nil || !errors.Is(err, errMergeConflict) {
 		return err
@@ -76,7 +106,23 @@ func (tr *Train) Land(ctx context.Context, issueID, branch string) error {
 	if rerr := tr.Resolve(ctx, issueID, branch); rerr != nil {
 		return fmt.Errorf("%v (repair failed: %v)", err, rerr)
 	}
-	return attempt()
+	if err := attempt(); err != nil {
+		return err
+	}
+	return tr.push(def)
+}
+
+// push publishes the default branch after a land. The merge is already on
+// disk, so a failed push surfaces as a Land error for the operator to retry
+// without rolling anything back.
+func (tr *Train) push(def string) error {
+	if !tr.Push {
+		return nil
+	}
+	if out, err := tr.git("push", "-q", "origin", def); err != nil {
+		return fmt.Errorf("push %s to origin: %v: %s", def, err, out)
+	}
+	return nil
 }
 
 // DeleteBranch removes a landed issue branch. It uses git's safe delete, so

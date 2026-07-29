@@ -80,3 +80,39 @@ func TestTreehouseAcquireChecksOutBranch(t *testing.T) {
 		t.Fatalf("worktree on %q, want issue/GH-7", got)
 	}
 }
+
+// A pre-warmed lane can be stale: the pool synced it before the repo's
+// default branch moved. The issue branch must start from the current tip.
+func TestTreehouseAcquireStartsFromDefaultTip(t *testing.T) {
+	repo := initRepo(t)
+	wt := filepath.Join(t.TempDir(), "leased")
+	head, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("git", "-C", repo, "worktree", "add", "--detach", wt, strings.TrimSpace(string(head))).CombinedOutput()
+	if err != nil {
+		t.Fatalf("worktree add: %v %s", err, out)
+	}
+	// the default branch moves on after the lane was warmed
+	if out, err := exec.Command("git", "-C", repo, "commit", "--allow-empty", "-q", "-m", "newer").CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v %s", err, out)
+	}
+
+	binDir := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = get ]; then echo " + wt + "; fi\n"
+	if err := os.WriteFile(filepath.Join(binDir, "treehouse"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	path, _, err := Treehouse{Repo: repo}.Acquire("GH-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tip, _ := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	got, _ := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output()
+	if string(got) != string(tip) {
+		t.Fatalf("issue branch at %s, want default tip %s", got, tip)
+	}
+}

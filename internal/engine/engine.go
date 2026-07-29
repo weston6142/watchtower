@@ -841,6 +841,13 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 	is.running = true
 	e.mu.Unlock()
 	f := e.cfg.Flows[is.flowName]
+	// Fresh issues should build on the latest shared code. Fast-forward only
+	// and non-fatal: a diverged or dirty base is reported, not a blocker.
+	if startIdx == 0 && e.cfg.Train != nil {
+		if err := e.cfg.Train.SyncBase(); err != nil {
+			e.emit(core.EvBaseStale, is.id, map[string]string{"error": err.Error()})
+		}
+	}
 	aborted := true
 	landed := false
 	defer func() {

@@ -1020,3 +1020,61 @@ func TestMergedIssueBranchIsDeleted(t *testing.T) {
 		t.Fatalf("issue branch survived the merge: %q", out)
 	}
 }
+
+// Agents must build on the latest shared code: an issue started while the
+// local default branch lags origin should fast-forward it first.
+func TestIssueStartFastForwardsBaseFromOrigin(t *testing.T) {
+	repo := t.TempDir()
+	gitc := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return string(out)
+	}
+	gitc(repo, "init", "-q", "-b", "main")
+	gitc(repo, "config", "user.email", "t@t")
+	gitc(repo, "config", "user.name", "t")
+	gitc(repo, "commit", "-q", "--allow-empty", "-m", "base")
+	remote := t.TempDir()
+	gitc(remote, "init", "-q", "--bare")
+	gitc(repo, "remote", "add", "origin", remote)
+	gitc(repo, "push", "-q", "origin", "main")
+	ahead := t.TempDir()
+	gitc(ahead, "clone", "-q", remote, ".")
+	gitc(ahead, "config", "user.email", "t@t")
+	gitc(ahead, "config", "user.name", "t")
+	gitc(ahead, "commit", "-q", "--allow-empty", "-m", "remote work")
+	gitc(ahead, "push", "-q", "origin", "main")
+
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{
+		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+			Gate: flow.GateAuto, Workspace: "worktree"},
+	}}
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	e := New(Config{
+		Store: s,
+		Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"execute/executor": {},
+		}},
+		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
+		DataDir:   t.TempDir(),
+		Workspace: workspace.GitWorktree{Repo: repo},
+		Train:     &marshal.Train{Repo: repo, Pull: true},
+	})
+	id, err := e.CreateIssue("freshness", "", "default", levers.Preset(f, flow.LeverYolo), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if log := gitc(repo, "log", "--oneline", "main"); !strings.Contains(log, "remote work") {
+		t.Fatalf("base not fast-forwarded before issue ran: %s", log)
+	}
+}

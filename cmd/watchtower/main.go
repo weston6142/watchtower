@@ -452,7 +452,8 @@ func runDaemon(args []string) {
 			res := <-run.Run(ctx, issueID, "conflict-repair", "conflict-resolver", wt, autoAnswerAsks())
 			return res.Err
 		}
-		train = &marshal.Train{Repo: repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve}
+		train = &marshal.Train{Repo: repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve,
+			Pull: cfg.Pull, Push: cfg.Push}
 		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "watchtower")}
 		reconcile = func(ctx context.Context, issueID string) error {
 			res := <-run.Run(ctx, issueID, "librarian", "librarian", repo, autoAnswerAsks())

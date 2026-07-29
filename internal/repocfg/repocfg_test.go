@@ -111,3 +111,27 @@ func TestRepoIDStableAndShort(t *testing.T) {
 		t.Fatal("ids collide")
 	}
 }
+
+func TestPullDefaultsOnPushDefaultsOff(t *testing.T) {
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Pull || cfg.Push {
+		t.Fatalf("want pull=true push=false by default, got %+v", cfg)
+	}
+}
+
+func TestPullPushOverridableInConfig(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".watchtower")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("pull: false\npush: true\n"), 0o644)
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Pull || !cfg.Push {
+		t.Fatalf("config overrides not applied: %+v", cfg)
+	}
+}

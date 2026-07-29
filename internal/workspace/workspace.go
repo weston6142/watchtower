@@ -50,9 +50,14 @@ func (t Treehouse) Acquire(issueID string) (string, func() error, error) {
 	path := strings.TrimSpace(string(out))
 	// Treehouse leases detached-HEAD worktrees; the merge train needs a real
 	// branch, so pin the lease to issue/<id> (-B resets a leftover branch from
-	// a prior lease of the same issue to the leased tip).
-	if co, err := exec.Command("git", "-C", path, "checkout", "-q", "-B", "issue/"+issueID).CombinedOutput(); err != nil {
-		return "", nil, fmt.Errorf("checkout issue branch: %v: %s", err, co)
+	// a prior lease of the same issue). Pre-warmed lanes can lag the default
+	// branch, so start from its current tip rather than the leased commit.
+	co := []string{"-C", path, "checkout", "-q", "-B", "issue/" + issueID}
+	if def, err := exec.Command("git", "-C", t.Repo, "symbolic-ref", "--short", "HEAD").Output(); err == nil {
+		co = append(co, strings.TrimSpace(string(def)))
+	}
+	if out, err := exec.Command("git", co...).CombinedOutput(); err != nil {
+		return "", nil, fmt.Errorf("checkout issue branch: %v: %s", err, out)
 	}
 	release := func() error {
 		cmd := exec.Command("treehouse", "return", path)

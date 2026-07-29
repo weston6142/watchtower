@@ -26,6 +26,7 @@ const (
 	EvIssueMerged          EventType = "issue_merged"
 	EvMergeSequenced       EventType = "merge_sequenced"
 	EvMergeStarted         EventType = "merge_started"
+	EvBaseStale            EventType = "base_stale"
 	EvMergeConflict        EventType = "merge_conflict"
 	EvDocsReconciled       EventType = "docs_reconciled"
 	EvArtifactProduced     EventType = "artifact_produced"

@@ -22,6 +22,8 @@ type Config struct {
 	ClaudeBin    string  `yaml:"claude_bin"`
 	TestCmd      string  `yaml:"test_cmd"`
 	Theme        string  `yaml:"theme"`
+	Pull         bool    `yaml:"pull"`
+	Push         bool    `yaml:"push"`
 }
 
 func Default() Config {
@@ -31,6 +33,9 @@ func Default() Config {
 		Runner:    "claude",
 		Slots:     4,
 		ClaudeBin: "claude",
+		// Fast-forwarding the base from origin is safe, so it defaults on;
+		// publishing merges is a bigger step, so pushing stays opt-in.
+		Pull: true,
 	}
 }
 

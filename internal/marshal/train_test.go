@@ -133,3 +133,77 @@ func TestDeleteBranchRefusesUnmergedBranch(t *testing.T) {
 		t.Fatal("unmerged branch was deleted")
 	}
 }
+
+// remoteFor turns repo into a clone of a fresh bare remote named origin.
+func remoteFor(t *testing.T, repo string) string {
+	t.Helper()
+	remote := t.TempDir()
+	git(t, remote, "init", "-q", "--bare")
+	git(t, repo, "remote", "add", "origin", remote)
+	git(t, repo, "push", "-q", "origin", "main")
+	return remote
+}
+
+func TestSyncBaseFastForwardsFromOrigin(t *testing.T) {
+	repo, _ := repoWithBranch(t, false)
+	remote := remoteFor(t, repo)
+	// advance the remote past the local main
+	ahead := t.TempDir()
+	git(t, ahead, "clone", "-q", remote, ".")
+	git(t, ahead, "config", "user.email", "t@t")
+	git(t, ahead, "config", "user.name", "t")
+	git(t, ahead, "commit", "-q", "--allow-empty", "-m", "remote work")
+	git(t, ahead, "push", "-q", "origin", "main")
+
+	tr := &Train{Repo: repo, Pull: true}
+	if err := tr.SyncBase(); err != nil {
+		t.Fatal(err)
+	}
+	if log := git(t, repo, "log", "--oneline", "main"); !strings.Contains(log, "remote work") {
+		t.Fatalf("main not fast-forwarded: %s", log)
+	}
+}
+
+func TestSyncBaseWithoutRemoteIsNoop(t *testing.T) {
+	repo, _ := repoWithBranch(t, false)
+	tr := &Train{Repo: repo, Pull: true}
+	if err := tr.SyncBase(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncBaseDisabledIsNoop(t *testing.T) {
+	repo, _ := repoWithBranch(t, false)
+	remoteFor(t, repo)
+	tr := &Train{Repo: repo}
+	if err := tr.SyncBase(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLandPushesWhenEnabled(t *testing.T) {
+	repo, branch := repoWithBranch(t, false)
+	remote := remoteFor(t, repo)
+	tr := &Train{Repo: repo, Push: true}
+	if err := tr.Land(context.Background(), "GH-1", branch); err != nil {
+		t.Fatal(err)
+	}
+	local := strings.TrimSpace(git(t, repo, "rev-parse", "main"))
+	pushed := strings.TrimSpace(git(t, remote, "rev-parse", "main"))
+	if local != pushed {
+		t.Fatalf("remote main %s != local main %s after Land", pushed, local)
+	}
+}
+
+func TestLandDoesNotPushByDefault(t *testing.T) {
+	repo, branch := repoWithBranch(t, false)
+	remote := remoteFor(t, repo)
+	pre := strings.TrimSpace(git(t, remote, "rev-parse", "main"))
+	tr := &Train{Repo: repo}
+	if err := tr.Land(context.Background(), "GH-1", branch); err != nil {
+		t.Fatal(err)
+	}
+	if post := strings.TrimSpace(git(t, remote, "rev-parse", "main")); post != pre {
+		t.Fatalf("remote main moved without push enabled: %s -> %s", pre, post)
+	}
+}
