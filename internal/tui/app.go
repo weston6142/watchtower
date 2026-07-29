@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/weston6142/watchtower/internal/archmap"
+	"github.com/weston6142/watchtower/internal/attach"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -477,7 +478,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// someone opened it would lose data silently. The first
 					// h/l moves it into the set.
 					m.modal = &modalState{EditID: iv.ID, Title: iv.Title, Body: iv.Body,
-						FlowName: iv.Flow, Preset: iv.Preset, Priority: iv.Priority}
+						FlowName: iv.Flow, Preset: iv.Preset, Priority: iv.Priority,
+						Attach: strings.Join(iv.Attachments, ", "), OrigAttach: iv.Attachments}
 					m.backlog = nil
 				}
 			case "l":
@@ -819,6 +821,21 @@ func (m Model) applyLevers() tea.Cmd {
 	}
 }
 
+// resolveModalAttach turns the attach field's text into what the daemon wants:
+// absolute paths, plus the bare names of attachments being retained. The cwd
+// and home come from the client because the daemon has neither.
+func resolveModalAttach(modal modalState) ([]string, error) {
+	if strings.TrimSpace(modal.Attach) == "" {
+		return nil, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	home, _ := os.UserHomeDir()
+	return attach.Resolve(modal.Attach, modal.OrigAttach, cwd, home)
+}
+
 func (m Model) createIssue(modal modalState) tea.Cmd {
 	if m.client == nil {
 		return nil
@@ -831,9 +848,15 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 	if preset == "" {
 		preset = "regular"
 	}
+	attachments, err := resolveModalAttach(modal)
+	if err != nil {
+		return func() tea.Msg { return createIssueMsg{err: err} }
+	}
 	client := m.client
 	return func() tea.Msg {
-		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title, Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority})
+		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title,
+			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority,
+			Attach: attachments})
 		if err != nil {
 			return createIssueMsg{err: err}
 		}
@@ -872,10 +895,15 @@ func (m Model) modalCommand(modal modalState, op, issueID string) tea.Cmd {
 	if preset == "" {
 		preset = "regular"
 	}
+	attachments, err := resolveModalAttach(modal)
+	if err != nil {
+		return func() tea.Msg { return createIssueMsg{err: err} }
+	}
 	client := m.client
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: op, IssueID: issueID, Title: modal.Title,
-			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority})
+			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority,
+			Attach: attachments})
 		return createIssueMsg{response: r, err: err}
 	}
 }

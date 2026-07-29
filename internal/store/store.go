@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS decisions(
   answered_by TEXT, blocking_cost INTEGER, created_at TEXT);
 CREATE TABLE IF NOT EXISTS proposals(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, title TEXT, body TEXT, status TEXT);
+CREATE TABLE IF NOT EXISTS attachments(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, name TEXT,
+  size INTEGER, source_path TEXT, added_at TEXT, ord INTEGER);
+CREATE INDEX IF NOT EXISTS attachments_issue ON attachments(issue_id);
 `
 
 type Store struct {
@@ -68,6 +72,19 @@ type ProposalRow struct {
 	Title   string
 	Body    string
 	Status  string
+}
+
+// AttachmentRow is one attachment's metadata. Bytes live on disk under the
+// issue dir, never in SQLite; SourcePath is provenance for operator debugging
+// and nothing reads it to locate a file.
+type AttachmentRow struct {
+	ID         int64
+	IssueID    string
+	Name       string
+	Size       int64
+	SourcePath string
+	AddedAt    time.Time
+	Ord        int
 }
 
 type IssueRow struct {
@@ -491,6 +508,65 @@ func (s *Store) Issues() ([]IssueRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ReplaceAttachments swaps an issue's whole attachment set in one transaction,
+// numbering ord by index. Rows are cheap and bytes are not, so churning rows on
+// every edit is fine and keeps display order equal to the order typed.
+func (s *Store) ReplaceAttachments(issueID string, rows []AttachmentRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM attachments WHERE issue_id=?`, issueID); err != nil {
+		return err
+	}
+	for i, r := range rows {
+		at := r.AddedAt
+		if at.IsZero() {
+			at = time.Now().UTC()
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO attachments(issue_id,name,size,source_path,added_at,ord)
+			 VALUES(?,?,?,?,?,?)`,
+			issueID, r.Name, r.Size, r.SourcePath, at.UTC().Format(time.RFC3339Nano), i); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) Attachments(issueID string) ([]AttachmentRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(
+		`SELECT id,issue_id,name,size,source_path,added_at,ord
+		 FROM attachments WHERE issue_id=? ORDER BY ord`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AttachmentRow
+	for rows.Next() {
+		var r AttachmentRow
+		var at string
+		if err := rows.Scan(&r.ID, &r.IssueID, &r.Name, &r.Size, &r.SourcePath, &at, &r.Ord); err != nil {
+			return nil, err
+		}
+		r.AddedAt, _ = time.Parse(time.RFC3339Nano, at)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteAttachments(issueID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM attachments WHERE issue_id=?`, issueID)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }

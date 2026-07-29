@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/weston6142/watchtower/internal/attach"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -343,7 +345,8 @@ func (e *Engine) markDecisionsKilled(ids []int64) {
 // Abandon removes an issue for good: any running stage is cancelled, its
 // pending decisions are closed, and the lane disappears from every surface
 // via EvIssueAbandoned. Abandon is a state, not a purge — rows, events, and
-// artifacts stay in the store.
+// artifacts stay in the store. Attachments are the one exception: their bytes
+// and rows go, because nothing left on an abandoned lane reads them.
 func (e *Engine) Abandon(issueID string) error {
 	e.mu.Lock()
 	is, ok := e.issues[issueID]
@@ -361,6 +364,17 @@ func (e *Engine) Abandon(issueID string) error {
 		cancel()
 	}
 	e.emit(core.EvIssueAbandoned, issueID, nil)
+	// The first on-disk deletion in Abandon, scoped deliberately: attachment
+	// bytes and rows only. The issues row, events, and stage artifacts stay so
+	// an abandoned lane is still inspectable. Failure is logged, never
+	// returned — Abandon must stay idempotent and must not half-abandon an
+	// issue because a file was locked.
+	if err := attach.DeleteAll(e.issueDir(issueID)); err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: abandon %s: remove attachments: %v\n", issueID, err)
+	}
+	if err := e.cfg.Store.DeleteAttachments(issueID); err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: abandon %s: delete attachment rows: %v\n", issueID, err)
+	}
 	return nil
 }
 
@@ -386,56 +400,134 @@ func (e *Engine) emit(t core.EventType, issueID string, payload any) {
 	}
 }
 
-func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, priority int) (string, error) {
+// issueDir is where an issue's attachments and "none"-stage artifacts live.
+func (e *Engine) issueDir(id string) string {
+	return filepath.Join(e.cfg.DataDir, id)
+}
+
+// rollbackCreate undoes a half-created issue: a failed attach must not burn an
+// ID or leave an issue in memory. nextID is deliberately not rewound — IDs stay
+// monotonic so a rehydrate can never mint a colliding GH-n.
+func (e *Engine) rollbackCreate(id string) {
+	e.mu.Lock()
+	delete(e.issues, id)
+	e.mu.Unlock()
+	_ = attach.DeleteAll(e.issueDir(id))
+	_ = e.cfg.Store.DeleteAttachments(id)
+}
+
+func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, priority int, attachments []string) (string, error) {
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return "", fmt.Errorf("unknown flow %q", flowName)
+	}
+	// Validate before allocating: a refusal here costs no ID and creates no dir.
+	set, err := attach.Plan(nil, attachments)
+	if err != nil {
+		return "", err
 	}
 	e.mu.Lock()
 	e.nextID++
 	id := fmt.Sprintf("GH-%d", e.nextID)
 	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority}
 	e.mu.Unlock()
+	if err := attach.Save(e.issueDir(id), set); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
 		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Levers: matrixStrings(m), Priority: priority,
 	}); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+		e.rollbackCreate(id)
 		return "", err
 	}
 	e.emit(core.EvIssueCreated, id, map[string]any{
-		"title": title, "flow": flowName, "body": body, "priority": priority})
+		"title": title, "flow": flowName, "body": body, "priority": priority,
+		"attachments": set.Names()})
 	return id, nil
 }
 
 // DraftIssue records an issue in the backlog without starting anything: no
 // flow run, no slot. The draft is durable and editable until launched.
-func (e *Engine) DraftIssue(title, body, flowName, preset string, m levers.Matrix, priority int) (string, error) {
+func (e *Engine) DraftIssue(title, body, flowName, preset string, m levers.Matrix, priority int, attachments []string) (string, error) {
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return "", fmt.Errorf("unknown flow %q", flowName)
+	}
+	set, err := attach.Plan(nil, attachments)
+	if err != nil {
+		return "", err
 	}
 	e.mu.Lock()
 	e.nextID++
 	id := fmt.Sprintf("GH-%d", e.nextID)
 	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority, draft: true}
 	e.mu.Unlock()
+	if err := attach.Save(e.issueDir(id), set); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
 		ID: id, Title: title, Body: body, Flow: flowName, State: "backlog", Levers: matrixStrings(m), Priority: priority,
 	}); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+		e.rollbackCreate(id)
 		return "", err
 	}
 	e.emit(core.EvIssueDrafted, id, map[string]any{
 		"title": title, "body": body, "flow": flowName, "preset": preset,
-		"priority": priority, "levers": matrixStrings(m)})
+		"priority": priority, "levers": matrixStrings(m), "attachments": set.Names()})
 	return id, nil
 }
 
 // UpdateIssue rewrites a draft's fields. Only legal while the issue is a
-// backlog draft; launched issues are immutable through this path.
-func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.Matrix, priority int) error {
+// backlog draft; launched issues are immutable through this path. The
+// attachment set is replaced wholesale: whatever is in the field on save is the
+// new set. Bytes of dropped names are deleted *last*, so a mid-sequence failure
+// leaves extra bytes on disk rather than a missing file the table still claims.
+func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.Matrix, priority int, attachments []string) error {
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return fmt.Errorf("unknown flow %q", flowName)
 	}
+	// Check draftness before touching anything: a later refusal must not leave
+	// in-memory fields rewritten.
 	e.mu.Lock()
 	is, ok := e.issues[id]
 	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", id)
+	}
+	if !is.draft {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is not in the backlog", id)
+	}
+	e.mu.Unlock()
+
+	existing, err := e.cfg.Store.Attachments(id)
+	if err != nil {
+		return err
+	}
+	set, err := attach.Plan(existing, attachments)
+	if err != nil {
+		return err
+	}
+	if err := attach.Save(e.issueDir(id), set); err != nil {
+		return err
+	}
+
+	// Re-check under the second lock: the draftness test above was released for
+	// the disk work, and the daemon serves each connection on its own goroutine,
+	// so the issue can be launched or abandoned in that window. Writing on
+	// regardless would push a running issue's row back to "backlog" or resurrect
+	// an abandoned one. Bailing here leaves the just-copied bytes orphaned, which
+	// is the failure this path deliberately prefers.
+	e.mu.Lock()
+	if current, ok := e.issues[id]; !ok || current != is {
 		e.mu.Unlock()
 		return fmt.Errorf("unknown issue %s", id)
 	}
@@ -450,9 +542,15 @@ func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.
 	}); err != nil {
 		return err
 	}
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+		return err
+	}
+	if err := attach.DeleteDropped(e.issueDir(id), existing, set); err != nil {
+		return err
+	}
 	e.emit(core.EvIssueUpdated, id, map[string]any{
 		"title": title, "body": body, "flow": flowName, "preset": preset,
-		"priority": priority, "levers": matrixStrings(m)})
+		"priority": priority, "levers": matrixStrings(m), "attachments": set.Names()})
 	return nil
 }
 
@@ -605,7 +703,7 @@ func (e *Engine) ResolveProposal(id int64, accept bool, flowName, preset string)
 	if lever != flow.LeverYolo && lever != flow.LeverRegular && lever != flow.LeverStrict {
 		lever = flow.LeverRegular
 	}
-	newID, err := e.CreateIssue(row.Title, row.Body, flowName, levers.Preset(f, lever), 0)
+	newID, err := e.CreateIssue(row.Title, row.Body, flowName, levers.Preset(f, lever), 0, nil)
 	if err != nil {
 		return "", err
 	}
@@ -644,9 +742,22 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return err
 	}
+	// Attachment state is not cached in issueState: querying it here is what
+	// lets Rehydrate stay untouched.
+	rows, err := e.cfg.Store.Attachments(is.id)
+	if err != nil {
+		return err
+	}
+	// Every stage, every run: a "none" stage's workdir already holds the files,
+	// a worktree stage's does not, and ISSUE.md must be true in both.
+	if err := attach.Materialize(workdir, e.issueDir(is.id), rows); err != nil {
+		return fmt.Errorf("stage %s: %w", st.Name, err)
+	}
 	// Materialize the issue for the agents: ISSUE.md is the contract for how
-	// a stage learns what it is working on.
+	// a stage learns what it is working on. The attachment list goes after the
+	// body and before project memory, adjacent to the issue it belongs to.
 	issueMD := fmt.Sprintf("# %s: %s\n\n%s\n", is.id, is.title, is.body)
+	issueMD += attach.Section(rows)
 	if e.cfg.Librarian != nil {
 		if mem, err := e.cfg.Librarian.Context(); err == nil && mem != "" {
 			issueMD += "\n# Project memory (curated by the Librarian)\n\n" + mem + "\n"

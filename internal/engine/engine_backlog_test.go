@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -93,7 +95,7 @@ func useAutoLaunchFlow(e *Engine) {
 
 func TestDraftIssueStaysInBacklog(t *testing.T) {
 	e, st := newTestEngine(t)
-	id, err := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 2)
+	id, err := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +120,8 @@ func TestDraftIssueStaysInBacklog(t *testing.T) {
 
 func TestUpdateIssueOnlyLegalFromBacklog(t *testing.T) {
 	e, st := newTestEngine(t)
-	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0)
-	if err := e.UpdateIssue(id, "t2", "b2", "default", "strict", levers.Matrix{}, 5); err != nil {
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.UpdateIssue(id, "t2", "b2", "default", "strict", levers.Matrix{}, 5, nil); err != nil {
 		t.Fatal(err)
 	}
 	row := issueRow(t, st, id)
@@ -129,18 +131,18 @@ func TestUpdateIssueOnlyLegalFromBacklog(t *testing.T) {
 	if !hasEvent(t, st, id, core.EvIssueUpdated) {
 		t.Fatal("no issue_updated event")
 	}
-	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0)
-	if err := e.UpdateIssue(rid, "x", "", "default", "regular", levers.Matrix{}, 0); err == nil {
+	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0, nil)
+	if err := e.UpdateIssue(rid, "x", "", "default", "regular", levers.Matrix{}, 0, nil); err == nil {
 		t.Fatal("update of non-draft succeeded")
 	}
-	if err := e.UpdateIssue("GH-999", "x", "", "default", "regular", levers.Matrix{}, 0); err == nil {
+	if err := e.UpdateIssue("GH-999", "x", "", "default", "regular", levers.Matrix{}, 0, nil); err == nil {
 		t.Fatal("update of unknown issue succeeded")
 	}
 }
 
 func TestAbandonDraft(t *testing.T) {
 	e, st := newTestEngine(t)
-	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0)
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0, nil)
 	if err := e.Abandon(id); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +156,7 @@ func TestAbandonDraft(t *testing.T) {
 
 func TestRehydrateKeepsDraftsInert(t *testing.T) {
 	e, st := newTestEngine(t)
-	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{"impl": "yolo"}, 3)
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{"impl": "yolo"}, 3, nil)
 	e2 := newEngineOver(t, st)
 	if err := e2.Rehydrate(); err != nil {
 		t.Fatal(err)
@@ -162,10 +164,10 @@ func TestRehydrateKeepsDraftsInert(t *testing.T) {
 	if hasEvent(t, st, id, core.EvStageFailed) {
 		t.Fatal("rehydrate marked draft failed")
 	}
-	if err := e2.UpdateIssue(id, "t2", "b", "default", "regular", levers.Matrix{}, 3); err != nil {
+	if err := e2.UpdateIssue(id, "t2", "b", "default", "regular", levers.Matrix{}, 3, nil); err != nil {
 		t.Fatal(err)
 	}
-	nid, _ := e2.CreateIssue("n", "", "default", levers.Matrix{}, 0)
+	nid, _ := e2.CreateIssue("n", "", "default", levers.Matrix{}, 0, nil)
 	if nid == id {
 		t.Fatal("id collision after rehydrate")
 	}
@@ -174,7 +176,7 @@ func TestRehydrateKeepsDraftsInert(t *testing.T) {
 func TestLaunchIssueRunsDraft(t *testing.T) {
 	e, st := newTestEngine(t)
 	useAutoLaunchFlow(e)
-	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 1)
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 1, nil)
 	if err := e.LaunchIssue(id); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +184,7 @@ func TestLaunchIssueRunsDraft(t *testing.T) {
 	if !hasEvent(t, st, id, core.EvIssueCreated) {
 		t.Fatal("launch did not emit issue_created")
 	}
-	if err := e.UpdateIssue(id, "x", "", "default", "regular", levers.Matrix{}, 0); err == nil {
+	if err := e.UpdateIssue(id, "x", "", "default", "regular", levers.Matrix{}, 0, nil); err == nil {
 		t.Fatal("update after launch succeeded")
 	}
 }
@@ -192,8 +194,59 @@ func TestLaunchIssueRejectsNonDrafts(t *testing.T) {
 	if err := e.LaunchIssue("GH-999"); err == nil {
 		t.Fatal("launched unknown issue")
 	}
-	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0)
+	rid, _ := e.CreateIssue("r", "", "default", levers.Matrix{}, 0, nil)
 	if err := e.LaunchIssue(rid); err == nil {
 		t.Fatal("launched a non-draft issue")
+	}
+}
+
+// Whatever is in the field on save is the new set: a dropped name loses its row
+// and its bytes, a retained name keeps both.
+func TestUpdateIssueReplacesAttachmentSet(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "keep.log")
+	drop := filepath.Join(dir, "drop.log")
+	for _, p := range []string{keep, drop} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, err := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0, []string{keep, drop})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachDir := filepath.Join(e.cfg.DataDir, id, "attachments")
+
+	// Retain keep.log by name; drop.log simply is not in the field any more.
+	if err := e.UpdateIssue(id, "t", "b", "default", "regular", levers.Matrix{}, 0,
+		[]string{"keep.log"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := s.Attachments(id)
+	if len(rows) != 1 || rows[0].Name != "keep.log" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if _, err := os.Stat(filepath.Join(attachDir, "keep.log")); err != nil {
+		t.Fatalf("retained bytes deleted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(attachDir, "drop.log")); !os.IsNotExist(err) {
+		t.Fatalf("dropped bytes survived: %v", err)
+	}
+}
+
+// A refusal leaves the draft exactly as it was.
+func TestUpdateIssueRefusesBadAttachment(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.UpdateIssue(id, "t2", "b2", "default", "regular", levers.Matrix{}, 0,
+		[]string{"/nope/ghost.log"}); err == nil {
+		t.Fatal("UpdateIssue accepted a missing attachment")
+	}
+	issues, _ := s.Issues()
+	for _, row := range issues {
+		if row.ID == id && row.Title != "t" {
+			t.Fatalf("a refused update still rewrote the draft: %+v", row)
+		}
 	}
 }

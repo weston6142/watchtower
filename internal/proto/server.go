@@ -113,7 +113,7 @@ func (sv *Server) exec(cmd Command) Response {
 		if !ok {
 			return Response{Error: "unknown flow " + cmd.Flow}
 		}
-		id, err := sv.eng.CreateIssue(cmd.Title, cmd.Body, cmd.Flow, levers.Preset(fl, lever), cmd.Priority)
+		id, err := sv.eng.CreateIssue(cmd.Title, cmd.Body, cmd.Flow, levers.Preset(fl, lever), cmd.Priority, cmd.Attach)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -123,7 +123,7 @@ func (sv *Server) exec(cmd Command) Response {
 		if !ok {
 			return Response{Error: "unknown flow " + cmd.Flow}
 		}
-		id, err := sv.eng.DraftIssue(cmd.Title, cmd.Body, cmd.Flow, string(lever), levers.Preset(fl, lever), cmd.Priority)
+		id, err := sv.eng.DraftIssue(cmd.Title, cmd.Body, cmd.Flow, string(lever), levers.Preset(fl, lever), cmd.Priority, cmd.Attach)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -133,7 +133,7 @@ func (sv *Server) exec(cmd Command) Response {
 		if !ok {
 			return Response{Error: "unknown flow " + cmd.Flow}
 		}
-		if err := sv.eng.UpdateIssue(cmd.IssueID, cmd.Title, cmd.Body, cmd.Flow, string(lever), levers.Preset(fl, lever), cmd.Priority); err != nil {
+		if err := sv.eng.UpdateIssue(cmd.IssueID, cmd.Title, cmd.Body, cmd.Flow, string(lever), levers.Preset(fl, lever), cmd.Priority, cmd.Attach); err != nil {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}

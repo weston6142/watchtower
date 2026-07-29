@@ -45,11 +45,11 @@ func TestLeverEditorCycles(t *testing.T) {
 
 func TestModalPriorityField(t *testing.T) {
 	m := modalState{}
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 5; i++ {
 		m = m.input("tab")
 	}
-	if m.Field != 4 {
-		t.Fatalf("Field = %d, want 4 (priority)", m.Field)
+	if m.Field != 5 {
+		t.Fatalf("Field = %d, want 5 (priority)", m.Field)
 	}
 	m = m.input("tab")
 	if m.Field != 0 {
@@ -104,5 +104,54 @@ func TestRenderModalHints(t *testing.T) {
 	}
 	if !strings.Contains(edit, "edit issue") {
 		t.Fatalf("edit-mode title wrong:\n%s", edit)
+	}
+}
+
+// The direct guard against the index-shift bug: text typed at index 4 must
+// land in Attach and must not touch the priority selector.
+func TestModalAttachFieldTakesRunes(t *testing.T) {
+	m := modalState{}
+	for i := 0; i < attachField; i++ {
+		m = m.input("tab")
+	}
+	if m.Field != attachField {
+		t.Fatalf("Field = %d, want %d", m.Field, attachField)
+	}
+	for _, r := range "/tmp/app.log" {
+		m = m.input(string(r))
+	}
+	if m.Attach != "/tmp/app.log" {
+		t.Fatalf("Attach = %q", m.Attach)
+	}
+	if m.Priority != 0 {
+		t.Fatalf("typing in attach moved Priority to %d", m.Priority)
+	}
+	m = m.input("backspace")
+	if m.Attach != "/tmp/app.lo" {
+		t.Fatalf("backspace: Attach = %q", m.Attach)
+	}
+}
+
+// The modal.go invariant: priority has no case in setFieldValue/fieldValue, so
+// rune input physically cannot reach it. Fields are compared one by one because
+// OrigAttach []string makes modalState non-comparable with ==.
+func TestModalPriorityStillRejectsRunes(t *testing.T) {
+	got := modalState{Field: priorityField}.input("x")
+	if got.Title != "" || got.Body != "" || got.FlowName != "" || got.Preset != "" ||
+		got.Attach != "" || got.Priority != 0 || got.Field != priorityField {
+		t.Fatalf("rune input reached the priority field: %+v", got)
+	}
+	// h/l cycling lives in the key router (Model.Update), not in input; it is
+	// already covered by TestModalPriorityCycles in app_test.go, which tabs via
+	// the priorityField constant and so follows the shift for free.
+}
+
+func TestRenderModalShowsAttachField(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	out := ansi.Strip(renderModal(modalState{Field: attachField, Attach: "/tmp/app.log"}, 80))
+	for _, want := range []string{"ATTACH", "/tmp/app.log"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
 	}
 }

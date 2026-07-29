@@ -257,3 +257,27 @@ func TestAbandonRemovesDraftFromBacklog(t *testing.T) {
 		t.Fatal("abandoned draft still visible")
 	}
 }
+
+// The edit modal prefills from IssueView, so the drafted/updated events are
+// what make retain-by-name work.
+func TestDraftedAndUpdatedCarryAttachments(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueDrafted, "GH-1", map[string]any{
+		"title": "t", "body": "b", "flow": "default", "preset": "regular",
+		"attachments": []string{"app.log", "shot.png"}}))
+	iv := s.Issues["GH-1"]
+	if iv == nil || len(iv.Attachments) != 2 ||
+		iv.Attachments[0] != "app.log" || iv.Attachments[1] != "shot.png" {
+		t.Fatalf("drafted attachments = %+v", iv)
+	}
+	s.Apply(ev(t, core.EvIssueUpdated, "GH-1", map[string]any{
+		"title": "t", "attachments": []string{"app.log"}}))
+	if got := s.Issues["GH-1"].Attachments; len(got) != 1 || got[0] != "app.log" {
+		t.Fatalf("updated attachments = %v", got)
+	}
+	// Dropping every attachment must clear the field, not keep a stale list.
+	s.Apply(ev(t, core.EvIssueUpdated, "GH-1", map[string]any{"title": "t"}))
+	if got := s.Issues["GH-1"].Attachments; len(got) != 0 {
+		t.Fatalf("stale attachments = %v", got)
+	}
+}

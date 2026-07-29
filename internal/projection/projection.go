@@ -21,13 +21,18 @@ type IssueView struct {
 	Priority     int
 	Body         string
 	Preset       string
-	Behind       string
-	Merged       bool
-	Unmerged     bool
-	Paused       bool
-	Killed       bool
-	AreaWeights  map[string]int
-	MergedAt     time.Time
+	// Attachments holds stored names in ord order. It is populated from the
+	// drafted/updated events and read only by the edit modal's prefill:
+	// EvIssueCreated rebuilds the view wholesale, so a launched issue drops
+	// the list, which is fine because a launched issue is not editable.
+	Attachments []string
+	Behind      string
+	Merged      bool
+	Unmerged    bool
+	Paused      bool
+	Killed      bool
+	AreaWeights map[string]int
+	MergedAt    time.Time
 }
 
 type DecisionView struct {
@@ -85,6 +90,7 @@ func (s *State) Apply(ev core.Event) {
 		view.Body = str("body")
 		view.Preset = str("preset")
 		view.Priority = int(num("priority"))
+		view.Attachments = stringsFromPayload(p["attachments"])
 		view.State = "backlog"
 	case core.EvIssueCreated:
 		s.Issues[ev.IssueID] = &IssueView{ID: ev.IssueID, Title: str("title"), Flow: str("flow"), State: "running", AreaWeights: map[string]int{}}
