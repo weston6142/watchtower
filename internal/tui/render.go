@@ -472,6 +472,7 @@ var helpGroups = [][]helpGroup{
 			{"tab", "attention / next field"},
 			{"g", "war room"},
 			{"enter", "open artifacts"},
+			{"f", "setup inspector"},
 			{"esc", "back"},
 			{"z", "rows / tower layout"},
 		}},

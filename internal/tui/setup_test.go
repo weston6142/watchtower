@@ -355,3 +355,11 @@ func TestSetupErrorSurfacesInKeybarAndPanelStaysShut(t *testing.T) {
 		t.Fatal("wantSetup left set after an error")
 	}
 }
+
+// A key nobody can discover is a key nobody uses.
+func TestSetupKeyAppearsInHelp(t *testing.T) {
+	got := ansi.Strip(renderHelpOverlay(200))
+	if !strings.Contains(got, "setup inspector") {
+		t.Fatalf("help does not list the setup inspector:\n%s", got)
+	}
+}
