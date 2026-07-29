@@ -194,14 +194,89 @@ func TestViewPlumbsHeightIntoBacklog(t *testing.T) {
 	}
 }
 
-// The empty state keeps telling the operator how to file a draft.
+// The empty state keeps telling the operator how to file a draft, and keeps the
+// small box it had before: there is nothing to size to, and one sentence ruled
+// off inside a 130-column frame reads worse than the box being small.
 func TestBacklogEmptyStateSurvivesResize(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	out := ansi.Strip(renderBacklog(nil, 0, 160, 48))
-	if !strings.Contains(out, "backlog is empty") {
-		t.Fatalf("empty state missing:\n%s", out)
+	for _, size := range [][2]int{{52, 14}, {100, 40}, {160, 48}} {
+		box := renderBacklog(nil, 0, size[0], size[1])
+		out := ansi.Strip(box)
+		if !strings.Contains(out, "backlog is empty — n then ctrl+s files a draft") {
+			t.Fatalf("%dx%d: empty state copy missing or cut:\n%s", size[0], size[1], out)
+		}
+		if w, h := lipgloss.Width(box), lipgloss.Height(box); w != 52 || h != 7 {
+			t.Errorf("%dx%d: empty box is %dx%d, want 52x7:\n%s", size[0], size[1], w, h, out)
+		}
 	}
-	if !strings.Contains(out, "ctrl+s") {
-		t.Fatalf("empty state lost its instructions:\n%s", out)
+}
+
+// The key hints are the way out of the overlay, so they survive at every width.
+// They are also the widest fixed line, so the frame is floored at their width
+// rather than at the list's — otherwise the draft count crowds them off the
+// right-hand side and the frame truncates them there.
+func TestBacklogKeepsKeyHintsAtEveryWidth(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	for _, width := range []int{20, 40, 52, 56, 60, 80, 100, 200} {
+		out := ansi.Strip(renderBacklog(backlogDrafts(40), 0, width, 24))
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.Contains(line, "enter") || !strings.Contains(line, "j/k") {
+				continue
+			}
+			if !strings.Contains(line, "j/k  move") {
+				t.Errorf("%d cols: key hints truncated: %q", width, line)
+			}
+		}
+	}
+}
+
+// Ids as wide as gh-webhooks are real, and the column is derived from the whole
+// set rather than the visible window: deriving it from the window would shift
+// the column sideways every time j/k crossed a page boundary.
+func TestBacklogShowsWideIdsWholeAndStably(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	entries := backlogDrafts(40)
+	entries[39] = &projection.IssueView{ID: "gh-webhooks", Title: "draft<39>", Body: "b"}
+	first := ansi.Strip(renderBacklog(entries, 39, 120, 24))
+	if !strings.Contains(first, "gh-webhooks") {
+		t.Fatalf("wide id truncated:\n%s", first)
+	}
+	// The wide id is off-window on the first page; the column keeps its width
+	// anyway, so the priority label starts in the same place on both pages.
+	// Display column, not byte offset: the cursor glyph and the border are
+	// multi-byte, so strings.Index alone would report the two pages as different.
+	column := func(box string) int {
+		for _, line := range strings.Split(ansi.Strip(box), "\n") {
+			if i := strings.Index(line, "normal"); i >= 0 {
+				return lipgloss.Width(line[:i])
+			}
+		}
+		return -1
+	}
+	page1, page2 := column(renderBacklog(entries, 0, 120, 24)), column(first)
+	if page1 < 0 || page1 != page2 {
+		t.Fatalf("id column moved between pages: %d then %d", page1, page2)
+	}
+}
+
+// Every line of the box is the same display width. Unpadded pane lines,
+// mismatched pane heights and the selected row's asymmetric MaxWidth all show
+// up here as a ragged right edge.
+func TestBacklogLinesAreUniformWidth(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	entries := backlogDrafts(40)
+	entries[3] = &projection.IssueView{ID: "gh-webhooks", Title: strings.Repeat("long ", 30),
+		Body: strings.Repeat("prose ", 200)}
+	for _, size := range [][2]int{{52, 12}, {80, 24}, {100, 40}, {200, 50}, {400, 120}} {
+		for _, sel := range []int{0, 3, 39} {
+			box := renderBacklog(entries, sel, size[0], size[1])
+			want := lipgloss.Width(box)
+			for i, line := range strings.Split(box, "\n") {
+				if got := lipgloss.Width(line); got != want {
+					t.Fatalf("%dx%d sel %d: line %d is %d cols, box is %d: %q",
+						size[0], size[1], sel, i, got, want, ansi.Strip(line))
+				}
+			}
+		}
 	}
 }

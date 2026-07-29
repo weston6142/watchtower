@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
@@ -17,7 +19,7 @@ import (
 
 // FixtureFlows lists every posable flow, in spec order.
 func FixtureFlows() []string {
-	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "backlog", "levers", "arch", "pager", "help", "stream"}
+	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "backlog", "backlog-long", "levers", "arch", "pager", "help", "stream"}
 }
 
 func fixtureState() *projection.State {
@@ -75,6 +77,46 @@ func applyBacklogDrafts(s *projection.State) {
 		ev, _ := core.NewEvent(core.EvIssueDrafted, spec.id, map[string]any{
 			"title": spec.title, "body": "b", "flow": "default", "preset": "regular",
 			"priority": spec.priority})
+		s.Apply(ev)
+	}
+}
+
+// applyBacklogLongDrafts seeds a queue deeper than a terminal shows at once, so
+// the goldens cover what two drafts cannot: the window clipping, the id column
+// widening for an 11-cell id, titles truncating, and a body wrapping past the
+// pane. It is deliberately separate from applyBacklogDrafts, whose two drafts
+// are asserted on by name elsewhere.
+func applyBacklogLongDrafts(s *projection.State) {
+	titles := []string{
+		"lane gutter spacing is off by one column",
+		"rehydrate drafts as editable when r is pressed on a shipped lane instead of reopening the pager",
+		"add a --json flag to the backlog command",
+		"stream door drops the last line of a turn when the transcript scrolls",
+	}
+	body := "The stage gutter is one column narrower than the lane it labels, so " +
+		"every row below the header reads one cell to the left of where the header " +
+		"says it is.\n\n" +
+		"Reproduced at 100 and at 200 columns, so it is the gutter constant and " +
+		"not the lane width. The fix is one number, but the goldens for every " +
+		"flow move with it, which is why this is its own draft."
+	// Ordered so GH-01 is urgent: it then sorts first (priority descending, id
+	// ascending) and is what the cursor and the detail pane land on.
+	levels := []int{1, 2, 0, -1}
+	for i := 1; i <= 36; i++ {
+		id := fmt.Sprintf("GH-%02d", i)
+		if i == 5 {
+			// A slug id as wide as the ones the tower really issues, and not one
+			// fixtureState already uses — reusing an id there would redraft a
+			// launched lane instead of adding a draft.
+			id = "gh-webhooks"
+		}
+		drafted := fmt.Sprintf("draft %02d body", i)
+		if i == 1 {
+			drafted = body // sorts first, so it is what the detail pane shows
+		}
+		ev, _ := core.NewEvent(core.EvIssueDrafted, id, map[string]any{
+			"title": titles[i%len(titles)], "body": drafted,
+			"flow": "default", "preset": "regular", "priority": levels[i%len(levels)]})
 		s.Apply(ev)
 	}
 }
@@ -139,6 +181,9 @@ func FixtureModel(flowName string, width, height int) Model {
 		m.modal = &modalState{Title: "Wire importer smoke test into CI", Field: 0}
 	case "backlog":
 		applyBacklogDrafts(m.State)
+		m.backlog = &backlogState{}
+	case "backlog-long":
+		applyBacklogLongDrafts(m.State)
 		m.backlog = &backlogState{}
 	case "levers":
 		m.leverEditor = newLeverEditor("ca-repo", m.stages, map[string]string{"review": "strict"})

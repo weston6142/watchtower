@@ -84,6 +84,28 @@ a pure client.
     says so), `ctrl+s` also saves.
   - `l` — launch: confirm box, then `launch_issue`.
   - `X` — delete: existing abandon confirm, then `abandon_issue`.
+- **Sized to the viewport (GH-9):** the backlog is the one overlay that grows
+  with the terminal instead of hugging its content — it is a browsing surface,
+  not a prompt. The frame fills the screen short of a two-cell margin — the
+  margin is load-bearing, since `overlayCenter` drops the dimmed base once a box
+  reaches the full width or height — floored at the width of its own key hint
+  line and capped so one row is not a long walk for the eye on an ultrawide
+  terminal. Height follows the same shape, and the row count is content-driven
+  under that cap so a two-draft backlog does not render as a tall blank box.
+- **Two panes:** the reclaimed width buys a detail pane on the right showing the
+  selected draft's id, priority, flow, preset, and body — data `IssueView`
+  already carried and the list never showed. Below the two-pane threshold the
+  detail pane yields and the list takes the whole frame. A body too tall for the
+  pane is cut with `… enter to read it all` rather than stopping mid-sentence.
+- **Scrolling list:** more drafts than rows pages the window (no new state — the
+  window is derived from the cursor), and the footer says which slice is on
+  screen (`1–30 of 36`) so off-window drafts are not read as drafts that do not
+  exist. The id column is derived from the widest id in the whole set, so slugs
+  like `gh-webhooks` are shown whole and the column does not shift while
+  scrolling. When the footer cannot hold both, the count yields and the keys
+  stay.
+- **Empty backlog keeps its old small box:** there is nothing to size to, and one
+  sentence ruled off inside a 130-column frame reads worse than the small box.
 - Help overlay gains the new keys.
 
 ## Non-goals

@@ -28,6 +28,11 @@ const (
 	backlogChromeRows = 8
 	// backlogMinInner is the old fixed width: id, priority, and a readable title.
 	backlogMinInner = 44
+	// backlogIDMin/Max bound the id column. Real ids run from GH-3 to
+	// gh-importer, so the column is derived per entry set between these.
+	backlogIDMin    = 8
+	backlogIDMax    = 14
+	backlogPrioCols = 7
 	// backlogMaxInner caps the line length — past this, one row is a long walk
 	// for the eye on an ultrawide terminal.
 	backlogMaxInner = 132
@@ -49,16 +54,26 @@ const (
 // issues wait, so it wears the issue modal's clothes — but sized to width x
 // height rather than to the rows it happens to hold.
 func renderBacklog(entries []*projection.IssueView, sel, width, height int) string {
+	keys := backlogKeys()
+	// The key hints are the one line that is the same at every size, and cutting
+	// them costs the operator the way out of the overlay — so they, not the list,
+	// set the frame's floor.
+	inner := min(max(width-backlogChromeCols, backlogMinInner, lipgloss.Width(keys)), backlogMaxInner)
+	if len(entries) == 0 {
+		// An empty backlog has nothing to size to: one sentence ruled off inside a
+		// 130-column frame reads worse than the small box ever did, so the empty
+		// state keeps exactly its old shape.
+		return renderBox("backlog", "drafts waiting to launch", " esc close ",
+			lipgloss.NewStyle().Foreground(activeTheme.Dim).
+				Render("backlog is empty — n then ctrl+s files a draft")+"\n\n"+keys)
+	}
 	if height <= 0 {
 		height = backlogFallbackRows
 	}
-	inner := min(max(width-backlogChromeCols, backlogMinInner), backlogMaxInner)
 	paneBudget := max(height-backlogChromeRows-backlogFooterRows, backlogMinRows)
 
-	// An empty backlog has nothing to detail, so it keeps the whole width for its
-	// one line rather than ruling off a blank pane.
 	listWidth, detailWidth := inner, 0
-	if inner >= backlogSplitInner && len(entries) > 0 {
+	if inner >= backlogSplitInner {
 		detailWidth = max(backlogDetailInner, inner/3)
 		listWidth = max(backlogMinInner, inner-detailWidth-backlogDividerCols)
 	}
@@ -69,7 +84,7 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 	}
 	// Height is content-driven but capped: filling a tall terminal with blank
 	// rows for two drafts would be worse than the box being small.
-	paneRows := max(backlogMinRows, min(paneBudget, max(len(entries), 1, len(detail))))
+	paneRows := max(backlogMinRows, min(paneBudget, max(len(entries), len(detail))))
 	detail = backlogClipDetail(detail, paneRows, detailWidth)
 
 	start := backlogWindowStart(sel, len(entries), paneRows)
@@ -106,26 +121,35 @@ func backlogClipDetail(detail []string, rows, width int) []string {
 // selected row's band spans the whole column.
 func backlogRows(entries []*projection.IssueView, sel, start, end, width int) []string {
 	t := activeTheme
-	if len(entries) == 0 {
-		return []string{lipgloss.NewStyle().Foreground(t.Dim).
-			Render(padCell("backlog is empty — n then ctrl+s files a draft", width))}
-	}
 	// cursorRow prepends a two-column cursor or gutter, so the cells share what
 	// is left of the column.
 	cells := max(1, width-2)
-	titleWidth := max(1, cells-14)
+	idWidth := backlogIDWidth(entries)
+	titleWidth := max(1, cells-idWidth-backlogPrioCols)
 	var rows []string
 	for i := start; i < end; i++ {
 		iv := entries[i]
 		// Pad every cell before styling: padCell truncates, and truncating an
 		// already-styled string can cut mid-escape and bleed colour into the
 		// next cell. Width 7 fits urgent/normal plus a space.
-		id := lipgloss.NewStyle().Foreground(t.Dim).Render(padCell(iv.ID, 7))
-		prio := lipgloss.NewStyle().Foreground(t.Structure).Render(padCell(priority.Label(iv.Priority), 7))
+		id := lipgloss.NewStyle().Foreground(t.Dim).Render(padCell(iv.ID, idWidth))
+		prio := lipgloss.NewStyle().Foreground(t.Structure).Render(padCell(priority.Label(iv.Priority), backlogPrioCols))
 		title := lipgloss.NewStyle().Foreground(t.Text).Render(padCell(iv.Title, titleWidth))
 		rows = append(rows, cursorRow(i == sel, id+prio+title, width))
 	}
 	return rows
+}
+
+// backlogIDWidth sizes the id column to the widest id in the whole set rather
+// than in the visible window: deriving it from the window would shift the
+// column sideways every time j/k crossed a page boundary. Ids as long as
+// gh-importer are real, and the old fixed 7 showed them as gh-imp….
+func backlogIDWidth(entries []*projection.IssueView) int {
+	widest := 0
+	for _, iv := range entries {
+		widest = max(widest, lipgloss.Width(iv.ID))
+	}
+	return min(max(widest+1, backlogIDMin), backlogIDMax)
 }
 
 // backlogDetail describes one draft in the right-hand pane. Every line is padded
@@ -183,29 +207,34 @@ func backlogPane(list, detail []string, rows, listWidth, detailWidth int) string
 // backlogFooter puts the keys on the left and, once there are drafts, how many
 // of them you are looking at on the right.
 func backlogFooter(count, start, rows, width int) string {
-	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
-	keys := keyChip("enter") + dim.Render(" edit  ") + keyChip("l") + dim.Render(" launch  ") +
-		keyChip("X") + dim.Render(" delete  ") + keyChip("j/k") + dim.Render(" move")
-	position := ""
+	keys := backlogKeys()
+	position := fmt.Sprintf("%d drafts", count)
 	switch {
-	// An empty backlog says so in the list itself; "0 drafts" here would only
-	// repeat it, and falling through to count <= rows is what would print it.
-	case count == 0:
 	case count == 1:
 		position = "1 draft"
-	case count <= rows:
-		position = fmt.Sprintf("%d drafts", count)
-	default:
+	case count > rows:
 		// The window is clipping: say which slice of the queue is on screen so
 		// drafts off-window are not mistaken for drafts that do not exist.
 		position = fmt.Sprintf("%d–%d of %d", start+1, min(start+rows, count), count)
 	}
-	if position == "" {
+	styled := lipgloss.NewStyle().Foreground(activeTheme.Structure).Render(position)
+	gap := width - lipgloss.Width(keys) - lipgloss.Width(styled)
+	if gap < 1 {
+		// Both do not fit. The keys are how the operator acts on the list, so the
+		// count is what yields: appending it anyway would push the hints past the
+		// frame, and the frame truncates from the right.
 		return keys
 	}
-	styled := lipgloss.NewStyle().Foreground(activeTheme.Structure).Render(position)
-	gap := max(1, width-lipgloss.Width(keys)-lipgloss.Width(styled))
 	return keys + strings.Repeat(" ", gap) + styled
+}
+
+// backlogKeys is the hint line under the panes. renderBacklog measures it to
+// floor the frame — cutting the keys costs the operator the way out of the
+// overlay — so it lives on its own rather than inline in the footer.
+func backlogKeys() string {
+	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
+	return keyChip("enter") + dim.Render(" edit  ") + keyChip("l") + dim.Render(" launch  ") +
+		keyChip("X") + dim.Render(" delete  ") + keyChip("j/k") + dim.Render(" move")
 }
 
 // padStyled right-pads an already-styled line to width. The padding is plain, so
