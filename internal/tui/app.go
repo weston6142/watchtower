@@ -80,6 +80,7 @@ type Model struct {
 	wantLeverEditor  bool
 	aliases          map[string]string
 	reducedMotion    bool
+	herdrReporter    overviewReporter
 	ticks            int
 }
 
@@ -188,6 +189,14 @@ func (m *Model) SetStageAliases(aliases map[string]string) { m.aliases = aliases
 
 func (m *Model) SetReducedMotion(reduced bool) { m.reducedMotion = reduced }
 
+// overviewReporter receives every overview snapshot; satisfied by
+// *herdr.Reporter. An interface so tests can substitute a spy.
+type overviewReporter interface {
+	Report(needYou, failing, building int)
+}
+
+func (m *Model) SetHerdrReporter(r overviewReporter) { m.herdrReporter = r }
+
 func (m *Model) SetRetireAfter(after time.Duration) {
 	if after > 0 {
 		m.retireAfter = after
@@ -243,6 +252,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.Overview = msg.overview
+		if m.herdrReporter != nil && msg.overview != nil {
+			m.herdrReporter.Report(msg.overview.NeedYou, msg.overview.Failing, msg.overview.Building)
+		}
 		return m, nil
 	case proposalsMsg:
 		if msg.err != nil {

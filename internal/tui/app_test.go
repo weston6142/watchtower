@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/proto"
 )
 
 func mkev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -23,6 +25,33 @@ func mkev(t *testing.T, typ core.EventType, issue string, payload any) core.Even
 }
 
 var seq int64
+
+type spyReporter struct {
+	calls [][3]int
+}
+
+func (s *spyReporter) Report(needYou, failing, building int) {
+	s.calls = append(s.calls, [3]int{needYou, failing, building})
+}
+
+func TestOverviewUpdateFeedsHerdrReporter(t *testing.T) {
+	m := NewModel(nil, []string{"spec", "execute"})
+	spy := &spyReporter{}
+	m.SetHerdrReporter(spy)
+
+	next, _ := m.Update(overviewMsg{overview: &proto.Overview{NeedYou: 2, Failing: 1, Building: 4}})
+	m = next.(Model)
+
+	if len(spy.calls) != 1 || spy.calls[0] != [3]int{2, 1, 4} {
+		t.Fatalf("reporter calls = %v, want [[2 1 4]]", spy.calls)
+	}
+
+	// An errored overview poll must not report.
+	m.Update(overviewMsg{err: errors.New("boom")})
+	if len(spy.calls) != 1 {
+		t.Fatalf("reporter called on overview error: %v", spy.calls)
+	}
+}
 
 func TestApplyEventsBuildsStateAndToast(t *testing.T) {
 	m := NewModel(nil, []string{"brainstorm", "spec", "execute", "review", "merge"})

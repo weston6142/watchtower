@@ -18,6 +18,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/herdr"
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
@@ -103,6 +104,8 @@ func main() {
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "get_flow", Flow: "default"})
 		model := tui.NewModel(c, r.FlowStages)
+		reporter := herdr.NewFromEnv()
+		model.SetHerdrReporter(reporter)
 		model.Repo = *repo
 		model.SetStageAliases(tui.ParseStageAliases(*stageAliases))
 		model.SetReducedMotion(*reducedMotion)
@@ -110,8 +113,10 @@ func main() {
 		if cfg, err := repocfg.Load(resolveRepo(*repo)); err == nil {
 			tui.SetTheme(cfg.Theme) // empty or unknown falls back to tokyo-night
 		}
-		if _, err := tea.NewProgram(model, tea.WithAltScreen()).Run(); err != nil {
-			fatal(err)
+		_, runErr := tea.NewProgram(model, tea.WithAltScreen()).Run()
+		reporter.Idle()
+		if runErr != nil {
+			fatal(runErr)
 		}
 	case "snap":
 		// Hidden dev command: render every TUI flow from fixtures for
