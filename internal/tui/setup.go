@@ -86,8 +86,9 @@ func retryWord(n int) string {
 
 // setupRepoLines renders the two-row repo header. Row two leads with the load
 // stamp and the resolved workspace provider — the stamp first because the
-// fake-runner workspace clause is long and truncation eats the tail, and D2 made
-// the stamp a header field on purpose. Row one drops test_cmd first for the same
+// fake-runner workspace clause is long and truncation eats the tail, and the
+// stamp is what tells the operator how stale the panel is. Row one drops
+// test_cmd first for the same
 // reason: it is the least load-bearing item on that line.
 func setupRepoLines(r proto.RepoSetup) []string {
 	t := activeTheme
@@ -278,9 +279,24 @@ func (s *setupState) selectableCount() int {
 	return len(setupSelectable(setupRows(*s.View, s.Expanded)))
 }
 
+// selectedRow is the row the cursor points at, false when the panel is posed
+// without a view or the cursor is out of range. The one place that resolves
+// Sel into a row, so the key handler and its tests cannot disagree.
+func (s *setupState) selectedRow() (setupRow, bool) {
+	if s.View == nil {
+		return setupRow{}, false
+	}
+	rows := setupRows(*s.View, s.Expanded)
+	sel := setupSelectable(rows)
+	if s.Sel < 0 || s.Sel >= len(sel) {
+		return setupRow{}, false
+	}
+	return rows[sel[s.Sel]], true
+}
+
 // setupWindow is how many outline rows fit, after chrome. Clamped before the
 // content reaches renderBox: overlayCenter degrades to lipgloss.Place once the
-// box reaches the terminal's height, which is the clipping D3 exists to avoid.
+// box reaches the terminal's height, which clips the panel.
 func setupWindow(height int) int {
 	return max(setupMinRows, height-setupChromeRows)
 }

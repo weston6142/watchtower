@@ -79,11 +79,15 @@ type Model struct {
 	leverEditor      *leverEditorState
 	wantLeverEditor  bool
 	setup            *setupState
-	wantSetup        bool
-	aliases          map[string]string
-	reducedMotion    bool
-	herdrReporter    overviewReporter
-	ticks            int
+	// wantSetup records that f was accepted. Unlike wantLeverEditor it gates
+	// nothing — setupMsg has a single producer, so there is no second response
+	// to disambiguate — but with no daemon attached the fetch is a no-op and
+	// this is the only sign the grid handled the key rather than a door.
+	wantSetup     bool
+	aliases       map[string]string
+	reducedMotion bool
+	herdrReporter overviewReporter
+	ticks         int
 }
 
 type Msg struct{ Events []core.Event }
@@ -867,36 +871,16 @@ func (m *Model) openSetup() tea.Cmd {
 	}
 }
 
-// setupPromptTarget names the stage and package the cursor's agent row points
-// at, or two empty strings when the cursor is not on an agent row.
-func (m Model) setupPromptTarget() (stage, pkg string) {
-	if m.setup == nil || m.setup.View == nil {
-		return "", ""
-	}
-	rows := setupRows(*m.setup.View, m.setup.Expanded)
-	sel := setupSelectable(rows)
-	if m.setup.Sel < 0 || m.setup.Sel >= len(sel) {
-		return "", ""
-	}
-	row := rows[sel[m.setup.Sel]]
-	if row.Kind != setupRowAgent {
-		return "", ""
-	}
-	return row.Stage, row.Pkg
-}
-
 // setupEnter toggles a stage row or fetches the selected agent's prompt — the
 // same expand-or-open path the artifact list already uses.
 func (m *Model) setupEnter() tea.Cmd {
-	if m.setup == nil || m.setup.View == nil {
+	if m.setup == nil {
 		return nil
 	}
-	rows := setupRows(*m.setup.View, m.setup.Expanded)
-	sel := setupSelectable(rows)
-	if m.setup.Sel < 0 || m.setup.Sel >= len(sel) {
+	row, ok := m.setup.selectedRow()
+	if !ok {
 		return nil
 	}
-	row := rows[sel[m.setup.Sel]]
 	if row.Kind == setupRowStage {
 		m.setup.Expanded[row.Stage] = !m.setup.Expanded[row.Stage]
 		m.setup.clampTop(m.Height)

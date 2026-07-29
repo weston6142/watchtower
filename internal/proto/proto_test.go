@@ -329,17 +329,22 @@ func newConfigClient(t *testing.T, f flow.Flow, packages map[string]pkgs.Package
 	return c, s
 }
 
+// oneAgentFlow is the smallest flow the setup ops accept: one auto stage named
+// "run" with a single agent, so a test only has to say which package.
+func oneAgentFlow(pkg string) flow.Flow {
+	return flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name: "run", Agents: []flow.AgentRef{{Package: pkg}},
+		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
+	}}}
+}
+
 // overrideFlow is a one-stage flow whose AgentRef.Model contradicts the
 // package's model. internal/claude/runner.go passes pkg.Model alone, so the
 // package must win everywhere.
 func overrideFlow() flow.Flow {
-	return flow.Flow{Name: "default", Stages: []flow.Stage{{
-		Name:       "run",
-		Agents:     []flow.AgentRef{{Package: "agent", Model: "sonnet"}},
-		Gate:       flow.GateAuto,
-		Completion: flow.CompletionAll,
-		Workspace:  "none",
-	}}}
+	f := oneAgentFlow("agent")
+	f.Stages[0].Agents[0].Model = "sonnet"
+	return f
 }
 
 func overridePackages() map[string]pkgs.Package {
@@ -462,10 +467,11 @@ func TestSetupOutlineCoversEveryAgentInStage(t *testing.T) {
 		}
 	}
 	// Every stage in the flow is reported, in flow order.
-	if len(r.Setup.Stages) != len(reviewFlow().Stages) {
-		t.Fatalf("got %d stages, want %d", len(r.Setup.Stages), len(reviewFlow().Stages))
+	want := reviewFlow().Stages
+	if len(r.Setup.Stages) != len(want) {
+		t.Fatalf("got %d stages, want %d", len(r.Setup.Stages), len(want))
 	}
-	for i, stg := range reviewFlow().Stages {
+	for i, stg := range want {
 		if r.Setup.Stages[i].Name != stg.Name {
 			t.Fatalf("stage %d is %q, want %q", i, r.Setup.Stages[i].Name, stg.Name)
 		}
@@ -490,9 +496,9 @@ func TestSetupOutlineReportsPackageModelNotAgentRefOverride(t *testing.T) {
 	}
 }
 
-// D1 exists for this test: if the inspector reported runner truth while
-// issue_detail kept the override, two surfaces in one TUI would print
-// different models for the same stage.
+// Both ops resolve the model through effectiveAgent for this reason: if the
+// inspector reported runner truth while issue_detail kept the override, two
+// surfaces in one TUI would print different models for the same stage.
 func TestIssueDetailAgreesWithSetupOutlineOnModel(t *testing.T) {
 	c, s := newConfigClient(t, overrideFlow(), overridePackages(), fixtureRepoSetup())
 	r, err := c.Do(Command{Op: "create_issue", Title: "t", Flow: "default", Preset: "regular"})
@@ -520,11 +526,7 @@ func TestIssueDetailAgreesWithSetupOutlineOnModel(t *testing.T) {
 }
 
 func TestSetupOutlineMarksMissingPackage(t *testing.T) {
-	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
-		Name: "run", Agents: []flow.AgentRef{{Package: "ghost"}},
-		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
-	}}}
-	c, _ := newConfigClient(t, f, map[string]pkgs.Package{}, fixtureRepoSetup())
+	c, _ := newConfigClient(t, oneAgentFlow("ghost"), map[string]pkgs.Package{}, fixtureRepoSetup())
 	r, _ := c.Do(Command{Op: "setup_outline"})
 	if r.Setup == nil {
 		t.Fatal("no setup view")
@@ -674,11 +676,7 @@ func TestSetupPromptRejectsUnpairedStagePackage(t *testing.T) {
 }
 
 func TestSetupPromptRejectsUnloadedPackage(t *testing.T) {
-	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
-		Name: "run", Agents: []flow.AgentRef{{Package: "ghost"}},
-		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
-	}}}
-	c, _ := newConfigClient(t, f, map[string]pkgs.Package{}, fixtureRepoSetup())
+	c, _ := newConfigClient(t, oneAgentFlow("ghost"), map[string]pkgs.Package{}, fixtureRepoSetup())
 	r, _ := c.Do(Command{Op: "setup_prompt", Stage: "run", Package: "ghost"})
 	if r.OK || r.Error != "package ghost not loaded" {
 		t.Fatalf("got OK=%v err=%q, want the not-loaded error", r.OK, r.Error)
@@ -690,11 +688,7 @@ func TestSetupPromptRejectsUnloadedPackage(t *testing.T) {
 func TestSetupPromptTruncatesOversizePrompt(t *testing.T) {
 	big := strings.Repeat("x123456789\n", 30_000) // ~330 KiB
 	packages := map[string]pkgs.Package{"agent": {Name: "agent", Prompt: big}}
-	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
-		Name: "run", Agents: []flow.AgentRef{{Package: "agent"}},
-		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
-	}}}
-	c, _ := newConfigClient(t, f, packages, fixtureRepoSetup())
+	c, _ := newConfigClient(t, oneAgentFlow("agent"), packages, fixtureRepoSetup())
 	r, err := c.Do(Command{Op: "setup_prompt", Stage: "run", Package: "agent"})
 	if err != nil {
 		t.Fatalf("client could not read the frame: %v", err)

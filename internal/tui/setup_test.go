@@ -124,7 +124,7 @@ func TestSetupCursorSkipsNonSelectableRows(t *testing.T) {
 	}
 }
 
-// D3: six collapsed stage rows plus the repo header plus chrome will not fit a
+// Six collapsed stage rows plus the repo header plus chrome will not fit a
 // short terminal, and overlayCenter degrades to lipgloss.Place the moment the
 // box reaches the terminal's height. The outline must window itself first.
 func TestSetupOutlineScrollsOnShortTerminal(t *testing.T) {
@@ -165,8 +165,8 @@ func TestSetupFakeRunnerRendersExplanation(t *testing.T) {
 	if !strings.Contains(got, setupFakeNoPackages) {
 		t.Errorf("missing %q in:\n%s", setupFakeNoPackages, got)
 	}
-	// The load stamp must survive the longest header row two can get — D2 put it
-	// in the header, and losing it in exactly the degraded case is backwards.
+	// The load stamp must survive the longest header row two can get: losing the
+	// panel's staleness marker in exactly the degraded case is backwards.
 	if !strings.Contains(got, "loaded 12:55") {
 		t.Errorf("fake-runner header truncated away the load stamp:\n%s", got)
 	}
@@ -294,9 +294,12 @@ func TestSetupEnterTogglesStageAndOpensAgentPrompt(t *testing.T) {
 		t.Fatal("no reviewer agent row")
 	}
 	m.setup.Sel = agentIdx
-	stage, pkg := m.setupPromptTarget()
-	if stage != "review" || pkg != "reviewer" {
-		t.Fatalf("enter would open %s/%s, want review/reviewer", stage, pkg)
+	row, ok := m.setup.selectedRow()
+	if !ok {
+		t.Fatal("cursor resolved to no row")
+	}
+	if row.Kind != setupRowAgent || row.Stage != "review" || row.Pkg != "reviewer" {
+		t.Fatalf("enter would open %s/%s, want the review/reviewer agent row", row.Stage, row.Pkg)
 	}
 }
 
