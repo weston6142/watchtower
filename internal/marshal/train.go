@@ -79,6 +79,18 @@ func (tr *Train) Land(ctx context.Context, issueID, branch string) error {
 	return attempt()
 }
 
+// DeleteBranch removes a landed issue branch. It uses git's safe delete, so
+// a branch whose commits have not been merged is refused rather than lost.
+func (tr *Train) DeleteBranch(branch string) error {
+	if branch == "" || branch == "HEAD" {
+		return nil
+	}
+	if out, err := tr.git("branch", "-d", branch); err != nil {
+		return fmt.Errorf("delete branch %s: %v: %s", branch, err, out)
+	}
+	return nil
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

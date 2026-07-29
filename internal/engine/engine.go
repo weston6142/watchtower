@@ -842,10 +842,12 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 	e.mu.Unlock()
 	f := e.cfg.Flows[is.flowName]
 	aborted := true
+	landed := false
 	defer func() {
 		e.mu.Lock()
 		is.activeTouchset = nil
 		release := is.wsRelease
+		branch := is.branch
 		is.wsRelease = nil
 		is.wsPath = ""
 		is.branch = ""
@@ -854,6 +856,12 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 		e.mu.Unlock()
 		if release != nil {
 			_ = release()
+		}
+		// A landed branch has served its purpose. Deleting it must wait until
+		// the workspace is released — a worktree still holding the branch
+		// checked out makes git refuse the delete.
+		if landed && branch != "" && e.cfg.Train != nil {
+			_ = e.cfg.Train.DeleteBranch(branch)
 		}
 		if aborted && e.cfg.Marshal != nil {
 			e.cfg.Marshal.Aborted(is.id)
@@ -914,6 +922,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			aborted = false
 			return nil
 		}
+		landed = true
 		if e.cfg.Reconcile != nil {
 			if err := e.cfg.Reconcile(ctx, is.id); err == nil {
 				e.emit(core.EvDocsReconciled, is.id, nil)

@@ -13,10 +13,12 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
+	"github.com/weston6142/watchtower/internal/workspace"
 )
 
 func testFlow() flow.Flow {
@@ -967,5 +969,54 @@ func TestAbandonUnknownIssue(t *testing.T) {
 	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
 	if err := e.Abandon("GH-404"); err == nil {
 		t.Fatal("expected error for unknown issue")
+	}
+}
+
+// After a merge lands, the issue branch has served its purpose; leaving it
+// behind blocks later re-use of the branch name and clutters the repo.
+func TestMergedIssueBranchIsDeleted(t *testing.T) {
+	repo := t.TempDir()
+	gitc := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return string(out)
+	}
+	gitc("init", "-q", "-b", "main")
+	gitc("config", "user.email", "t@t")
+	gitc("config", "user.name", "t")
+	gitc("commit", "-q", "--allow-empty", "-m", "base")
+
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{
+		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+			Gate: flow.GateAuto, Workspace: "worktree"},
+	}}
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	e := New(Config{
+		Store: s,
+		Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"execute/executor": {},
+		}},
+		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
+		DataDir:   t.TempDir(),
+		Workspace: workspace.GitWorktree{Repo: repo},
+		Train:     &marshal.Train{Repo: repo},
+	})
+	id, err := e.CreateIssue("branch cleanup", "", "default", levers.Preset(f, flow.LeverYolo), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	branch := "issue/" + id
+	if out := gitc("branch", "--list", branch); strings.TrimSpace(out) != "" {
+		t.Fatalf("issue branch survived the merge: %q", out)
 	}
 }

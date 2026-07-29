@@ -104,3 +104,32 @@ func TestLandVerifiesBranchIsAncestor(t *testing.T) {
 		t.Fatalf("branch not ancestor of main after Land: %v", err)
 	}
 }
+
+func TestDeleteBranchRemovesMergedBranch(t *testing.T) {
+	repo, branch := repoWithBranch(t, false)
+	tr := &Train{Repo: repo}
+	if err := tr.Land(context.Background(), "GH-1", branch); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.DeleteBranch(branch); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("git", "-C", repo, "branch", "--list", branch).CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("branch still exists after DeleteBranch: %s", out)
+	}
+}
+
+func TestDeleteBranchRefusesUnmergedBranch(t *testing.T) {
+	repo, branch := repoWithBranch(t, false)
+	tr := &Train{Repo: repo}
+	if err := tr.DeleteBranch(branch); err == nil {
+		t.Fatal("expected error deleting unmerged branch")
+	}
+	if out := git(t, repo, "branch", "--list", branch); strings.TrimSpace(out) == "" {
+		t.Fatal("unmerged branch was deleted")
+	}
+}
