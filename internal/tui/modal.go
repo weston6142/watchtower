@@ -15,6 +15,8 @@ type modalState struct {
 	Field    int
 	FlowName string
 	Preset   string
+	Priority string
+	EditID   string // non-empty: editing this backlog draft instead of creating
 }
 
 func (m modalState) input(key string) modalState {
@@ -26,7 +28,7 @@ func (m modalState) input(key string) modalState {
 			m.setFieldValue(string(runes[:len(runes)-1]))
 		}
 	case "tab":
-		m.Field = (m.Field + 1) % 4
+		m.Field = (m.Field + 1) % 5
 	default:
 		if key != "" && !strings.ContainsAny(key, "\n\r\t") {
 			m.setFieldValue(m.fieldValue() + key)
@@ -45,6 +47,8 @@ func (m *modalState) setFieldValue(value string) {
 		m.FlowName = value
 	case 3:
 		m.Preset = value
+	case 4:
+		m.Priority = value
 	}
 }
 
@@ -58,6 +62,8 @@ func (m modalState) fieldValue() string {
 		return m.FlowName
 	case 3:
 		return m.Preset
+	case 4:
+		return m.Priority
 	default:
 		return ""
 	}
@@ -95,15 +101,22 @@ func renderModal(m modalState, width int) string {
 		preset = string(flow.LeverRegular)
 	}
 	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
+	submit := keyChip("enter") + dim.Render(" create  ") + keyChip("ctrl+s") + dim.Render(" backlog")
+	boxTitle := "new issue"
+	if m.EditID != "" {
+		submit = keyChip("enter") + dim.Render(" save")
+		boxTitle = "edit issue"
+	}
 	lines := []string{
 		modalField(m.Field == 0, "title", m.Title, true),
 		modalField(m.Field == 1, "body", m.Body, false),
 		modalField(m.Field == 2, "flow", flowName, false),
 		modalField(m.Field == 3, "preset", preset, false),
+		modalField(m.Field == 4, "priority", m.Priority, false),
 		"",
-		keyChip("tab") + dim.Render(" next field  ") + keyChip("enter") + dim.Render(" create"),
+		keyChip("tab") + dim.Render(" next field  ") + submit,
 	}
-	return renderBox("new issue", "", " esc cancel ", boundedLines(lines, max(1, width-6)))
+	return renderBox(boxTitle, "", " esc cancel ", boundedLines(lines, max(1, width-6)))
 }
 
 const modalFieldWidth = 44

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -345,16 +346,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "esc":
 				m.modal = nil
-			case "enter":
+			case "enter", "ctrl+s":
 				if strings.TrimSpace(m.modal.Title) == "" {
 					m.Err = "title is required"
+					return m, nil
+				}
+				if _, err := modalPriority(*m.modal); err != nil {
+					m.Err = "priority must be a number"
 					return m, nil
 				}
 				if m.client == nil {
 					m.modal = nil
 					return m, nil
 				}
-				return m, m.createIssue(*m.modal)
+				switch {
+				case m.modal.EditID != "":
+					return m, m.updateIssue(*m.modal)
+				case key == "ctrl+s":
+					return m, m.draftIssue(*m.modal)
+				default:
+					return m, m.createIssue(*m.modal)
+				}
 			default:
 				updated := m.modal.input(key)
 				m.modal = &updated
@@ -717,7 +729,8 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 	}
 	client := m.client
 	return func() tea.Msg {
-		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title, Body: modal.Body, Flow: flowName, Preset: preset})
+		priority, _ := modalPriority(modal)
+		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title, Body: modal.Body, Flow: flowName, Preset: preset, Priority: priority})
 		if err != nil {
 			return createIssueMsg{err: err}
 		}
@@ -732,6 +745,45 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 			return createIssueMsg{response: started}
 		}
 		return createIssueMsg{response: r}
+	}
+}
+
+// modalPriority parses the modal's priority text; empty means 0.
+func modalPriority(modal modalState) (int, error) {
+	value := strings.TrimSpace(modal.Priority)
+	if value == "" {
+		return 0, nil
+	}
+	return strconv.Atoi(value)
+}
+
+func (m Model) draftIssue(modal modalState) tea.Cmd {
+	return m.modalCommand(modal, "draft_issue", "")
+}
+
+func (m Model) updateIssue(modal modalState) tea.Cmd {
+	return m.modalCommand(modal, "update_issue", modal.EditID)
+}
+
+// modalCommand sends one modal-backed op; createIssue keeps its own start step.
+func (m Model) modalCommand(modal modalState, op, issueID string) tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	flowName := strings.TrimSpace(modal.FlowName)
+	if flowName == "" {
+		flowName = "default"
+	}
+	preset := strings.TrimSpace(modal.Preset)
+	if preset == "" {
+		preset = "regular"
+	}
+	priority, _ := modalPriority(modal)
+	client := m.client
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: op, IssueID: issueID, Title: modal.Title,
+			Body: modal.Body, Flow: flowName, Preset: preset, Priority: priority})
+		return createIssueMsg{response: r, err: err}
 	}
 }
 

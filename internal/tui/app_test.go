@@ -55,11 +55,33 @@ func pressKey(t *testing.T, m Model, key string) Model {
 		msg = tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
 		msg = tea.KeyMsg{Type: tea.KeyEsc}
+	case "ctrl+s":
+		msg = tea.KeyMsg{Type: tea.KeyCtrlS}
 	default:
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}
 	next, _ := m.Update(msg)
 	return next.(Model)
+}
+
+func TestModalCtrlSValidatesTitle(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "n")
+	m = pressKey(t, m, "ctrl+s")
+	if m.Err != "title is required" {
+		t.Fatalf("Err = %q", m.Err)
+	}
+}
+
+func TestModalBadPriorityKeepsModalOpen(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "n")
+	m.modal.Title = "t"
+	m.modal.Priority = "abc"
+	m = pressKey(t, m, "ctrl+s")
+	if m.modal == nil || m.Err != "priority must be a number" {
+		t.Fatalf("bad priority: modal=%v err=%q", m.modal, m.Err)
+	}
 }
 
 func toastModel(t *testing.T) Model {
