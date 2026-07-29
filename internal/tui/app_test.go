@@ -86,15 +86,7 @@ func TestModalBadPriorityKeepsModalOpen(t *testing.T) {
 
 func backlogFixtureState() *projection.State {
 	s := projection.NewState()
-	for _, spec := range []struct {
-		id, title string
-		prio      int
-	}{{"GH-2", "low fix", 0}, {"GH-3", "hot fix", 5}} {
-		ev, _ := core.NewEvent(core.EvIssueDrafted, spec.id, map[string]any{
-			"title": spec.title, "body": "b", "flow": "default", "preset": "regular",
-			"priority": spec.prio})
-		s.Apply(ev)
-	}
+	applyBacklogDrafts(s)
 	return s
 }
 

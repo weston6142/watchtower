@@ -65,6 +65,20 @@ func fixtureState() *projection.State {
 	return st
 }
 
+// applyBacklogDrafts seeds two drafts with distinct priorities so backlog
+// ordering is visible in fixtures and tests.
+func applyBacklogDrafts(s *projection.State) {
+	for _, spec := range []struct {
+		id, title string
+		priority  int
+	}{{"GH-2", "low fix", 0}, {"GH-3", "hot fix", 5}} {
+		ev, _ := core.NewEvent(core.EvIssueDrafted, spec.id, map[string]any{
+			"title": spec.title, "body": "b", "flow": "default", "preset": "regular",
+			"priority": spec.priority})
+		s.Apply(ev)
+	}
+}
+
 func fixtureProposals() []store.ProposalRow {
 	return []store.ProposalRow{
 		{ID: 1, Title: "Add smoke test for the importer webhook", Body: "The last two importer regressions were webhook-shaped. A 30-second smoke test on PR would have caught both before review."},
@@ -124,15 +138,7 @@ func FixtureModel(flowName string, width, height int) Model {
 	case "modal":
 		m.modal = &modalState{Title: "Wire importer smoke test into CI", Field: 0}
 	case "backlog":
-		for _, spec := range []struct {
-			id, title string
-			priority  int
-		}{{"GH-2", "low fix", 0}, {"GH-3", "hot fix", 5}} {
-			ev, _ := core.NewEvent(core.EvIssueDrafted, spec.id, map[string]any{
-				"title": spec.title, "body": "b", "flow": "default", "preset": "regular",
-				"priority": spec.priority})
-			m.State.Apply(ev)
-		}
+		applyBacklogDrafts(m.State)
 		m.backlog = &backlogState{}
 	case "levers":
 		m.leverEditor = newLeverEditor("ca-repo", m.stages, map[string]string{"review": "strict"})

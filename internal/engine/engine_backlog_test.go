@@ -20,16 +20,7 @@ func newTestEngine(t *testing.T) (*Engine, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	sw := &steward.Steward{Store: st}
-	e := New(Config{
-		Store:     st,
-		Runner:    &runner.FakeRunner{Scripts: scripts()},
-		Pool:      slots.NewPool(2),
-		Flows:     map[string]flow.Flow{"default": testFlow()},
-		DataDir:   t.TempDir(),
-		Observers: []func(core.Event){sw.Observe},
-	})
-	return e, st
+	return newEngineOver(t, st), st
 }
 
 func newEngineOver(t *testing.T, st *store.Store) *Engine {
