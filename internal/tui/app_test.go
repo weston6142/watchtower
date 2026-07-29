@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
 )
@@ -55,6 +56,12 @@ func pressKey(t *testing.T, m Model, key string) Model {
 		msg = tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
 		msg = tea.KeyMsg{Type: tea.KeyEsc}
+	case "left":
+		msg = tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		msg = tea.KeyMsg{Type: tea.KeyRight}
+	case "tab":
+		msg = tea.KeyMsg{Type: tea.KeyTab}
 	case "ctrl+s":
 		msg = tea.KeyMsg{Type: tea.KeyCtrlS}
 	default:
@@ -73,15 +80,107 @@ func TestModalCtrlSValidatesTitle(t *testing.T) {
 	}
 }
 
-func TestModalBadPriorityKeepsModalOpen(t *testing.T) {
+// The modal has no priority parse left to fail, so normal is what a new issue
+// carries without anyone touching the field.
+func TestModalPriorityDefaultsToNormal(t *testing.T) {
 	m := Model{State: projection.NewState()}
 	m = pressKey(t, m, "n")
-	m.modal.Title = "t"
-	m.modal.Priority = "abc"
-	m = pressKey(t, m, "ctrl+s")
-	if m.modal == nil || m.Err != "priority must be a number" {
-		t.Fatalf("bad priority: modal=%v err=%q", m.modal, m.Err)
+	if m.modal == nil || m.modal.Priority != 0 {
+		t.Fatalf("new modal priority = %+v, want 0", m.modal)
 	}
+	if out := ansi.Strip(renderModal(*m.modal, 80)); !strings.Contains(out, "normal") {
+		t.Fatalf("modal does not show the level name:\n%s", out)
+	}
+}
+
+// h/l cycle the chooser and wrap, so every reachable value is a named level.
+func TestModalPriorityCycles(t *testing.T) {
+	m := openPriorityField(t)
+	for _, tc := range []struct {
+		key  string
+		want int
+	}{{"l", 1}, {"l", 2}, {"l", -1}, {"h", 2}, {"h", 1}, {"h", 0}} {
+		m = pressKey(t, m, tc.key)
+		if m.modal.Priority != tc.want {
+			t.Fatalf("after %q: Priority = %d, want %d", tc.key, m.modal.Priority, tc.want)
+		}
+	}
+}
+
+// left/right alias to h/l inside the modal: the global arrow→vim aliasing runs
+// after the modal branch returns, so the cycler has to handle them itself.
+func TestModalPriorityArrowKeys(t *testing.T) {
+	m := openPriorityField(t)
+	m = pressKey(t, m, "right")
+	if m.modal.Priority != 1 {
+		t.Fatalf("right: Priority = %d, want 1", m.modal.Priority)
+	}
+	m = pressKey(t, m, "left")
+	if m.modal.Priority != 0 {
+		t.Fatalf("left: Priority = %d, want 0", m.modal.Priority)
+	}
+}
+
+// Guards the removal of priority from setFieldValue/fieldValue: text cannot
+// land in the field at all, so a bad priority is unreachable, not just rejected.
+func TestModalPriorityIgnoresTextInput(t *testing.T) {
+	m := openPriorityField(t)
+	for _, key := range []string{"a", "5", "backspace"} {
+		m = pressKey(t, m, key)
+		if m.modal.Priority != 0 {
+			t.Fatalf("%q leaked into priority: %d", key, m.modal.Priority)
+		}
+	}
+}
+
+// The h/l interception is gated on the priority field; with the title focused
+// they are ordinary letters. No golden can catch this, since a snapshot only
+// poses a static state.
+func TestModalTextFieldsStillAcceptHL(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "n")
+	for _, key := range []string{"h", "e", "l", "l", "o"} {
+		m = pressKey(t, m, key)
+	}
+	if m.modal.Title != "hello" {
+		t.Fatalf("Title = %q, want hello", m.modal.Title)
+	}
+}
+
+// An out-of-set stored priority is rendered, never renumbered on open: losing
+// the odd value takes a deliberate keypress.
+func TestModalPriorityKeepsOutOfSetOnOpen(t *testing.T) {
+	s := projection.NewState()
+	ev, _ := core.NewEvent(core.EvIssueDrafted, "GH-9", map[string]any{
+		"title": "stale", "body": "b", "flow": "default", "preset": "regular", "priority": 5})
+	s.Apply(ev)
+	m := Model{State: s}
+	m = pressKey(t, m, "b")
+	m = pressKey(t, m, "enter")
+	if m.modal == nil || m.modal.Priority != 5 {
+		t.Fatalf("edit modal renumbered priority: %+v", m.modal)
+	}
+	for i := 0; i < priorityField; i++ {
+		m = pressKey(t, m, "tab")
+	}
+	m = pressKey(t, m, "h")
+	if m.modal.Priority != 2 {
+		t.Fatalf("h from 5: Priority = %d, want 2 (urgent)", m.modal.Priority)
+	}
+}
+
+// openPriorityField opens a new-issue modal with the priority field focused.
+func openPriorityField(t *testing.T) Model {
+	t.Helper()
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "n")
+	for i := 0; i < priorityField; i++ {
+		m = pressKey(t, m, "tab")
+	}
+	if m.modal == nil || m.modal.Field != priorityField {
+		t.Fatalf("priority field not focused: %+v", m.modal)
+	}
+	return m
 }
 
 func backlogFixtureState() *projection.State {
@@ -104,7 +203,7 @@ func TestBacklogViewKeys(t *testing.T) {
 		t.Fatal("b did not open the backlog view")
 	}
 	m = pressKey(t, m, "enter")
-	if m.modal == nil || m.modal.EditID != "GH-3" || m.modal.Title != "hot fix" || m.modal.Priority != "5" {
+	if m.modal == nil || m.modal.EditID != "GH-3" || m.modal.Title != "hot fix" || m.modal.Priority != 2 {
 		t.Fatalf("edit modal not prefilled: %+v", m.modal)
 	}
 	m = pressKey(t, m, "esc")

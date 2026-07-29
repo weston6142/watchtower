@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+	"github.com/weston6142/watchtower/internal/projection"
 )
 
 func TestModalTyping(t *testing.T) {
@@ -50,13 +51,45 @@ func TestModalPriorityField(t *testing.T) {
 	if m.Field != 4 {
 		t.Fatalf("Field = %d, want 4 (priority)", m.Field)
 	}
-	m = m.input("7")
-	if m.Priority != "7" {
-		t.Fatalf("Priority = %q", m.Priority)
-	}
 	m = m.input("tab")
 	if m.Field != 0 {
 		t.Fatalf("tab wrap: Field = %d, want 0", m.Field)
+	}
+}
+
+// The field shows the level name, not a number, and advertises the adjust keys
+// so the option set is not something the operator has to guess.
+func TestRenderModalShowsPriorityLevel(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	out := ansi.Strip(renderModal(modalState{Field: priorityField, Priority: 2}, 80))
+	for _, want := range []string{"urgent", "h/l", "adjust", "\u25c2"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// An out-of-set priority renders as its number, and the padding keeps the title
+// column fixed — padCell truncates, so the label must be padded before styling.
+func TestBacklogRendersOutOfSetPriority(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	row := func(p int) string {
+		out := ansi.Strip(renderBacklog([]*projection.IssueView{
+			{ID: "GH-9", Title: "stale", Priority: p}}, 0, 80))
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "GH-9") {
+				return line
+			}
+		}
+		t.Fatalf("no GH-9 row in:\n%s", out)
+		return ""
+	}
+	odd := row(5)
+	if !strings.Contains(odd, "5") || strings.Contains(odd, "p5") {
+		t.Fatalf("out-of-set priority not shown bare: %q", odd)
+	}
+	if got, want := strings.Index(odd, "stale"), strings.Index(row(0), "stale"); got != want {
+		t.Fatalf("title column moved: %d vs %d\n%q\n%q", got, want, odd, row(0))
 	}
 }
 

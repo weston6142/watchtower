@@ -71,7 +71,7 @@ func applyBacklogDrafts(s *projection.State) {
 	for _, spec := range []struct {
 		id, title string
 		priority  int
-	}{{"GH-2", "low fix", 0}, {"GH-3", "hot fix", 5}} {
+	}{{"GH-2", "low fix", 0}, {"GH-3", "hot fix", 2}} {
 		ev, _ := core.NewEvent(core.EvIssueDrafted, spec.id, map[string]any{
 			"title": spec.title, "body": "b", "flow": "default", "preset": "regular",
 			"priority": spec.priority})

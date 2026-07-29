@@ -1,11 +1,11 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/priority"
 	"github.com/weston6142/watchtower/internal/projection"
 )
 
@@ -17,10 +17,16 @@ type modalState struct {
 	Field    int
 	FlowName string
 	Preset   string
-	Priority string
+	// Priority is the level's stored int, not text: the modal is a chooser, so
+	// there is nothing to parse and no way to hold an unparseable value. The
+	// zero value is priority.Levels' normal, which is what a new issue wants.
+	Priority int
 	EditID   string // non-empty: editing this backlog draft instead of creating
 }
 
+// input handles text fields only. Priority is cycled by the key router
+// (Model.Update) instead, and has no case in setFieldValue/fieldValue, so
+// backspace and rune input physically cannot reach it.
 func (m modalState) input(key string) modalState {
 	switch key {
 	case "backspace":
@@ -30,7 +36,7 @@ func (m modalState) input(key string) modalState {
 			m.setFieldValue(string(runes[:len(runes)-1]))
 		}
 	case "tab":
-		m.Field = (m.Field + 1) % 5
+		m.Field = (m.Field + 1) % modalFieldCount
 	default:
 		if key != "" && !strings.ContainsAny(key, "\n\r\t") {
 			m.setFieldValue(m.fieldValue() + key)
@@ -49,8 +55,6 @@ func (m *modalState) setFieldValue(value string) {
 		m.FlowName = value
 	case 3:
 		m.Preset = value
-	case 4:
-		m.Priority = value
 	}
 }
 
@@ -64,8 +68,6 @@ func (m modalState) fieldValue() string {
 		return m.FlowName
 	case 3:
 		return m.Preset
-	case 4:
-		return m.Priority
 	default:
 		return ""
 	}
@@ -114,14 +116,40 @@ func renderModal(m modalState, width int) string {
 		modalField(m.Field == 1, "body", m.Body, false),
 		modalField(m.Field == 2, "flow", flowName, false),
 		modalField(m.Field == 3, "preset", preset, false),
-		modalField(m.Field == 4, "priority", m.Priority, false),
+		modalChoiceField(m.Field == priorityField, "priority", priority.Label(m.Priority)),
 		"",
-		keyChip("tab") + dim.Render(" next field  ") + submit,
+		keyChip("tab") + dim.Render(" next field  ") + keyChip("h/l") + dim.Render(" adjust  ") + submit,
 	}
 	return renderBox(boxTitle, "", " esc cancel ", boundedLines(lines, max(1, width-6)))
 }
 
 const modalFieldWidth = 44
+
+// priorityField is the modal's priority slot; it is a selector, not an input.
+// It is the last field, so tab wraps after it.
+const (
+	priorityField   = 4
+	modalFieldCount = priorityField + 1
+)
+
+// modalChoiceField renders a fixed-choice field as the lever editor's
+// ◂ value ▸ control rather than modalField's caret: a caret invites typing, and
+// this field takes none.
+func modalChoiceField(selected bool, name, value string) string {
+	t := activeTheme
+	labelLine := lipgloss.NewStyle().Foreground(t.Dim).Render(strings.ToUpper(name))
+	border := t.Dimmer
+	body := lipgloss.NewStyle().Foreground(t.Structure).Render(value)
+	if selected {
+		border = t.Accent
+		arrow := lipgloss.NewStyle().Foreground(t.Accent)
+		body = arrow.Render("◂ ") + lipgloss.NewStyle().Foreground(t.Bright).Render(value) + arrow.Render(" ▸")
+	}
+	field := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(modalFieldWidth).Render(body)
+	return labelLine + "\n" + field
+}
 
 // modalField renders a labelled input: dim uppercase label over a bordered
 // value box; the active field gets an accent border and a block caret.
@@ -166,8 +194,11 @@ func renderBacklog(entries []*projection.IssueView, sel, width int) string {
 		lines = append(lines, dim.Render("backlog is empty — n then ctrl+s files a draft"))
 	}
 	for i, iv := range entries {
-		prio := lipgloss.NewStyle().Foreground(t.Structure).Render(fmt.Sprintf("p%d", iv.Priority))
-		row := padCell(iv.ID, 7) + padCell(prio, 5) + iv.Title
+		// Pad the unstyled label, then style: padCell truncates, and truncating
+		// an already-styled string can cut mid-escape and bleed colour into the
+		// title. Width 7 fits urgent/normal plus a space.
+		prio := lipgloss.NewStyle().Foreground(t.Structure).Render(padCell(priority.Label(iv.Priority), 7))
+		row := padCell(iv.ID, 7) + prio + iv.Title
 		lines = append(lines, cursorRow(i == sel, boundedLines([]string{row}, rowWidth), rowWidth+4))
 	}
 	lines = append(lines, "",

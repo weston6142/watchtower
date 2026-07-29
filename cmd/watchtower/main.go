@@ -21,6 +21,7 @@ import (
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/priority"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -251,7 +252,7 @@ func main() {
 			if issue.State != "backlog" {
 				continue
 			}
-			fmt.Printf("%s  p%d  %s  %s\n", issue.ID, issue.Priority, issue.Flow, issue.Title)
+			fmt.Printf("%s  %-7s  %s  %s\n", issue.ID, priority.Label(issue.Priority), issue.Flow, issue.Title)
 		}
 	case "status":
 		fs := flag.NewFlagSet("status", flag.ExitOnError)
