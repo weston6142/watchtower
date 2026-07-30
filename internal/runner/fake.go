@@ -16,6 +16,7 @@ type Script struct {
 	DependsOn       []string
 	Lines           []string
 	Artifacts       map[string]string
+	SessionID       string
 	Tokens          int
 	Fail            bool
 }
@@ -25,6 +26,7 @@ type FakeRunner struct {
 	OnProposal      func(string, Proposal)
 	OnProposalBatch func(string, []Proposal)
 	OnResponse      func(issueID, stage string, response levers.Response)
+	OnStart         func(issueID, stage, agentPkg, workdir string) error
 	OnLine          func(issueID, stage, line string)
 }
 
@@ -36,6 +38,12 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		if !ok {
 			done <- Result{Err: fmt.Errorf("no script for %s/%s", stage, agentPkg)}
 			return
+		}
+		if f.OnStart != nil {
+			if err := f.OnStart(issueID, stage, agentPkg, workdir); err != nil {
+				done <- Result{SessionID: sc.SessionID, Err: err}
+				return
+			}
 		}
 		for _, d := range sc.Asks {
 			reply := make(chan levers.Response, 1)
@@ -87,7 +95,10 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			}
 			out[name] = p
 		}
-		done <- Result{Artifacts: out, DependsOn: append([]string(nil), sc.DependsOn...), Tokens: sc.Tokens}
+		done <- Result{
+			Artifacts: out, DependsOn: append([]string(nil), sc.DependsOn...),
+			SessionID: sc.SessionID, Tokens: sc.Tokens,
+		}
 	}()
 	return done
 }

@@ -5,9 +5,51 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/levers"
 )
+
+func TestStageCheckpointLifecyclePreservesSuccessfulHistory(t *testing.T) {
+	s, err := Open("file:checkpoints?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	successID, err := s.InsertStageCheckpoint(StageCheckpoint{
+		IssueID: "GH-1", Stage: "brainstorm", StartCommit: "abc", Status: "running",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := contextpack.Artifact{Name: "brainstorm.md", SHA256: "digest"}
+	if err := s.FinishStageCheckpoint(
+		successID, "succeeded", "def", "session-1", "", []contextpack.Artifact{artifact}); err != nil {
+		t.Fatal(err)
+	}
+	failedID, err := s.InsertStageCheckpoint(StageCheckpoint{
+		IssueID: "GH-1", Stage: "spec", StartCommit: "def", Status: "running",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishStageCheckpoint(
+		failedID, "failed", "def", "session-2", "spec failed", nil); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.StageCheckpoints("GH-1")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("checkpoints: %+v err=%v", rows, err)
+	}
+	if rows[0].Status != "succeeded" || rows[0].Artifacts[0] != artifact ||
+		rows[0].StartCommit != "abc" || rows[0].EndCommit != "def" ||
+		rows[0].SessionID != "session-1" {
+		t.Fatalf("successful checkpoint changed: %+v", rows[0])
+	}
+	if rows[1].Status != "failed" || rows[1].Failure != "spec failed" {
+		t.Fatalf("failed checkpoint: %+v", rows[1])
+	}
+}
 
 func TestAppendAssignsSeqAndReplays(t *testing.T) {
 	s, err := Open("file:t1?mode=memory&cache=shared")

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/attach"
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/evidence"
@@ -1012,7 +1013,82 @@ func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 	a.Reply <- a.Decision.RecommendedAnswer()
 }
 
-func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage, attempt, of int) error {
+func (e *Engine) stageContext(issueID string) ([]string, string, error) {
+	checkpoints, err := e.cfg.Store.StageCheckpoints(issueID)
+	if err != nil {
+		return nil, "", err
+	}
+	seen := map[string]bool{}
+	var inputs []string
+	lastSuccessful := ""
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Status != "succeeded" {
+			continue
+		}
+		lastSuccessful = checkpoint.Stage
+		for _, artifact := range checkpoint.Artifacts {
+			if !seen[artifact.Name] {
+				seen[artifact.Name] = true
+				inputs = append(inputs, artifact.Name)
+			}
+		}
+	}
+	return inputs, lastSuccessful, nil
+}
+
+func (e *Engine) decisionLedger(issueID string) (string, error) {
+	rows, err := e.cfg.Store.AllDecisionRows()
+	if err != nil {
+		return "", err
+	}
+	var decisions []contextpack.Decision
+	for _, row := range rows {
+		if row.IssueID != issueID {
+			continue
+		}
+		decisions = append(decisions, contextpack.Decision{
+			Stage: row.Stage, Question: row.Question, Kind: row.Kind,
+			Options: row.Options, Response: row.Response, Why: row.Why,
+			Consequences: row.Consequences, Status: row.Status, At: row.CreatedAt,
+		})
+	}
+	return contextpack.DecisionLedger(decisions), nil
+}
+
+func repositoryState(workdir string, contextPaths []string) (head, branch string, dirty bool) {
+	if output, err := exec.Command("git", "-C", workdir, "rev-parse", "HEAD").Output(); err == nil {
+		head = strings.TrimSpace(string(output))
+	}
+	if output, err := exec.Command(
+		"git", "-C", workdir, "rev-parse", "--abbrev-ref", "HEAD",
+	).Output(); err == nil {
+		branch = strings.TrimSpace(string(output))
+	}
+	if output, err := exec.Command("git", "-C", workdir, "status", "--porcelain").Output(); err == nil {
+		ignored := map[string]bool{
+			"ISSUE.md": true, "STAGE.md": true, "decisions.md": true,
+		}
+		for _, name := range contextPaths {
+			ignored[filepath.ToSlash(name)] = true
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+			if len(line) < 4 {
+				continue
+			}
+			path := filepath.ToSlash(strings.TrimSpace(line[3:]))
+			if ignored[path] || strings.HasPrefix(path, "attachments/") {
+				continue
+			}
+			dirty = true
+			break
+		}
+	}
+	return head, branch, dirty
+}
+
+func (e *Engine) runStageOnce(
+	ctx context.Context, is *issueState, st flow.Stage, attempt, of int,
+) (runErr error) {
 	// "none" stages share one per-issue dir so artifacts flow between stages
 	// (brainstorm.md -> spec stage, etc.); worktree/readonly stages share the
 	// acquired workspace for the same reason.
@@ -1044,6 +1120,79 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	if err := os.WriteFile(filepath.Join(workdir, "ISSUE.md"), []byte(issueMD), 0o644); err != nil {
 		return err
 	}
+	requiredInputs, lastSuccessful, err := e.stageContext(is.id)
+	if err != nil {
+		return err
+	}
+	if err := contextpack.Materialize(e.issueDir(is.id), workdir, requiredInputs); err != nil {
+		return fmt.Errorf("materialize stage context: %w", err)
+	}
+	ledger, err := e.decisionLedger(is.id)
+	if err != nil {
+		return err
+	}
+	if err := contextpack.WriteDecisionLedger(workdir, ledger); err != nil {
+		return err
+	}
+	contextPaths := append(append([]string(nil), requiredInputs...), st.Artifacts...)
+	startCommit, branch, dirty := repositoryState(workdir, contextPaths)
+	_, _, _, lastFailure, err := e.cfg.Store.LastStageEvents(is.id)
+	if err != nil {
+		return err
+	}
+	var recovery *contextpack.Recovery
+	if attempt > 1 || lastFailure != "" {
+		recovery = &contextpack.Recovery{
+			LastSuccessfulStage: lastSuccessful, CurrentHead: startCommit,
+			Dirty: dirty, LastFailure: lastFailure,
+			OutstandingOutputs: append([]string(nil), st.Artifacts...),
+		}
+	}
+	expectedOutputs := append([]string(nil), st.Artifacts...)
+	if len(expectedOutputs) == 0 {
+		expectedOutputs = []string{"committed repository changes or a stage result"}
+	}
+	prohibited := []string{
+		"do not merge or publish the issue branch",
+		"do not commit ISSUE.md, STAGE.md, decisions.md, or materialized workflow artifacts",
+	}
+	if st.MergeBarrier {
+		prohibited = []string{
+			"do not bypass serialized integration",
+			"do not commit ISSUE.md, STAGE.md, decisions.md, or materialized workflow artifacts",
+		}
+	}
+	if err := contextpack.WriteStageBrief(workdir, contextpack.Brief{
+		IssueID: is.id, Stage: st.Name, StartCommit: startCommit,
+		BaseCommit: is.baseRef, Branch: branch, RequiredInputs: requiredInputs,
+		ExpectedOutputs: expectedOutputs, ProhibitedActions: prohibited,
+		VerificationOwner: "merge-verification", Recovery: recovery,
+	}); err != nil {
+		return err
+	}
+	checkpointID, err := e.cfg.Store.InsertStageCheckpoint(store.StageCheckpoint{
+		IssueID: is.id, Stage: st.Name, StartCommit: startCommit, Status: "running",
+	})
+	if err != nil {
+		return err
+	}
+	var checkpointArtifacts []contextpack.Artifact
+	var sessionIDs []string
+	defer func() {
+		endCommit, _, _ := repositoryState(workdir, contextPaths)
+		status, failure := "succeeded", ""
+		switch {
+		case errors.Is(runErr, errDependenciesDiscovered):
+			status = "waiting_dependencies"
+		case runErr != nil && ctx.Err() != nil:
+			status, failure = "killed", runErr.Error()
+		case runErr != nil:
+			status, failure = "failed", runErr.Error()
+		}
+		_ = e.cfg.Store.FinishStageCheckpoint(
+			checkpointID, status, endCommit, strings.Join(sessionIDs, ","),
+			failure, checkpointArtifacts)
+	}()
 	e.emit(core.EvStageStarted, is.id, map[string]any{
 		"stage": st.Name, "attempt": attempt, "of": of})
 
@@ -1093,6 +1242,9 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	var discovered []string
 	for i := 0; i < need; i++ {
 		d := <-dones
+		if d.res.SessionID != "" {
+			sessionIDs = append(sessionIDs, d.res.SessionID)
+		}
 		if d.res.Err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("agent %s: %w", d.pkg, d.res.Err)
@@ -1111,6 +1263,22 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	if st.Completion == flow.CompletionAny && succeeded == 0 {
 		return firstErr
 	}
+	// validate artifacts
+	for _, name := range st.Artifacts {
+		p := filepath.Join(workdir, name)
+		if _, err := os.Stat(p); err != nil {
+			return fmt.Errorf("stage %s missing artifact %s", st.Name, name)
+		}
+	}
+	checkpointArtifacts, err = contextpack.Archive(workdir, e.issueDir(is.id), st.Artifacts)
+	if err != nil {
+		return fmt.Errorf("archive stage artifacts: %w", err)
+	}
+	for _, artifact := range checkpointArtifacts {
+		e.emit(core.EvArtifactProduced, is.id, map[string]string{
+			"stage": st.Name, "artifact": artifact.Name,
+			"path": filepath.Join(e.issueDir(is.id), "artifacts", artifact.Name)})
+	}
 	if normalized := deps.Normalize(discovered); len(normalized) > 0 {
 		e.mu.Lock()
 		all := append(append([]string(nil), is.dependsOn...), normalized...)
@@ -1119,14 +1287,6 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 			return fmt.Errorf("discovered dependencies: %w", err)
 		}
 		return errDependenciesDiscovered
-	}
-	// validate artifacts
-	for _, name := range st.Artifacts {
-		p := filepath.Join(workdir, name)
-		if _, err := os.Stat(p); err != nil {
-			return fmt.Errorf("stage %s missing artifact %s", st.Name, name)
-		}
-		e.emit(core.EvArtifactProduced, is.id, map[string]string{"stage": st.Name, "artifact": name, "path": p})
 	}
 	return nil
 }

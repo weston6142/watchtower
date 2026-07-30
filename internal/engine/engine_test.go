@@ -304,6 +304,15 @@ func initGitRepo(t *testing.T, dir string) {
 	runGit("commit", "-qm", "base")
 }
 
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v %s", args, err, out)
+	}
+	return string(out)
+}
+
 func TestWorktreeAcquiredOnceAndReleased(t *testing.T) {
 	ws := &fakeWS{dir: t.TempDir()}
 	initGitRepo(t, ws.dir)
@@ -866,6 +875,133 @@ func TestAcceptedDiscoveredDependencyReleasesRunAndWaitsForRestart(t *testing.T)
 	}
 	if !waiting || completed {
 		t.Fatalf("waiting=%v completed=%v", waiting, completed)
+	}
+}
+
+func TestStageArtifactsAndCompactContextAreDurable(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{
+		{Name: "brainstorm", Agents: []flow.AgentRef{{Package: "brainstorm"}},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+			Artifacts: []string{"brainstorm.md"}},
+		{Name: "spec", Agents: []flow.AgentRef{{Package: "spec-writer"}},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+	}}
+	fr := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"brainstorm/brainstorm": {
+			SessionID: "session-brainstorm",
+			Asks: []levers.Decision{{
+				Question: "Use the recommended shape?", Options: []string{"yes", "no"},
+				Recommended: 0, Importance: 0.2, Why: "it is bounded",
+				Consequences: []string{"bounded", "broader"},
+			}},
+			Artifacts: map[string]string{"brainstorm.md": "# approved\n"},
+		},
+		"spec/spec-writer": {SessionID: "session-spec"},
+	}}
+	var specBrief, specLedger string
+	fr.OnStart = func(_, stage, _, workdir string) error {
+		if stage != "spec" {
+			return nil
+		}
+		brief, err := os.ReadFile(filepath.Join(workdir, "STAGE.md"))
+		if err != nil {
+			return err
+		}
+		ledger, err := os.ReadFile(filepath.Join(workdir, "decisions.md"))
+		if err != nil {
+			return err
+		}
+		specBrief, specLedger = string(brief), string(ledger)
+		return nil
+	}
+	e, s := newEngineCfg(t, fr, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"default": f}
+		cfg.Workspace = &fakeWS{dir: repo}
+	})
+	id, err := e.CreateIssue(
+		"durable context", "", "default", levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	durable := filepath.Join(e.cfg.DataDir, id, "artifacts", "brainstorm.md")
+	if body, err := os.ReadFile(durable); err != nil || string(body) != "# approved\n" {
+		t.Fatalf("durable brainstorm: %q err=%v", body, err)
+	}
+	if !strings.Contains(specBrief, "brainstorm.md") ||
+		!strings.Contains(specLedger, "Use the recommended shape?") ||
+		!strings.Contains(specLedger, "yes") {
+		t.Fatalf("brief:\n%s\nledger:\n%s", specBrief, specLedger)
+	}
+	checkpoints, err := s.StageCheckpoints(id)
+	if err != nil || len(checkpoints) != 2 {
+		t.Fatalf("checkpoints: %+v err=%v", checkpoints, err)
+	}
+	if checkpoints[0].StartCommit == "" || checkpoints[0].EndCommit == "" ||
+		len(checkpoints[0].Artifacts) != 1 ||
+		checkpoints[0].Artifacts[0].Name != "brainstorm.md" {
+		t.Fatalf("brainstorm checkpoint: %+v", checkpoints[0])
+	}
+	if checkpoints[0].SessionID == checkpoints[1].SessionID ||
+		checkpoints[0].SessionID != "session-brainstorm" ||
+		checkpoints[1].SessionID != "session-spec" {
+		t.Fatalf("sessions not stage-local: %+v", checkpoints)
+	}
+}
+
+func TestRetryBriefUsesCheckpointHeadDirtyStateAndFailure(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+	}}}
+	fr := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/executor": {SessionID: "failed-session", Fail: true},
+	}}
+	var retryBrief string
+	starts := 0
+	fr.OnStart = func(_, _, _, workdir string) error {
+		starts++
+		if starts == 2 {
+			body, err := os.ReadFile(filepath.Join(workdir, "STAGE.md"))
+			retryBrief = string(body)
+			return err
+		}
+		return nil
+	}
+	e, s := newEngineCfg(t, fr, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"default": f}
+		cfg.Workspace = &fakeWS{dir: repo}
+	})
+	id, err := e.CreateIssue("retry", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("first run succeeded")
+	}
+	fr.Scripts["execute/executor"] = runner.Script{SessionID: "retry-session"}
+	if err := e.RetryStage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	for _, want := range []string{
+		"Current HEAD: " + head, "dirty: no", "scripted failure execute/executor",
+		"Last successful stage: unknown",
+	} {
+		if !strings.Contains(retryBrief, want) {
+			t.Fatalf("retry brief missing %q:\n%s", want, retryBrief)
+		}
+	}
+	checkpoints, err := s.StageCheckpoints(id)
+	if err != nil || len(checkpoints) != 2 ||
+		checkpoints[0].Status != "failed" || checkpoints[1].Status != "succeeded" {
+		t.Fatalf("checkpoints: %+v err=%v", checkpoints, err)
 	}
 }
 

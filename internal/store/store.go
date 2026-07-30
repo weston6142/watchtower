@@ -11,6 +11,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
@@ -26,6 +27,17 @@ CREATE TABLE IF NOT EXISTS issues(
 CREATE TABLE IF NOT EXISTS stage_runs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, stage TEXT, agent TEXT,
   session_id TEXT, worktree TEXT, artifacts TEXT, status TEXT, tokens INTEGER);
+CREATE TABLE IF NOT EXISTS stage_checkpoints(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  start_commit TEXT,
+  end_commit TEXT,
+  artifacts TEXT NOT NULL,
+  status TEXT NOT NULL,
+  session_id TEXT,
+  failure TEXT,
+  created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, question TEXT, options TEXT,
   recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
@@ -60,6 +72,19 @@ type StageRun struct {
 	Worktree  string
 	Status    string
 	Tokens    int
+}
+
+type StageCheckpoint struct {
+	ID          int64
+	IssueID     string
+	Stage       string
+	StartCommit string
+	EndCommit   string
+	Artifacts   []contextpack.Artifact
+	Status      string
+	SessionID   string
+	Failure     string
+	CreatedAt   time.Time
 }
 
 type DecisionRow struct {
@@ -323,6 +348,94 @@ func (s *Store) StageRuns(issueID string) ([]StageRun, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) InsertStageCheckpoint(checkpoint StageCheckpoint) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifacts, err := json.Marshal(checkpoint.Artifacts)
+	if err != nil {
+		return 0, err
+	}
+	createdAt := checkpoint.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	result, err := s.db.Exec(
+		`INSERT INTO stage_checkpoints(
+			issue_id,stage,start_commit,end_commit,artifacts,status,session_id,failure,created_at
+		 ) VALUES(?,?,?,?,?,?,?,?,?)`,
+		checkpoint.IssueID, checkpoint.Stage, checkpoint.StartCommit, checkpoint.EndCommit,
+		string(artifacts), checkpoint.Status, checkpoint.SessionID, checkpoint.Failure,
+		createdAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+func (s *Store) FinishStageCheckpoint(
+	id int64, status, endCommit, sessionID, failure string, artifacts []contextpack.Artifact,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	encoded, err := json.Marshal(artifacts)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`UPDATE stage_checkpoints
+		 SET status=?,end_commit=?,session_id=?,failure=?,artifacts=? WHERE id=?`,
+		status, endCommit, sessionID, failure, string(encoded), id)
+	return err
+}
+
+func (s *Store) StageCheckpoints(issueID string) ([]StageCheckpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(
+		`SELECT id,issue_id,stage,start_commit,end_commit,artifacts,status,
+		        session_id,failure,created_at
+		 FROM stage_checkpoints WHERE issue_id=? ORDER BY id`,
+		issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var checkpoints []StageCheckpoint
+	for rows.Next() {
+		var checkpoint StageCheckpoint
+		var artifacts, createdAt string
+		if err := rows.Scan(
+			&checkpoint.ID, &checkpoint.IssueID, &checkpoint.Stage,
+			&checkpoint.StartCommit, &checkpoint.EndCommit, &artifacts,
+			&checkpoint.Status, &checkpoint.SessionID, &checkpoint.Failure, &createdAt,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(artifacts), &checkpoint.Artifacts); err != nil {
+			return nil, err
+		}
+		checkpoint.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, err
+		}
+		checkpoints = append(checkpoints, checkpoint)
+	}
+	return checkpoints, rows.Err()
+}
+
+func (s *Store) LastSuccessfulCheckpoint(issueID string) (StageCheckpoint, bool, error) {
+	checkpoints, err := s.StageCheckpoints(issueID)
+	if err != nil {
+		return StageCheckpoint{}, false, err
+	}
+	for index := len(checkpoints) - 1; index >= 0; index-- {
+		if checkpoints[index].Status == "succeeded" {
+			return checkpoints[index], true, nil
+		}
+	}
+	return StageCheckpoint{}, false, nil
 }
 
 func (s *Store) IssueTokens(issueID string) (int, error) {

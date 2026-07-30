@@ -76,6 +76,13 @@ func TestHappyPathProducesArtifactAndTokens(t *testing.T) {
 	}
 }
 
+func TestTaskMessagePointsToCompactStageBrief(t *testing.T) {
+	message := TaskMessage("spec", "GH-1")
+	if !strings.Contains(message, "STAGE.md") || !strings.Contains(message, "ISSUE.md") {
+		t.Fatalf("task message: %q", message)
+	}
+}
+
 func TestDecisionRoundTrip(t *testing.T) {
 	done, asks := run(t, abs(t, "testdata/asker.sh"), t.TempDir())
 	a := <-asks

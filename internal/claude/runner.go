@@ -47,7 +47,7 @@ func EffortEnv(effort string) string {
 // the setup inspector can show it verbatim: it lives in Go source and is
 // invisible in the package files.
 func TaskMessage(stage, issueID string) string {
-	return fmt.Sprintf("Task: run the %s stage for issue %s. Read ISSUE.md in the current directory for the issue description; artifacts from earlier stages are alongside it. Work in the current directory.", stage, issueID)
+	return fmt.Sprintf("Task: run the %s stage for issue %s. Read ISSUE.md and STAGE.md in the current directory, then use only the materialized artifacts and decisions.md named there. Work in the current directory.", stage, issueID)
 }
 
 // CodeRunner drives a claude CLI subprocess in stream-json mode, translating
