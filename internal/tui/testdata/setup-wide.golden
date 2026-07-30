@@ -1,0 +1,50 @@
+[2m  ● 1 question for you  ● 1 build failing                                                                                                          2 building · 1 shipped today · 412k tokens · ~$6.18  [0m
+[2m⏸ FX parked at spec — p resumes[0m
+[2mshipping order: — · builders 1/4 busy · ideas 0 · questions 1                                                                                                  ┌──────────────────────────────────────┐[0m
+[2mMAP · quiet · a full map                                                                                                                                       │  FOCUS                               │[0m
+[2m              CA            GH           ▸FX            FX                                                                                                     │                                      │[0m
+[2m             create a      issue         flaky e2e     dark-mode                                                                                               │ DECISION QUEUE                       │[0m
+[2m             repo for      importer —    fix —         audit                                                                                                   │ ▶ [1] CA brainstorm — Should creati… │[0m
+[2m             ca-repo       gh-importer   fx-e2e        fx-dark                                                                                                 └──────────────────────────────────────┘[0m
+[2mBRAINSTORM   ◔ need-you    ●             ●             ●                                                                                                                                               [0m
+[2mSPEC         ○             ●             ●             ⏸ paused                                                                                                                                        [0m
+[2mPLAN         ○             ●             ●             ○                                                                                                                                               [0m
+[2mEXECUTE      ○             ◐ working 96k ✕ failed   [0m[38;2;187;154;247m┌──────────────────────────────────────────────────────────────────────────────────────────────┐[0m[2m                                                   [0m
+[2mREVIEW       ○             ○             ○          [0m[38;2;187;154;247m│[0m [1;38;2;227;236;255;48;2;31;35;52m setup[0m[38;2;86;95;137;48;2;31;35;52m fx-e2e flaky e2e fix · flow default[0m[48;2;31;35;52m                                       [0m[1;38;2;22;22;30;48;2;187;154;247m esc close [0m [38;2;187;154;247m│[0m[2m                                                   [0m
+[2mMERGE        ○             ○             ○          [0m[38;2;187;154;247m│[0m                                                                                              [38;2;187;154;247m│[0m[2m                                                   [0m
+[2m[0m                                                    [38;2;187;154;247m│[0m   [38;2;86;95;137mREPO   [0m[38;2;121;162;247mclaude · 4 slots · budget off · $0.00/Mtok · claude_bin claude[0m                      [38;2;187;154;247m│[0m[2m[0m
+[2mSHIPPED today[0m                                       [38;2;187;154;247m│[0m   [38;2;86;95;137m       [0m[38;2;121;162;247mloaded 12:55 · workspace treehouse · pull on · push on[0m                              [38;2;187;154;247m│[0m[2m[0m
+[2m⇡ ▓ ML retry budget for marshal[0m                     [38;2;187;154;247m│[0m                                                                                              [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m [48;2;31;35;52m[38;2;187;154;247m▸[0m [38;2;187;154;247m▸[0m [38;2;227;236;255mbrainstorm  [0m[38;2;121;162;247m1 agent · decision_queue · no workspace[0m                              [38;2;86;95;137mregular[0m[0m [38;2;187;154;247m│[0m[2m[0m
+[2mPARKED[0m                                              [38;2;187;154;247m│[0m   [38;2;187;154;247m▸[0m [38;2;227;236;255mspec        [0m[38;2;121;162;247m1 agent · approve_artifact · no workspace[0m                            [38;2;86;95;137mregular[0m [38;2;187;154;247m│[0m[2m[0m
+[2m⏸ ▓ FX dark-mode audit[0m                              [38;2;187;154;247m│[0m   [38;2;187;154;247m▸[0m [38;2;227;236;255mplan        [0m[38;2;121;162;247m1 agent · approve_artifact · no workspace[0m                            [38;2;86;95;137mregular[0m [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m   [38;2;187;154;247m▸[0m [38;2;227;236;255mexecute     [0m[38;2;121;162;247m1 agent · auto · worktree · heavy · 1 retry[0m                          [38;2;86;95;137mregular[0m [38;2;187;154;247m│[0m[2m[0m
+[2m   j/k  floors   tab  next   p  pause/resume   x  ki[0m[38;2;187;154;247m│[0m   [38;2;187;154;247m▾[0m [38;2;227;236;255mreview      [0m[38;2;121;162;247m3 agents · auto · worktree · heavy[0m                                    [38;2;86;95;137mstrict[0m [38;2;187;154;247m│[0m[2m                                                    [0m
+[2m[0m                                                    [38;2;187;154;247m│[0m     [38;2;86;95;137mparallel · completion all · retries 0 · artifacts — · lever strict[0m                       [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m     [38;2;227;236;255mclean-code-reviewer   [0m[38;2;121;162;247mopus · medium (8192 thinking tokens)[0m                               [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m         [38;2;86;95;137mtools Bash, Read, Edit, Glob, Grep[0m                                                   [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m         [38;2;86;95;137mprompt 24 lines · enter opens[0m                                                        [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m         [38;2;86;95;137m┃ Light single-pass clean code review of the branch diff.[0m                            [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m     [38;2;227;236;255mreviewer              [0m[38;2;121;162;247mopus · medium (8192 thinking tokens)[0m                               [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m         [38;2;86;95;137mtools Bash, Read, Edit, Glob, Grep[0m                                                   [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m         [38;2;86;95;137mprompt 24 lines · enter opens[0m                                                        [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m         [38;2;86;95;137m┃ Adversarially verify each change against the spec.[0m                                 [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m     [38;2;227;236;255mdoc-writer            [0m[38;2;121;162;247mopus · medium (8192 thinking tokens)[0m                               [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m         [38;2;86;95;137mtools Bash, Read, Edit, Glob, Grep[0m                                                   [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m         [38;2;86;95;137mprompt 24 lines · enter opens[0m                                                        [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m         [38;2;86;95;137m┃ Reconcile the docs with what actually shipped.[0m                                     [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m   [38;2;187;154;247m▸[0m [38;2;227;236;255mmerge       [0m[38;2;121;162;247m1 agent · approve_artifact · readonly · barrier[0m                      [38;2;86;95;137mregular[0m [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m                                                                                              [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m│[0m [48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mj/k[0m[48;2;40;46;65m [0m[38;2;86;95;137m move  [0m[48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65menter[0m[48;2;40;46;65m [0m[38;2;86;95;137m expand / open prompt  [0m[48;2;40;46;65m [0m[38;2;227;236;255;48;2;40;46;65mesc[0m[48;2;40;46;65m [0m[38;2;86;95;137m close[0m                                        [38;2;187;154;247m│[0m[2m[0m
+[2m[0m                                                    [38;2;187;154;247m└──────────────────────────────────────────────────────────────────────────────────────────────┘[0m[2m[0m
+[2m[0m
+[2m[0m
+[2m[0m
+[2m[0m
+[2m[0m
+[2m[0m
+[2m[0m
+[2m[0m
+[2m[0m
+[2m[0m
+[2m[0m

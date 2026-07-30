@@ -133,3 +133,33 @@ func abs(t *testing.T, rel string) string {
 	}
 	return p
 }
+
+func TestThinkingTokens(t *testing.T) {
+	for in, want := range map[string]string{
+		"low": "1024", "medium": "8192", "high": "32768", "": "", "wat": "",
+	} {
+		if got := ThinkingTokens(in); got != want {
+			t.Errorf("ThinkingTokens(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The setup inspector shows the first user message verbatim. If TaskMessage and
+// the runner's stdin ever drift, the panel lies about the prompt — which is the
+// entire feature. This test wires them together so they cannot.
+func TestTaskMessageMatchesRunnerInput(t *testing.T) {
+	dir := t.TempDir()
+	done, _ := run(t, abs(t, "testdata/stdin.sh"), dir)
+	if res := <-done; res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "stdin.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// run() drives stage "spec", issue "GH-1", package "spec-writer".
+	want := string(UserMessage(TaskMessage("spec", "GH-1")))
+	if string(got) != want {
+		t.Fatalf("runner wrote %q, TaskMessage yields %q", got, want)
+	}
+}

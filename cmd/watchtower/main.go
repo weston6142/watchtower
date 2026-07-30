@@ -510,6 +510,21 @@ func runDaemon(args []string) {
 	srv.SetTranscript(transcriptBuffer)
 	srv.SetPricePerMTok(*pricePerMTok)
 	srv.SetBudget(*budget)
+	// The setup inspector reports what the daemon is running, so these are the
+	// post-override values, and the workspace is the provider actually held —
+	// workspace.Detect picks treehouse purely on PATH and nothing else can see
+	// which one won. LoadedAt is formatted here, once, so no render path calls
+	// time.Now() and the golden snapshots stay deterministic.
+	wsName := ""
+	if ws != nil {
+		wsName = ws.Name()
+	}
+	srv.SetRepoSetup(proto.RepoSetup{
+		Runner: *runnerKind, Slots: *slotN, Budget: *budget,
+		PricePerMTok: *pricePerMTok, ClaudeBin: *claudeBin, TestCmd: *testCmd,
+		Pull: cfg.Pull, Push: cfg.Push, Workspace: wsName,
+		LoadedAt: time.Now().Format("15:04"),
+	})
 	fatal(srv.Serve(l))
 }
 

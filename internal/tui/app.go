@@ -79,6 +79,8 @@ type Model struct {
 	confirm          *confirmState
 	leverEditor      *leverEditorState
 	wantLeverEditor  bool
+	setup            *setupState
+	wantSetup        bool
 	aliases          map[string]string
 	reducedMotion    bool
 	herdrReporter    overviewReporter
@@ -137,6 +139,18 @@ type leverApplyMsg struct {
 	response proto.Response
 	values   map[string]string
 	err      error
+}
+
+type setupMsg struct {
+	view *proto.SetupView
+	err  error
+}
+
+type setupPromptMsg struct {
+	stage string
+	pkg   string
+	lines []string
+	err   error
 }
 
 type createIssueMsg struct {
@@ -341,6 +355,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.leverEditor = nil
 		return m, nil
+	case setupMsg:
+		m.wantSetup = false
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		m.setup = &setupState{View: msg.view, Expanded: map[string]bool{}}
+		m.setup.clampTop(m.Height)
+		return m, nil
+	case setupPromptMsg:
+		if m.setup == nil {
+			// f closed the panel while the fetch was in flight. Opening the
+			// pager now would strand it with no outline underneath and Files
+			// nil, so esc would drop the operator into an empty "no artifacts"
+			// box instead of back where they were.
+			return m, nil
+		}
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		// The setup prompt has no file behind it, so readArtifact cannot serve
+		// it. Title is set here because renderPager prints a bare position
+		// indicator when it is empty.
+		m.pager = pagerState{
+			Mode:  "pager",
+			Title: msg.stage + " · " + msg.pkg + " · prompt",
+			Lines: msg.lines,
+		}
+		return m, nil
 	case createIssueMsg:
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -514,6 +558,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// The && m.pager.Mode == "" is load-bearing, not defensive: the
+		// pager's key branch sits below this one, so a bare m.setup != nil
+		// arm would swallow j/k/esc and the prompt body could not scroll.
+		if m.setup != nil && m.pager.Mode == "" {
+			switch key {
+			case "esc", "f":
+				m.setup = nil
+			case "j":
+				m.setup.Sel++
+				m.setup.clampTop(m.Height)
+			case "k":
+				m.setup.Sel--
+				m.setup.clampTop(m.Height)
+			case "g":
+				m.setup.Sel = 0
+				m.setup.clampTop(m.Height)
+			case "G":
+				m.setup.Sel = m.setup.selectableCount() - 1
+				m.setup.clampTop(m.Height)
+			case "enter":
+				return m, m.setupEnter()
+			}
+			return m, nil
+		}
 		if m.archMode != "" {
 			if key == "esc" || key == "a" {
 				m.archMode = ""
@@ -576,6 +644,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.modes = append(m.modes, "shelf")
 			m.shelfSel = 0
 			return m, nil
+		case "f":
+			// The grid only: this switch sits below the door check, so f
+			// inside a door is the door's to ignore.
+			m.Err = ""
+			// Two statements, not `return m, m.openSetup()`: openSetup has a
+			// pointer receiver and sets m.wantSetup, and the order of the
+			// copy into the result slot versus the call is unspecified. This
+			// is the shape openArtifactsFor already uses.
+			cmd := m.openSetup()
+			return m, cmd
 		case "z":
 			m.rows = !m.rows
 			return m, nil
@@ -772,6 +850,72 @@ func (m *Model) openLeverEditor(issueID string) tea.Cmd {
 		return nil
 	}
 	return m.fetchDetail(issueID)
+}
+
+// openSetup fetches the focused lane's setup outline, or the repo default when
+// nothing is focused. Same fetch-then-open shape as the lever editor: the
+// panel opens when the response lands, never before.
+//
+// wantSetup records that f was accepted. Unlike wantLeverEditor it gates
+// nothing — setupMsg has a single producer, so there is no second response to
+// disambiguate — but with no daemon attached the fetch below is a no-op, and
+// the flag is the only sign the grid handled the key rather than a door.
+func (m *Model) openSetup() tea.Cmd {
+	m.wantSetup = true
+	if m.client == nil {
+		// Fixtures and tests pose m.setup directly. With no daemon there is no
+		// running config to report, so f only records the intent.
+		return nil
+	}
+	client := m.client
+	issueID := m.Focus.Issue
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "setup_outline", IssueID: issueID})
+		if err != nil {
+			return setupMsg{err: err}
+		}
+		if !r.OK {
+			return setupMsg{err: errors.New(r.Error)}
+		}
+		return setupMsg{view: r.Setup}
+	}
+}
+
+// setupEnter toggles a stage row or fetches the selected agent's prompt — the
+// same expand-or-open path the artifact list already uses.
+func (m *Model) setupEnter() tea.Cmd {
+	if m.setup == nil {
+		return nil
+	}
+	row, ok := m.setup.selectedRow()
+	if !ok {
+		return nil
+	}
+	if row.Kind == setupRowStage {
+		m.setup.Expanded[row.Stage] = !m.setup.Expanded[row.Stage]
+		m.setup.clampTop(m.Height)
+		return nil
+	}
+	return m.fetchSetupPrompt(row.Stage, row.Pkg)
+}
+
+func (m Model) fetchSetupPrompt(stage, pkg string) tea.Cmd {
+	if m.client == nil || m.setup == nil || m.setup.View == nil {
+		return nil
+	}
+	client := m.client
+	issueID, flowName := m.setup.View.IssueID, m.setup.View.Flow
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{Op: "setup_prompt", Stage: stage, Package: pkg,
+			IssueID: issueID, Flow: flowName})
+		if err != nil {
+			return setupPromptMsg{stage: stage, pkg: pkg, err: err}
+		}
+		if !r.OK {
+			return setupPromptMsg{stage: stage, pkg: pkg, err: errors.New(r.Error)}
+		}
+		return setupPromptMsg{stage: stage, pkg: pkg, lines: r.Lines}
+	}
 }
 
 func (m *Model) cycleSelectedLever(delta int) {
@@ -999,6 +1143,14 @@ func (m *Model) openDiffPager() tea.Cmd {
 func (m *Model) updatePagerKey(key string) tea.Cmd {
 	switch {
 	case key == "esc":
+		if m.setup != nil {
+			// Entered from the setup panel, not the artifact list: Files is nil,
+			// so the artifacts branch below would drop the operator into an
+			// empty "no artifacts" box. Clear the pager and land back on the
+			// outline, with Sel and Top untouched.
+			m.pager = pagerState{}
+			return nil
+		}
 		if m.pager.Mode == "pager" {
 			m.pager.Mode = "artifacts"
 			m.pager.Lines = nil
@@ -1428,6 +1580,11 @@ func (m Model) View() string {
 		overlayBox = renderBacklog(entries, m.backlog.Sel, layoutWidth)
 	} else if m.leverEditor != nil {
 		overlayBox = renderLeverEditor(m.leverEditor.Stages, m.leverEditor.Matrix, m.leverEditor.Sel)
+	} else if m.setup != nil && m.pager.Mode == "" {
+		// The && is load-bearing: View() is a single if/else-if chain, so a bare
+		// m.setup arm placed above the pager arms wins unconditionally and the
+		// prompt would never render.
+		overlayBox = renderSetup(*m.setup, layoutWidth, m.Height)
 	} else if m.pager.Mode == "artifacts" {
 		tower = renderArtifactList(m.pager, m.Ids[m.Focus.Issue], towerWidth, m.Height)
 	} else if m.pager.Mode == "pager" {

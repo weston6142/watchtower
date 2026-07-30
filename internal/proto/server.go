@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/weston6142/watchtower/internal/archmap"
+	"github.com/weston6142/watchtower/internal/claude"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -27,6 +30,7 @@ type Server struct {
 	transcript   *transcript.Buffer
 	pricePerMTok float64
 	budget       int
+	repoSetup    RepoSetup
 }
 
 func NewServer(e *engine.Engine, s *store.Store) *Server {
@@ -45,6 +49,11 @@ func (sv *Server) SetTranscript(b *transcript.Buffer) { sv.transcript = b }
 func (sv *Server) SetPricePerMTok(price float64) { sv.pricePerMTok = price }
 
 func (sv *Server) SetBudget(budget int) { sv.budget = budget }
+
+// SetRepoSetup shares the resolved repo config so the setup inspector can
+// report what the daemon is running rather than what config.yaml says. One
+// setter rather than five: these values only ever travel together.
+func (sv *Server) SetRepoSetup(r RepoSetup) { sv.repoSetup = r }
 
 func (sv *Server) Serve(l net.Listener) error {
 	for {
@@ -233,12 +242,10 @@ func (sv *Server) exec(cmd Command) Response {
 				if stg.Name != stage || len(stg.Agents) == 0 {
 					continue
 				}
-				ref := stg.Agents[0]
-				if p, ok := sv.packages[ref.Package]; ok {
+				// Agents[0] only: this op reports one model for the stage, and
+				// the setup inspector is where every agent is listed.
+				if p, _, found := sv.effectiveAgent(stg.Agents[0]); found {
 					model, effort = p.Model, p.Effort
-				}
-				if ref.Model != "" {
-					model = ref.Model
 				}
 				break
 			}
@@ -270,6 +277,18 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{OK: true, Lines: []string{}}
 		}
 		return Response{OK: true, Lines: sv.transcript.Tail(cmd.IssueID, n)}
+	case "setup_outline":
+		view, err := sv.setupView(cmd)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Setup: view}
+	case "setup_prompt":
+		lines, err := sv.setupPrompt(cmd)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Lines: lines}
 	case "overview":
 		overview, err := sv.overview()
 		if err != nil {
@@ -364,4 +383,205 @@ func (sv *Server) flowFor(name string) (flow.Flow, bool) {
 		return f, ok
 	}
 	return flow.Flow{}, false
+}
+
+// effectiveAgent reports what the CLI actually receives for one agent ref.
+// internal/claude/runner.go passes pkg.Model alone, so the package is the
+// truth; ref.Model is returned separately as declared-but-unapplied. Shared by
+// issue_detail and setup_outline so two surfaces in one TUI cannot print
+// different models for the same stage.
+func (sv *Server) effectiveAgent(ref flow.AgentRef) (pkg pkgs.Package, declaredModel string, ok bool) {
+	pkg, ok = sv.packages[ref.Package]
+	if ref.Model != "" && ref.Model != pkg.Model {
+		declaredModel = ref.Model
+	}
+	return pkg, declaredModel, ok
+}
+
+// promptPreviewLines and promptPreviewRunes bound the per-agent preview that
+// rides in the outline response, so its size does not grow with package count.
+const (
+	promptPreviewLines = 3
+	promptPreviewRunes = 120
+)
+
+// setupView assembles the read-only picture of what the daemon is running for
+// one flow, optionally scoped to an issue so its per-stage levers show. It
+// reads the cached flows and packages — never the files on disk.
+func (sv *Server) setupView(cmd Command) (*SetupView, error) {
+	if sv.flows == nil {
+		return nil, errors.New("no flows loaded")
+	}
+	var issue store.IssueRow
+	scoped := false
+	if cmd.IssueID != "" {
+		issues, err := sv.st.Issues()
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range issues {
+			if candidate.ID == cmd.IssueID {
+				issue, scoped = candidate, true
+				break
+			}
+		}
+		if !scoped {
+			return nil, errors.New("unknown issue " + cmd.IssueID)
+		}
+	}
+	name := cmd.Flow
+	if name == "" && scoped {
+		name = issue.Flow
+	}
+	if name == "" {
+		name = "default"
+	}
+	f, ok := sv.flows[name]
+	if !ok {
+		// An explicit flow name that does not resolve is an error. An issue's
+		// own stale flow name falls back to default so the panel still opens —
+		// and SetupView.Flow names the flow actually shown, so the fallback is
+		// visible rather than silent.
+		if cmd.Flow != "" {
+			return nil, errors.New("unknown flow " + name)
+		}
+		if f, ok = sv.flows["default"]; !ok {
+			return nil, errors.New("unknown flow " + name)
+		}
+		name = "default"
+	}
+	view := &SetupView{Flow: name, Repo: sv.repoSetup}
+	if scoped {
+		view.IssueID, view.IssueTitle = issue.ID, issue.Title
+	}
+	for _, stg := range f.Stages {
+		ss := StageSetup{
+			Name: stg.Name, Gate: string(stg.Gate), Workspace: stg.Workspace,
+			Parallel: stg.Parallel, Completion: stg.Completion,
+			HeavySlot: stg.HeavySlot, MergeBarrier: stg.MergeBarrier,
+			Retries: stg.Retries, Artifacts: append([]string(nil), stg.Artifacts...),
+		}
+		if scoped {
+			ss.Lever = issue.Levers[stg.Name]
+		}
+		for _, ref := range stg.Agents {
+			ss.Agents = append(ss.Agents, sv.agentSetup(ref))
+		}
+		view.Stages = append(view.Stages, ss)
+	}
+	return view, nil
+}
+
+// agentSetup reports one agent's effective CLI settings, the fields watchtower
+// parses but never passes, and a short prompt preview.
+func (sv *Server) agentSetup(ref flow.AgentRef) AgentSetup {
+	out := AgentSetup{Package: ref.Package}
+	pkg, declaredModel, ok := sv.effectiveAgent(ref)
+	out.DeclaredModel = declaredModel
+	if !ok {
+		out.Missing = true
+		return out
+	}
+	out.Model, out.Effort = pkg.Model, pkg.Effort
+	out.ThinkingTokens = claude.ThinkingTokens(pkg.Effort)
+	out.AllowedTools = append([]string(nil), pkg.AllowedTools...)
+	out.MaxTurns = pkg.MaxTurns
+	body := strings.TrimSuffix(pkg.Prompt, "\n")
+	if body == "" {
+		return out
+	}
+	lines := strings.Split(body, "\n")
+	out.PromptLines = len(lines)
+	for _, line := range lines {
+		if len(out.PromptPreview) == promptPreviewLines {
+			break
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out.PromptPreview = append(out.PromptPreview, truncateRunes(line, promptPreviewRunes))
+	}
+	return out
+}
+
+// truncateRunes clips s to at most n runes. The preview is a hint on the wire,
+// not a rendering, so a plain rune cut is enough — no lipgloss in the daemon.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+// maxPromptBytes bounds a prompt body on the wire. proto's frame limit is
+// 1 MiB (maxMessageBytes, symmetric with client.go's scanner buffer), so a
+// clipped body plus its headings always fits with room to spare.
+const maxPromptBytes = 256 << 10
+
+const (
+	promptTaskHeading         = "first user message · internal/claude/runner.go"
+	promptSystemHeadingPrefix = "--append-system-prompt · .watchtower/packages/"
+	promptBaseNote            = "Claude Code's own base system prompt is added by the CLI and is not shown here."
+	// unscopedIssueID stands in for the issue id when nothing is focused, so
+	// the task line reads as a template rather than naming a lane at random.
+	unscopedIssueID = "«issue-id»"
+)
+
+// setupPrompt assembles the full prompt one agent receives: the synthesized
+// first user message, then the package's system prompt. The stage/package pair
+// is validated against the flow, so the op cannot be used to dump arbitrary
+// package bodies by guessing a name.
+func (sv *Server) setupPrompt(cmd Command) ([]string, error) {
+	view, err := sv.setupView(cmd)
+	if err != nil {
+		return nil, err
+	}
+	paired := false
+	for _, stg := range view.Stages {
+		if stg.Name != cmd.Stage {
+			continue
+		}
+		for _, ag := range stg.Agents {
+			if ag.Package == cmd.Package {
+				paired = true
+				break
+			}
+		}
+		break
+	}
+	if !paired {
+		return nil, fmt.Errorf("stage %s has no agent %s", cmd.Stage, cmd.Package)
+	}
+	pkg, ok := sv.packages[cmd.Package]
+	if !ok {
+		return nil, fmt.Errorf("package %s not loaded", cmd.Package)
+	}
+	issueID := cmd.IssueID
+	if issueID == "" {
+		issueID = unscopedIssueID
+	}
+	lines := []string{
+		promptTaskHeading, "",
+		claude.TaskMessage(cmd.Stage, issueID), "",
+		promptSystemHeadingPrefix + cmd.Package + "/prompt.md", "",
+	}
+	lines = append(lines, promptBody(pkg.Prompt)...)
+	return append(lines, "", promptBaseNote), nil
+}
+
+// promptBody splits a package prompt into wire lines, clipped on a line
+// boundary when it would blow past maxPromptBytes. Clipping mid-line would
+// misrepresent the prompt; a named truncation line does not.
+func promptBody(prompt string) []string {
+	body := strings.Split(strings.TrimSuffix(prompt, "\n"), "\n")
+	total := 0
+	for i, line := range body {
+		total += len(line) + 1
+		if total > maxPromptBytes {
+			out := append([]string(nil), body[:i]...)
+			return append(out, fmt.Sprintf("— truncated at 256 KiB (prompt is %d bytes) —", len(prompt)))
+		}
+	}
+	return body
 }
