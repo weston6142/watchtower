@@ -1,9 +1,14 @@
 package pkgs
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestLoadDir(t *testing.T) {
-	m, err := LoadDir("testdata")
+	m, err := LoadDir(filepath.Join("testdata", "packages"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,5 +21,58 @@ func TestLoadDir(t *testing.T) {
 	}
 	if p.Prompt == "" || p.Name != "executor" {
 		t.Fatalf("bad package: %+v", p)
+	}
+	if !strings.HasPrefix(p.Prompt, "# Shared include: decision-protocol\n") ||
+		!strings.Contains(p.Prompt, "# Package prompt: executor\n") {
+		t.Fatalf("composed prompt: %q", p.Prompt)
+	}
+}
+
+func TestLoadDirRejectsUnsafeIncludes(t *testing.T) {
+	cases := []struct {
+		name    string
+		include string
+		setup   func(root string)
+	}{
+		{name: "parent traversal", include: "../secret"},
+		{name: "absolute", include: "/tmp/secret"},
+		{name: "missing", include: "missing"},
+		{name: "duplicate", include: "safe\n  - safe", setup: func(root string) {
+			writeTestFile(t, filepath.Join(root, "shared", "safe.md"), "safe")
+		}},
+		{name: "escaping symlink", include: "escape", setup: func(root string) {
+			outside := filepath.Join(root, "outside.md")
+			writeTestFile(t, outside, "secret")
+			if err := os.MkdirAll(filepath.Join(root, "shared"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(root, "shared", "escape.md")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.setup != nil {
+				tc.setup(root)
+			}
+			writeTestFile(t, filepath.Join(root, "packages", "agent", "prompt.md"), "agent")
+			writeTestFile(t, filepath.Join(root, "packages", "agent", "package.yaml"),
+				"includes:\n  - "+tc.include+"\n")
+			if _, err := LoadDir(filepath.Join(root, "packages")); err == nil {
+				t.Fatal("unsafe include was accepted")
+			}
+		})
+	}
+}
+
+func writeTestFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

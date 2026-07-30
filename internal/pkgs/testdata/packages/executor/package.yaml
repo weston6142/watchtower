@@ -1,0 +1,5 @@
+includes:
+  - decision-protocol
+allowed_tools: ["Bash", "Read", "Write", "Edit"]
+model: ""
+max_turns: 0
