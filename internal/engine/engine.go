@@ -1436,6 +1436,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 	}
 	aborted := true
 	landed := false
+	var verification marshal.Verification
 	defer func() {
 		e.mu.Lock()
 		is.activeTouchset = nil
@@ -1516,7 +1517,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 		}
 	}
 	if len(f.Stages) > 0 && f.Stages[len(f.Stages)-1].Name == "merge-verification" {
-		decision, err := e.finalVerificationDecision(is)
+		decision, receipt, err := e.finalVerificationDecision(is)
 		if err != nil {
 			return err
 		}
@@ -1529,10 +1530,28 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			aborted = false
 			return nil
 		}
+		verification = receipt
 	}
 	if e.cfg.Train != nil && is.branch != "" {
 		e.emit(core.EvMergeStarted, is.id, map[string]string{"branch": is.branch})
-		if err := e.landWithEscalation(ctx, is); err != nil {
+		result, err := e.landWithEscalation(ctx, is, verification)
+		if err != nil {
+			var pending *marshal.PublishPendingError
+			if errors.As(err, &pending) {
+				integration := store.IssueIntegration{
+					IssueID: is.id, State: store.IntegrationPublishPending,
+					BaseBranch: result.BaseBranch, PreSHA: result.PreSHA,
+					LandedSHA: result.LandedSHA, LastError: err.Error(),
+				}
+				if storeErr := e.cfg.Store.SetIssueIntegration(integration); storeErr != nil {
+					return fmt.Errorf("%v (persist publish pending: %w)", err, storeErr)
+				}
+				e.emit(core.EvPublishPending, is.id, map[string]string{
+					"branch": result.BaseBranch, "commit": result.LandedSHA,
+					"error": err.Error(),
+				})
+				return err
+			}
 			e.emit(core.EvIssueCompleted, is.id, map[string]string{
 				"merge": "left-unmerged", "branch": is.branch})
 			if e.cfg.Marshal != nil {
@@ -1540,6 +1559,13 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			}
 			aborted = false
 			return nil
+		}
+		if err := e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
+			IssueID: is.id, State: store.IntegrationMerged,
+			BaseBranch: result.BaseBranch, PreSHA: result.PreSHA,
+			LandedSHA: result.LandedSHA,
+		}); err != nil {
+			return fmt.Errorf("persist merged integration: %w", err)
 		}
 		landed = true
 		if e.cfg.Reconcile != nil {
@@ -1564,63 +1590,74 @@ type mergeDecision struct {
 	BaseCommit   string `json:"base_commit,omitempty"`
 }
 
-func (e *Engine) finalVerificationDecision(is *issueState) (string, error) {
+func (e *Engine) finalVerificationDecision(
+	is *issueState,
+) (string, marshal.Verification, error) {
 	artifactDir := filepath.Join(e.issueDir(is.id), "artifacts")
 	decisionPath := filepath.Join(artifactDir, "merge-decision.json")
 	file, err := os.Open(decisionPath)
 	if err != nil {
-		return "", fmt.Errorf("read merge decision: %w", err)
+		return "", marshal.Verification{}, fmt.Errorf("read merge decision: %w", err)
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	var decision mergeDecision
 	if err := decoder.Decode(&decision); err != nil {
-		return "", fmt.Errorf("decode merge decision: %w", err)
+		return "", marshal.Verification{}, fmt.Errorf("decode merge decision: %w", err)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return "", fmt.Errorf("decode merge decision: %w", err)
+		return "", marshal.Verification{}, fmt.Errorf("decode merge decision: %w", err)
 	}
 	if decision.Decision != "merge" && decision.Decision != "hold" {
-		return "", fmt.Errorf("invalid merge decision %q: want merge or hold", decision.Decision)
+		return "", marshal.Verification{}, fmt.Errorf(
+			"invalid merge decision %q: want merge or hold", decision.Decision)
 	}
 	if decision.Decision == "hold" {
-		return decision.Decision, nil
+		return decision.Decision, marshal.Verification{}, nil
 	}
 
 	receipt, err := marshal.LoadVerification(filepath.Join(artifactDir, "verification.json"))
 	if err != nil {
-		return "", fmt.Errorf("load verification receipt: %w", err)
+		return "", marshal.Verification{}, fmt.Errorf("load verification receipt: %w", err)
 	}
 	branchSHA, err := gitRevision(is.wsPath, "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("read verification branch commit: %w", err)
+		return "", marshal.Verification{}, fmt.Errorf("read verification branch commit: %w", err)
 	}
 	treeSHA, err := gitRevision(is.wsPath, "HEAD^{tree}")
 	if err != nil {
-		return "", fmt.Errorf("read verified tree: %w", err)
+		return "", marshal.Verification{}, fmt.Errorf("read verified tree: %w", err)
 	}
 	if receipt.BaseSHA != is.baseRef {
-		return "", fmt.Errorf("verification base %s does not match issue base %s", receipt.BaseSHA, is.baseRef)
+		return "", marshal.Verification{}, fmt.Errorf(
+			"verification base %s does not match issue base %s", receipt.BaseSHA, is.baseRef)
 	}
 	if receipt.BranchSHA != branchSHA {
-		return "", fmt.Errorf("verification branch %s does not match current branch %s", receipt.BranchSHA, branchSHA)
+		return "", marshal.Verification{}, fmt.Errorf(
+			"verification branch %s does not match current branch %s", receipt.BranchSHA, branchSHA)
 	}
 	if !receipt.AppliesTo(treeSHA) {
-		return "", fmt.Errorf("verified tree %s does not match current tree %s", receipt.TreeSHA, treeSHA)
+		return "", marshal.Verification{}, fmt.Errorf(
+			"verified tree %s does not match current tree %s", receipt.TreeSHA, treeSHA)
 	}
 	if decision.BranchCommit != "" && decision.BranchCommit != branchSHA {
-		return "", fmt.Errorf("merge decision branch %s does not match current branch %s", decision.BranchCommit, branchSHA)
+		return "", marshal.Verification{}, fmt.Errorf(
+			"merge decision branch %s does not match current branch %s",
+			decision.BranchCommit, branchSHA)
 	}
 	if decision.BaseCommit != "" && decision.BaseCommit != is.baseRef {
-		return "", fmt.Errorf("merge decision base %s does not match issue base %s", decision.BaseCommit, is.baseRef)
+		return "", marshal.Verification{}, fmt.Errorf(
+			"merge decision base %s does not match issue base %s",
+			decision.BaseCommit, is.baseRef)
 	}
 	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 &&
 		!receipt.Includes(e.cfg.Train.TestCmd) {
-		return "", fmt.Errorf("verification receipt does not include configured verification command %q",
+		return "", marshal.Verification{}, fmt.Errorf(
+			"verification receipt does not include configured verification command %q",
 			e.cfg.Train.TestCmd)
 	}
-	return decision.Decision, nil
+	return decision.Decision, receipt, nil
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {
@@ -1680,6 +1717,21 @@ func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
 		e.mu.Unlock()
 		return fmt.Errorf("issue %s is already running", issueID)
 	}
+	integration, publishPending, err := e.cfg.Store.IssueIntegration(issueID)
+	if err != nil {
+		e.mu.Unlock()
+		return err
+	}
+	if publishPending && integration.State == store.IntegrationPublishPending {
+		is.running = true
+		e.mu.Unlock()
+		err := e.retryPublish(ctx, is, integration)
+		e.mu.Lock()
+		is.running = false
+		is.terminal = err != nil
+		e.mu.Unlock()
+		return err
+	}
 	startIdx := is.stageIdx
 	is.terminal = false
 	is.killRequested = false
@@ -1725,9 +1777,15 @@ func (e *Engine) SetLever(issueID, stage string, l flow.Lever) error {
 	return nil
 }
 
-func (e *Engine) landWithEscalation(ctx context.Context, is *issueState) error {
-	err := e.cfg.Train.Land(ctx, is.id, is.branch)
+func (e *Engine) landWithEscalation(
+	ctx context.Context, is *issueState, verification marshal.Verification,
+) (marshal.LandResult, error) {
+	result, err := e.cfg.Train.LandVerified(ctx, is.id, is.branch, verification)
 	for err != nil {
+		var pending *marshal.PublishPendingError
+		if errors.As(err, &pending) {
+			return result, err
+		}
 		e.emit(core.EvMergeConflict, is.id, map[string]string{"error": err.Error()})
 		d := levers.Decision{
 			Question:    fmt.Sprintf("Merge of %s failed: %v. Retry, or leave the branch for manual merge?", is.id, err),
@@ -1736,10 +1794,46 @@ func (e *Engine) landWithEscalation(ctx context.Context, is *issueState) error {
 			Importance:  1.0,
 		}
 		if legacyAnswer(e.escalate(is.id, "merge", d)) != 0 {
-			return err
+			return result, err
 		}
-		err = e.cfg.Train.Land(ctx, is.id, is.branch)
+		result, err = e.cfg.Train.LandVerified(ctx, is.id, is.branch, verification)
 	}
+	return result, nil
+}
+
+func (e *Engine) retryPublish(
+	ctx context.Context, is *issueState, integration store.IssueIntegration,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	e.emit(core.EvPublishRetry, is.id, map[string]string{
+		"branch": integration.BaseBranch, "commit": integration.LandedSHA})
+	if err := e.cfg.Train.Publish(integration.LandedSHA, integration.BaseBranch); err != nil {
+		integration.LastError = err.Error()
+		if storeErr := e.cfg.Store.SetIssueIntegration(integration); storeErr != nil {
+			return fmt.Errorf("%v (persist publish retry: %w)", err, storeErr)
+		}
+		e.emit(core.EvPublishPending, is.id, map[string]string{
+			"branch": integration.BaseBranch, "commit": integration.LandedSHA,
+			"error": err.Error(),
+		})
+		return err
+	}
+	integration.State = store.IntegrationMerged
+	integration.LastError = ""
+	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		return err
+	}
+	e.emit(core.EvPublishSucceeded, is.id, map[string]string{
+		"branch": integration.BaseBranch, "commit": integration.LandedSHA})
+	e.emit(core.EvIssueMerged, is.id, map[string]string{
+		"branch": integration.BaseBranch, "commit": integration.LandedSHA})
+	e.wakeDependents(context.Background(), is.id)
+	if e.cfg.Marshal != nil {
+		e.cfg.Marshal.Merged(is.id)
+	}
+	e.emit(core.EvIssueCompleted, is.id, nil)
 	return nil
 }
 

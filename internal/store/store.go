@@ -55,6 +55,14 @@ CREATE TABLE IF NOT EXISTS issue_dependencies(
   PRIMARY KEY(issue_id, depends_on));
 CREATE INDEX IF NOT EXISTS issue_dependencies_parent
   ON issue_dependencies(depends_on);
+CREATE TABLE IF NOT EXISTS issue_integration(
+  issue_id TEXT PRIMARY KEY,
+  state TEXT NOT NULL,
+  base_branch TEXT,
+  pre_sha TEXT,
+  landed_sha TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL);
 `
 
 type Store struct {
@@ -141,6 +149,21 @@ type IssueRow struct {
 	Levers    map[string]string
 	Priority  int
 	DependsOn []string
+}
+
+const (
+	IntegrationPublishPending = "publish_pending"
+	IntegrationMerged         = "merged"
+)
+
+type IssueIntegration struct {
+	IssueID    string
+	State      string
+	BaseBranch string
+	PreSHA     string
+	LandedSHA  string
+	LastError  string
+	UpdatedAt  time.Time
 }
 
 func Open(path string) (*Store, error) {
@@ -241,6 +264,53 @@ func (s *Store) EventsSince(seq int64) ([]core.Event, error) {
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) SetIssueIntegration(integration IssueIntegration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	updatedAt := integration.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO issue_integration(
+		   issue_id,state,base_branch,pre_sha,landed_sha,last_error,updated_at
+		 ) VALUES(?,?,?,?,?,?,?)
+		 ON CONFLICT(issue_id) DO UPDATE SET
+		   state=excluded.state,
+		   base_branch=excluded.base_branch,
+		   pre_sha=excluded.pre_sha,
+		   landed_sha=excluded.landed_sha,
+		   last_error=excluded.last_error,
+		   updated_at=excluded.updated_at`,
+		integration.IssueID, integration.State, integration.BaseBranch,
+		integration.PreSHA, integration.LandedSHA, integration.LastError,
+		updatedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) IssueIntegration(issueID string) (IssueIntegration, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var integration IssueIntegration
+	var updatedAt string
+	err := s.db.QueryRow(
+		`SELECT issue_id,state,base_branch,pre_sha,landed_sha,last_error,updated_at
+		 FROM issue_integration WHERE issue_id=?`, issueID,
+	).Scan(&integration.IssueID, &integration.State, &integration.BaseBranch,
+		&integration.PreSHA, &integration.LandedSHA, &integration.LastError, &updatedAt)
+	if err == sql.ErrNoRows {
+		return IssueIntegration{}, false, nil
+	}
+	if err != nil {
+		return IssueIntegration{}, false, err
+	}
+	integration.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return IssueIntegration{}, false, fmt.Errorf("parse integration update time: %w", err)
+	}
+	return integration, true, nil
 }
 
 // EventsSinceTime returns events at or after t in sequence order.

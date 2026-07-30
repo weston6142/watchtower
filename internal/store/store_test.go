@@ -51,6 +51,40 @@ func TestStageCheckpointLifecyclePreservesSuccessfulHistory(t *testing.T) {
 	}
 }
 
+func TestIssueIntegrationLifecycle(t *testing.T) {
+	s, err := Open("file:integration-lifecycle?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, ok, err := s.IssueIntegration("GH-1"); err != nil || ok {
+		t.Fatalf("missing integration = ok %v err %v", ok, err)
+	}
+	pending := IssueIntegration{
+		IssueID: "GH-1", State: IntegrationPublishPending, BaseBranch: "main",
+		PreSHA: "before", LandedSHA: "merged", LastError: "push failed",
+	}
+	if err := s.SetIssueIntegration(pending); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.IssueIntegration("GH-1")
+	if err != nil || !ok || got.IssueID != pending.IssueID ||
+		got.State != pending.State || got.BaseBranch != pending.BaseBranch ||
+		got.PreSHA != pending.PreSHA || got.LandedSHA != pending.LandedSHA ||
+		got.LastError != pending.LastError || got.UpdatedAt.IsZero() {
+		t.Fatalf("integration = %+v ok %v err %v", got, ok, err)
+	}
+	pending.State = IntegrationMerged
+	pending.LastError = ""
+	if err := s.SetIssueIntegration(pending); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err = s.IssueIntegration("GH-1")
+	if err != nil || !ok || got.State != IntegrationMerged || got.LastError != "" {
+		t.Fatalf("updated integration = %+v ok %v err %v", got, ok, err)
+	}
+}
+
 func TestAppendAssignsSeqAndReplays(t *testing.T) {
 	s, err := Open("file:t1?mode=memory&cache=shared")
 	if err != nil {

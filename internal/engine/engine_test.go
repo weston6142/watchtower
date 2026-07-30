@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1127,6 +1128,78 @@ func TestMergeVerificationAcceptsMatchingPassingReceipt(t *testing.T) {
 		}
 	}
 	t.Fatal("valid receipt did not reach merge")
+}
+
+func TestPushFailurePersistsAndRetryPublishesWithoutRerunningStage(t *testing.T) {
+	e, s, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	goodRemote := t.TempDir()
+	if out, err := exec.Command("git", "-C", goodRemote, "init", "-q", "--bare").CombinedOutput(); err != nil {
+		t.Fatalf("init remote: %v: %s", err, out)
+	}
+	missingRemote := filepath.Join(t.TempDir(), "missing.git")
+	if out, err := exec.Command("git", "-C", repo, "remote", "add", "origin", missingRemote).CombinedOutput(); err != nil {
+		t.Fatalf("add remote: %v: %s", err, out)
+	}
+	e.cfg.Train.Push = true
+	id, err := e.CreateIssue("publish", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.StartIssue(context.Background(), id)
+	var pending *marshal.PublishPendingError
+	if !errors.As(err, &pending) {
+		t.Fatalf("StartIssue error = %v, want publish pending", err)
+	}
+	integration, ok, err := s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationPublishPending ||
+		integration.LandedSHA == "" {
+		t.Fatalf("integration = %+v ok %v err %v", integration, ok, err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("stage runs before retry = %+v err %v", runs, err)
+	}
+	if out, err := exec.Command(
+		"git", "-C", repo, "remote", "set-url", "origin", goodRemote,
+	).CombinedOutput(); err != nil {
+		t.Fatalf("repair remote: %v: %s", err, out)
+	}
+	restarted := New(e.cfg)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.RetryStage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runs, err = s.StageRuns(id)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("publish retry reran stage: %+v err %v", runs, err)
+	}
+	integration, ok, err = s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationMerged {
+		t.Fatalf("integration after retry = %+v ok %v err %v", integration, ok, err)
+	}
+	remoteHead := strings.TrimSpace(gitOutput(t, goodRemote, "rev-parse", "main"))
+	if remoteHead != integration.LandedSHA {
+		t.Fatalf("remote main %s != landed %s", remoteHead, integration.LandedSHA)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[core.EventType]bool{}
+	for _, event := range events {
+		if event.IssueID == id {
+			seen[event.Type] = true
+		}
+	}
+	for _, eventType := range []core.EventType{
+		core.EvPublishPending, core.EvPublishRetry, core.EvPublishSucceeded, core.EvIssueMerged,
+	} {
+		if !seen[eventType] {
+			t.Fatalf("missing %s event: %+v", eventType, seen)
+		}
+	}
 }
 
 // newEngineOnFile builds an engine on a file-backed store so a second engine
