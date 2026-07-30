@@ -66,6 +66,25 @@ func TestIssueCompletedSetsDone(t *testing.T) {
 	}
 }
 
+func TestCleanupWarningSurvivesIssueCompletion(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "x"}))
+	s.Apply(ev(t, core.EvIssueMerged, "GH-1", nil))
+	s.Apply(ev(t, core.EvCleanupNeeded, "GH-1", map[string]any{
+		"operations": []string{"delete_branch:issue/GH-1"}, "error": "branch busy",
+	}))
+	s.Apply(ev(t, core.EvIssueCompleted, "GH-1", nil))
+	issue := s.Issues["GH-1"]
+	if issue.State != "cleanup_needed" || !issue.Merged ||
+		issue.LastError != "branch busy" || len(issue.Cleanup) != 1 {
+		t.Fatalf("cleanup warning = %+v", issue)
+	}
+	s.Apply(ev(t, core.EvCleanupCompleted, "GH-1", nil))
+	if issue.State != "done" || issue.LastError != "" || len(issue.Cleanup) != 0 {
+		t.Fatalf("completed cleanup = %+v", issue)
+	}
+}
+
 func TestAttemptAndErrorSurfacing(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "x", "flow": "default"}))

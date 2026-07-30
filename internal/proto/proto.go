@@ -74,6 +74,7 @@ type IssueDetail struct {
 	AttemptOf int               `json:"attempt_of,omitempty"`
 	Budget    int               `json:"budget,omitempty"`
 	Levers    map[string]string `json:"levers,omitempty"`
+	Cleanup   []string          `json:"cleanup,omitempty"`
 	Dollars   float64           `json:"dollars,omitempty"`
 }
 

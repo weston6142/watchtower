@@ -32,6 +32,7 @@ type IssueView struct {
 	Unmerged    bool
 	Paused      bool
 	Killed      bool
+	Cleanup     []string
 	AreaWeights map[string]int
 	MergedAt    time.Time
 }
@@ -171,8 +172,23 @@ func (s *State) Apply(ev core.Event) {
 		}
 	case core.EvIssueCompleted:
 		if iv != nil {
-			iv.State = "done"
+			if iv.State != "cleanup_needed" {
+				iv.State = "done"
+			}
 			iv.Unmerged = str("merge") == "left-unmerged"
+		}
+	case core.EvCleanupNeeded:
+		if iv != nil {
+			iv.State = "cleanup_needed"
+			iv.Merged = true
+			iv.LastError = str("error")
+			iv.Cleanup = stringsFromPayload(p["operations"])
+		}
+	case core.EvCleanupCompleted:
+		if iv != nil {
+			iv.State = "done"
+			iv.LastError = ""
+			iv.Cleanup = nil
 		}
 	case core.EvStageFailed:
 		if iv != nil {

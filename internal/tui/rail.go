@@ -77,6 +77,9 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 		if strings.HasPrefix(det.Issue.State, "failed") {
 			lines = append(lines, fmt.Sprintf("error: %s · attempt %d of %d", det.LastError, det.Attempt, det.AttemptOf))
 		}
+		if det.Issue.State == "cleanup_needed" {
+			lines = append(lines, "cleanup needed: "+strings.Join(det.Cleanup, ", "))
+		}
 		if det.Budget > 0 {
 			percent := det.Tokens * 100 / det.Budget
 			percent = max(0, min(100, percent))
@@ -143,6 +146,8 @@ func focusStatus(state string) string {
 		return "failed"
 	case strings.HasPrefix(state, "paused"):
 		return "paused"
+	case state == "cleanup_needed":
+		return "shipped · cleanup needed"
 	case state == "done":
 		return "shipped"
 	default:

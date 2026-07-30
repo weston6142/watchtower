@@ -39,7 +39,6 @@ type Config struct {
 	Marshal     Sequencer
 	Train       *marshal.Train
 	Librarian   *librarian.Librarian
-	Reconcile   func(context.Context, string) error
 	Observers   []func(core.Event)
 	Pool        *slots.Pool
 	Flows       map[string]flow.Flow
@@ -1437,26 +1436,20 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 	}
 	aborted := true
 	landed := false
+	preserveWorkspace := false
 	var verification marshal.Verification
 	defer func() {
 		e.mu.Lock()
 		is.activeTouchset = nil
 		release := is.wsRelease
-		branch := is.branch
 		is.wsRelease = nil
 		is.wsPath = ""
 		is.branch = ""
 		is.baseRef = ""
 		is.running = false
 		e.mu.Unlock()
-		if release != nil {
+		if release != nil && !landed && !preserveWorkspace {
 			_ = release()
-		}
-		// A landed branch has served its purpose. Deleting it must wait until
-		// the workspace is released — a worktree still holding the branch
-		// checked out makes git refuse the delete.
-		if landed && branch != "" && e.cfg.Train != nil {
-			_ = e.cfg.Train.DeleteBranch(branch)
 		}
 		if aborted && e.cfg.Marshal != nil {
 			e.cfg.Marshal.Aborted(is.id)
@@ -1543,6 +1536,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 					IssueID: is.id, State: store.IntegrationPublishPending,
 					BaseBranch: result.BaseBranch, PreSHA: result.PreSHA,
 					LandedSHA: result.LandedSHA, LastError: err.Error(),
+					Cleanup: cleanupOperations(is.wsPath, is.branch),
 				}
 				if storeErr := e.cfg.Store.SetIssueIntegration(integration); storeErr != nil {
 					return fmt.Errorf("%v (persist publish pending: %w)", err, storeErr)
@@ -1551,6 +1545,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 					"branch": result.BaseBranch, "commit": result.LandedSHA,
 					"error": err.Error(),
 				})
+				preserveWorkspace = true
 				return err
 			}
 			if errors.Is(err, errConflictHeld) {
@@ -1564,21 +1559,23 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			}
 			return err
 		}
-		if err := e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
-			IssueID: is.id, State: store.IntegrationMerged,
-			BaseBranch: result.BaseBranch, PreSHA: result.PreSHA,
-			LandedSHA: result.LandedSHA,
-		}); err != nil {
-			return fmt.Errorf("persist merged integration: %w", err)
-		}
 		landed = true
-		if e.cfg.Reconcile != nil {
-			if err := e.cfg.Reconcile(ctx, is.id); err == nil {
-				e.emit(core.EvDocsReconciled, is.id, nil)
-			}
+		if e.cfg.Train.Push {
+			e.emit(core.EvPublishSucceeded, is.id, map[string]string{
+				"branch": result.BaseBranch, "commit": result.LandedSHA})
 		}
 		e.emit(core.EvIssueMerged, is.id, map[string]string{"branch": is.branch})
 		e.wakeDependents(context.Background(), is.id)
+		integration := store.IssueIntegration{
+			IssueID: is.id, State: store.IntegrationMerged,
+			BaseBranch: result.BaseBranch, PreSHA: result.PreSHA,
+			LandedSHA: result.LandedSHA,
+		}
+		if err := e.finishLandingCleanup(
+			is.id, integration, is.wsPath, is.branch, is.wsRelease,
+		); err != nil {
+			return err
+		}
 	}
 	if e.cfg.Marshal != nil {
 		e.cfg.Marshal.Merged(is.id)
@@ -1713,16 +1710,21 @@ func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
 		e.mu.Unlock()
 		return fmt.Errorf("unknown issue %s", issueID)
 	}
-	if !is.terminal {
-		e.mu.Unlock()
-		return fmt.Errorf("issue %s has no failed stage to retry", issueID)
-	}
 	if is.running {
 		e.mu.Unlock()
 		return fmt.Errorf("issue %s is already running", issueID)
 	}
 	integration, publishPending, err := e.cfg.Store.IssueIntegration(issueID)
 	if err != nil {
+		e.mu.Unlock()
+		return err
+	}
+	if publishPending && integration.State == store.IntegrationCleanupNeeded {
+		is.running = true
+		e.mu.Unlock()
+		err := e.retryCleanup(ctx, is, integration)
+		e.mu.Lock()
+		is.running = false
 		e.mu.Unlock()
 		return err
 	}
@@ -1735,6 +1737,10 @@ func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
 		is.terminal = err != nil
 		e.mu.Unlock()
 		return err
+	}
+	if !is.terminal {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s has no failed stage to retry", issueID)
 	}
 	startIdx := is.stageIdx
 	is.terminal = false
@@ -1929,20 +1935,119 @@ func (e *Engine) retryPublish(
 		})
 		return err
 	}
-	integration.State = store.IntegrationMerged
-	integration.LastError = ""
-	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
-		return err
-	}
 	e.emit(core.EvPublishSucceeded, is.id, map[string]string{
 		"branch": integration.BaseBranch, "commit": integration.LandedSHA})
 	e.emit(core.EvIssueMerged, is.id, map[string]string{
 		"branch": integration.BaseBranch, "commit": integration.LandedSHA})
 	e.wakeDependents(context.Background(), is.id)
+	if err := e.retryCleanup(ctx, is, integration); err != nil {
+		return err
+	}
 	if e.cfg.Marshal != nil {
 		e.cfg.Marshal.Merged(is.id)
 	}
 	e.emit(core.EvIssueCompleted, is.id, nil)
+	return nil
+}
+
+const (
+	cleanupReleasePrefix = "release_worktree:"
+	cleanupDeletePrefix  = "delete_branch:"
+)
+
+func cleanupOperations(worktreePath, branch string) []string {
+	var operations []string
+	if worktreePath != "" {
+		operations = append(operations, cleanupReleasePrefix+worktreePath)
+	}
+	if branch != "" {
+		operations = append(operations, cleanupDeletePrefix+branch)
+	}
+	return operations
+}
+
+func (e *Engine) finishLandingCleanup(
+	issueID string,
+	integration store.IssueIntegration,
+	worktreePath, branch string,
+	release func() error,
+) error {
+	operations := cleanupOperations(worktreePath, branch)
+	if release != nil {
+		if err := release(); err != nil {
+			return e.recordCleanupNeeded(integration, operations, err)
+		}
+	}
+	if branch != "" && e.cfg.Train != nil {
+		if err := e.cfg.Train.DeleteBranch(branch); err != nil {
+			return e.recordCleanupNeeded(
+				integration, []string{cleanupDeletePrefix + branch}, err)
+		}
+	}
+	integration.State = store.IntegrationMerged
+	integration.Cleanup = nil
+	integration.LastError = ""
+	return e.cfg.Store.SetIssueIntegration(integration)
+}
+
+func (e *Engine) retryCleanup(
+	ctx context.Context, is *issueState, integration store.IssueIntegration,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	remaining := append([]string(nil), integration.Cleanup...)
+	for len(remaining) > 0 {
+		operation := remaining[0]
+		var err error
+		switch {
+		case strings.HasPrefix(operation, cleanupReleasePrefix):
+			path := strings.TrimPrefix(operation, cleanupReleasePrefix)
+			releaser, ok := e.cfg.Workspace.(workspace.Releaser)
+			if !ok {
+				err = fmt.Errorf("workspace provider cannot retry release of %s", path)
+			} else {
+				err = releaser.ReleasePath(path)
+			}
+		case strings.HasPrefix(operation, cleanupDeletePrefix):
+			branch := strings.TrimPrefix(operation, cleanupDeletePrefix)
+			if e.cfg.Train == nil {
+				err = fmt.Errorf("merge train cannot retry branch deletion of %s", branch)
+			} else {
+				err = e.cfg.Train.DeleteBranch(branch)
+			}
+		default:
+			err = fmt.Errorf("unknown cleanup operation %q", operation)
+		}
+		if err != nil {
+			return e.recordCleanupNeeded(integration, remaining, err)
+		}
+		remaining = remaining[1:]
+	}
+	integration.State = store.IntegrationMerged
+	integration.Cleanup = nil
+	integration.LastError = ""
+	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		return err
+	}
+	e.emit(core.EvCleanupCompleted, is.id, map[string]string{
+		"commit": integration.LandedSHA})
+	return nil
+}
+
+func (e *Engine) recordCleanupNeeded(
+	integration store.IssueIntegration, operations []string, cleanupErr error,
+) error {
+	integration.State = store.IntegrationCleanupNeeded
+	integration.Cleanup = append([]string(nil), operations...)
+	integration.LastError = cleanupErr.Error()
+	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		return fmt.Errorf("%v (persist cleanup: %w)", cleanupErr, err)
+	}
+	e.emit(core.EvCleanupNeeded, integration.IssueID, map[string]any{
+		"operations": operations, "error": cleanupErr.Error(),
+		"commit": integration.LandedSHA,
+	})
 	return nil
 }
 

@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS issue_integration(
   pre_sha TEXT,
   landed_sha TEXT,
   last_error TEXT,
+  cleanup TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL);
 `
 
@@ -153,6 +154,7 @@ type IssueRow struct {
 
 const (
 	IntegrationPublishPending = "publish_pending"
+	IntegrationCleanupNeeded  = "cleanup_needed"
 	IntegrationMerged         = "merged"
 )
 
@@ -163,6 +165,7 @@ type IssueIntegration struct {
 	PreSHA     string
 	LandedSHA  string
 	LastError  string
+	Cleanup    []string
 	UpdatedAt  time.Time
 }
 
@@ -189,6 +192,10 @@ func Open(path string) (*Store, error) {
 	}
 	if err := ensureColumn(db, "proposals", "task_key",
 		`ALTER TABLE proposals ADD COLUMN task_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(db, "issue_integration", "cleanup",
+		`ALTER TABLE issue_integration ADD COLUMN cleanup TEXT NOT NULL DEFAULT '[]'`); err != nil {
 		return nil, err
 	}
 	var max sql.NullInt64
@@ -273,20 +280,25 @@ func (s *Store) SetIssueIntegration(integration IssueIntegration) error {
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
-	_, err := s.db.Exec(
+	cleanup, err := json.Marshal(integration.Cleanup)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
 		`INSERT INTO issue_integration(
-		   issue_id,state,base_branch,pre_sha,landed_sha,last_error,updated_at
-		 ) VALUES(?,?,?,?,?,?,?)
+		   issue_id,state,base_branch,pre_sha,landed_sha,last_error,cleanup,updated_at
+		 ) VALUES(?,?,?,?,?,?,?,?)
 		 ON CONFLICT(issue_id) DO UPDATE SET
 		   state=excluded.state,
 		   base_branch=excluded.base_branch,
 		   pre_sha=excluded.pre_sha,
 		   landed_sha=excluded.landed_sha,
 		   last_error=excluded.last_error,
+		   cleanup=excluded.cleanup,
 		   updated_at=excluded.updated_at`,
 		integration.IssueID, integration.State, integration.BaseBranch,
 		integration.PreSHA, integration.LandedSHA, integration.LastError,
-		updatedAt.Format(time.RFC3339Nano))
+		string(cleanup), updatedAt.Format(time.RFC3339Nano))
 	return err
 }
 
@@ -294,17 +306,20 @@ func (s *Store) IssueIntegration(issueID string) (IssueIntegration, bool, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var integration IssueIntegration
-	var updatedAt string
+	var cleanup, updatedAt string
 	err := s.db.QueryRow(
-		`SELECT issue_id,state,base_branch,pre_sha,landed_sha,last_error,updated_at
+		`SELECT issue_id,state,base_branch,pre_sha,landed_sha,last_error,cleanup,updated_at
 		 FROM issue_integration WHERE issue_id=?`, issueID,
 	).Scan(&integration.IssueID, &integration.State, &integration.BaseBranch,
-		&integration.PreSHA, &integration.LandedSHA, &integration.LastError, &updatedAt)
+		&integration.PreSHA, &integration.LandedSHA, &integration.LastError, &cleanup, &updatedAt)
 	if err == sql.ErrNoRows {
 		return IssueIntegration{}, false, nil
 	}
 	if err != nil {
 		return IssueIntegration{}, false, err
+	}
+	if err := json.Unmarshal([]byte(cleanup), &integration.Cleanup); err != nil {
+		return IssueIntegration{}, false, fmt.Errorf("decode integration cleanup: %w", err)
 	}
 	integration.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
 	if err != nil {

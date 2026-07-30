@@ -19,6 +19,12 @@ type Provider interface {
 	Name() string
 }
 
+// Releaser makes a workspace cleanup operation replayable after a daemon
+// restart. Engine integration state persists the exact path to pass back.
+type Releaser interface {
+	ReleasePath(path string) error
+}
+
 // GitWorktree provisions workspaces with `git worktree` under .worktrees/,
 // creating a branch named issue/<id> per workspace.
 type GitWorktree struct{ Repo string }
@@ -31,16 +37,20 @@ func (g GitWorktree) Acquire(issueID string) (string, func() error, error) {
 		return "", nil, fmt.Errorf("worktree add: %v: %s", err, out)
 	}
 	release := func() error {
-		out, err := exec.Command("git", "-C", g.Repo, "worktree", "remove", "--force", path).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("worktree remove: %v: %s", err, out)
-		}
-		return nil
+		return g.ReleasePath(path)
 	}
 	return path, release, nil
 }
 
 func (g GitWorktree) Name() string { return "git worktree" }
+
+func (g GitWorktree) ReleasePath(path string) error {
+	out, err := exec.Command("git", "-C", g.Repo, "worktree", "remove", "--force", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("worktree remove: %v: %s", err, out)
+	}
+	return nil
+}
 
 // Treehouse provisions workspaces via the `treehouse` CLI's lease mechanism.
 type Treehouse struct{ Repo string }
@@ -67,18 +77,22 @@ func (t Treehouse) Acquire(issueID string) (string, func() error, error) {
 		return "", nil, fmt.Errorf("checkout issue branch: %v: %s", err, out)
 	}
 	release := func() error {
-		cmd := exec.Command("treehouse", "return", path)
-		cmd.Dir = t.Repo
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("treehouse return: %v: %s", err, out)
-		}
-		return nil
+		return t.ReleasePath(path)
 	}
 	return path, release, nil
 }
 
 func (t Treehouse) Name() string { return "treehouse" }
+
+func (t Treehouse) ReleasePath(path string) error {
+	cmd := exec.Command("treehouse", "return", path)
+	cmd.Dir = t.Repo
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("treehouse return: %v: %s", err, out)
+	}
+	return nil
+}
 
 // Detect prefers treehouse when its binary is on PATH, falling back to
 // plain git worktrees otherwise.

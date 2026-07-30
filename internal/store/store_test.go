@@ -63,6 +63,7 @@ func TestIssueIntegrationLifecycle(t *testing.T) {
 	pending := IssueIntegration{
 		IssueID: "GH-1", State: IntegrationPublishPending, BaseBranch: "main",
 		PreSHA: "before", LandedSHA: "merged", LastError: "push failed",
+		Cleanup: []string{"delete_branch:issue/GH-1"},
 	}
 	if err := s.SetIssueIntegration(pending); err != nil {
 		t.Fatal(err)
@@ -71,7 +72,8 @@ func TestIssueIntegrationLifecycle(t *testing.T) {
 	if err != nil || !ok || got.IssueID != pending.IssueID ||
 		got.State != pending.State || got.BaseBranch != pending.BaseBranch ||
 		got.PreSHA != pending.PreSHA || got.LandedSHA != pending.LandedSHA ||
-		got.LastError != pending.LastError || got.UpdatedAt.IsZero() {
+		got.LastError != pending.LastError || len(got.Cleanup) != 1 ||
+		got.Cleanup[0] != pending.Cleanup[0] || got.UpdatedAt.IsZero() {
 		t.Fatalf("integration = %+v ok %v err %v", got, ok, err)
 	}
 	pending.State = IntegrationMerged

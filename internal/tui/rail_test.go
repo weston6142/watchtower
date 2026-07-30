@@ -189,6 +189,23 @@ func TestRailShowsModelAndEffort(t *testing.T) {
 	}
 }
 
+func TestRailShowsCleanupOperations(t *testing.T) {
+	det := &proto.IssueDetail{
+		Issue: store.IssueRow{
+			ID: "GH-1", Title: "landed task", Flow: "default", State: "cleanup_needed",
+		},
+		Cleanup: []string{"delete_branch:issue/GH-1"},
+	}
+	out := renderRail(nil, map[string]Identity{}, det, 80)
+	for _, want := range []string{
+		"shipped · cleanup needed", "cleanup needed: delete_branch:issue/GH-1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRailIsBoxed(t *testing.T) {
 	out := renderRail(nil, map[string]Identity{}, nil, 40)
 	if !strings.Contains(out, "─") || !strings.Contains(out, "│") {

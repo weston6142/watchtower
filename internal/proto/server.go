@@ -301,6 +301,10 @@ func (sv *Server) exec(cmd Command) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
+		integration, _, err := sv.st.IssueIntegration(cmd.IssueID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
 		model, effort := "", ""
 		if f, ok := sv.flows[issue.Flow]; ok {
 			for _, stg := range f.Stages {
@@ -319,7 +323,7 @@ func (sv *Server) exec(cmd Command) Response {
 			Issue: issue, Runs: runs, Tokens: tokens, Artifacts: artifacts,
 			Model: model, Effort: effort,
 			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf, Budget: sv.budget, Levers: issue.Levers,
-			Dollars: float64(tokens) / 1_000_000 * sv.pricePerMTok,
+			Cleanup: integration.Cleanup, Dollars: float64(tokens) / 1_000_000 * sv.pricePerMTok,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

@@ -68,6 +68,12 @@ func (st *Steward) Observe(ev core.Event) {
 	case core.EvStageFailed:
 		setState("failed")
 	case core.EvIssueCompleted:
+		rows, _ := st.Store.Issues()
+		for _, row := range rows {
+			if row.ID == ev.IssueID && row.State == "cleanup_needed" {
+				return
+			}
+		}
 		if str("merge") == "left-unmerged" {
 			setState("done (unmerged)")
 		} else {
@@ -75,6 +81,10 @@ func (st *Steward) Observe(ev core.Event) {
 		}
 	case core.EvIssueMerged:
 		setState("merged")
+	case core.EvCleanupNeeded:
+		setState("cleanup_needed")
+	case core.EvCleanupCompleted:
+		setState("done")
 	case core.EvIssueAbandoned:
 		setState("abandoned")
 	}

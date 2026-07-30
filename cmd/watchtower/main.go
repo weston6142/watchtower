@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -583,15 +582,10 @@ func runDaemon(args []string) {
 	})
 	var train *marshal.Train
 	var lib *librarian.Librarian
-	var reconcile func(context.Context, string) error
 	if *runnerKind == "claude" {
 		train = &marshal.Train{Repo: repo, TestCmd: testArgv,
 			Pull: cfg.Pull, Push: cfg.Push}
 		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "watchtower")}
-		reconcile = func(ctx context.Context, issueID string) error {
-			res := <-run.Run(ctx, issueID, "librarian", "librarian", repo, autoAnswerAsks())
-			return res.Err
-		}
 	}
 	transcriptBuffer := transcript.NewBuffer(500)
 	eng := engine.New(engine.Config{
@@ -599,7 +593,7 @@ func runDaemon(args []string) {
 		Flows: flows, DataDir: filepath.Join(data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
 		Marshal: seq, Train: train,
-		Librarian: lib, Reconcile: reconcile,
+		Librarian: lib,
 		OnLine:    transcriptBuffer.Add,
 		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
 	})
@@ -649,19 +643,6 @@ func runDaemon(args []string) {
 		LoadedAt: time.Now().Format("15:04"),
 	})
 	fatal(srv.Serve(l))
-}
-
-// autoAnswerAsks returns an Ask channel whose decisions are answered with the
-// agent's own recommendation for maintenance runs that never escalate to a
-// human. Conflict resolution deliberately uses the engine's normal ask path.
-func autoAnswerAsks() chan runner.Ask {
-	asks := make(chan runner.Ask)
-	go func() {
-		for a := range asks {
-			a.Reply <- a.Decision.RecommendedAnswer()
-		}
-	}()
-	return asks
 }
 
 func statusSentence(o *proto.Overview) string {

@@ -1721,6 +1721,104 @@ func TestMergedIssueBranchIsDeleted(t *testing.T) {
 	}
 }
 
+type failOnceReleaseWorkspace struct {
+	delegate workspace.GitWorktree
+	failed   bool
+}
+
+func (w *failOnceReleaseWorkspace) Acquire(issueID string) (string, func() error, error) {
+	path, _, err := w.delegate.Acquire(issueID)
+	if err != nil {
+		return "", nil, err
+	}
+	return path, func() error {
+		if !w.failed {
+			w.failed = true
+			return errors.New("injected worktree release failure")
+		}
+		return w.delegate.ReleasePath(path)
+	}, nil
+}
+
+func (w *failOnceReleaseWorkspace) ReleasePath(path string) error {
+	return w.delegate.ReleasePath(path)
+}
+
+func (w *failOnceReleaseWorkspace) Name() string { return "fail-once worktree" }
+
+func TestMergedCleanupFailureIsDurableAndRetryDoesNotReland(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+		Gate: flow.GateAuto, Workspace: "worktree", Completion: flow.CompletionAll,
+	}}}
+	s, err := store.Open("file:cleanup-retry?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ws := &failOnceReleaseWorkspace{delegate: workspace.GitWorktree{Repo: repo}}
+	e := New(Config{
+		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"execute/executor": {},
+		}},
+		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
+		DataDir: t.TempDir(), Workspace: ws, Train: &marshal.Train{Repo: repo},
+	})
+	id, err := e.CreateIssue("cleanup", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	integration, ok, err := s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationCleanupNeeded ||
+		len(integration.Cleanup) != 2 ||
+		!strings.HasPrefix(integration.Cleanup[0], cleanupReleasePrefix) ||
+		integration.Cleanup[1] != cleanupDeletePrefix+"issue/"+id {
+		t.Fatalf("cleanup integration = %+v ok %v err %v", integration, ok, err)
+	}
+	runs, _ := s.StageRuns(id)
+	if len(runs) != 1 {
+		t.Fatalf("stage runs before cleanup retry = %d", len(runs))
+	}
+	if err := e.RetryStage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	integration, ok, err = s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationMerged ||
+		len(integration.Cleanup) != 0 {
+		t.Fatalf("cleanup after retry = %+v ok %v err %v", integration, ok, err)
+	}
+	runs, _ = s.StageRuns(id)
+	if len(runs) != 1 {
+		t.Fatalf("cleanup retry reran stage: %d runs", len(runs))
+	}
+	if branch := gitOutput(t, repo, "branch", "--list", "issue/"+id); strings.TrimSpace(branch) != "" {
+		t.Fatalf("branch survived cleanup retry: %q", branch)
+	}
+	events, _ := s.EventsSince(0)
+	var mergedAt, cleanupAt, cleanupDoneAt int
+	for index, event := range events {
+		if event.IssueID != id {
+			continue
+		}
+		switch event.Type {
+		case core.EvIssueMerged:
+			mergedAt = index + 1
+		case core.EvCleanupNeeded:
+			cleanupAt = index + 1
+		case core.EvCleanupCompleted:
+			cleanupDoneAt = index + 1
+		}
+	}
+	if mergedAt == 0 || cleanupAt <= mergedAt || cleanupDoneAt <= cleanupAt {
+		t.Fatalf("event order merged=%d cleanup=%d completed=%d", mergedAt, cleanupAt, cleanupDoneAt)
+	}
+}
+
 // Agents must build on the latest shared code: an issue started while the
 // local default branch lags origin should fast-forward it first.
 func TestIssueStartFastForwardsBaseFromOrigin(t *testing.T) {

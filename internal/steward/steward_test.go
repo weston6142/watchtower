@@ -71,6 +71,24 @@ func TestStewardMarksAbandoned(t *testing.T) {
 	}
 }
 
+func TestStewardPreservesCleanupWarningUntilCompleted(t *testing.T) {
+	s := newTestStore(t)
+	st := &Steward{Store: s}
+	st.Observe(ev(t, core.EvIssueCreated, "GH-1", map[string]any{
+		"title": "cleanup", "flow": "default",
+	}))
+	st.Observe(ev(t, core.EvIssueMerged, "GH-1", nil))
+	st.Observe(ev(t, core.EvCleanupNeeded, "GH-1", nil))
+	st.Observe(ev(t, core.EvIssueCompleted, "GH-1", nil))
+	if row := findRow(t, s, "GH-1"); row.State != "cleanup_needed" {
+		t.Fatalf("completion hid cleanup warning: %+v", row)
+	}
+	st.Observe(ev(t, core.EvCleanupCompleted, "GH-1", nil))
+	if row := findRow(t, s, "GH-1"); row.State != "done" {
+		t.Fatalf("cleanup completion state: %+v", row)
+	}
+}
+
 func TestObserveDraftAndUpdate(t *testing.T) {
 	s := newTestStore(t)
 	sw := &Steward{Store: s}
