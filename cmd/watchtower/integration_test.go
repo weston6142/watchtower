@@ -4,7 +4,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -34,6 +36,37 @@ func run(t *testing.T, bin, dir string, args ...string) string {
 	return string(out)
 }
 
+func stopDaemons(base string) {
+	pidFiles, _ := filepath.Glob(filepath.Join(base, "repos", "*", "daemon.pid"))
+	var pids []int
+	for _, path := range pidFiles {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
+		if err != nil {
+			continue
+		}
+		pids = append(pids, pid)
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		live := false
+		for _, pid := range pids {
+			if syscall.Kill(pid, 0) == nil {
+				live = true
+				break
+			}
+		}
+		if !live {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func initRepo(t *testing.T, bin, base string) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -52,9 +85,7 @@ func TestTwoReposAutoSpawnWithoutCollision(t *testing.T) {
 	base := t.TempDir()
 	repoA := initRepo(t, bin, base)
 	repoB := initRepo(t, bin, base)
-	t.Cleanup(func() { // kill spawned daemons
-		exec.Command("pkill", "-f", bin).Run()
-	})
+	t.Cleanup(func() { stopDaemons(base) })
 
 	idA := strings.TrimSpace(lastLine(run(t, bin, repoA, "new", "--data", base, "--title", "issue-a")))
 	idB := strings.TrimSpace(lastLine(run(t, bin, repoB, "new", "--data", base, "--title", "issue-b")))
@@ -95,7 +126,7 @@ func newRepo(t *testing.T) (bin, base, repo string) {
 	bin = buildBinary(t)
 	base = t.TempDir()
 	repo = initRepo(t, bin, base)
-	t.Cleanup(func() { exec.Command("pkill", "-f", bin).Run() })
+	t.Cleanup(func() { stopDaemons(base) })
 	return bin, base, repo
 }
 
@@ -269,7 +300,7 @@ func TestDependencyWorkflowUsesEightSessionsAndLandedBase(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { exec.Command("pkill", "-f", bin).Run() })
+	t.Cleanup(func() { stopDaemons(base) })
 	parent := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
 		"--draft", "--title", "parent")))
 	child := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
