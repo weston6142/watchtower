@@ -1,3 +1,4 @@
+includes: ["decision-protocol"]
 allowed_tools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
 model: ""
 max_turns: 0

@@ -3,7 +3,12 @@ package scaffold
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/pkgs"
 )
 
 func TestInitCreatesTree(t *testing.T) {
@@ -50,5 +55,102 @@ func TestInitIdempotentAndNonDestructive(t *testing.T) {
 	b, _ := os.ReadFile(custom)
 	if string(b) != "runner: fake\n" {
 		t.Fatal("init overwrote existing config.yaml")
+	}
+}
+
+func TestDefaultWorkflowIsSequentialAndUsesSharedDecisionProtocol(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	watchtower := filepath.Join(root, ".watchtower")
+	defaultFlow, err := flow.Load(filepath.Join(watchtower, "flows", "default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStages := []string{
+		"brainstorm", "spec", "plan", "execute", "correctness-review",
+		"clean-code-review", "librarian", "merge-verification",
+	}
+	var gotStages []string
+	artifactSet := map[string]bool{}
+	for index, stage := range defaultFlow.Stages {
+		gotStages = append(gotStages, stage.Name)
+		if len(stage.Agents) != 1 || stage.Parallel {
+			t.Fatalf("stage %s is not single-agent sequential: %+v", stage.Name, stage)
+		}
+		if stage.Gate != flow.GateAuto {
+			t.Fatalf("stage %s has an extra engine gate %q", stage.Name, stage.Gate)
+		}
+		if index < 3 && stage.Workspace != "worktree" {
+			t.Fatalf("early stage %s workspace = %q, want worktree", stage.Name, stage.Workspace)
+		}
+		for _, artifact := range stage.Artifacts {
+			artifactSet[artifact] = true
+		}
+	}
+	if !slices.Equal(gotStages, wantStages) {
+		t.Fatalf("stages = %v, want %v", gotStages, wantStages)
+	}
+	for _, artifact := range []string{
+		"brainstorm.md", "spec.md", "plan.md", "touchset.json",
+		"merge-report.md", "merge-decision.json", "verification.json",
+	} {
+		if !artifactSet[artifact] {
+			t.Errorf("missing artifact %s", artifact)
+		}
+	}
+
+	packages, err := pkgs.LoadDir(filepath.Join(watchtower, "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range defaultFlow.Stages {
+		name := stage.Agents[0].Package
+		if _, ok := packages[name]; !ok {
+			t.Errorf("stage %s references missing package %s", stage.Name, name)
+		}
+	}
+	for _, removed := range []string{"reviewer", "doc-writer"} {
+		if _, ok := packages[removed]; ok {
+			t.Errorf("obsolete package %s is still shipped", removed)
+		}
+	}
+	for _, early := range []string{"brainstorm", "spec-writer", "planner"} {
+		if !slices.Contains(packages[early].AllowedTools, "Bash") {
+			t.Errorf("early package %s cannot inspect the repository", early)
+		}
+	}
+	for name, pkg := range packages {
+		if !slices.Contains(pkg.Includes, "decision-protocol") {
+			t.Errorf("package %s does not include decision-protocol", name)
+		}
+		lower := strings.ToLower(pkg.Prompt)
+		for _, banned := range []string{
+			"guildhall_decision", "superpowers", "visual companion",
+			"choose how to execute", "git add .", "git add -a", "git add --all",
+		} {
+			if strings.Contains(lower, banned) {
+				t.Errorf("package %s contains banned text %q", name, banned)
+			}
+		}
+	}
+	protocol, err := os.ReadFile(filepath.Join(watchtower, "shared", "decision-protocol.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		`"kind":"choice"`, `"kind":"freeform"`, `"allow_freeform":true`,
+		"two or three meaningful options", "one question at",
+	} {
+		if !strings.Contains(string(protocol), required) {
+			t.Errorf("decision protocol missing %q", required)
+		}
+	}
+	librarian := strings.ToLower(packages["librarian"].Prompt)
+	for _, postMerge := range []string{"after merge", "just merged", "post-merge"} {
+		if strings.Contains(librarian, postMerge) {
+			t.Errorf("librarian contains post-merge instruction %q", postMerge)
+		}
 	}
 }

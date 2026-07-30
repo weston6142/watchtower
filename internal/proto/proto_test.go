@@ -15,9 +15,42 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/store"
 )
+
+func TestSetupOutlineReportsShippedSequentialWorkflow(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := scaffold.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	watchtower := filepath.Join(root, ".watchtower")
+	f, err := flow.Load(filepath.Join(watchtower, "flows", "default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packages, err := pkgs.LoadDir(filepath.Join(watchtower, "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := newConfigClient(t, f, packages, fixtureRepoSetup())
+	response, err := c.Do(Command{Op: "setup_outline"})
+	if err != nil || !response.OK || response.Setup == nil {
+		t.Fatalf("setup_outline: %+v err=%v", response, err)
+	}
+	if len(response.Setup.Stages) != 8 {
+		t.Fatalf("stages: %+v", response.Setup.Stages)
+	}
+	for _, stage := range response.Setup.Stages {
+		if len(stage.Agents) != 1 || stage.Parallel {
+			t.Fatalf("stage is not sequential: %+v", stage)
+		}
+		if stage.Agents[0].Missing {
+			t.Fatalf("missing package: %+v", stage.Agents[0])
+		}
+	}
+}
 
 func newTestClient(t *testing.T) *Client {
 	t.Helper()

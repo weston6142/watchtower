@@ -2,15 +2,18 @@ name: default
 stages:
   - name: brainstorm
     agents: [{package: brainstorm}]
-    gate: decision_queue
+    workspace: worktree
+    gate: auto
     artifacts: [brainstorm.md]
   - name: spec
     agents: [{package: spec-writer}]
-    gate: approve_artifact
+    workspace: worktree
+    gate: auto
     artifacts: [spec.md]
   - name: plan
     agents: [{package: planner}]
-    gate: approve_artifact
+    workspace: worktree
+    gate: auto
     artifacts: [plan.md, touchset.json]
   - name: execute
     agents: [{package: executor}]
@@ -19,17 +22,26 @@ stages:
     heavy_slot: true
     retries: 1
     artifacts: []
-  - name: review
-    agents: [{package: clean-code-reviewer}, {package: reviewer}, {package: doc-writer}]
-    parallel: true
-    completion: all
+  - name: correctness-review
+    agents: [{package: correctness-reviewer}]
     workspace: worktree
     gate: auto
     heavy_slot: true
     artifacts: []
-  - name: merge
-    agents: [{package: reviewer}]
-    workspace: readonly
+  - name: clean-code-review
+    agents: [{package: clean-code-reviewer}]
+    workspace: worktree
+    gate: auto
+    artifacts: []
+  - name: librarian
+    agents: [{package: librarian}]
+    workspace: worktree
+    gate: auto
+    artifacts: []
+  - name: merge-verification
+    agents: [{package: merge-verifier}]
+    workspace: worktree
     merge_barrier: true
-    gate: approve_artifact
-    artifacts: [merge-report.md]
+    gate: auto
+    heavy_slot: true
+    artifacts: [merge-report.md, merge-decision.json, verification.json]
