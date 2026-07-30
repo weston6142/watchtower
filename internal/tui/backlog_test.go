@@ -60,20 +60,23 @@ func TestBacklogWidthIndependentOfContent(t *testing.T) {
 	}
 }
 
-// A full queue of drafts uses the vertical space too, and stays inside it.
-func TestBacklogFillsTerminalHeight(t *testing.T) {
+// The backlog keeps one stable vertical footprint regardless of how many
+// drafts it contains, so opening it does not jump between a prompt-sized box
+// and a browsing surface.
+func TestBacklogUsesSixtyPercentTerminalHeight(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	entries := backlogDrafts(40)
-	short := lipgloss.Height(renderBacklog(entries, 0, 120, 20))
-	tall := lipgloss.Height(renderBacklog(entries, 0, 120, 48))
-	if tall <= short {
-		t.Fatalf("box did not grow with the terminal: %d rows at 48 vs %d at 20", tall, short)
-	}
-	if tall >= 48 {
-		t.Fatalf("box %d rows overflows a 48-row terminal", tall)
-	}
-	if short >= 20 {
-		t.Fatalf("box %d rows overflows a 20-row terminal", short)
+	for _, height := range []int{20, 40, 60} {
+		want := height * 60 / 100
+		for _, entries := range [][]*projection.IssueView{
+			nil,
+			backlogDrafts(1),
+			backlogDrafts(40),
+		} {
+			if got := lipgloss.Height(renderBacklog(entries, 0, 120, height)); got != want {
+				t.Errorf("%d-row terminal with %d drafts: box is %d rows, want %d",
+					height, len(entries), got, want)
+			}
+		}
 	}
 }
 
@@ -194,9 +197,8 @@ func TestViewPlumbsHeightIntoBacklog(t *testing.T) {
 	}
 }
 
-// The empty state keeps telling the operator how to file a draft, and keeps the
-// small box it had before: there is nothing to size to, and one sentence ruled
-// off inside a 130-column frame reads worse than the box being small.
+// The empty state keeps telling the operator how to file a draft while sharing
+// the same stable height as a populated backlog.
 func TestBacklogEmptyStateSurvivesResize(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	for _, size := range [][2]int{{52, 14}, {100, 40}, {160, 48}} {
@@ -205,8 +207,8 @@ func TestBacklogEmptyStateSurvivesResize(t *testing.T) {
 		if !strings.Contains(out, "backlog is empty — n then ctrl+s files a draft") {
 			t.Fatalf("%dx%d: empty state copy missing or cut:\n%s", size[0], size[1], out)
 		}
-		if w, h := lipgloss.Width(box), lipgloss.Height(box); w != 52 || h != 7 {
-			t.Errorf("%dx%d: empty box is %dx%d, want 52x7:\n%s", size[0], size[1], w, h, out)
+		if got, want := lipgloss.Height(box), max(9, size[1]*60/100); got != want {
+			t.Errorf("%dx%d: empty box is %d rows, want %d:\n%s", size[0], size[1], got, want, out)
 		}
 	}
 }
@@ -221,7 +223,7 @@ func TestBacklogKeepsKeyHintsAtEveryWidth(t *testing.T) {
 		out := ansi.Strip(renderBacklog(backlogDrafts(40), 0, width, 24))
 		found := false
 		for _, line := range strings.Split(out, "\n") {
-			if !strings.Contains(line, "enter") {
+			if !strings.Contains(line, "enter  edit") {
 				continue
 			}
 			found = true

@@ -22,10 +22,13 @@ import (
 // lipgloss.Place once a box reaches the full width or height, and that drops the
 // dimmed base along with the overlay look, so these margins are load-bearing.
 const (
-	// backlogChromeCols/Rows are the border, padding, and outer margin the frame
-	// gives back to the dimmed base.
+	// backlogChromeCols gives the frame room inside the terminal.
 	backlogChromeCols = 8
-	backlogChromeRows = 8
+	// backlogBoxRows are the header, separators, footer, and borders surrounding
+	// the list pane. The complete box occupies three fifths of the terminal.
+	backlogBoxRows           = 6
+	backlogHeightNumerator   = 3
+	backlogHeightDenominator = 5
 	// backlogMinInner is the old fixed width: id, priority, and a readable title.
 	backlogMinInner = 44
 	// backlogIDMin/Max bound the id column. Real ids run from GH-3 to
@@ -59,21 +62,15 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 	// them costs the operator the way out of the overlay — so they, not the list,
 	// set the frame's floor.
 	inner := min(max(width-backlogChromeCols, backlogMinInner, lipgloss.Width(keys)), backlogMaxInner)
-	if len(entries) == 0 {
-		// An empty backlog has nothing to size to: one sentence ruled off inside a
-		// 130-column frame reads worse than the small box ever did, so the empty
-		// state keeps exactly its old shape.
-		return renderBox("backlog", "drafts waiting to launch", " esc close ",
-			lipgloss.NewStyle().Foreground(activeTheme.Dim).
-				Render("backlog is empty — n then ctrl+s files a draft")+"\n\n"+keys)
-	}
 	if height <= 0 {
 		height = backlogFallbackRows
 	}
 	// The call site clamps sel too, but an out-of-range sel here would page the
 	// window past the end and have the footer report 37–36 of 36.
 	sel = min(max(sel, 0), len(entries)-1)
-	paneBudget := max(height-backlogChromeRows-backlogFooterRows, backlogMinRows)
+	targetHeight := max(backlogMinRows+backlogBoxRows,
+		height*backlogHeightNumerator/backlogHeightDenominator)
+	paneRows := targetHeight - backlogBoxRows
 
 	listWidth, detailWidth := inner, 0
 	if inner >= backlogSplitInner {
@@ -85,13 +82,14 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 	if detailWidth > 0 && sel >= 0 && sel < len(entries) {
 		detail = backlogDetail(entries[sel], detailWidth)
 	}
-	// Height is content-driven but capped: filling a tall terminal with blank
-	// rows for two drafts would be worse than the box being small.
-	paneRows := max(backlogMinRows, min(paneBudget, max(len(entries), len(detail))))
 	detail = backlogClipDetail(detail, paneRows, detailWidth)
 
 	start := backlogWindowStart(sel, len(entries), paneRows)
 	list := backlogRows(entries, sel, start, min(start+paneRows, len(entries)), listWidth)
+	if len(entries) == 0 {
+		list = []string{lipgloss.NewStyle().Foreground(activeTheme.Dim).
+			Render(padCell("backlog is empty — n then ctrl+s files a draft", listWidth))}
+	}
 	pane := backlogPane(list, detail, paneRows, listWidth, detailWidth)
 	footer := boundedLines([]string{backlogFooter(len(entries), start, paneRows, inner)}, inner)
 	return renderBox("backlog", "drafts waiting to launch", " esc close ", pane+"\n\n"+footer)
