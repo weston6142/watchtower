@@ -17,15 +17,46 @@ func Preset(f flow.Flow, l flow.Lever) Matrix {
 	return m
 }
 
+type DecisionKind string
+
+const (
+	DecisionChoice   DecisionKind = "choice"
+	DecisionFreeform DecisionKind = "freeform"
+)
+
 type Decision struct {
-	Question     string
-	Options      []string
-	Recommended  int
-	Importance   float64
-	Paths        []string
-	Why          string
-	Consequences []string
-	Reversible   string
+	Kind                DecisionKind
+	Question            string
+	Options             []string
+	Recommended         int
+	RecommendedResponse string
+	AllowFreeform       bool
+	Importance          float64
+	Paths               []string
+	Why                 string
+	Consequences        []string
+	Reversible          string
+}
+
+type Response struct {
+	Kind   DecisionKind `json:"kind"`
+	Option *int         `json:"option,omitempty"`
+	Text   string       `json:"text,omitempty"`
+}
+
+func ChoiceResponse(option int) Response {
+	return Response{Kind: DecisionChoice, Option: &option}
+}
+
+func FreeformResponse(text string) Response {
+	return Response{Kind: DecisionFreeform, Text: text}
+}
+
+func (d Decision) RecommendedAnswer() Response {
+	if d.Kind == DecisionFreeform {
+		return FreeformResponse(d.RecommendedResponse)
+	}
+	return ChoiceResponse(d.Recommended)
 }
 
 type Rules struct {

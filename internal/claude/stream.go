@@ -135,14 +135,17 @@ func toolSummary(name string, input json.RawMessage) string {
 }
 
 type decisionPayload struct {
-	Question     string   `json:"question"`
-	Options      []string `json:"options"`
-	Recommended  int      `json:"recommended"`
-	Importance   float64  `json:"importance"`
-	Paths        []string `json:"paths"`
-	Why          string   `json:"why"`
-	Consequences []string `json:"consequences"`
-	Reversible   string   `json:"reversible"`
+	Kind                levers.DecisionKind `json:"kind"`
+	Question            string              `json:"question"`
+	Options             []string            `json:"options"`
+	Recommended         int                 `json:"recommended"`
+	RecommendedResponse string              `json:"recommended_response"`
+	AllowFreeform       bool                `json:"allow_freeform"`
+	Importance          float64             `json:"importance"`
+	Paths               []string            `json:"paths"`
+	Why                 string              `json:"why"`
+	Consequences        []string            `json:"consequences"`
+	Reversible          string              `json:"reversible"`
 }
 
 // Legacy accepts the pre-rename guildhall_* marker key. Removable once no
@@ -171,12 +174,28 @@ func ExtractDecision(text string) (levers.Decision, bool) {
 		if d.Question == "" { // new key absent or empty — fall back to legacy
 			d = m.Legacy
 		}
-		if d.Question == "" || len(d.Options) == 0 {
+		if d.Kind == "" {
+			d.Kind = levers.DecisionChoice
+		}
+		if d.Question == "" {
+			continue
+		}
+		switch d.Kind {
+		case levers.DecisionChoice:
+			if len(d.Options) == 0 || d.Recommended < 0 || d.Recommended >= len(d.Options) {
+				continue
+			}
+		case levers.DecisionFreeform:
+			if d.RecommendedResponse == "" {
+				continue
+			}
+		default:
 			continue
 		}
 		return levers.Decision{
-			Question: d.Question, Options: d.Options,
-			Recommended: d.Recommended, Importance: d.Importance,
+			Kind: d.Kind, Question: d.Question, Options: d.Options,
+			Recommended: d.Recommended, RecommendedResponse: d.RecommendedResponse,
+			AllowFreeform: d.AllowFreeform, Importance: d.Importance,
 			Paths: d.Paths, Why: d.Why,
 			Consequences: d.Consequences, Reversible: d.Reversible,
 		}, true

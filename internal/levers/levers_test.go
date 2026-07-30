@@ -36,3 +36,22 @@ func TestPresetFillsAllStages(t *testing.T) {
 		t.Fatalf("preset wrong: %v", m)
 	}
 }
+
+func TestRecommendedAnswerMatchesDecisionKind(t *testing.T) {
+	choice := Decision{Kind: DecisionChoice, Recommended: 1}
+	choiceAnswer := choice.RecommendedAnswer()
+	if choiceAnswer.Kind != DecisionChoice || choiceAnswer.Option == nil || *choiceAnswer.Option != 1 {
+		t.Fatalf("choice answer = %#v", choiceAnswer)
+	}
+
+	freeform := Decision{
+		Kind:                DecisionFreeform,
+		RecommendedResponse: "Approve spec.md as written.",
+	}
+	freeformAnswer := freeform.RecommendedAnswer()
+	if freeformAnswer.Kind != DecisionFreeform ||
+		freeformAnswer.Text != "Approve spec.md as written." ||
+		freeformAnswer.Option != nil {
+		t.Fatalf("freeform answer = %#v", freeformAnswer)
+	}
+}

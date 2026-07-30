@@ -3,6 +3,8 @@ package claude
 import (
 	"strings"
 	"testing"
+
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 func TestParseInitAssistantResult(t *testing.T) {
@@ -98,8 +100,40 @@ func TestExtractDecision(t *testing.T) {
 func TestExtractDecisionV2Fields(t *testing.T) {
 	text := `{"watchtower_decision": {"question": "Q?", "options": ["a","b"], "recommended": 1, "importance": 0.5, "paths": [], "why": "b is safer", "consequences": ["fast but risky", "slower, safe"], "reversible": "until execute"}}`
 	d, ok := ExtractDecision(text)
-	if !ok || d.Why != "b is safer" || len(d.Consequences) != 2 || d.Reversible != "until execute" {
+	if !ok || d.Kind != levers.DecisionChoice || d.Why != "b is safer" ||
+		len(d.Consequences) != 2 || d.Reversible != "until execute" {
 		t.Fatalf("v2 fields: %+v ok=%v", d, ok)
+	}
+}
+
+func TestExtractChoiceDecisionAllowsFreeform(t *testing.T) {
+	text := `{"watchtower_decision":{"kind":"choice","question":"Fix it?","options":["Apply fix","Hold"],"recommended":0,"allow_freeform":true,"importance":0.8,"why":"The fix is scoped.","consequences":["Tests rerun.","Branch is preserved."],"reversible":"yes"}}`
+	d, ok := ExtractDecision(text)
+	if !ok || d.Kind != levers.DecisionChoice || !d.AllowFreeform {
+		t.Fatalf("decision = %#v, %v", d, ok)
+	}
+}
+
+func TestExtractFreeformDecision(t *testing.T) {
+	text := `{"watchtower_decision":{"kind":"freeform","question":"Review spec.md","recommended_response":"Approve spec.md as written.","importance":0.8,"why":"It matches the design.","consequences":["Planning begins."],"reversible":"yes"}}`
+	d, ok := ExtractDecision(text)
+	if !ok || d.Kind != levers.DecisionFreeform ||
+		d.RecommendedResponse != "Approve spec.md as written." {
+		t.Fatalf("decision = %#v, %v", d, ok)
+	}
+}
+
+func TestExtractDecisionRejectsInvalidKindPayload(t *testing.T) {
+	cases := []string{
+		`{"watchtower_decision":{"kind":"choice","question":"Q?","recommended":0}}`,
+		`{"watchtower_decision":{"kind":"choice","question":"Q?","options":["a"],"recommended":1}}`,
+		`{"watchtower_decision":{"kind":"freeform","question":"Q?"}}`,
+		`{"watchtower_decision":{"kind":"unknown","question":"Q?","options":["a"]}}`,
+	}
+	for _, text := range cases {
+		if d, ok := ExtractDecision(text); ok {
+			t.Errorf("ExtractDecision(%q) = %#v, true", text, d)
+		}
 	}
 }
 
