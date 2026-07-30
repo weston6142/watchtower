@@ -62,8 +62,16 @@ func TestLandCleanMerge(t *testing.T) {
 func TestLandConflictWithoutResolverFails(t *testing.T) {
 	repo, branch := repoWithBranch(t, true)
 	tr := &Train{Repo: repo}
-	if err := tr.Land(context.Background(), "GH-1", branch); err == nil {
-		t.Fatal("expected conflict error")
+	err := tr.Land(context.Background(), "GH-1", branch)
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error = %v, want ConflictError", err)
+	}
+	if conflict.BaseBranch != "main" ||
+		conflict.BaseSHA != strings.TrimSpace(git(t, repo, "rev-parse", "main")) ||
+		len(conflict.Files) != 1 || conflict.Files[0] != "f.txt" ||
+		!strings.Contains(conflict.Output, "CONFLICT") {
+		t.Fatalf("conflict = %+v", conflict)
 	}
 	if s := git(t, repo, "status", "--porcelain"); s != "" {
 		t.Fatalf("dirty repo after abort: %q", s)

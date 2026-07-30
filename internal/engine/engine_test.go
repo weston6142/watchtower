@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1199,6 +1200,207 @@ func TestPushFailurePersistsAndRetryPublishesWithoutRerunningStage(t *testing.T)
 		if !seen[eventType] {
 			t.Fatalf("missing %s event: %+v", eventType, seen)
 		}
+	}
+}
+
+type countingGitWorktree struct {
+	repo     string
+	acquired int
+}
+
+func (w *countingGitWorktree) Acquire(issueID string) (string, func() error, error) {
+	w.acquired++
+	return (workspace.GitWorktree{Repo: w.repo}).Acquire(issueID)
+}
+
+func (w *countingGitWorktree) Name() string { return "counting git worktree" }
+
+type conflictFlowRunner struct {
+	repo            string
+	decision        string
+	gate            []string
+	originalWorkdir string
+	conflictWorkdir string
+	conflictContext string
+	currentBase     string
+}
+
+func commandIn(dir string, args ...string) (string, error) {
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+func (r *conflictFlowRunner) Run(
+	_ context.Context, _, stage, _ string, workdir string, _ chan<- runner.Ask,
+) <-chan runner.Result {
+	results := make(chan runner.Result, 1)
+	var result runner.Result
+	switch stage {
+	case "execute":
+		r.originalWorkdir = workdir
+		if err := os.WriteFile(filepath.Join(workdir, "diff"), []byte("issue\n"), 0o644); err != nil {
+			result.Err = err
+			break
+		}
+		if output, err := commandIn(workdir, "commit", "-qam", "issue change"); err != nil {
+			result.Err = fmt.Errorf("commit issue: %v: %s", err, output)
+		}
+	case "merge-verification":
+		base, _ := commandIn(workdir, "merge-base", "main", "HEAD")
+		branch, _ := commandIn(workdir, "rev-parse", "HEAD")
+		tree, _ := commandIn(workdir, "rev-parse", "HEAD^{tree}")
+		receipt, _ := json.Marshal(marshal.Verification{
+			BaseSHA: base, BranchSHA: branch, TreeSHA: tree, Passed: true,
+			Commands: [][]string{r.gate},
+		})
+		decision, _ := json.Marshal(map[string]string{"decision": "merge"})
+		for name, body := range map[string][]byte{
+			"merge-report.md":     []byte("verified\n"),
+			"merge-decision.json": decision,
+			"verification.json":   receipt,
+		} {
+			if err := os.WriteFile(filepath.Join(workdir, name), body, 0o644); err != nil {
+				result.Err = err
+				break
+			}
+		}
+		if result.Err == nil {
+			if err := os.WriteFile(filepath.Join(r.repo, "diff"), []byte("base advanced\n"), 0o644); err != nil {
+				result.Err = err
+			} else if output, err := commandIn(r.repo, "commit", "-qam", "advance base"); err != nil {
+				result.Err = fmt.Errorf("advance base: %v: %s", err, output)
+			} else {
+				r.currentBase, _ = commandIn(r.repo, "rev-parse", "HEAD")
+			}
+		}
+	case "conflict-resolution":
+		r.conflictWorkdir = workdir
+		contextBody, err := os.ReadFile(filepath.Join(workdir, "CONFLICT.md"))
+		if err != nil {
+			result.Err = err
+			break
+		}
+		r.conflictContext = string(contextBody)
+		if r.decision == "resolved" {
+			_, _ = commandIn(workdir, "rebase", "main")
+			if err := os.WriteFile(filepath.Join(workdir, "diff"), []byte("resolved\n"), 0o644); err != nil {
+				result.Err = err
+				break
+			}
+			if output, err := commandIn(workdir, "add", "diff"); err != nil {
+				result.Err = fmt.Errorf("add resolution: %v: %s", err, output)
+				break
+			}
+			if output, err := commandIn(workdir, "-c", "core.editor=true", "rebase", "--continue"); err != nil {
+				result.Err = fmt.Errorf("continue rebase: %v: %s", err, output)
+				break
+			}
+		}
+		if err := os.WriteFile(
+			filepath.Join(workdir, "conflict-report.md"), []byte("conflict handled\n"), 0o644,
+		); err != nil {
+			result.Err = err
+			break
+		}
+		if r.decision != "missing" {
+			body, _ := json.Marshal(map[string]string{"decision": r.decision})
+			result.Err = os.WriteFile(filepath.Join(workdir, "conflict-decision.json"), body, 0o644)
+		}
+	}
+	results <- result
+	close(results)
+	return results
+}
+
+func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, string, *conflictFlowRunner, *countingGitWorktree, string) {
+	t.Helper()
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	originalBase := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	marker := filepath.Join(t.TempDir(), "gate-replayed")
+	gate := filepath.Join(t.TempDir(), "gate")
+	if err := os.WriteFile(gate, []byte("#!/bin/sh\nset -eu\ntouch \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := &conflictFlowRunner{repo: repo, decision: decision, gate: []string{gate, marker}}
+	ws := &countingGitWorktree{repo: repo}
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{
+		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+		{Name: "merge-verification", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+			Artifacts: []string{"merge-report.md", "merge-decision.json", "verification.json"}},
+	}}
+	s, err := store.Open("file:" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	e := New(Config{
+		Store: s, Runner: run, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(), Workspace: ws,
+		Train: &marshal.Train{Repo: repo, TestCmd: run.gate},
+	})
+	return e, s, repo, run, ws, originalBase
+}
+
+func TestConflictResolutionUsesOriginalIssueWorktree(t *testing.T) {
+	tests := []struct {
+		decision string
+		wantErr  string
+		merged   bool
+		replayed bool
+	}{
+		{decision: "hold"},
+		{decision: "resolved", merged: true, replayed: true},
+		{decision: "invalid", wantErr: "conflict decision"},
+		{decision: "missing", wantErr: "conflict-decision.json"},
+	}
+	for _, test := range tests {
+		t.Run(test.decision, func(t *testing.T) {
+			e, s, repo, run, ws, originalBase := conflictEngine(t, test.decision)
+			id, err := e.CreateIssue(test.decision, "", "default", levers.Matrix{}, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = e.StartIssue(context.Background(), id)
+			if test.wantErr == "" && err != nil {
+				t.Fatal(err)
+			}
+			if test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
+				t.Fatalf("StartIssue error = %v, want %q", err, test.wantErr)
+			}
+			if ws.acquired != 1 || run.conflictWorkdir != run.originalWorkdir {
+				t.Fatalf("acquired=%d original=%q conflict=%q",
+					ws.acquired, run.originalWorkdir, run.conflictWorkdir)
+			}
+			for _, want := range []string{
+				"issue/" + id, originalBase, run.currentBase, "diff", "merge conflict",
+			} {
+				if !strings.Contains(run.conflictContext, want) {
+					t.Fatalf("CONFLICT.md missing %q:\n%s", want, run.conflictContext)
+				}
+			}
+			_, markerErr := os.Stat(run.gate[1])
+			if (markerErr == nil) != test.replayed {
+				t.Fatalf("gate replayed=%v, want %v", markerErr == nil, test.replayed)
+			}
+			events, _ := s.EventsSince(0)
+			sawMerged := false
+			for _, event := range events {
+				if event.IssueID == id && event.Type == core.EvIssueMerged {
+					sawMerged = true
+				}
+			}
+			if sawMerged != test.merged {
+				t.Fatalf("merged=%v, want %v", sawMerged, test.merged)
+			}
+			if !test.merged {
+				if branch := gitOutput(t, repo, "branch", "--list", "issue/"+id); strings.TrimSpace(branch) == "" {
+					t.Fatal("unmerged conflict branch was deleted")
+				}
+			}
+		})
 	}
 }
 

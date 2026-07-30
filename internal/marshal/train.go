@@ -2,16 +2,11 @@ package marshal
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
 )
-
-// errMergeConflict tags failures that a conflict resolver may repair;
-// its message is part of the error strings surfaced to humans.
-var errMergeConflict = errors.New("merge conflict")
 
 // maxTestOutputBytes caps failing test output embedded in a Land error.
 const maxTestOutputBytes = 2000
@@ -20,7 +15,6 @@ const maxTestOutputBytes = 2000
 type Train struct {
 	Repo    string
 	TestCmd []string
-	Resolve func(ctx context.Context, issueID, branch string) error
 	// Pull enables SyncBase fast-forwarding the default branch from origin
 	// before an issue starts; Push publishes the default branch after a land.
 	Pull bool
@@ -39,6 +33,18 @@ type PublishPendingError struct {
 	Branch string
 	Commit string
 	Err    error
+}
+
+type ConflictError struct {
+	BaseBranch string
+	BaseSHA    string
+	Files      []string
+	Output     string
+}
+
+func (e *ConflictError) Error() string {
+	return fmt.Sprintf("merge conflict on %s at %s in %s: %s",
+		e.BaseBranch, e.BaseSHA, strings.Join(e.Files, ", "), e.Output)
 }
 
 func (e *PublishPendingError) Error() string {
@@ -130,7 +136,11 @@ func (tr *Train) LandVerified(
 	result.PreSHA = pre
 	attempt := func() error {
 		if out, err := tr.git("merge", "--no-ff", "--no-edit", branch); err != nil {
-			return tr.rollback(pre, fmt.Errorf("%w: %s", errMergeConflict, out))
+			files, _ := tr.git("diff", "--name-only", "--diff-filter=U")
+			conflict := &ConflictError{
+				BaseBranch: def, BaseSHA: pre, Files: strings.Fields(files), Output: out,
+			}
+			return tr.rollback(pre, conflict)
 		}
 		if _, err := tr.git("merge-base", "--is-ancestor", branch, def); err != nil {
 			return tr.rollback(pre, fmt.Errorf(
@@ -157,12 +167,6 @@ func (tr *Train) LandVerified(
 		return nil
 	}
 	err = attempt()
-	if err != nil && tr.Resolve != nil && errors.Is(err, errMergeConflict) {
-		if rerr := tr.Resolve(ctx, issueID, branch); rerr != nil {
-			return result, fmt.Errorf("%v (repair failed: %v)", err, rerr)
-		}
-		err = attempt()
-	}
 	if err != nil {
 		return result, err
 	}

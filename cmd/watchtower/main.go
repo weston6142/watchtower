@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -586,23 +585,7 @@ func runDaemon(args []string) {
 	var lib *librarian.Librarian
 	var reconcile func(context.Context, string) error
 	if *runnerKind == "claude" {
-		resolve := func(ctx context.Context, issueID, branch string) error {
-			if ws == nil {
-				return fmt.Errorf("no workspace provider for conflict repair")
-			}
-			wt, release, err := ws.Acquire(issueID + "-repair")
-			if err != nil {
-				return err
-			}
-			defer release()
-			out, err := exec.Command("git", "-C", wt, "checkout", branch).CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("checkout: %v: %s", err, out)
-			}
-			res := <-run.Run(ctx, issueID, "conflict-repair", "conflict-resolver", wt, autoAnswerAsks())
-			return res.Err
-		}
-		train = &marshal.Train{Repo: repo, TestCmd: testArgv, Resolve: resolve,
+		train = &marshal.Train{Repo: repo, TestCmd: testArgv,
 			Pull: cfg.Pull, Push: cfg.Push}
 		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "watchtower")}
 		reconcile = func(ctx context.Context, issueID string) error {
@@ -669,8 +652,8 @@ func runDaemon(args []string) {
 }
 
 // autoAnswerAsks returns an Ask channel whose decisions are answered with the
-// agent's own recommendation — for maintenance runs (conflict repair, doc
-// reconcile) that never escalate to a human.
+// agent's own recommendation for maintenance runs that never escalate to a
+// human. Conflict resolution deliberately uses the engine's normal ask path.
 func autoAnswerAsks() chan runner.Ask {
 	asks := make(chan runner.Ask)
 	go func() {

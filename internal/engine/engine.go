@@ -31,6 +31,7 @@ import (
 )
 
 var errDependenciesDiscovered = errors.New("new dependencies discovered")
+var errConflictHeld = errors.New("merge conflict held")
 
 type Config struct {
 	Store       *store.Store
@@ -1552,13 +1553,16 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 				})
 				return err
 			}
-			e.emit(core.EvIssueCompleted, is.id, map[string]string{
-				"merge": "left-unmerged", "branch": is.branch})
-			if e.cfg.Marshal != nil {
-				e.cfg.Marshal.Merged(is.id)
+			if errors.Is(err, errConflictHeld) {
+				e.emit(core.EvIssueCompleted, is.id, map[string]string{
+					"merge": "left-unmerged", "branch": is.branch})
+				if e.cfg.Marshal != nil {
+					e.cfg.Marshal.Merged(is.id)
+				}
+				aborted = false
+				return nil
 			}
-			aborted = false
-			return nil
+			return err
 		}
 		if err := e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
 			IssueID: is.id, State: store.IntegrationMerged,
@@ -1786,19 +1790,124 @@ func (e *Engine) landWithEscalation(
 		if errors.As(err, &pending) {
 			return result, err
 		}
-		e.emit(core.EvMergeConflict, is.id, map[string]string{"error": err.Error()})
-		d := levers.Decision{
-			Question:    fmt.Sprintf("Merge of %s failed: %v. Retry, or leave the branch for manual merge?", is.id, err),
-			Options:     []string{"retry", "leave branch"},
-			Recommended: 1,
-			Importance:  1.0,
-		}
-		if legacyAnswer(e.escalate(is.id, "merge", d)) != 0 {
+		var conflict *marshal.ConflictError
+		if !errors.As(err, &conflict) {
 			return result, err
 		}
+		e.emit(core.EvMergeConflict, is.id, map[string]any{
+			"error": conflict.Error(), "base_branch": conflict.BaseBranch,
+			"base_sha": conflict.BaseSHA, "files": conflict.Files,
+		})
+		decision, resolveErr := e.resolveConflict(ctx, is, conflict)
+		if resolveErr != nil {
+			return result, resolveErr
+		}
+		if decision == "hold" {
+			return result, errConflictHeld
+		}
+		// The resolver changed the issue branch after its verification receipt
+		// was recorded. Force the full recorded command set to replay against
+		// the newly integrated tree even if content happens to converge.
+		verification.TreeSHA = ""
 		result, err = e.cfg.Train.LandVerified(ctx, is.id, is.branch, verification)
 	}
 	return result, nil
+}
+
+func (e *Engine) resolveConflict(
+	ctx context.Context, is *issueState, conflict *marshal.ConflictError,
+) (string, error) {
+	body := fmt.Sprintf(
+		"# Merge conflict\n\n"+
+			"- Issue branch: `%s`\n"+
+			"- Current base branch: `%s`\n"+
+			"- Current base SHA: `%s`\n"+
+			"- Original base SHA: `%s`\n"+
+			"- Error: `%s`\n"+
+			"- Conflicting files:\n",
+		is.branch, conflict.BaseBranch, conflict.BaseSHA, is.baseRef, conflict.Error())
+	for _, name := range conflict.Files {
+		body += fmt.Sprintf("  - `%s`\n", name)
+	}
+	body += "\n## Merge output\n\n```\n" + conflict.Output + "\n```\n"
+	if err := os.WriteFile(filepath.Join(is.wsPath, "CONFLICT.md"), []byte(body), 0o644); err != nil {
+		return "", err
+	}
+	artifacts, err := contextpack.Archive(is.wsPath, e.issueDir(is.id), []string{"CONFLICT.md"})
+	if err != nil {
+		return "", fmt.Errorf("archive conflict context: %w", err)
+	}
+	for _, artifact := range artifacts {
+		e.emit(core.EvArtifactProduced, is.id, map[string]string{
+			"stage": "conflict-resolution", "artifact": artifact.Name,
+			"path": filepath.Join(e.issueDir(is.id), "artifacts", artifact.Name),
+		})
+	}
+	stage := flow.Stage{
+		Name: "conflict-resolution",
+		Agents: []flow.AgentRef{{
+			Package: "conflict-resolver",
+		}},
+		Workspace:  "worktree",
+		Gate:       flow.GateAuto,
+		Completion: flow.CompletionAll,
+		Artifacts:  []string{"conflict-report.md", "conflict-decision.json"},
+	}
+	if err := e.runStage(ctx, is, stage); err != nil {
+		return "", err
+	}
+	decision, err := loadConflictDecision(filepath.Join(is.wsPath, "conflict-decision.json"))
+	if err != nil {
+		return "", err
+	}
+	if decision == "hold" {
+		return decision, nil
+	}
+	if decision != "resolved" {
+		return "", fmt.Errorf("invalid conflict decision %q: want resolved or hold", decision)
+	}
+	if status, err := gitCommandOutput(is.wsPath, "status", "--porcelain", "--untracked-files=no"); err != nil {
+		return "", err
+	} else if status != "" {
+		return "", fmt.Errorf("resolved issue branch is dirty: %s", status)
+	}
+	if output, err := exec.Command(
+		"git", "-C", is.wsPath, "merge-base", "--is-ancestor", conflict.BaseSHA, "HEAD",
+	).CombinedOutput(); err != nil {
+		return "", fmt.Errorf(
+			"resolved issue branch is not rebased onto %s: %v: %s",
+			conflict.BaseSHA, err, strings.TrimSpace(string(output)))
+	}
+	return decision, nil
+}
+
+func loadConflictDecision(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("read conflict decision: %w", err)
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	var document struct {
+		Decision string `json:"decision"`
+	}
+	if err := decoder.Decode(&document); err != nil {
+		return "", fmt.Errorf("decode conflict decision: %w", err)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return "", fmt.Errorf("decode conflict decision: %w", err)
+	}
+	return document.Decision, nil
+}
+
+func gitCommandOutput(dir string, args ...string) (string, error) {
+	output, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err,
+			strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func (e *Engine) retryPublish(
