@@ -122,7 +122,8 @@ func (sv *Server) exec(cmd Command) Response {
 		if !ok {
 			return Response{Error: "unknown flow " + cmd.Flow}
 		}
-		id, err := sv.eng.CreateIssue(cmd.Title, cmd.Body, cmd.Flow, levers.Preset(fl, lever), cmd.Priority, cmd.Attach)
+		id, err := sv.eng.CreateIssueWithDependencies(
+			cmd.Title, cmd.Body, cmd.Flow, levers.Preset(fl, lever), cmd.Priority, cmd.Attach, cmd.DependsOn)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -132,7 +133,9 @@ func (sv *Server) exec(cmd Command) Response {
 		if !ok {
 			return Response{Error: "unknown flow " + cmd.Flow}
 		}
-		id, err := sv.eng.DraftIssue(cmd.Title, cmd.Body, cmd.Flow, string(lever), levers.Preset(fl, lever), cmd.Priority, cmd.Attach)
+		id, err := sv.eng.DraftIssueWithDependencies(
+			cmd.Title, cmd.Body, cmd.Flow, string(lever), levers.Preset(fl, lever),
+			cmd.Priority, cmd.Attach, cmd.DependsOn)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -142,7 +145,17 @@ func (sv *Server) exec(cmd Command) Response {
 		if !ok {
 			return Response{Error: "unknown flow " + cmd.Flow}
 		}
-		if err := sv.eng.UpdateIssue(cmd.IssueID, cmd.Title, cmd.Body, cmd.Flow, string(lever), levers.Preset(fl, lever), cmd.Priority, cmd.Attach); err != nil {
+		var err error
+		if cmd.DependsOn == nil {
+			err = sv.eng.UpdateIssue(
+				cmd.IssueID, cmd.Title, cmd.Body, cmd.Flow, string(lever),
+				levers.Preset(fl, lever), cmd.Priority, cmd.Attach)
+		} else {
+			err = sv.eng.UpdateIssueWithDependencies(
+				cmd.IssueID, cmd.Title, cmd.Body, cmd.Flow, string(lever),
+				levers.Preset(fl, lever), cmd.Priority, cmd.Attach, cmd.DependsOn)
+		}
+		if err != nil {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}

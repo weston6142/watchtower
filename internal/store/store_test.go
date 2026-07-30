@@ -102,17 +102,36 @@ func TestDecisionRoundTripsTypedFreeformResponse(t *testing.T) {
 func TestProposalLifecycle(t *testing.T) {
 	s, _ := Open("file:t4?mode=memory&cache=shared")
 	defer s.Close()
-	id, err := s.InsertProposal("GH-1", "New task", "details")
+	id, err := s.InsertProposal("GH-1", "New task", "details", []string{"GH-2", "GH-3"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ps, _ := s.PendingProposals()
-	if len(ps) != 1 || ps[0].Title != "New task" {
+	if len(ps) != 1 || ps[0].Title != "New task" ||
+		len(ps[0].DependsOn) != 2 || ps[0].DependsOn[1] != "GH-3" {
 		t.Fatalf("pending: %+v", ps)
 	}
 	s.SetProposalStatus(id, "accepted")
 	if ps, _ = s.PendingProposals(); len(ps) != 0 {
 		t.Fatalf("still pending: %+v", ps)
+	}
+}
+
+func TestProposalBatchLifecycle(t *testing.T) {
+	s, _ := Open("file:proposal-batch?mode=memory&cache=shared")
+	defer s.Close()
+	batchID, err := s.InsertProposalBatch("GH-1", []ProposalRow{
+		{Key: "api", Title: "Add API"},
+		{Key: "consumer", Title: "Use API", DependsOn: []string{"api"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps, err := s.PendingProposals()
+	if err != nil || len(ps) != 2 || ps[0].BatchID != batchID ||
+		ps[1].BatchID != batchID || ps[1].Key != "consumer" ||
+		len(ps[1].DependsOn) != 1 || ps[1].DependsOn[0] != "api" {
+		t.Fatalf("pending batch: %+v err=%v", ps, err)
 	}
 }
 

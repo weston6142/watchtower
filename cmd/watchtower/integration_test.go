@@ -141,6 +141,24 @@ func TestNewWithAttachAndBody(t *testing.T) {
 	}
 }
 
+func TestNewDraftWithDependenciesAppearsInBacklog(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	parent := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "parent")))
+	child := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "child", "--depends-on", parent, "--depends-on", parent)))
+	if child == "" {
+		t.Fatal("child draft returned no id")
+	}
+	out := run(t, bin, repo, "backlog", "--data", base)
+	if !strings.Contains(out, "child") || !strings.Contains(out, "depends on "+parent) {
+		t.Fatalf("dependency missing from backlog:\n%s", out)
+	}
+	if strings.Count(out, "depends on "+parent) != 1 {
+		t.Fatalf("dependency was not deduplicated:\n%s", out)
+	}
+}
+
 func TestNewRefusesMissingAttachment(t *testing.T) {
 	bin, base, repo := newRepo(t)
 

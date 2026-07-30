@@ -171,12 +171,16 @@ func backlogDetail(iv *projection.IssueView, width int) []string {
 	lines := wrapped(iv.Title, lipgloss.NewStyle().Foreground(t.Bright).Bold(true))
 	lines = append(lines, cell("", dim))
 	labelWidth := min(9, max(1, width-1))
-	for _, kv := range [][2]string{
+	metadata := [][2]string{
 		{"id", iv.ID},
 		{"priority", priority.Label(iv.Priority)},
 		{"flow", orElse(iv.Flow, "default")},
 		{"preset", orElse(iv.Preset, string(flow.LeverRegular))},
-	} {
+	}
+	if len(iv.DependsOn) > 0 {
+		metadata = append(metadata, [2]string{"depends", strings.Join(iv.DependsOn, ", ")})
+	}
+	for _, kv := range metadata {
 		label := dim.Render(padCell(strings.ToUpper(kv[0]), labelWidth))
 		value := lipgloss.NewStyle().Foreground(t.Structure).
 			Render(padCell(kv[1], max(1, width-labelWidth)))

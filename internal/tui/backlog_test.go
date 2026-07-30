@@ -135,10 +135,11 @@ func TestBacklogShowsSelectedDetail(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	entries := []*projection.IssueView{
 		{ID: "GH-1", Title: "first", Body: "body-of-first", Flow: "default", Preset: "regular"},
-		{ID: "GH-2", Title: "second", Body: "body-of-second", Flow: "hotfix", Preset: "strict"},
+		{ID: "GH-2", Title: "second", Body: "body-of-second", Flow: "hotfix", Preset: "strict",
+			DependsOn: []string{"GH-1", "GH-9"}},
 	}
 	out := ansi.Strip(renderBacklog(entries, 1, 140, 40))
-	for _, want := range []string{"second", "body-of-second", "hotfix", "strict"} {
+	for _, want := range []string{"second", "body-of-second", "hotfix", "strict", "GH-1, GH-9"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}

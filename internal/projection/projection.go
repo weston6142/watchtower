@@ -26,6 +26,7 @@ type IssueView struct {
 	// EvIssueCreated rebuilds the view wholesale, so a launched issue drops
 	// the list, which is fine because a launched issue is not editable.
 	Attachments []string
+	DependsOn   []string
 	Behind      string
 	Merged      bool
 	Unmerged    bool
@@ -94,6 +95,7 @@ func (s *State) Apply(ev core.Event) {
 		view.Preset = str("preset")
 		view.Priority = int(num("priority"))
 		view.Attachments = stringsFromPayload(p["attachments"])
+		view.DependsOn = stringsFromPayload(p["depends_on"])
 		view.State = "backlog"
 	case core.EvIssueCreated:
 		s.Issues[ev.IssueID] = &IssueView{ID: ev.IssueID, Title: str("title"), Flow: str("flow"), State: "running", AreaWeights: map[string]int{}}

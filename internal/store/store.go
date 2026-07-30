@@ -3,7 +3,9 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,7 +31,9 @@ CREATE TABLE IF NOT EXISTS decisions(
   recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
   answered_by TEXT, blocking_cost INTEGER, created_at TEXT);
 CREATE TABLE IF NOT EXISTS proposals(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, title TEXT, body TEXT, status TEXT);
+  id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, title TEXT, body TEXT,
+  status TEXT, depends_on TEXT NOT NULL DEFAULT '[]',
+  batch_id INTEGER NOT NULL DEFAULT 0, task_key TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS attachments(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, name TEXT,
   size INTEGER, source_path TEXT, added_at TEXT, ord INTEGER);
@@ -80,11 +84,14 @@ type DecisionRow struct {
 }
 
 type ProposalRow struct {
-	ID      int64
-	IssueID string
-	Title   string
-	Body    string
-	Status  string
+	ID        int64
+	BatchID   int64
+	IssueID   string
+	Key       string
+	Title     string
+	Body      string
+	Status    string
+	DependsOn []string
 }
 
 // AttachmentRow is one attachment's metadata. Bytes live on disk under the
@@ -124,11 +131,52 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, err
 	}
+	if err := ensureColumn(db, "proposals", "depends_on",
+		`ALTER TABLE proposals ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(db, "proposals", "batch_id",
+		`ALTER TABLE proposals ADD COLUMN batch_id INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(db, "proposals", "task_key",
+		`ALTER TABLE proposals ADD COLUMN task_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		return nil, err
+	}
 	var max sql.NullInt64
 	if err := db.QueryRow(`SELECT MAX(seq) FROM events`).Scan(&max); err != nil {
 		return nil, err
 	}
 	return &Store{db: db, seq: max.Int64}, nil
+}
+
+func ensureColumn(db *sql.DB, table, column, alter string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = db.Exec(alter)
+	return err
 }
 
 func (s *Store) Append(ev core.Event) (core.Event, error) {
@@ -469,16 +517,59 @@ func (s *Store) AllDecisionRows() ([]DecisionRow, error) {
 	return s.decisionRows(``)
 }
 
-func (s *Store) InsertProposal(issueID, title, body string) (int64, error) {
+func (s *Store) InsertProposal(issueID, title, body string, dependsOn []string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	encoded, err := json.Marshal(deps.Normalize(dependsOn))
+	if err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO proposals(issue_id,title,body,status) VALUES(?,?,?,'pending')`,
-		issueID, title, body)
+		`INSERT INTO proposals(issue_id,title,body,status,depends_on) VALUES(?,?,?,'pending',?)`,
+		issueID, title, body, string(encoded))
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+func (s *Store) InsertProposalBatch(issueID string, proposals []ProposalRow) (int64, error) {
+	if len(proposals) == 0 {
+		return 0, fmt.Errorf("proposal batch is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var batchID int64
+	for _, proposal := range proposals {
+		encoded, err := json.Marshal(deps.Normalize(proposal.DependsOn))
+		if err != nil {
+			return 0, err
+		}
+		res, err := tx.Exec(
+			`INSERT INTO proposals(
+				issue_id,title,body,status,depends_on,batch_id,task_key
+			 ) VALUES(?,?,?,'pending',?,?,?)`,
+			issueID, proposal.Title, proposal.Body, string(encoded), batchID, proposal.Key)
+		if err != nil {
+			return 0, err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return 0, err
+		}
+		if batchID == 0 {
+			batchID = id
+			if _, err := tx.Exec(`UPDATE proposals SET batch_id=? WHERE id=?`, batchID, id); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return batchID, tx.Commit()
 }
 
 func (s *Store) SetProposalStatus(id int64, status string) error {
@@ -488,11 +579,19 @@ func (s *Store) SetProposalStatus(id int64, status string) error {
 	return err
 }
 
+func (s *Store) SetProposalBatchStatus(batchID int64, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE proposals SET status=? WHERE batch_id=?`, status, batchID)
+	return err
+}
+
 func (s *Store) PendingProposals() ([]ProposalRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(
-		`SELECT id,issue_id,title,body,status FROM proposals WHERE status='pending' ORDER BY id`)
+		`SELECT id,batch_id,issue_id,task_key,title,body,status,depends_on
+		 FROM proposals WHERE status='pending' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -500,12 +599,55 @@ func (s *Store) PendingProposals() ([]ProposalRow, error) {
 	var out []ProposalRow
 	for rows.Next() {
 		var p ProposalRow
-		if err := rows.Scan(&p.ID, &p.IssueID, &p.Title, &p.Body, &p.Status); err != nil {
+		var dependsOn string
+		if err := rows.Scan(
+			&p.ID, &p.BatchID, &p.IssueID, &p.Key, &p.Title, &p.Body, &p.Status, &dependsOn); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(dependsOn), &p.DependsOn); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// AcceptProposalBatch stores every generated issue and edge, then accepts the
+// whole pending batch in the same SQLite transaction.
+func (s *Store) AcceptProposalBatch(batchID int64, issues []IssueRow, edges map[string][]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, issue := range issues {
+		encodedLevers, err := json.Marshal(issue.Levers)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO issues(id,title,body,state,flow,levers,priority)
+			 VALUES(?,?,?,?,?,?,?)`,
+			issue.ID, issue.Title, issue.Body, issue.State, issue.Flow,
+			string(encodedLevers), issue.Priority); err != nil {
+			return err
+		}
+		for _, parent := range edges[issue.ID] {
+			if _, err := tx.Exec(
+				`INSERT INTO issue_dependencies(issue_id,depends_on) VALUES(?,?)`,
+				issue.ID, parent); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec(
+		`UPDATE proposals SET status='accepted' WHERE batch_id=? AND status='pending'`,
+		batchID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UpsertIssue(r IssueRow) error {
@@ -720,6 +862,34 @@ func (s *Store) DeleteAttachments(issueID string) error {
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`DELETE FROM attachments WHERE issue_id=?`, issueID)
 	return err
+}
+
+// DeleteIssue removes a creation that failed before its public event was
+// emitted. It is intentionally narrow and is not an operator-facing delete.
+func (s *Store) DeleteIssue(issueID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`DELETE FROM issue_dependencies WHERE issue_id=? OR depends_on=?`,
+		`DELETE FROM attachments WHERE issue_id=?`,
+		`DELETE FROM issues WHERE id=?`,
+	} {
+		var execErr error
+		if strings.Contains(query, " OR ") {
+			_, execErr = tx.Exec(query, issueID, issueID)
+		} else {
+			_, execErr = tx.Exec(query, issueID)
+		}
+		if execErr != nil {
+			return execErr
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }

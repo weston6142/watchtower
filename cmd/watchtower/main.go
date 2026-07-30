@@ -153,19 +153,23 @@ func main() {
 		prio := fs.Int("priority", 0, "priority")
 		draft := fs.Bool("draft", false, "save to the backlog instead of starting")
 		var attachments attachFlag
+		var dependsOn stringListFlag
 		fs.Var(&attachments, "attach", "attach a file to the issue (repeatable)")
+		fs.Var(&dependsOn, "depends-on", "issue that must merge first (repeatable)")
 		fs.Parse(args)
 		resolved := mustResolveAttach(attachments)
 		c := mustDial(*data, *repoF)
 		defer c.Close()
 		if *draft {
 			r := mustDo(c, proto.Command{Op: "draft_issue", Title: *title, Body: *body,
-				Flow: *flowName, Preset: *preset, Priority: *prio, Attach: resolved})
+				Flow: *flowName, Preset: *preset, Priority: *prio, Attach: resolved,
+				DependsOn: dependsOn})
 			fmt.Println(r.IssueID)
 			break
 		}
 		r := mustDo(c, proto.Command{Op: "create_issue", Title: *title, Body: *body,
-			Flow: *flowName, Preset: *preset, Priority: *prio, Attach: resolved})
+			Flow: *flowName, Preset: *preset, Priority: *prio, Attach: resolved,
+			DependsOn: dependsOn})
 		mustDo(c, proto.Command{Op: "start_issue", IssueID: r.IssueID})
 		fmt.Println(r.IssueID)
 	case "decisions":
@@ -222,7 +226,12 @@ func main() {
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_proposals"})
 		for _, p := range r.Proposals {
-			fmt.Printf("[%d] (from %s) %s — %s\n", p.ID, p.IssueID, p.Title, p.Body)
+			dependencySuffix := ""
+			if len(p.DependsOn) > 0 {
+				dependencySuffix = " [depends on " + strings.Join(p.DependsOn, ", ") + "]"
+			}
+			fmt.Printf("[%d] (from %s) %s%s — %s\n",
+				p.ID, p.IssueID, p.Title, dependencySuffix, p.Body)
 		}
 	case "accept-proposal", "reject-proposal":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
@@ -270,7 +279,12 @@ func main() {
 			if issue.State != "backlog" {
 				continue
 			}
-			fmt.Printf("%s  %-7s  %s  %s\n", issue.ID, priority.Label(issue.Priority), issue.Flow, issue.Title)
+			dependencySuffix := ""
+			if len(issue.DependsOn) > 0 {
+				dependencySuffix = "  depends on " + strings.Join(issue.DependsOn, ", ")
+			}
+			fmt.Printf("%s  %-7s  %s  %s%s\n",
+				issue.ID, priority.Label(issue.Priority), issue.Flow, issue.Title, dependencySuffix)
 		}
 	case "status":
 		fs := flag.NewFlagSet("status", flag.ExitOnError)
@@ -495,13 +509,15 @@ func runDaemon(args []string) {
 		fmt.Fprintln(os.Stderr, "rehydrate:", err)
 	}
 	fileProposal := func(issueID string, p runner.Proposal) {
-		eng.FileProposal(issueID, p.Title, p.Body)
+		eng.FileProposalWithDependencies(issueID, p.Title, p.Body, p.DependsOn)
 	}
 	switch r := run.(type) {
 	case *claude.CodeRunner:
 		r.OnProposal = fileProposal
+		r.OnProposalBatch = eng.FileProposalBatch
 	case *runner.FakeRunner:
 		r.OnProposal = fileProposal
+		r.OnProposalBatch = eng.FileProposalBatch
 	}
 	sock := filepath.Join(data, sockFileName)
 	os.Remove(sock)
@@ -647,6 +663,15 @@ func (a *attachFlag) String() string { return strings.Join(*a, ",") }
 
 func (a *attachFlag) Set(value string) error {
 	*a = append(*a, value)
+	return nil
+}
+
+type stringListFlag []string
+
+func (s *stringListFlag) String() string { return strings.Join(*s, ",") }
+
+func (s *stringListFlag) Set(value string) error {
+	*s = append(*s, value)
 	return nil
 }
 

@@ -16,6 +16,9 @@ type modalState struct {
 	Field    int
 	FlowName string
 	Preset   string
+	// DependsOn is comma-separated issue IDs. The command boundary trims and
+	// deduplicates them before graph validation.
+	DependsOn string
 	// Attach is the raw field text: comma-separated paths, or the stored name
 	// of an existing attachment to retain it. Resolution happens client-side
 	// before the command is sent.
@@ -61,6 +64,8 @@ func (m *modalState) setFieldValue(value string) {
 		m.FlowName = value
 	case 3:
 		m.Preset = value
+	case dependenciesField:
+		m.DependsOn = value
 	case attachField:
 		m.Attach = value
 	}
@@ -76,6 +81,8 @@ func (m modalState) fieldValue() string {
 		return m.FlowName
 	case 3:
 		return m.Preset
+	case dependenciesField:
+		return m.DependsOn
 	case attachField:
 		return m.Attach
 	default:
@@ -126,6 +133,7 @@ func renderModal(m modalState, width int) string {
 		modalField(m.Field == 1, "body", m.Body, false),
 		modalField(m.Field == 2, "flow", flowName, false),
 		modalField(m.Field == 3, "preset", preset, false),
+		modalField(m.Field == dependenciesField, "depends on", m.DependsOn, false),
 		modalField(m.Field == attachField, "attach", m.Attach, false),
 		modalChoiceField(m.Field == priorityField, "priority", priority.Label(m.Priority)),
 		"",
@@ -136,13 +144,13 @@ func renderModal(m modalState, width int) string {
 
 const modalFieldWidth = 44
 
-// attach is a text field; priority is a selector, not an input, and is last so
-// tab wraps after it. Adding attach at 4 without moving priority to 5 would
-// route typed paths into the priority chooser.
+// Dependency and attachment values are text fields; priority is a selector,
+// not an input, and is last so tab wraps after it.
 const (
-	attachField     = 4
-	priorityField   = 5
-	modalFieldCount = priorityField + 1
+	dependenciesField = 4
+	attachField       = 5
+	priorityField     = 6
+	modalFieldCount   = priorityField + 1
 )
 
 // modalChoiceField renders a fixed-choice field as the lever editor's

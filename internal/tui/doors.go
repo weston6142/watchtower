@@ -61,6 +61,9 @@ func renderProposalsDoor(ps []store.ProposalRow, sel, width int) string {
 		for _, line := range wrapProposal(proposal.Body, max(1, width-6)) {
 			lines = append(lines, "    "+dim.Render(line))
 		}
+		if len(proposal.DependsOn) > 0 {
+			lines = append(lines, "    "+dim.Render("depends on "+strings.Join(proposal.DependsOn, ", ")))
+		}
 		if i < len(ps)-1 {
 			lines = append(lines, "")
 		}

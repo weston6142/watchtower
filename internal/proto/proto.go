@@ -21,6 +21,7 @@ type Command struct {
 	// message well under the per-file cap, so the daemon reads the files off the
 	// shared filesystem itself. A bare name retains an existing attachment.
 	Attach     []string `json:"attach,omitempty"`
+	DependsOn  []string `json:"depends_on,omitempty"`
 	IssueID    string   `json:"issue_id,omitempty"`
 	DecisionID int64    `json:"decision_id,omitempty"`
 	Option     *int     `json:"option,omitempty"`

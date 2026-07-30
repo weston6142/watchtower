@@ -13,12 +13,15 @@ type Ask struct {
 
 // Proposal is a suggested new issue discovered by an agent mid-flow.
 type Proposal struct {
-	Title string
-	Body  string
+	Key       string
+	Title     string
+	Body      string
+	DependsOn []string
 }
 
 type Result struct {
 	Artifacts map[string]string
+	DependsOn []string
 	SessionID string
 	Tokens    int
 	Err       error

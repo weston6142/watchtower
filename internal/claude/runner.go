@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -52,11 +53,12 @@ func TaskMessage(stage, issueID string) string {
 // CodeRunner drives a claude CLI subprocess in stream-json mode, translating
 // its output into runner.Result and decision markers into runner.Ask.
 type CodeRunner struct {
-	Bin        string
-	Packages   map[string]pkgs.Package
-	ExtraEnv   []string
-	OnProposal func(string, runner.Proposal)
-	OnLine     func(issueID, stage, line string)
+	Bin             string
+	Packages        map[string]pkgs.Package
+	ExtraEnv        []string
+	OnProposal      func(string, runner.Proposal)
+	OnProposalBatch func(string, []runner.Proposal)
+	OnLine          func(issueID, stage, line string)
 }
 
 const coachMsg = `Your watchtower_decision is missing required fields. Re-emit the SAME decision
@@ -128,6 +130,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	gotResult := false
 	sessionDone := false
 	coachCount := 0
+	decisionAccepted := false
 	// Replies to the agent (decision answers, coaching) are deferred until the
 	// current turn's result event. A message written mid-turn is absorbed into
 	// the running turn as steering — it never starts a new turn — so an agent
@@ -180,6 +183,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				if !d.Accepts(response) {
 					return abort(fmt.Errorf("invalid response for decision %q", d.Question))
 				}
+				decisionAccepted = true
 				answer := response.Text
 				if response.Kind == levers.DecisionChoice {
 					answer = d.Options[*response.Option]
@@ -188,6 +192,15 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			}
 			if p, found := ExtractProposal(ev.Text); found && c.OnProposal != nil {
 				c.OnProposal(issueID, p)
+			}
+			if batch, found := ExtractProposalBatch(ev.Text); found && c.OnProposalBatch != nil {
+				c.OnProposalBatch(issueID, batch)
+			}
+			if dependsOn, found := ExtractDependency(ev.Text); found {
+				if !decisionAccepted {
+					return abort(fmt.Errorf("dependency marker emitted without an accepted decision"))
+				}
+				res.DependsOn = deps.Normalize(append(res.DependsOn, dependsOn...))
 			}
 		case KindToolUse:
 			emit(ev)

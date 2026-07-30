@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/runner"
 )
@@ -204,8 +205,10 @@ func ExtractDecision(text string) (levers.Decision, bool) {
 }
 
 type proposalPayload struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
+	Key       string   `json:"key"`
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	DependsOn []string `json:"depends_on"`
 }
 
 // Legacy accepts the pre-rename guildhall_* marker key; see decisionMarker.
@@ -233,9 +236,76 @@ func ExtractProposal(text string) (runner.Proposal, bool) {
 		if p.Title == "" {
 			continue
 		}
-		return runner.Proposal{Title: p.Title, Body: p.Body}, true
+		return runner.Proposal{
+			Key: p.Key, Title: p.Title, Body: p.Body,
+			DependsOn: deps.Normalize(p.DependsOn),
+		}, true
 	}
 	return runner.Proposal{}, false
+}
+
+type proposalBatchMarker struct {
+	Batch struct {
+		Tasks []proposalPayload `json:"tasks"`
+	} `json:"watchtower_proposal_batch"`
+}
+
+// ExtractProposalBatch scans assistant text for a set of keyed proposals.
+// Dependencies are still proposal keys here; the engine resolves them only
+// after it has allocated every issue ID in the batch.
+func ExtractProposalBatch(text string) ([]runner.Proposal, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `{"watchtower_proposal_batch":`) {
+			continue
+		}
+		var marker proposalBatchMarker
+		if json.Unmarshal([]byte(line), &marker) != nil || len(marker.Batch.Tasks) == 0 {
+			continue
+		}
+		out := make([]runner.Proposal, 0, len(marker.Batch.Tasks))
+		valid := true
+		for _, task := range marker.Batch.Tasks {
+			if strings.TrimSpace(task.Key) == "" || strings.TrimSpace(task.Title) == "" {
+				valid = false
+				break
+			}
+			out = append(out, runner.Proposal{
+				Key: strings.TrimSpace(task.Key), Title: task.Title, Body: task.Body,
+				DependsOn: deps.Normalize(task.DependsOn),
+			})
+		}
+		if valid {
+			return out, true
+		}
+	}
+	return nil, false
+}
+
+type dependencyMarker struct {
+	Dependency struct {
+		DependsOn []string `json:"depends_on"`
+	} `json:"watchtower_dependency"`
+}
+
+// ExtractDependency scans assistant text for a dependency discovered after an
+// accepted decision. The engine enforces that sequencing contract.
+func ExtractDependency(text string) ([]string, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `{"watchtower_dependency":`) {
+			continue
+		}
+		var marker dependencyMarker
+		if json.Unmarshal([]byte(line), &marker) != nil {
+			continue
+		}
+		ids := deps.Normalize(marker.Dependency.DependsOn)
+		if len(ids) > 0 {
+			return ids, true
+		}
+	}
+	return nil, false
 }
 
 // UserMessage encodes text as a stream-json user message line (newline-terminated),

@@ -10,19 +10,22 @@ import (
 )
 
 type Script struct {
-	Asks      []levers.Decision
-	Proposals []Proposal
-	Lines     []string
-	Artifacts map[string]string
-	Tokens    int
-	Fail      bool
+	Asks            []levers.Decision
+	Proposals       []Proposal
+	ProposalBatches [][]Proposal
+	DependsOn       []string
+	Lines           []string
+	Artifacts       map[string]string
+	Tokens          int
+	Fail            bool
 }
 
 type FakeRunner struct {
-	Scripts    map[string]Script
-	OnProposal func(string, Proposal)
-	OnResponse func(issueID, stage string, response levers.Response)
-	OnLine     func(issueID, stage, line string)
+	Scripts         map[string]Script
+	OnProposal      func(string, Proposal)
+	OnProposalBatch func(string, []Proposal)
+	OnResponse      func(issueID, stage string, response levers.Response)
+	OnLine          func(issueID, stage, line string)
 }
 
 func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
@@ -61,6 +64,11 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				f.OnProposal(issueID, p)
 			}
 		}
+		for _, batch := range sc.ProposalBatches {
+			if f.OnProposalBatch != nil {
+				f.OnProposalBatch(issueID, batch)
+			}
+		}
 		for _, line := range sc.Lines {
 			if f.OnLine != nil {
 				f.OnLine(issueID, stage, line)
@@ -79,7 +87,7 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			}
 			out[name] = p
 		}
-		done <- Result{Artifacts: out, Tokens: sc.Tokens}
+		done <- Result{Artifacts: out, DependsOn: append([]string(nil), sc.DependsOn...), Tokens: sc.Tokens}
 	}()
 	return done
 }

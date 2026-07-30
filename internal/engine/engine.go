@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,6 +26,8 @@ import (
 	"github.com/weston6142/watchtower/internal/touchset"
 	"github.com/weston6142/watchtower/internal/workspace"
 )
+
+var errDependenciesDiscovered = errors.New("new dependencies discovered")
 
 type Config struct {
 	Store       *store.Store
@@ -236,6 +239,7 @@ func matrixFromStrings(values map[string]string) levers.Matrix {
 }
 
 func (e *Engine) SetDependencies(issueID string, parents []string) error {
+	parents = deps.Normalize(parents)
 	graph, err := e.cfg.Store.DependencyGraph()
 	if err != nil {
 		return err
@@ -517,9 +521,15 @@ func (e *Engine) rollbackCreate(id string) {
 	e.mu.Unlock()
 	_ = attach.DeleteAll(e.issueDir(id))
 	_ = e.cfg.Store.DeleteAttachments(id)
+	_ = e.cfg.Store.DeleteIssue(id)
 }
 
 func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, priority int, attachments []string) (string, error) {
+	return e.CreateIssueWithDependencies(title, body, flowName, m, priority, attachments, nil)
+}
+
+func (e *Engine) CreateIssueWithDependencies(title, body, flowName string, m levers.Matrix,
+	priority int, attachments, dependsOn []string) (string, error) {
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return "", fmt.Errorf("unknown flow %q", flowName)
 	}
@@ -547,15 +557,24 @@ func (e *Engine) CreateIssue(title, body, flowName string, m levers.Matrix, prio
 		e.rollbackCreate(id)
 		return "", err
 	}
+	if err := e.SetDependencies(id, deps.Normalize(dependsOn)); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
 	e.emit(core.EvIssueCreated, id, map[string]any{
 		"title": title, "flow": flowName, "body": body, "priority": priority,
-		"attachments": set.Names()})
+		"attachments": set.Names(), "depends_on": deps.Normalize(dependsOn)})
 	return id, nil
 }
 
 // DraftIssue records an issue in the backlog without starting anything: no
 // flow run, no slot. The draft is durable and editable until launched.
 func (e *Engine) DraftIssue(title, body, flowName, preset string, m levers.Matrix, priority int, attachments []string) (string, error) {
+	return e.DraftIssueWithDependencies(title, body, flowName, preset, m, priority, attachments, nil)
+}
+
+func (e *Engine) DraftIssueWithDependencies(title, body, flowName, preset string, m levers.Matrix,
+	priority int, attachments, dependsOn []string) (string, error) {
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return "", fmt.Errorf("unknown flow %q", flowName)
 	}
@@ -582,9 +601,14 @@ func (e *Engine) DraftIssue(title, body, flowName, preset string, m levers.Matri
 		e.rollbackCreate(id)
 		return "", err
 	}
+	if err := e.SetDependencies(id, deps.Normalize(dependsOn)); err != nil {
+		e.rollbackCreate(id)
+		return "", err
+	}
 	e.emit(core.EvIssueDrafted, id, map[string]any{
 		"title": title, "body": body, "flow": flowName, "preset": preset,
-		"priority": priority, "levers": matrixStrings(m), "attachments": set.Names()})
+		"priority": priority, "levers": matrixStrings(m), "attachments": set.Names(),
+		"depends_on": deps.Normalize(dependsOn)})
 	return id, nil
 }
 
@@ -594,8 +618,26 @@ func (e *Engine) DraftIssue(title, body, flowName, preset string, m levers.Matri
 // new set. Bytes of dropped names are deleted *last*, so a mid-sequence failure
 // leaves extra bytes on disk rather than a missing file the table still claims.
 func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.Matrix, priority int, attachments []string) error {
+	current, err := e.cfg.Store.Dependencies(id)
+	if err != nil {
+		return err
+	}
+	return e.UpdateIssueWithDependencies(id, title, body, flowName, preset, m, priority, attachments, current)
+}
+
+func (e *Engine) UpdateIssueWithDependencies(id, title, body, flowName, preset string,
+	m levers.Matrix, priority int, attachments, dependsOn []string) error {
 	if _, ok := e.cfg.Flows[flowName]; !ok {
 		return fmt.Errorf("unknown flow %q", flowName)
+	}
+	dependsOn = deps.Normalize(dependsOn)
+	graph, err := e.cfg.Store.DependencyGraph()
+	if err != nil {
+		return err
+	}
+	graph[id] = dependsOn
+	if err := graph.Validate(); err != nil {
+		return err
 	}
 	// Check draftness before touching anything: a later refusal must not leave
 	// in-memory fields rewritten.
@@ -648,12 +690,16 @@ func (e *Engine) UpdateIssue(id, title, body, flowName, preset string, m levers.
 	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
 		return err
 	}
+	if err := e.SetDependencies(id, dependsOn); err != nil {
+		return err
+	}
 	if err := attach.DeleteDropped(e.issueDir(id), existing, set); err != nil {
 		return err
 	}
 	e.emit(core.EvIssueUpdated, id, map[string]any{
 		"title": title, "body": body, "flow": flowName, "preset": preset,
-		"priority": priority, "levers": matrixStrings(m), "attachments": set.Names()})
+		"priority": priority, "levers": matrixStrings(m), "attachments": set.Names(),
+		"depends_on": dependsOn})
 	return nil
 }
 
@@ -784,20 +830,40 @@ func (e *Engine) blockingCost(issueID string) int {
 }
 
 func (e *Engine) FileProposal(issueID, title, body string) {
-	if _, err := e.cfg.Store.InsertProposal(issueID, title, body); err != nil {
+	e.FileProposalWithDependencies(issueID, title, body, nil)
+}
+
+func (e *Engine) FileProposalWithDependencies(issueID, title, body string, dependsOn []string) {
+	if _, err := e.cfg.Store.InsertProposal(issueID, title, body, dependsOn); err != nil {
 		return
 	}
-	e.emit(core.EvProposalFiled, issueID, map[string]string{"title": title})
+	e.emit(core.EvProposalFiled, issueID, map[string]any{
+		"title": title, "depends_on": deps.Normalize(dependsOn)})
+}
+
+func (e *Engine) FileProposalBatch(issueID string, proposals []runner.Proposal) {
+	rows := make([]store.ProposalRow, 0, len(proposals))
+	seen := map[string]bool{}
+	for _, proposal := range proposals {
+		key := strings.TrimSpace(proposal.Key)
+		if key == "" || seen[key] || strings.TrimSpace(proposal.Title) == "" {
+			return
+		}
+		seen[key] = true
+		rows = append(rows, store.ProposalRow{
+			Key: key, Title: proposal.Title, Body: proposal.Body,
+			DependsOn: deps.Normalize(proposal.DependsOn),
+		})
+	}
+	batchID, err := e.cfg.Store.InsertProposalBatch(issueID, rows)
+	if err != nil {
+		return
+	}
+	e.emit(core.EvProposalFiled, issueID, map[string]any{
+		"batch_id": batchID, "tasks": len(rows)})
 }
 
 func (e *Engine) ResolveProposal(id int64, accept bool, flowName, preset string) (string, error) {
-	if !accept {
-		if err := e.cfg.Store.SetProposalStatus(id, "rejected"); err != nil {
-			return "", err
-		}
-		e.emit(core.EvProposalRejected, "", map[string]any{"proposal_id": id})
-		return "", nil
-	}
 	ps, err := e.cfg.Store.PendingProposals()
 	if err != nil {
 		return "", err
@@ -812,6 +878,19 @@ func (e *Engine) ResolveProposal(id int64, accept bool, flowName, preset string)
 	if row == nil {
 		return "", fmt.Errorf("no pending proposal %d", id)
 	}
+	if !accept {
+		var err error
+		if row.BatchID != 0 {
+			err = e.cfg.Store.SetProposalBatchStatus(row.BatchID, "rejected")
+		} else {
+			err = e.cfg.Store.SetProposalStatus(id, "rejected")
+		}
+		if err != nil {
+			return "", err
+		}
+		e.emit(core.EvProposalRejected, "", map[string]any{"proposal_id": id})
+		return "", nil
+	}
 	f, ok := e.cfg.Flows[flowName]
 	if !ok {
 		return "", fmt.Errorf("unknown flow %q", flowName)
@@ -820,7 +899,17 @@ func (e *Engine) ResolveProposal(id int64, accept bool, flowName, preset string)
 	if lever != flow.LeverYolo && lever != flow.LeverRegular && lever != flow.LeverStrict {
 		lever = flow.LeverRegular
 	}
-	newID, err := e.CreateIssue(row.Title, row.Body, flowName, levers.Preset(f, lever), 0, nil)
+	if row.BatchID != 0 {
+		var batch []store.ProposalRow
+		for _, proposal := range ps {
+			if proposal.BatchID == row.BatchID {
+				batch = append(batch, proposal)
+			}
+		}
+		return e.resolveProposalBatch(batch, flowName, levers.Preset(f, lever))
+	}
+	newID, err := e.CreateIssueWithDependencies(
+		row.Title, row.Body, flowName, levers.Preset(f, lever), 0, nil, row.DependsOn)
 	if err != nil {
 		return "", err
 	}
@@ -829,6 +918,74 @@ func (e *Engine) ResolveProposal(id int64, accept bool, flowName, preset string)
 	}
 	e.emit(core.EvProposalAccepted, newID, map[string]any{"proposal_id": id})
 	return newID, nil
+}
+
+func (e *Engine) resolveProposalBatch(
+	proposals []store.ProposalRow, flowName string, matrix levers.Matrix,
+) (string, error) {
+	if len(proposals) == 0 {
+		return "", fmt.Errorf("proposal batch is empty")
+	}
+	keyToID := make(map[string]string, len(proposals))
+	e.mu.Lock()
+	for _, proposal := range proposals {
+		if proposal.Key == "" {
+			e.mu.Unlock()
+			return "", fmt.Errorf("proposal batch has an empty key")
+		}
+		if _, exists := keyToID[proposal.Key]; exists {
+			e.mu.Unlock()
+			return "", fmt.Errorf("proposal batch repeats key %s", proposal.Key)
+		}
+		e.nextID++
+		keyToID[proposal.Key] = fmt.Sprintf("GH-%d", e.nextID)
+	}
+	e.mu.Unlock()
+
+	graph, err := e.cfg.Store.DependencyGraph()
+	if err != nil {
+		return "", err
+	}
+	issues := make([]store.IssueRow, 0, len(proposals))
+	edges := make(map[string][]string, len(proposals))
+	for _, proposal := range proposals {
+		id := keyToID[proposal.Key]
+		for _, dependency := range proposal.DependsOn {
+			if resolved, ok := keyToID[dependency]; ok {
+				edges[id] = append(edges[id], resolved)
+			} else {
+				edges[id] = append(edges[id], dependency)
+			}
+		}
+		edges[id] = deps.Normalize(edges[id])
+		graph[id] = edges[id]
+		issues = append(issues, store.IssueRow{
+			ID: id, Title: proposal.Title, Body: proposal.Body, State: "running",
+			Flow: flowName, Levers: matrixStrings(matrix),
+		})
+	}
+	if err := graph.Validate(); err != nil {
+		return "", err
+	}
+	if err := e.cfg.Store.AcceptProposalBatch(proposals[0].BatchID, issues, edges); err != nil {
+		return "", err
+	}
+	e.mu.Lock()
+	for _, issue := range issues {
+		e.issues[issue.ID] = &issueState{
+			id: issue.ID, title: issue.Title, body: issue.Body, flowName: issue.Flow,
+			matrix: matrix, dependsOn: append([]string(nil), edges[issue.ID]...),
+		}
+	}
+	e.mu.Unlock()
+	for _, issue := range issues {
+		e.emit(core.EvIssueCreated, issue.ID, map[string]any{
+			"title": issue.Title, "body": issue.Body, "flow": issue.Flow,
+			"depends_on": edges[issue.ID]})
+		e.emit(core.EvProposalAccepted, issue.ID, map[string]any{
+			"batch_id": proposals[0].BatchID})
+	}
+	return issues[0].ID, nil
 }
 
 func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
@@ -933,6 +1090,7 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	need := len(st.Agents)
 	var firstErr error
 	succeeded := 0
+	var discovered []string
 	for i := 0; i < need; i++ {
 		d := <-dones
 		if d.res.Err != nil {
@@ -942,6 +1100,7 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 			continue
 		}
 		succeeded++
+		discovered = append(discovered, d.res.DependsOn...)
 		if st.Completion == flow.CompletionAny {
 			break
 		}
@@ -951,6 +1110,15 @@ func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage
 	}
 	if st.Completion == flow.CompletionAny && succeeded == 0 {
 		return firstErr
+	}
+	if normalized := deps.Normalize(discovered); len(normalized) > 0 {
+		e.mu.Lock()
+		all := append(append([]string(nil), is.dependsOn...), normalized...)
+		e.mu.Unlock()
+		if err := e.SetDependencies(is.id, deps.Normalize(all)); err != nil {
+			return fmt.Errorf("discovered dependencies: %w", err)
+		}
+		return errDependenciesDiscovered
 	}
 	// validate artifacts
 	for _, name := range st.Artifacts {
@@ -1007,6 +1175,9 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 		err = e.runStageOnce(stageCtx, is, st, attempt+1, of)
 		if err == nil {
 			break
+		}
+		if errors.Is(err, errDependenciesDiscovered) {
+			return err
 		}
 		if e.wasKilled(is) {
 			e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
@@ -1150,7 +1321,18 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 		if err := e.checkBudget(is, st.Name); err != nil {
 			return err
 		}
-		if err := e.runStage(ctx, is, st); err != nil {
+		if err := e.runStage(ctx, is, st); errors.Is(err, errDependenciesDiscovered) {
+			unmet, depErr := e.unmetDependencies(is.id)
+			if depErr != nil {
+				return depErr
+			}
+			e.mu.Lock()
+			is.waitingDependencies = true
+			e.mu.Unlock()
+			e.emit(core.EvIssueWaitingDependencies, is.id, map[string]any{
+				"unmet": unmet, "restart_stage": f.Stages[0].Name})
+			return nil
+		} else if err != nil {
 			return err
 		}
 	}

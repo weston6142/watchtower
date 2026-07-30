@@ -242,7 +242,12 @@ func TestAnswerDecisionAcceptsFreeformText(t *testing.T) {
 
 func TestBacklogOps(t *testing.T) {
 	c := newTestClient(t)
-	r, err := c.Do(Command{Op: "draft_issue", Title: "t", Body: "b", Flow: "default", Preset: "regular", Priority: 2})
+	parent, err := c.Do(Command{Op: "draft_issue", Title: "parent", Flow: "default", Preset: "regular"})
+	if err != nil || !parent.OK {
+		t.Fatalf("parent draft_issue: %v %+v", err, parent)
+	}
+	r, err := c.Do(Command{Op: "draft_issue", Title: "t", Body: "b", Flow: "default", Preset: "regular", Priority: 2,
+		DependsOn: []string{" " + parent.IssueID + " ", parent.IssueID}})
 	if err != nil || !r.OK {
 		t.Fatalf("draft_issue: %v %+v", err, r)
 	}
@@ -260,6 +265,9 @@ func TestBacklogOps(t *testing.T) {
 			found = true
 			if row.State != "backlog" || row.Title != "t2" || row.Priority != 5 || row.Body != "b2" {
 				t.Fatalf("row wrong after update: %+v", row)
+			}
+			if len(row.DependsOn) != 1 || row.DependsOn[0] != parent.IssueID {
+				t.Fatalf("dependencies not normalized and retained: %+v", row.DependsOn)
 			}
 		}
 	}

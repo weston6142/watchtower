@@ -45,15 +45,29 @@ func TestLeverEditorCycles(t *testing.T) {
 
 func TestModalPriorityField(t *testing.T) {
 	m := modalState{}
-	for i := 0; i < 5; i++ {
+	for i := 0; i < priorityField; i++ {
 		m = m.input("tab")
 	}
-	if m.Field != 5 {
-		t.Fatalf("Field = %d, want 5 (priority)", m.Field)
+	if m.Field != priorityField {
+		t.Fatalf("Field = %d, want %d (priority)", m.Field, priorityField)
 	}
 	m = m.input("tab")
 	if m.Field != 0 {
 		t.Fatalf("tab wrap: Field = %d, want 0", m.Field)
+	}
+}
+
+func TestModalDependencyFieldTakesCommaSeparatedIDs(t *testing.T) {
+	m := modalState{Field: dependenciesField}
+	for _, r := range "GH-1, GH-2" {
+		m = m.input(string(r))
+	}
+	if m.DependsOn != "GH-1, GH-2" {
+		t.Fatalf("DependsOn = %q", m.DependsOn)
+	}
+	out := ansi.Strip(renderModal(m, 80))
+	if !strings.Contains(out, "DEPENDS ON") || !strings.Contains(out, "GH-1, GH-2") {
+		t.Fatalf("dependency field missing:\n%s", out)
 	}
 }
 
@@ -107,7 +121,7 @@ func TestRenderModalHints(t *testing.T) {
 	}
 }
 
-// The direct guard against the index-shift bug: text typed at index 4 must
+// The direct guard against the index-shift bug: text typed at attachField must
 // land in Attach and must not touch the priority selector.
 func TestModalAttachFieldTakesRunes(t *testing.T) {
 	m := modalState{}

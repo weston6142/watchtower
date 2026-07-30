@@ -89,6 +89,25 @@ func TestDecisionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDependencyMarkerRequiresAcceptedDecision(t *testing.T) {
+	done, _ := run(t, abs(t, "testdata/dependency-without-decision.sh"), t.TempDir())
+	res := <-done
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "without an accepted decision") {
+		t.Fatalf("result: %+v", res)
+	}
+}
+
+func TestDependencyMarkerReturnsIDsAfterAcceptedDecision(t *testing.T) {
+	done, asks := run(t, abs(t, "testdata/dependency-after-decision.sh"), t.TempDir())
+	ask := <-asks
+	ask.Reply <- levers.ChoiceResponse(0)
+	res := <-done
+	if res.Err != nil || len(res.DependsOn) != 2 ||
+		res.DependsOn[0] != "GH-2" || res.DependsOn[1] != "GH-3" {
+		t.Fatalf("result: %+v", res)
+	}
+}
+
 func TestRunnerCoachesIncompleteDecision(t *testing.T) {
 	done, asks := run(t, abs(t, "testdata/coached.sh"), t.TempDir())
 	a := <-asks // must be the COACHED (v2) decision, not the v1 one

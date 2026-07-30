@@ -16,6 +16,7 @@ import (
 	"github.com/weston6142/watchtower/internal/archmap"
 	"github.com/weston6142/watchtower/internal/attach"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/priority"
@@ -551,7 +552,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// h/l moves it into the set.
 					m.modal = &modalState{EditID: iv.ID, Title: iv.Title, Body: iv.Body,
 						FlowName: iv.Flow, Preset: iv.Preset, Priority: iv.Priority,
-						Attach: strings.Join(iv.Attachments, ", "), OrigAttach: iv.Attachments}
+						DependsOn: strings.Join(iv.DependsOn, ", "),
+						Attach:    strings.Join(iv.Attachments, ", "), OrigAttach: iv.Attachments}
 					m.backlog = nil
 				}
 			case "l":
@@ -1051,7 +1053,7 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "create_issue", Title: modal.Title,
 			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority,
-			Attach: attachments})
+			Attach: attachments, DependsOn: parseDependencies(modal.DependsOn)})
 		if err != nil {
 			return createIssueMsg{err: err}
 		}
@@ -1098,9 +1100,13 @@ func (m Model) modalCommand(modal modalState, op, issueID string) tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: op, IssueID: issueID, Title: modal.Title,
 			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority,
-			Attach: attachments})
+			Attach: attachments, DependsOn: parseDependencies(modal.DependsOn)})
 		return createIssueMsg{response: r, err: err}
 	}
+}
+
+func parseDependencies(value string) []string {
+	return deps.Normalize(strings.Split(value, ","))
 }
 
 func (m *Model) openArtifactsFor(issueID string) tea.Cmd {

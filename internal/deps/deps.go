@@ -1,6 +1,26 @@
 package deps
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// Normalize trims dependency IDs, drops blanks, and preserves the first
+// occurrence of each ID. Graph.Validate remains the authority for whether the
+// resulting edges are legal.
+func Normalize(ids []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
 
 // Graph maps each known issue to the issues that must merge before it starts.
 type Graph map[string][]string

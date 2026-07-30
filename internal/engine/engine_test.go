@@ -763,6 +763,112 @@ func TestProposalAcceptCreatesIssue(t *testing.T) {
 	}
 }
 
+func TestProposalAcceptRetainsDependencies(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	parent, err := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.FileProposalWithDependencies(
+		"GH-source", "Follow-up", "needs parent first", []string{parent})
+	ps, _ := s.PendingProposals()
+	newID, err := e.ResolveProposal(ps[0].ID, true, "default", "regular")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dependencies, err := s.Dependencies(newID)
+	if err != nil || len(dependencies) != 1 || dependencies[0] != parent {
+		t.Fatalf("dependencies: %v err=%v", dependencies, err)
+	}
+}
+
+func TestProposalBatchAcceptResolvesLocalDependencyKeys(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	e.FileProposalBatch("GH-source", []runner.Proposal{
+		{Key: "api", Title: "Add API"},
+		{Key: "consumer", Title: "Use API", DependsOn: []string{"api"}},
+	})
+	ps, err := s.PendingProposals()
+	if err != nil || len(ps) != 2 {
+		t.Fatalf("proposals: %+v err=%v", ps, err)
+	}
+	firstID, err := e.ResolveProposal(ps[0].ID, true, "default", "regular")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Issues()
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("issues: %+v err=%v", rows, err)
+	}
+	idsByTitle := map[string]string{}
+	for _, row := range rows {
+		idsByTitle[row.Title] = row.ID
+	}
+	if firstID != idsByTitle["Add API"] {
+		t.Fatalf("returned %s, API is %s", firstID, idsByTitle["Add API"])
+	}
+	consumerDeps, err := s.Dependencies(idsByTitle["Use API"])
+	if err != nil || len(consumerDeps) != 1 || consumerDeps[0] != idsByTitle["Add API"] {
+		t.Fatalf("consumer dependencies: %v err=%v", consumerDeps, err)
+	}
+	if pending, _ := s.PendingProposals(); len(pending) != 0 {
+		t.Fatalf("batch left pending rows: %+v", pending)
+	}
+}
+
+func TestProposalBatchRejectsUnknownDependencyWithoutPartialIssues(t *testing.T) {
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	e.FileProposalBatch("GH-source", []runner.Proposal{
+		{Key: "api", Title: "Add API"},
+		{Key: "consumer", Title: "Use API", DependsOn: []string{"missing"}},
+	})
+	ps, _ := s.PendingProposals()
+	if _, err := e.ResolveProposal(ps[0].ID, true, "default", "regular"); err == nil {
+		t.Fatal("unknown batch dependency accepted")
+	}
+	if rows, _ := s.Issues(); len(rows) != 0 {
+		t.Fatalf("partial issues persisted: %+v", rows)
+	}
+	if pending, _ := s.PendingProposals(); len(pending) != 2 {
+		t.Fatalf("failed batch should remain reviewable: %+v", pending)
+	}
+}
+
+func TestAcceptedDiscoveredDependencyReleasesRunAndWaitsForRestart(t *testing.T) {
+	f := testFlow()
+	fr := &runner.FakeRunner{Scripts: scripts()}
+	fr.Scripts["brainstorm/brainstorm"] = runner.Script{DependsOn: []string{"GH-1"}}
+	e, s := newEngine(t, fr)
+	parent, err := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err != nil || parent != "GH-1" {
+		t.Fatalf("parent: %s %v", parent, err)
+	}
+	child, err := e.CreateIssue("child", "", "default", levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), child); err != nil {
+		t.Fatal(err)
+	}
+	dependencies, _ := s.Dependencies(child)
+	if len(dependencies) != 1 || dependencies[0] != parent {
+		t.Fatalf("dependencies: %v", dependencies)
+	}
+	events, _ := s.EventsSince(0)
+	var waiting, completed bool
+	for _, event := range events {
+		if event.IssueID == child && event.Type == core.EvIssueWaitingDependencies {
+			waiting = true
+		}
+		if event.IssueID == child && event.Type == core.EvIssueCompleted {
+			completed = true
+		}
+	}
+	if !waiting || completed {
+		t.Fatalf("waiting=%v completed=%v", waiting, completed)
+	}
+}
+
 // newEngineOnFile builds an engine on a file-backed store so a second engine
 // can be constructed on the same durable state, simulating a daemon restart.
 func newEngineOnFile(t *testing.T, s *store.Store, r runner.Runner, dataDir string) *Engine {

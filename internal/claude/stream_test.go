@@ -138,13 +138,35 @@ func TestExtractDecisionRejectsInvalidKindPayload(t *testing.T) {
 }
 
 func TestExtractProposal(t *testing.T) {
-	text := "found something\n{\"watchtower_proposal\": {\"title\": \"Refactor refunds\", \"body\": \"3 call sites entangled\"}}"
+	text := "found something\n{\"watchtower_proposal\": {\"title\": \"Refactor refunds\", \"body\": \"3 call sites entangled\", \"depends_on\": [\" GH-1 \", \"GH-2\"]}}"
 	p, ok := ExtractProposal(text)
-	if !ok || p.Title != "Refactor refunds" || p.Body != "3 call sites entangled" {
+	if !ok || p.Title != "Refactor refunds" || p.Body != "3 call sites entangled" ||
+		len(p.DependsOn) != 2 || p.DependsOn[0] != "GH-1" || p.DependsOn[1] != "GH-2" {
 		t.Fatalf("proposal: %+v ok=%v", p, ok)
 	}
 	if _, ok := ExtractProposal("nothing"); ok {
 		t.Fatal("false positive")
+	}
+}
+
+func TestExtractProposalBatch(t *testing.T) {
+	text := `{"watchtower_proposal_batch":{"tasks":[` +
+		`{"key":"api","title":"Add API","body":"endpoint","depends_on":[]},` +
+		`{"key":"consumer","title":"Use API","body":"client","depends_on":["api"]}` +
+		`]}}`
+	batch, ok := ExtractProposalBatch(text)
+	if !ok || len(batch) != 2 || batch[0].Key != "api" ||
+		batch[1].Key != "consumer" || len(batch[1].DependsOn) != 1 ||
+		batch[1].DependsOn[0] != "api" {
+		t.Fatalf("batch: %+v ok=%v", batch, ok)
+	}
+}
+
+func TestExtractDependency(t *testing.T) {
+	dependsOn, ok := ExtractDependency(
+		`{"watchtower_dependency":{"depends_on":[" GH-1 ","GH-2","GH-1"]}}`)
+	if !ok || len(dependsOn) != 2 || dependsOn[0] != "GH-1" || dependsOn[1] != "GH-2" {
+		t.Fatalf("dependency: %#v ok=%v", dependsOn, ok)
 	}
 }
 
