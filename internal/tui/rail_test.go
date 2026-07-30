@@ -26,6 +26,33 @@ func TestRenderToastMarksRecommended(t *testing.T) {
 	}
 }
 
+func TestRenderToastShowsOtherOnlyWhenAllowed(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	d := projection.DecisionView{
+		ID: 4, Stage: "merge", Question: "Repair?",
+		Options: []string{"Apply fix", "Hold"}, Recommended: 0, AllowFreeform: true,
+	}
+	if out := renderToast(d, Identity{Tag: "GH"}, 2, 0, 60); !strings.Contains(out, "Other...") {
+		t.Fatalf("allowed Other missing:\n%s", out)
+	}
+	d.AllowFreeform = false
+	if out := renderToast(d, Identity{Tag: "GH"}, 0, 0, 60); strings.Contains(out, "Other...") {
+		t.Fatalf("disallowed Other rendered:\n%s", out)
+	}
+}
+
+func TestRenderToastShowsFreeformRecommendation(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	d := projection.DecisionView{
+		ID: 4, Stage: "spec", Kind: "freeform", Question: "Review spec.md",
+		RecommendedResponse: "Approve spec.md as written.",
+	}
+	out := renderToast(d, Identity{Tag: "GH"}, 0, 0, 60)
+	if !strings.Contains(out, "Approve spec.md as written.") || !strings.Contains(out, "edit") {
+		t.Fatalf("freeform recommendation missing:\n%s", out)
+	}
+}
+
 func TestRenderToastUsesTheme(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	d := projection.DecisionView{ID: 3, Stage: "plan", Question: "Pick one", Options: []string{"a", "b"}, Recommended: 0}

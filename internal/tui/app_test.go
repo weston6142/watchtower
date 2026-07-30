@@ -301,6 +301,38 @@ func TestToastEscDismissesAndEnterDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestFreeformToastEnterOpensRecommendedResponseEditor(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "spec", "flow": "default"}),
+		mkev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+			"decision_id": float64(7), "stage": "spec", "kind": "freeform",
+			"question": "Review spec.md", "recommended_response": "Approve spec.md as written."}),
+	})
+	m = pressKey(t, m, "enter")
+	if m.decisionEditor == nil || m.decisionEditor.Value != "Approve spec.md as written." {
+		t.Fatalf("editor = %#v", m.decisionEditor)
+	}
+	m = pressKey(t, m, "backspace")
+	if strings.HasSuffix(m.decisionEditor.Value, ".") {
+		t.Fatalf("backspace did not edit response: %#v", m.decisionEditor)
+	}
+}
+
+func TestChoiceToastOtherOpensEmptyEditor(t *testing.T) {
+	m := toastModel(t)
+	m.Toast.AllowFreeform = true
+	m = pressKey(t, m, "j")
+	m = pressKey(t, m, "j")
+	if m.toastSel != len(m.Toast.Options) {
+		t.Fatalf("selection = %d, want Other index %d", m.toastSel, len(m.Toast.Options))
+	}
+	m = pressKey(t, m, "enter")
+	if m.decisionEditor == nil || m.decisionEditor.Value != "" {
+		t.Fatalf("editor = %#v", m.decisionEditor)
+	}
+}
+
 func TestShelfAutoRetiresAndUnretiresMergedIssue(t *testing.T) {
 	m := NewModel(nil, []string{"spec", "merge"})
 	m.State.Issues["GH-1"] = &projection.IssueView{ID: "GH-1", Title: "shipped", Merged: true, MergedAt: time.Now().Add(-2 * time.Minute)}

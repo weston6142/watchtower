@@ -38,6 +38,21 @@ func TestReplayBuildsIssueView(t *testing.T) {
 	}
 }
 
+func TestDecisionProjectionPreservesFreeformFields(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+		"decision_id": float64(2), "stage": "spec",
+		"kind": "freeform", "question": "Review spec.md",
+		"recommended_response": "Approve spec.md as written.",
+		"allow_freeform":       true,
+	}))
+	got := s.Decisions[2]
+	if got.Kind != "freeform" || got.RecommendedResponse != "Approve spec.md as written." ||
+		!got.AllowFreeform {
+		t.Fatalf("decision = %#v", got)
+	}
+}
+
 func TestIssueCompletedSetsDone(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "x"}))

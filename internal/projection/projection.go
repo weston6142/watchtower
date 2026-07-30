@@ -36,16 +36,19 @@ type IssueView struct {
 }
 
 type DecisionView struct {
-	ID           int64
-	IssueID      string
-	Stage        string
-	Question     string
-	Options      []string
-	Recommended  int
-	Why          string
-	Consequences []string
-	Reversible   string
-	Paths        []string
+	ID                  int64
+	IssueID             string
+	Stage               string
+	Kind                string
+	Question            string
+	Options             []string
+	Recommended         int
+	RecommendedResponse string
+	AllowFreeform       bool
+	Why                 string
+	Consequences        []string
+	Reversible          string
+	Paths               []string
 }
 
 type Notice struct {
@@ -125,8 +128,10 @@ func (s *State) Apply(ev core.Event) {
 		}
 		id := int64(num("decision_id"))
 		s.Decisions[id] = DecisionView{ID: id, IssueID: ev.IssueID, Stage: str("stage"),
-			Question: str("question"), Options: opts, Recommended: int(num("recommended")),
-			Why: str("why"), Consequences: stringsFromPayload(p["consequences"]),
+			Kind: str("kind"), Question: str("question"), Options: opts,
+			Recommended: int(num("recommended")), RecommendedResponse: str("recommended_response"),
+			AllowFreeform: p["allow_freeform"] == true,
+			Why:           str("why"), Consequences: stringsFromPayload(p["consequences"]),
 			Reversible: str("reversible"), Paths: stringsFromPayload(p["paths"])}
 		if iv != nil {
 			iv.State = "waiting_decision"

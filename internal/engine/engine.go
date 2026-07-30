@@ -656,6 +656,8 @@ func (e *Engine) escalate(issueID, stage string, d levers.Decision) levers.Respo
 	e.emit(core.EvDecisionRequired, issueID, map[string]any{
 		"decision_id": p.ID, "stage": stage, "question": d.Question,
 		"options": d.Options, "recommended": d.Recommended, "why": d.Why,
+		"kind": d.Kind, "recommended_response": d.RecommendedResponse,
+		"allow_freeform": d.AllowFreeform, "importance": d.Importance,
 		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths})
 	choice, ok := <-p.reply
 	if !ok {

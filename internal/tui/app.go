@@ -77,6 +77,7 @@ type Model struct {
 	modal            *modalState
 	backlog          *backlogState
 	confirm          *confirmState
+	decisionEditor   *decisionEditor
 	leverEditor      *leverEditorState
 	wantLeverEditor  bool
 	setup            *setupState
@@ -128,6 +129,11 @@ type confirmState struct {
 	IssueID string
 	Prompt  string
 	Op      string // daemon op sent on y — kill_stage, abandon_issue, …
+}
+
+type decisionEditor struct {
+	DecisionID int64
+	Value      string
 }
 
 type commandMsg struct {
@@ -423,6 +429,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.decisionEditor != nil {
+			switch key {
+			case "esc":
+				m.decisionEditor = nil
+			case "enter":
+				if strings.TrimSpace(m.decisionEditor.Value) == "" {
+					m.Err = "response is required"
+					return m, nil
+				}
+				return m, m.answerDecisionText(m.decisionEditor.Value)
+			case "backspace":
+				runes := []rune(m.decisionEditor.Value)
+				if len(runes) > 0 {
+					m.decisionEditor.Value = string(runes[:len(runes)-1])
+				}
+			default:
+				if key != "" && !strings.ContainsAny(key, "\n\r\t") {
+					m.decisionEditor.Value += key
+				}
+			}
+			return m, nil
+		}
 		// The issue modal takes raw text and the backlog box owns its own
 		// keys, so q and ? belong to them while they're open — quitting or
 		// opening help under a live input reads as broken. ctrl+c above
@@ -670,6 +698,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.Toast != nil {
+			if m.Toast.Kind == "freeform" {
+				switch key {
+				case "y":
+					return m, m.answerDecisionText(m.Toast.RecommendedResponse)
+				case "enter":
+					m.decisionEditor = &decisionEditor{
+						DecisionID: m.Toast.ID, Value: m.Toast.RecommendedResponse}
+				case "esc":
+					m.dismissToast()
+				case "o":
+					return m, m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
+				}
+				return m, nil
+			}
 			switch key {
 			case "y":
 				if !m.evidenceOpened[m.Toast.ID] {
@@ -677,10 +719,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.answerDecision(m.Toast.Recommended)
 			case "j":
-				m.toastSel = min(m.toastSel+1, max(0, len(m.Toast.Options)-1))
+				last := len(m.Toast.Options) - 1
+				if m.Toast.AllowFreeform {
+					last = len(m.Toast.Options)
+				}
+				m.toastSel = min(m.toastSel+1, max(0, last))
 			case "k":
 				m.toastSel = max(m.toastSel-1, 0)
 			case "enter":
+				if m.Toast.AllowFreeform && m.toastSel == len(m.Toast.Options) {
+					m.decisionEditor = &decisionEditor{DecisionID: m.Toast.ID}
+					return m, nil
+				}
 				if m.toastSel == m.Toast.Recommended {
 					if !m.evidenceOpened[m.Toast.ID] {
 						m.acceptStreak++
@@ -802,6 +852,7 @@ func (m *Model) setToast(d *projection.DecisionView) {
 		m.toastSel = d.Recommended
 	} else {
 		m.toastSel = 0
+		m.decisionEditor = nil
 	}
 }
 
@@ -1183,6 +1234,19 @@ func (m Model) answerDecision(option int) tea.Cmd {
 	decisionID := m.Toast.ID
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "answer_decision", DecisionID: decisionID, Option: &option})
+		return answerMsg{decisionID: decisionID, response: r, err: err}
+	}
+}
+
+func (m Model) answerDecisionText(text string) tea.Cmd {
+	if m.Toast == nil || m.client == nil {
+		return nil
+	}
+	client := m.client
+	decisionID := m.Toast.ID
+	return func() tea.Msg {
+		r, err := client.Do(proto.Command{
+			Op: "answer_decision", DecisionID: decisionID, Text: text})
 		return answerMsg{decisionID: decisionID, response: r, err: err}
 	}
 }
@@ -1599,6 +1663,9 @@ func (m Model) View() string {
 		tower = renderEvidenceDetails(*m.Evidence, m.EvidenceTitle, lastError, artifacts, towerWidth)
 	} else if m.evidenceDecision != nil {
 		tower = renderEvidenceFallback(*m.evidenceDecision, m.Detail, towerWidth)
+	} else if m.decisionEditor != nil && m.Toast != nil {
+		editor := renderDecisionEditor(*m.Toast, *m.decisionEditor, towerWidth)
+		tower = lipgloss.JoinVertical(lipgloss.Left, tower, "", editor)
 	} else if m.Toast != nil {
 		// The toast never replaces the grid — spatial memory rule: the tower
 		// stays visible and the toast stacks beneath it, above the shelf.

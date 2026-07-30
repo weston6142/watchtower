@@ -210,26 +210,60 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 		}
 	}
 	lines = append(lines, "")
-	for i, option := range d.Options {
-		consequence := ""
-		if i < len(d.Consequences) {
-			consequence = d.Consequences[i]
+	if d.Kind == "freeform" {
+		lines = append(lines, strings.Split(renderOption(
+			d.RecommendedResponse, "", true, true, inner), "\n")...)
+	} else {
+		for i, option := range d.Options {
+			consequence := ""
+			if i < len(d.Consequences) {
+				consequence = d.Consequences[i]
+			}
+			lines = append(lines, strings.Split(renderOption(option, consequence,
+				i == sel, i == d.Recommended, inner), "\n")...)
 		}
-		lines = append(lines, strings.Split(renderOption(option, consequence, i == sel, i == d.Recommended, inner), "\n")...)
+		if d.AllowFreeform {
+			lines = append(lines, strings.Split(renderOption(
+				"Other...", "type a different response", sel == len(d.Options), false, inner), "\n")...)
+		}
 	}
 	if streak >= 3 {
 		lines = append(lines, "", dim.Render(fmt.Sprintf("you've accepted %d recommendations in a row without opening evidence", streak)))
 	}
-	hint := keyChip("j/k") + dim.Render(" choose  ") +
-		keyChip("enter") + dim.Render(" select  ") +
-		keyChip("y") + dim.Render(" accept ★  ") +
+	hint := keyChip("enter") + dim.Render(" edit  ") +
+		keyChip("y") + dim.Render(" accept ★  ")
+	if d.Kind != "freeform" {
+		hint = keyChip("j/k") + dim.Render(" choose  ") +
+			keyChip("enter") + dim.Render(" select  ") +
+			keyChip("y") + dim.Render(" accept ★  ")
+	}
+	hint +=
 		keyChip("o") + dim.Render(" evidence  ") +
-		keyChip("1..9") + dim.Render(" by number  ") +
-		keyChip("esc") + dim.Render(" dismiss")
+			keyChip("1..9") + dim.Render(" by number  ") +
+			keyChip("esc") + dim.Render(" dismiss")
 	lines = append(lines, "", hint)
 	verdict := reversibleVerdict(d.Reversible)
 	title := fmt.Sprintf("DECISION %d · %s %s", d.ID, id.Tag, d.Stage)
 	return renderBox(title, verdict, " esc dismiss ", strings.Join(lines, "\n"))
+}
+
+func renderDecisionEditor(d projection.DecisionView, editor decisionEditor, width int) string {
+	inner := max(20, width-8)
+	value := editor.Value
+	if value == "" {
+		value = "…"
+	}
+	content := strings.Join([]string{
+		d.Question,
+		"",
+		lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+			BorderForeground(activeTheme.Accent).Padding(0, 1).Width(inner - 4).
+			Render(value + "█"),
+		"",
+		keyChip("enter") + themeDim.Render(" submit  ") +
+			keyChip("esc") + themeDim.Render(" choices"),
+	}, "\n")
+	return renderBox(fmt.Sprintf("RESPONSE %d · %s", d.ID, d.Stage), "", " editing ", content)
 }
 
 // reversibleVerdict compresses the reversibility text for the card band,
