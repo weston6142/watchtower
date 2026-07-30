@@ -1,17 +1,17 @@
 An agent's prompt and its model come from more places than the agent package,
-and two of those places are parsed but never sent. Both are invisible until you
-read the runner, which is why the setup inspector exists — but the resolution
-rules belong to `internal/claude/` and `internal/proto/`, not to the panel.
+and two of those places are parsed but never sent. These rules belong to
+`internal/claude/` and `internal/proto/`, not to the panel that exposes them
+(setup-inspector).
 
 **The prompt is assembled from three sources, and only one of them is a file
-you can edit.** `setup_prompt` shows the first two in order:
+you can edit.** `setup_prompt` shows the first two, in order:
 
 1. The first user message — `claude.TaskMessage(stage, issueID)` in
    `internal/claude/runner.go`. It lives in Go source, not in any package, and
    it is what tells the agent to read `ISSUE.md` and where earlier artifacts
    sit. Editing `prompt.md` cannot change it.
-2. `.watchtower/packages/<pkg>/prompt.md`, passed as
-   `--append-system-prompt`. This is the agent's role.
+2. `.watchtower/packages/<pkg>/prompt.md`, passed as `--append-system-prompt`.
+   This is the agent's role.
 3. Claude Code's own base system prompt, added by the CLI. Watchtower never
    sees it and cannot show it.
 
@@ -28,10 +28,10 @@ they read as effective. If you make either one real, that label is the second
 place to change.
 
 **Effort reaches the CLI only as a thinking-token budget.**
-`claude.ThinkingTokens(effort)` maps the level to a bare number and
-`EffortEnv` wraps it as `MAX_THINKING_TOKENS=…`. A new effort level goes in
-`ThinkingTokens`, never in `EffortEnv`, or the number the inspector reports
-and the number the CLI receives drift apart. Empty or unknown levels mean CLI
+`claude.ThinkingTokens(effort)` maps the level to a bare number and `EffortEnv`
+wraps it as `MAX_THINKING_TOKENS=…`. A new effort level goes in
+`ThinkingTokens`, never in `EffortEnv`, or the number the inspector reports and
+the number the CLI receives drift apart. Empty or unknown levels mean CLI
 default, not zero.
 
 **Resolve through `Server.effectiveAgent`, not through `sv.packages`

@@ -31,8 +31,10 @@ Layout:
 - `internal/runner/`, `internal/claude/` — the `Runner` interface and the
   headless `claude -p --output-format stream-json` implementation.
 - `internal/slots/`, `internal/workspace/` — the heavy-slot pool, and workspace
-  provisioning via `git worktree` under `.worktrees/` (one per issue, with a
-  release func).
+  provisioning (one per issue, with a release func). Two providers:
+  `workspace.Detect` prefers `treehouse` leases when that binary is on `PATH`
+  and otherwise falls back to `git worktree` under `.worktrees/`. Which one won
+  is visible only in the setup inspector — see setup-inspector.
 - `internal/archmap/` (repo paths → architecture areas), `internal/touchset/`
   (the file globs a plan expects to touch — the Marshal's overlap input),
   `internal/evidence/` (worktree diffs → `evidence.json` for gates),
