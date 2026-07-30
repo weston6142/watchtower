@@ -1,3 +1,4 @@
-allowed_tools: ["Read", "Glob", "Grep", "Write"]
+includes: ["decision-protocol"]
+allowed_tools: ["Bash", "Read", "Glob", "Grep", "Write"]
 model: ""
 max_turns: 0

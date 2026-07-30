@@ -5,14 +5,15 @@ interchangeable:
 |---|---|---|---|
 | pause / resume | `p` (toggle) | `pause_issue` / `resume_issue` | issue keeps its place; reversible |
 | kill | `x` | `kill_stage` | cancels the *running stage* only; the lane stays |
-| retry | `R` | `retry_stage` | re-runs the failed/killed stage; only offered when `State == "failed"` or `Killed` |
+| retry | `R` | `retry_stage` | re-runs a failed/killed stage, or retries only pending publication/cleanup |
 | retire | `c` | none (TUI-local) | hides a *shipped* lane in this TUI session only; not durable |
 | abandon | `X` | `abandon_issue` | removes the lane everywhere, durably, forever |
 
 Rules that hold across the daemon:
 
 - **`abandoned` is terminal.** `Rehydrate` skips it alongside `done`,
-  `done (unmerged)`, and `merged` (`internal/engine/engine.go`). A restart must
+  `done (unmerged)`, `merged`, and published `cleanup_needed` lanes
+  (`internal/engine/engine.go`). A restart must
   never resurrect an abandoned lane or re-mark it failed.
 - **Abandon is a state, not a purge.** `Engine.Abandon` cancels any running
   stage, closes pending decisions as `killed`, drops the issue from
@@ -33,7 +34,11 @@ live source of bugs:
 - **Store** (`IssueRow.State`) is written only by the steward's `setState` (plus
   the initial `running` from `Engine.CreateIssue`). It uses a stage-qualified
   running form — `running:spec` — plus `waiting_decision`, `failed`, `done`,
-  `done (unmerged)`, `merged`, `abandoned`. There is **no** `paused` here: the
+  `done (unmerged)`, `merged`, `cleanup_needed`, `abandoned`. A
+  `cleanup_needed` issue is already semantically merged: dependents wake, while
+  the exact worktree-release or safe branch-delete operation remains visible
+  and retryable without rerunning stages, merge, or verification. There is
+  **no** `paused` here: the
   steward has no `issue_paused`/`issue_resumed` case, and `Engine.Pause` is a
   purely in-memory `pauseGate`. Pause does not survive a daemon restart.
 - **Projection** (`IssueView.State`, what the TUI sees) uses plain `running`,

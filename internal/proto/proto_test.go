@@ -271,6 +271,20 @@ func TestAnswerDecisionAcceptsFreeformText(t *testing.T) {
 	if !answer.OK {
 		t.Fatalf("answer: %+v", answer)
 	}
+	deadline = time.After(5 * time.Second)
+	for {
+		events, _ := c.Do(Command{Op: "tail"})
+		for _, event := range events.Events {
+			if event.IssueID == r.IssueID && event.Type == core.EvIssueCompleted {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("issue did not finish after freeform answer")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 func TestBacklogOps(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 // buildBinary compiles watchtower once into a temp dir.
@@ -194,6 +196,13 @@ func TestResetReplacesWatchtowerTreeAndRestartsDaemon(t *testing.T) {
 	if status := run(t, bin, repo, "status", "--data", base); status == "" {
 		t.Fatal("restarted daemon returned empty status")
 	}
+	fresh := t.TempDir()
+	run(t, bin, fresh, "init", "--data", base)
+	if output, err := exec.Command(
+		"diff", "-ru", filepath.Join(fresh, ".watchtower"), filepath.Join(repo, ".watchtower"),
+	).CombinedOutput(); err != nil {
+		t.Fatalf("reset differs from fresh init: %v\n%s", err, output)
+	}
 }
 
 func TestResetYesStillRefusesPendingDecision(t *testing.T) {
@@ -230,6 +239,97 @@ stages:
 	}
 	if body, err := os.ReadFile(extra); err != nil || string(body) != "still here" {
 		t.Fatalf("reset changed tree despite refusal: %q err=%v", body, err)
+	}
+}
+
+func TestDependencyWorkflowUsesEightSessionsAndLandedBase(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	bin := buildBinary(t)
+	base, err := os.MkdirTemp("/tmp", "wt-e2e-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(base) })
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-qm", "base"},
+	} {
+		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	run(t, bin, repo, "init", "--data", base)
+	if err := os.WriteFile(
+		filepath.Join(repo, ".watchtower", "config.yaml"),
+		[]byte("runner: fake\npull: false\npush: false\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { exec.Command("pkill", "-f", bin).Run() })
+	parent := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "parent")))
+	child := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "child", "--depends-on", parent)))
+	run(t, bin, repo, "launch", "--data", base, child)
+	run(t, bin, repo, "launch", "--data", base, parent)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		issues := run(t, bin, repo, "issues", "--data", base)
+		if strings.Contains(issues, parent+"  done") && strings.Contains(issues, child+"  done") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("workflow did not finish:\n%s\n%s", issues,
+				run(t, bin, repo, "tail", "--data", base))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if tail := run(t, bin, repo, "tail", "--data", base); !strings.Contains(tail, child+" issue_waiting_dependencies") {
+		t.Fatalf("dependent never waited:\n%s", tail)
+	}
+	databases, err := filepath.Glob(filepath.Join(base, "repos", "*", "watchtower.db"))
+	if err != nil || len(databases) != 1 {
+		t.Fatalf("database paths = %v err %v", databases, err)
+	}
+	st, err := store.Open(databases[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, issueID := range []string{parent, child} {
+		runs, err := st.StageRuns(issueID)
+		if err != nil || len(runs) != 8 {
+			t.Fatalf("%s stage runs = %+v err %v", issueID, runs, err)
+		}
+		sessions := map[string]bool{}
+		for _, stageRun := range runs {
+			sessions[stageRun.SessionID] = true
+		}
+		if len(sessions) != 8 {
+			t.Fatalf("%s sessions not stage-isolated: %+v", issueID, runs)
+		}
+		if output, err := exec.Command(
+			"git", "-C", repo, "branch", "--list", "issue/"+issueID,
+		).CombinedOutput(); err != nil || strings.TrimSpace(string(output)) != "" {
+			t.Fatalf("%s branch remains: %q err %v", issueID, output, err)
+		}
+		if body, err := os.ReadFile(filepath.Join(repo, "watchtower-fake", issueID+".txt")); err != nil || strings.TrimSpace(string(body)) != issueID {
+			t.Fatalf("%s landed file = %q err %v", issueID, body, err)
+		}
+	}
+	parentIntegration, ok, err := st.IssueIntegration(parent)
+	if err != nil || !ok {
+		t.Fatalf("parent integration = %+v ok %v err %v", parentIntegration, ok, err)
+	}
+	childCheckpoints, err := st.StageCheckpoints(child)
+	if err != nil || len(childCheckpoints) == 0 ||
+		childCheckpoints[0].StartCommit != parentIntegration.LandedSHA {
+		t.Fatalf("child did not start from parent landing: checkpoints=%+v parent=%+v err=%v",
+			childCheckpoints, parentIntegration, err)
 	}
 }
 

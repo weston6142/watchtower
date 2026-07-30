@@ -2,9 +2,12 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/weston6142/watchtower/internal/levers"
 )
@@ -88,6 +91,14 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		}
 		out := map[string]string{}
 		for name, content := range sc.Artifacts {
+			if content == "" {
+				generated, err := generatedFakeArtifact(name, workdir)
+				if err != nil {
+					done <- Result{Err: err}
+					return
+				}
+				content = generated
+			}
 			p := filepath.Join(workdir, name)
 			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 				done <- Result{Err: err}
@@ -104,3 +115,45 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 }
 
 func (f *FakeRunner) SetOnLine(fn func(issueID, stage, line string)) { f.OnLine = fn }
+
+func generatedFakeArtifact(name, workdir string) (string, error) {
+	switch name {
+	case "merge-decision.json":
+		return `{"decision":"merge"}`, nil
+	case "verification.json":
+		stageBrief, err := os.ReadFile(filepath.Join(workdir, "STAGE.md"))
+		if err != nil {
+			return "", err
+		}
+		base := ""
+		for _, line := range strings.Split(string(stageBrief), "\n") {
+			if strings.HasPrefix(line, "- Base commit: ") {
+				base = strings.TrimSpace(strings.TrimPrefix(line, "- Base commit: "))
+				break
+			}
+		}
+		revision := func(ref string) (string, error) {
+			output, err := exec.Command("git", "-C", workdir, "rev-parse", ref).CombinedOutput()
+			if err != nil {
+				return "", fmt.Errorf("fake verification %s: %v: %s",
+					ref, err, strings.TrimSpace(string(output)))
+			}
+			return strings.TrimSpace(string(output)), nil
+		}
+		branch, err := revision("HEAD")
+		if err != nil {
+			return "", err
+		}
+		tree, err := revision("HEAD^{tree}")
+		if err != nil {
+			return "", err
+		}
+		document, err := json.Marshal(map[string]any{
+			"base_sha": base, "branch_sha": branch, "tree_sha": tree,
+			"passed": true, "commands": [][]string{{"true"}},
+		})
+		return string(document), err
+	default:
+		return "", nil
+	}
+}

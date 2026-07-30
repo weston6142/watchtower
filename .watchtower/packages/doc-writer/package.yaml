@@ -1,4 +1,0 @@
-allowed_tools: ["Read", "Write", "Edit", "Glob", "Grep"]
-model: "opus"
-effort: "medium"
-max_turns: 0

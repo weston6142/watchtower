@@ -145,8 +145,8 @@ func fixtureArch() *archmap.Map {
 
 // FixtureModel returns a Model posed for the named flow at the given size.
 // fixtureSetup poses the setup inspector against the shape of
-// .watchtower/flows/default.yaml: six stages, review expanded with its three
-// agents, treehouse resolved, and a fixed load time — no render path may reach
+// .watchtower/flows/default.yaml: eight sequential stages, review and
+// documentation expanded, treehouse resolved, and a fixed load time — no render path may reach
 // for a clock, or the goldens stop being byte-comparable.
 func fixtureSetup() *setupState {
 	agent := func(name string, preview string) proto.AgentSetup {
@@ -164,31 +164,37 @@ func fixtureSetup() *setupState {
 			Pull: true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
 		},
 		Stages: []proto.StageSetup{
-			{Name: "brainstorm", Gate: "decision_queue", Workspace: "none", Completion: "all",
+			{Name: "brainstorm", Gate: "auto", Workspace: "worktree", Completion: "all",
 				Artifacts: []string{"brainstorm.md"}, Lever: "regular",
 				Agents: []proto.AgentSetup{agent("brainstorm", "Explore the request before proposing anything.")}},
-			{Name: "spec", Gate: "approve_artifact", Workspace: "none", Completion: "all",
+			{Name: "spec", Gate: "auto", Workspace: "worktree", Completion: "all",
 				Artifacts: []string{"spec.md"}, Lever: "regular",
 				Agents: []proto.AgentSetup{agent("spec-writer", "Turn the brainstorm into a spec with resolved decisions.")}},
-			{Name: "plan", Gate: "approve_artifact", Workspace: "none", Completion: "all",
+			{Name: "plan", Gate: "auto", Workspace: "worktree", Completion: "all",
 				Artifacts: []string{"plan.md", "touchset.json"}, Lever: "regular",
 				Agents: []proto.AgentSetup{agent("planner", "Produce ordered bite-sized TDD tasks with real code.")}},
 			{Name: "execute", Gate: "auto", Workspace: "worktree", Completion: "all",
 				HeavySlot: true, Retries: 1, Lever: "regular",
 				Agents: []proto.AgentSetup{agent("executor", "Work the plan one task at a time, committing each.")}},
-			{Name: "review", Gate: "auto", Workspace: "worktree", Completion: "all",
-				Parallel: true, HeavySlot: true, Lever: "strict",
-				Agents: []proto.AgentSetup{
-					agent("clean-code-reviewer", "Light single-pass clean code review of the branch diff."),
-					agent("reviewer", "Adversarially verify each change against the spec."),
-					agent("doc-writer", "Reconcile the docs with what actually shipped."),
-				}},
-			{Name: "merge", Gate: "approve_artifact", Workspace: "readonly", Completion: "all",
-				MergeBarrier: true, Artifacts: []string{"merge-report.md"}, Lever: "regular",
-				Agents: []proto.AgentSetup{agent("reviewer", "Adversarially verify each change against the spec.")}},
+			{Name: "correctness-review", Gate: "auto", Workspace: "worktree", Completion: "all",
+				HeavySlot: true, Lever: "strict",
+				Agents: []proto.AgentSetup{agent("correctness-reviewer", "Verify the implementation against the approved spec.")}},
+			{Name: "clean-code-review", Gate: "auto", Workspace: "worktree", Completion: "all",
+				Lever:  "regular",
+				Agents: []proto.AgentSetup{agent("clean-code-reviewer", "Light single-pass clean code review of the branch diff.")}},
+			{Name: "librarian", Gate: "auto", Workspace: "worktree", Completion: "all",
+				Lever:  "regular",
+				Agents: []proto.AgentSetup{agent("librarian", "Reconcile canonical docs before integration.")}},
+			{Name: "merge-verification", Gate: "auto", Workspace: "worktree", Completion: "all",
+				MergeBarrier: true, HeavySlot: true,
+				Artifacts: []string{"merge-report.md", "merge-decision.json", "verification.json"},
+				Lever:     "regular",
+				Agents:    []proto.AgentSetup{agent("merge-verifier", "Run the final gate and record the merge decision.")}},
 		},
 	}
-	return &setupState{View: &view, Expanded: map[string]bool{"review": true}}
+	return &setupState{View: &view, Expanded: map[string]bool{
+		"correctness-review": true, "clean-code-review": true, "librarian": true,
+	}}
 }
 
 func FixtureModel(flowName string, width, height int) Model {
@@ -209,7 +215,10 @@ func FixtureModel(flowName string, width, height int) Model {
 		Width:  width,
 		Height: height,
 	}
-	m.stages = []string{"brainstorm", "spec", "plan", "execute", "review", "merge"}
+	m.stages = []string{
+		"brainstorm", "spec", "plan", "execute", "correctness-review",
+		"clean-code-review", "librarian", "merge-verification",
+	}
 	m.dismissed = map[int64]bool{}
 	m.retired = map[string]bool{"ml-retry": true} // shipped lanes appear on the shelf once retired
 	m.evidenceOpened = map[int64]bool{}
@@ -234,7 +243,8 @@ func FixtureModel(flowName string, width, height int) Model {
 		applyBacklogLongDrafts(m.State)
 		m.backlog = &backlogState{}
 	case "levers":
-		m.leverEditor = newLeverEditor("ca-repo", m.stages, map[string]string{"review": "strict"})
+		m.leverEditor = newLeverEditor(
+			"ca-repo", m.stages, map[string]string{"correctness-review": "strict"})
 	case "arch":
 		m.archMode = "full"
 		m.Arch = fixtureArch()

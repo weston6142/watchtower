@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -563,7 +564,33 @@ func runDaemon(args []string) {
 	var ws workspace.Provider
 	switch *runnerKind {
 	case "fake":
-		run = fakeForFlows(flows)
+		fake := fakeForFlows(flows)
+		if _, gitErr := exec.Command("git", "-C", repo, "rev-parse", "--git-dir").Output(); gitErr == nil {
+			ws = workspace.GitWorktree{Repo: repo}
+			fake.OnStart = func(issueID, stage, _, workdir string) error {
+				if stage != "execute" {
+					return nil
+				}
+				dir := filepath.Join(workdir, "watchtower-fake")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return err
+				}
+				path := filepath.Join(dir, issueID+".txt")
+				if err := os.WriteFile(path, []byte(issueID+"\n"), 0o644); err != nil {
+					return err
+				}
+				if output, err := exec.Command("git", "-C", workdir, "add", path).CombinedOutput(); err != nil {
+					return fmt.Errorf("fake stage add: %v: %s", err, output)
+				}
+				if output, err := exec.Command(
+					"git", "-C", workdir, "commit", "-qm", "fake execute "+issueID,
+				).CombinedOutput(); err != nil {
+					return fmt.Errorf("fake stage commit: %v: %s", err, output)
+				}
+				return nil
+			}
+		}
+		run = fake
 	case "claude":
 		packages, err = pkgs.LoadDir(*pkgDir)
 		if err != nil {
@@ -582,9 +609,11 @@ func runDaemon(args []string) {
 	})
 	var train *marshal.Train
 	var lib *librarian.Librarian
-	if *runnerKind == "claude" {
+	if ws != nil {
 		train = &marshal.Train{Repo: repo, TestCmd: testArgv,
 			Pull: cfg.Pull, Push: cfg.Push}
+	}
+	if *runnerKind == "claude" {
 		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "watchtower")}
 	}
 	transcriptBuffer := transcript.NewBuffer(500)
@@ -723,7 +752,8 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 			for _, ag := range st.Agents {
 				scripts[st.Name+"/"+ag.Package] = runner.Script{
 					Artifacts: arts, Tokens: 10,
-					Lines: []string{fmt.Sprintf("fake %s/%s complete", st.Name, ag.Package)},
+					SessionID: "fake-" + st.Name,
+					Lines:     []string{fmt.Sprintf("fake %s/%s complete", st.Name, ag.Package)},
 				}
 			}
 		}

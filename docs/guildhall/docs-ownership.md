@@ -1,8 +1,8 @@
-The librarian is the sole writer of `docs/` on the default branch. Per-issue
-doc agents draft inside their worktree; after the merge the librarian folds
-those drafts into one voice, resolves contradictions, and curates this
-directory. If you are not the librarian stage, do not edit `docs/` — put the
-draft in your worktree and let reconciliation place it.
+The librarian is the sole workflow stage that writes `docs/`. It runs in the
+issue worktree after correctness and clean-code review but before final
+verification and integration. It folds relevant drafts into one voice,
+resolves contradictions, curates this directory, and commits the documentation
+on the issue branch. There is no post-merge documentation session.
 
 A draft only reaches the librarian if it is committed on the issue branch, so
 commit it at the repository root as `docs-draft-<topic>.md`. That path is the

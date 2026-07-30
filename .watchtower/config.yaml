@@ -1,0 +1,12 @@
+# watchtower repo configuration. All fields optional; shown values are defaults.
+# Relative paths resolve against the repo root.
+flows: .watchtower/flows
+packages: .watchtower/packages
+runner: claude        # claude|fake
+slots: 4              # concurrent heavy slots
+budget: 0             # per-issue token budget (0=off)
+price_per_mtok: 0     # estimated $/Mtok (0=hide cost)
+claude_bin: claude
+test_cmd: ""          # authoritative final gate recorded by merge verification, e.g. "go test ./..."
+pull: true            # fast-forward the default branch from origin before an issue starts
+push: false           # push the default branch to origin after a merge lands

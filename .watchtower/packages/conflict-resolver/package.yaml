@@ -1,4 +1,4 @@
-allowed_tools: ["Bash", "Read", "Edit", "Glob", "Grep"]
-model: "opus"
-effort: "medium"
+includes: ["decision-protocol"]
+allowed_tools: ["Bash", "Read", "Edit", "Glob", "Grep", "Write"]
+model: ""
 max_turns: 0

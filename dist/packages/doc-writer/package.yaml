@@ -1,3 +1,0 @@
-allowed_tools: ["Read", "Write", "Edit", "Glob", "Grep"]
-model: ""
-max_turns: 0
