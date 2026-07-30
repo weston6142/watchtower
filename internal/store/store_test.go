@@ -215,6 +215,43 @@ func TestIssueLeversPersistWithIssue(t *testing.T) {
 	}
 }
 
+func TestDependencyReplacementAndReverseLookup(t *testing.T) {
+	s, err := Open("file:dependencies?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []string{"GH-1", "GH-2", "GH-3"} {
+		if err := s.UpsertIssue(IssueRow{ID: id, Flow: "default", State: "backlog"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ReplaceDependencies("GH-2", []string{"GH-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReplaceDependencies("GH-3", []string{"GH-1", "GH-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Dependencies("GH-3"); len(got) != 2 || got[0] != "GH-1" || got[1] != "GH-2" {
+		t.Fatalf("dependencies = %v", got)
+	}
+	if got, _ := s.Dependents("GH-1"); len(got) != 2 || got[0] != "GH-2" || got[1] != "GH-3" {
+		t.Fatalf("dependents = %v", got)
+	}
+	if err := s.ReplaceDependencies("GH-3", []string{"GH-2"}); err != nil {
+		t.Fatal(err)
+	}
+	issues, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, issue := range issues {
+		if issue.ID == "GH-3" && (len(issue.DependsOn) != 1 || issue.DependsOn[0] != "GH-2") {
+			t.Fatalf("issue dependencies = %v", issue.DependsOn)
+		}
+	}
+}
+
 func attachmentFixture(issueID string) []AttachmentRow {
 	now := time.Unix(1700000000, 0).UTC()
 	return []AttachmentRow{

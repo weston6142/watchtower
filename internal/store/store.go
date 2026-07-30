@@ -10,6 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
 )
 
@@ -33,6 +34,11 @@ CREATE TABLE IF NOT EXISTS attachments(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, name TEXT,
   size INTEGER, source_path TEXT, added_at TEXT, ord INTEGER);
 CREATE INDEX IF NOT EXISTS attachments_issue ON attachments(issue_id);
+CREATE TABLE IF NOT EXISTS issue_dependencies(
+  issue_id TEXT NOT NULL, depends_on TEXT NOT NULL,
+  PRIMARY KEY(issue_id, depends_on));
+CREATE INDEX IF NOT EXISTS issue_dependencies_parent
+  ON issue_dependencies(depends_on);
 `
 
 type Store struct {
@@ -95,13 +101,14 @@ type AttachmentRow struct {
 }
 
 type IssueRow struct {
-	ID       string
-	Title    string
-	Body     string
-	State    string
-	Flow     string
-	Levers   map[string]string
-	Priority int
+	ID        string
+	Title     string
+	Body      string
+	State     string
+	Flow      string
+	Levers    map[string]string
+	Priority  int
+	DependsOn []string
 }
 
 func Open(path string) (*Store, error) {
@@ -563,7 +570,97 @@ func (s *Store) Issues() ([]IssueRow, error) {
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	dependencies, err := s.db.Query(
+		`SELECT issue_id,depends_on FROM issue_dependencies ORDER BY issue_id,depends_on`)
+	if err != nil {
+		return nil, err
+	}
+	defer dependencies.Close()
+	byIssue := map[string][]string{}
+	for dependencies.Next() {
+		var issueID, parent string
+		if err := dependencies.Scan(&issueID, &parent); err != nil {
+			return nil, err
+		}
+		byIssue[issueID] = append(byIssue[issueID], parent)
+	}
+	if err := dependencies.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].DependsOn = byIssue[out[i].ID]
+	}
+	return out, nil
+}
+
+func (s *Store) ReplaceDependencies(issueID string, ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM issue_dependencies WHERE issue_id=?`, issueID); err != nil {
+		return err
+	}
+	for _, parent := range ids {
+		if _, err := tx.Exec(
+			`INSERT INTO issue_dependencies(issue_id,depends_on) VALUES(?,?)`,
+			issueID, parent); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) Dependencies(issueID string) ([]string, error) {
+	return s.dependencyIDs(
+		`SELECT depends_on FROM issue_dependencies WHERE issue_id=? ORDER BY depends_on`,
+		issueID)
+}
+
+func (s *Store) Dependents(issueID string) ([]string, error) {
+	return s.dependencyIDs(
+		`SELECT issue_id FROM issue_dependencies WHERE depends_on=? ORDER BY issue_id`,
+		issueID)
+}
+
+func (s *Store) DependencyGraph() (deps.Graph, error) {
+	issues, err := s.Issues()
+	if err != nil {
+		return nil, err
+	}
+	graph := make(deps.Graph, len(issues))
+	for _, issue := range issues {
+		graph[issue.ID] = append([]string(nil), issue.DependsOn...)
+	}
+	return graph, nil
+}
+
+func (s *Store) dependencyIDs(query, issueID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(query, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // ReplaceAttachments swaps an issue's whole attachment set in one transaction,
