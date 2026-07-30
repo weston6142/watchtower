@@ -526,6 +526,13 @@ func runDaemon(args []string) {
 	if !set["test-cmd"] {
 		*testCmd = cfg.TestCmd
 	}
+	testArgv := append([]string(nil), cfg.TestArgv...)
+	if set["test-cmd"] {
+		testArgv, err = repocfg.ParseCommand(*testCmd)
+		if err != nil {
+			fatal(fmt.Errorf("test-cmd: %w", err))
+		}
+	}
 
 	data := repocfg.RepoDataDir(*base, repo)
 	if err := os.MkdirAll(data, 0o755); err != nil {
@@ -595,7 +602,7 @@ func runDaemon(args []string) {
 			res := <-run.Run(ctx, issueID, "conflict-repair", "conflict-resolver", wt, autoAnswerAsks())
 			return res.Err
 		}
-		train = &marshal.Train{Repo: repo, TestCmd: splitTestCmd(*testCmd), Resolve: resolve,
+		train = &marshal.Train{Repo: repo, TestCmd: testArgv, Resolve: resolve,
 			Pull: cfg.Pull, Push: cfg.Push}
 		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "watchtower")}
 		reconcile = func(ctx context.Context, issueID string) error {
@@ -672,13 +679,6 @@ func autoAnswerAsks() chan runner.Ask {
 		}
 	}()
 	return asks
-}
-
-func splitTestCmd(s string) []string {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	return strings.Fields(s)
 }
 
 func statusSentence(o *proto.Overview) string {

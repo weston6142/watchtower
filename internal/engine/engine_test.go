@@ -1005,6 +1005,130 @@ func TestRetryBriefUsesCheckpointHeadDirtyStateAndFailure(t *testing.T) {
 	}
 }
 
+func verificationFlow() flow.Flow {
+	return flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name: "merge-verification", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
+		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+		Artifacts: []string{"merge-report.md", "merge-decision.json", "verification.json"},
+	}}}
+}
+
+func verificationEngine(
+	t *testing.T, decision string, commands [][]string, treeOverride string,
+) (*Engine, *store.Store, string) {
+	t.Helper()
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	tree := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD^{tree}"))
+	if treeOverride != "" {
+		tree = treeOverride
+	}
+	receipt, err := json.Marshal(marshal.Verification{
+		BaseSHA: base, BranchSHA: base, TreeSHA: tree, Passed: true, Commands: commands,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisionBody, err := json.Marshal(map[string]string{"decision": decision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := verificationFlow()
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	e := New(Config{
+		Store: s, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
+		DataDir: t.TempDir(), Workspace: workspace.GitWorktree{Repo: repo},
+		Train: &marshal.Train{Repo: repo, TestCmd: []string{"true"}},
+		Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"merge-verification/merge-verifier": {Artifacts: map[string]string{
+				"merge-report.md": "verified\n", "merge-decision.json": string(decisionBody),
+				"verification.json": string(receipt),
+			}},
+		}},
+	})
+	return e, s, repo
+}
+
+func TestMergeVerificationHoldPreservesBranchWithoutLanding(t *testing.T) {
+	e, s, repo := verificationEngine(t, "hold", [][]string{{"true"}}, "")
+	id, err := e.CreateIssue("hold", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := s.EventsSince(0)
+	var mergeStarted, leftUnmerged bool
+	for _, event := range events {
+		if event.IssueID != id {
+			continue
+		}
+		if event.Type == core.EvMergeStarted {
+			mergeStarted = true
+		}
+		if event.Type == core.EvIssueCompleted && strings.Contains(string(event.Payload), "left-unmerged") {
+			leftUnmerged = true
+		}
+	}
+	if mergeStarted || !leftUnmerged {
+		t.Fatalf("mergeStarted=%v leftUnmerged=%v", mergeStarted, leftUnmerged)
+	}
+	if branch := gitOutput(t, repo, "branch", "--list", "issue/"+id); strings.TrimSpace(branch) == "" {
+		t.Fatal("held branch was deleted")
+	}
+}
+
+func TestMergeVerificationRequiresMachineDecisionAndApplicableReceipt(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision string
+		commands [][]string
+		tree     string
+		want     string
+	}{
+		{name: "unknown decision", decision: "maybe", commands: [][]string{{"true"}}, want: "merge decision"},
+		{name: "missing configured gate", decision: "merge", commands: [][]string{{"go", "test"}}, want: "configured verification command"},
+		{name: "different tree", decision: "merge", commands: [][]string{{"true"}}, tree: "different", want: "verified tree"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e, _, _ := verificationEngine(t, test.decision, test.commands, test.tree)
+			id, err := e.CreateIssue(test.name, "", "default", levers.Matrix{}, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.StartIssue(context.Background(), id); err == nil ||
+				!strings.Contains(err.Error(), test.want) {
+				t.Fatalf("StartIssue error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestMergeVerificationAcceptsMatchingPassingReceipt(t *testing.T) {
+	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	id, err := e.CreateIssue("merge", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := s.EventsSince(0)
+	for _, event := range events {
+		if event.IssueID == id && event.Type == core.EvIssueMerged {
+			return
+		}
+	}
+	t.Fatal("valid receipt did not reach merge")
+}
+
 // newEngineOnFile builds an engine on a file-backed store so a second engine
 // can be constructed on the same durable state, simulating a daemon restart.
 func newEngineOnFile(t *testing.T, s *store.Store, r runner.Runner, dataDir string) *Engine {

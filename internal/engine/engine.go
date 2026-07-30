@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1513,6 +1515,21 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			return err
 		}
 	}
+	if len(f.Stages) > 0 && f.Stages[len(f.Stages)-1].Name == "merge-verification" {
+		decision, err := e.finalVerificationDecision(is)
+		if err != nil {
+			return err
+		}
+		if decision == "hold" {
+			e.emit(core.EvIssueCompleted, is.id, map[string]string{
+				"merge": "left-unmerged", "branch": is.branch})
+			if e.cfg.Marshal != nil {
+				e.cfg.Marshal.Merged(is.id)
+			}
+			aborted = false
+			return nil
+		}
+	}
 	if e.cfg.Train != nil && is.branch != "" {
 		e.emit(core.EvMergeStarted, is.id, map[string]string{"branch": is.branch})
 		if err := e.landWithEscalation(ctx, is); err != nil {
@@ -1539,6 +1556,90 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 	aborted = false
 	e.emit(core.EvIssueCompleted, is.id, nil)
 	return nil
+}
+
+type mergeDecision struct {
+	Decision     string `json:"decision"`
+	BranchCommit string `json:"branch_commit,omitempty"`
+	BaseCommit   string `json:"base_commit,omitempty"`
+}
+
+func (e *Engine) finalVerificationDecision(is *issueState) (string, error) {
+	artifactDir := filepath.Join(e.issueDir(is.id), "artifacts")
+	decisionPath := filepath.Join(artifactDir, "merge-decision.json")
+	file, err := os.Open(decisionPath)
+	if err != nil {
+		return "", fmt.Errorf("read merge decision: %w", err)
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	var decision mergeDecision
+	if err := decoder.Decode(&decision); err != nil {
+		return "", fmt.Errorf("decode merge decision: %w", err)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return "", fmt.Errorf("decode merge decision: %w", err)
+	}
+	if decision.Decision != "merge" && decision.Decision != "hold" {
+		return "", fmt.Errorf("invalid merge decision %q: want merge or hold", decision.Decision)
+	}
+	if decision.Decision == "hold" {
+		return decision.Decision, nil
+	}
+
+	receipt, err := marshal.LoadVerification(filepath.Join(artifactDir, "verification.json"))
+	if err != nil {
+		return "", fmt.Errorf("load verification receipt: %w", err)
+	}
+	branchSHA, err := gitRevision(is.wsPath, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("read verification branch commit: %w", err)
+	}
+	treeSHA, err := gitRevision(is.wsPath, "HEAD^{tree}")
+	if err != nil {
+		return "", fmt.Errorf("read verified tree: %w", err)
+	}
+	if receipt.BaseSHA != is.baseRef {
+		return "", fmt.Errorf("verification base %s does not match issue base %s", receipt.BaseSHA, is.baseRef)
+	}
+	if receipt.BranchSHA != branchSHA {
+		return "", fmt.Errorf("verification branch %s does not match current branch %s", receipt.BranchSHA, branchSHA)
+	}
+	if !receipt.AppliesTo(treeSHA) {
+		return "", fmt.Errorf("verified tree %s does not match current tree %s", receipt.TreeSHA, treeSHA)
+	}
+	if decision.BranchCommit != "" && decision.BranchCommit != branchSHA {
+		return "", fmt.Errorf("merge decision branch %s does not match current branch %s", decision.BranchCommit, branchSHA)
+	}
+	if decision.BaseCommit != "" && decision.BaseCommit != is.baseRef {
+		return "", fmt.Errorf("merge decision base %s does not match issue base %s", decision.BaseCommit, is.baseRef)
+	}
+	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 &&
+		!receipt.Includes(e.cfg.Train.TestCmd) {
+		return "", fmt.Errorf("verification receipt does not include configured verification command %q",
+			e.cfg.Train.TestCmd)
+	}
+	return decision.Decision, nil
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func gitRevision(dir, revision string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", revision).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse %s: %v: %s", revision, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // runAndRecord runs an issue from startIdx and records whether it ended

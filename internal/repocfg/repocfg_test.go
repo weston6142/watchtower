@@ -3,6 +3,7 @@ package repocfg
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -36,11 +37,52 @@ func TestLoadReadsFileAndFillsGaps(t *testing.T) {
 	if cfg.Runner != "fake" || cfg.Slots != 2 || cfg.TestCmd != "go test ./..." {
 		t.Fatalf("file values not applied: %+v", cfg)
 	}
+	if !reflect.DeepEqual(cfg.TestArgv, []string{"go", "test", "./..."}) {
+		t.Fatalf("TestArgv = %#v", cfg.TestArgv)
+	}
 	if cfg.Flows != filepath.Join(root, "myflows") {
 		t.Fatalf("relative flows not resolved: %s", cfg.Flows)
 	}
 	if cfg.ClaudeBin != "claude" { // gap filled from defaults
 		t.Fatalf("gap not filled: %+v", cfg)
+	}
+}
+
+func TestLoadParsesQuotedTestCommandOnce(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".watchtower")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte(`test_cmd: 'go test "./pkg with space"'`+"\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.TestArgv, []string{"go", "test", "./pkg with space"}) {
+		t.Fatalf("TestArgv = %#v", cfg.TestArgv)
+	}
+}
+
+func TestLoadRejectsMalformedTestCommand(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".watchtower")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "config.yaml"), []byte("test_cmd: 'go test \"unterminated'\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root); err == nil {
+		t.Fatal("malformed test_cmd accepted")
 	}
 }
 

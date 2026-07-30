@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,17 +15,18 @@ import (
 // Config mirrors the daemon flags. Zero fields are filled from Default()
 // after unmarshalling, so a partial config.yaml is fine.
 type Config struct {
-	Flows        string  `yaml:"flows"`
-	Packages     string  `yaml:"packages"`
-	Runner       string  `yaml:"runner"`
-	Slots        int     `yaml:"slots"`
-	Budget       int     `yaml:"budget"`
-	PricePerMTok float64 `yaml:"price_per_mtok"`
-	ClaudeBin    string  `yaml:"claude_bin"`
-	TestCmd      string  `yaml:"test_cmd"`
-	Theme        string  `yaml:"theme"`
-	Pull         bool    `yaml:"pull"`
-	Push         bool    `yaml:"push"`
+	Flows        string   `yaml:"flows"`
+	Packages     string   `yaml:"packages"`
+	Runner       string   `yaml:"runner"`
+	Slots        int      `yaml:"slots"`
+	Budget       int      `yaml:"budget"`
+	PricePerMTok float64  `yaml:"price_per_mtok"`
+	ClaudeBin    string   `yaml:"claude_bin"`
+	TestCmd      string   `yaml:"test_cmd"`
+	TestArgv     []string `yaml:"-"`
+	Theme        string   `yaml:"theme"`
+	Pull         bool     `yaml:"pull"`
+	Push         bool     `yaml:"push"`
 }
 
 func Default() Config {
@@ -63,7 +66,79 @@ func Load(repoRoot string) (Config, error) {
 	if !filepath.IsAbs(cfg.Packages) {
 		cfg.Packages = filepath.Join(repoRoot, cfg.Packages)
 	}
+	cfg.TestArgv, err = ParseCommand(cfg.TestCmd)
+	if err != nil {
+		return Config{}, fmt.Errorf("%s test_cmd: %w", ConfigPath(repoRoot), err)
+	}
 	return cfg, nil
+}
+
+// ParseCommand converts a configured command line to argv once, honoring
+// quoting without ever invoking a shell.
+func ParseCommand(command string) ([]string, error) {
+	var argv []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	started := false
+	flush := func() error {
+		if !started {
+			return nil
+		}
+		value := current.String()
+		if value == "" {
+			return fmt.Errorf("empty command argument")
+		}
+		argv = append(argv, value)
+		current.Reset()
+		started = false
+		return nil
+	}
+	for _, char := range command {
+		if escaped {
+			current.WriteRune(char)
+			started = true
+			escaped = false
+			continue
+		}
+		if char == '\\' && quote != '\'' {
+			escaped = true
+			started = true
+			continue
+		}
+		if quote != 0 {
+			if char == quote {
+				quote = 0
+			} else {
+				current.WriteRune(char)
+			}
+			started = true
+			continue
+		}
+		if char == '\'' || char == '"' {
+			quote = char
+			started = true
+			continue
+		}
+		if unicode.IsSpace(char) {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		current.WriteRune(char)
+		started = true
+	}
+	if escaped {
+		return nil, fmt.Errorf("trailing escape")
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	return argv, nil
 }
 
 func fillGaps(cfg *Config) {
