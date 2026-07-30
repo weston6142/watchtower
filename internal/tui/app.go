@@ -1182,7 +1182,7 @@ func (m Model) answerDecision(option int) tea.Cmd {
 	client := m.client
 	decisionID := m.Toast.ID
 	return func() tea.Msg {
-		r, err := client.Do(proto.Command{Op: "answer_decision", DecisionID: decisionID, Option: option})
+		r, err := client.Do(proto.Command{Op: "answer_decision", DecisionID: decisionID, Option: &option})
 		return answerMsg{decisionID: decisionID, response: r, err: err}
 	}
 }

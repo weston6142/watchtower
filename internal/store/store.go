@@ -3,12 +3,14 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"strconv"
 	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 const schema = `
@@ -51,19 +53,24 @@ type StageRun struct {
 }
 
 type DecisionRow struct {
-	ID           int64
-	IssueID      string
-	Stage        string
-	Question     string
-	Options      []string
-	Recommended  int
-	Why          string
-	Consequences []string
-	Reversible   string
-	Status       string
-	Answer       int
-	BlockingCost int
-	CreatedAt    time.Time
+	ID                  int64
+	IssueID             string
+	Stage               string
+	Kind                levers.DecisionKind
+	Question            string
+	Options             []string
+	Recommended         int
+	RecommendedResponse string
+	AllowFreeform       bool
+	Importance          float64
+	Paths               []string
+	Why                 string
+	Consequences        []string
+	Reversible          string
+	Status              string
+	Response            levers.Response
+	BlockingCost        int
+	CreatedAt           time.Time
 }
 
 type ProposalRow struct {
@@ -318,9 +325,14 @@ func (s *Store) ArtifactPaths(issueID string) ([]string, error) {
 // decisionContext is the v2 rationale metadata persisted in the decisions
 // table's evidence column.
 type decisionContext struct {
-	Why          string   `json:"why"`
-	Consequences []string `json:"consequences"`
-	Reversible   string   `json:"reversible"`
+	Kind                levers.DecisionKind `json:"kind,omitempty"`
+	RecommendedResponse string              `json:"recommended_response,omitempty"`
+	AllowFreeform       bool                `json:"allow_freeform,omitempty"`
+	Importance          float64             `json:"importance,omitempty"`
+	Paths               []string            `json:"paths,omitempty"`
+	Why                 string              `json:"why"`
+	Consequences        []string            `json:"consequences"`
+	Reversible          string              `json:"reversible"`
 }
 
 func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
@@ -332,9 +344,25 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	}
 	// Reuse the existing evidence column for v2 decision context; this avoids
 	// a schema migration while keeping rationale metadata with the decision.
-	evidence, err := json.Marshal(decisionContext{d.Why, d.Consequences, d.Reversible})
+	kind := d.Kind
+	if kind == "" {
+		kind = levers.DecisionChoice
+	}
+	evidence, err := json.Marshal(decisionContext{
+		Kind: kind, RecommendedResponse: d.RecommendedResponse,
+		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
+		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
+	})
 	if err != nil {
 		return 0, err
+	}
+	answer := ""
+	if d.Response.Kind != "" {
+		encoded, err := json.Marshal(d.Response)
+		if err != nil {
+			return 0, err
+		}
+		answer = string(encoded)
 	}
 	if d.CreatedAt.IsZero() {
 		d.CreatedAt = time.Now().UTC()
@@ -346,17 +374,28 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 		`INSERT INTO decisions(issue_id,question,options,recommended,lever,status,answer,answered_by,blocking_cost,created_at,evidence)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		d.IssueID, d.Question, string(opts), d.Recommended, d.Stage, d.Status,
-		d.Answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), string(evidence))
+		answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), string(evidence))
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-func (s *Store) AnswerDecision(id int64, answer int, status string) error {
+func (s *Store) AnswerDecision(id int64, response levers.Response, status string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`UPDATE decisions SET status=?, answer=? WHERE id=?`, status, answer, id)
+	answer, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE decisions SET status=?, answer=? WHERE id=?`, status, string(answer), id)
+	return err
+}
+
+func (s *Store) CloseDecision(id int64, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE decisions SET status=?, answer='' WHERE id=?`, status, id)
 	return err
 }
 
@@ -373,11 +412,11 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 	var out []DecisionRow
 	for rows.Next() {
 		var d DecisionRow
-		var opts, evidence, created string
+		var opts, evidence, answer, created string
 		// The legacy Plan 1 schema calls the stage column "lever"; keep using
 		// it as the persisted stage name without a migration.
 		if err := rows.Scan(&d.ID, &d.IssueID, &d.Stage, &d.Question, &opts,
-			&d.Recommended, &evidence, &d.Status, &d.Answer, &d.BlockingCost, &created); err != nil {
+			&d.Recommended, &evidence, &d.Status, &answer, &d.BlockingCost, &created); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(opts), &d.Options); err != nil {
@@ -386,7 +425,24 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 		if evidence != "" {
 			var context decisionContext
 			if json.Unmarshal([]byte(evidence), &context) == nil {
-				d.Why, d.Consequences, d.Reversible = context.Why, context.Consequences, context.Reversible
+				d.Kind = context.Kind
+				d.RecommendedResponse = context.RecommendedResponse
+				d.AllowFreeform = context.AllowFreeform
+				d.Importance, d.Paths = context.Importance, context.Paths
+				d.Why, d.Consequences, d.Reversible =
+					context.Why, context.Consequences, context.Reversible
+			}
+		}
+		if d.Kind == "" {
+			d.Kind = levers.DecisionChoice
+		}
+		if answer != "" && (d.Status == "answered" || d.Status == "auto") {
+			if err := json.Unmarshal([]byte(answer), &d.Response); err != nil {
+				legacy, legacyErr := strconv.Atoi(answer)
+				if legacyErr != nil {
+					return nil, err
+				}
+				d.Response = levers.ChoiceResponse(legacy)
 			}
 		}
 		d.CreatedAt, err = time.Parse(time.RFC3339Nano, created)

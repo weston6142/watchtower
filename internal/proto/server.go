@@ -187,7 +187,19 @@ func (sv *Server) exec(cmd Command) Response {
 	case "list_decisions":
 		return Response{OK: true, Decisions: sv.eng.PendingDecisions()}
 	case "answer_decision":
-		if err := sv.eng.Answer(cmd.DecisionID, levers.ChoiceResponse(cmd.Option)); err != nil {
+		if cmd.Option != nil && cmd.Text != "" {
+			return Response{Error: "answer_decision accepts either option or text, not both"}
+		}
+		var answer levers.Response
+		switch {
+		case cmd.Option != nil:
+			answer = levers.ChoiceResponse(*cmd.Option)
+		case cmd.Text != "":
+			answer = levers.FreeformResponse(cmd.Text)
+		default:
+			return Response{Error: "answer_decision requires an option or text"}
+		}
+		if err := sv.eng.Answer(cmd.DecisionID, answer); err != nil {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true}

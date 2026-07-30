@@ -122,6 +122,42 @@ func TestYoloRunEscalatesOnlyGate(t *testing.T) {
 	}
 }
 
+func TestInvalidResponseLeavesDecisionPending(t *testing.T) {
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	id, err := e.CreateIssue("test", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- e.StartIssue(context.Background(), id) }()
+
+	var pending PendingDecision
+	deadline := time.After(5 * time.Second)
+	for pending.ID == 0 {
+		if decisions := e.PendingDecisions(); len(decisions) == 1 {
+			pending = decisions[0]
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := e.Answer(pending.ID, levers.FreeformResponse("not allowed")); err == nil {
+		t.Fatal("invalid freeform response was accepted for a choice decision")
+	}
+	if decisions := e.PendingDecisions(); len(decisions) != 1 || decisions[0].ID != pending.ID {
+		t.Fatalf("invalid answer consumed pending decision: %#v", decisions)
+	}
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The pause gate parks a lane before a stage; the event has to name it so the
 // grid can mark one cell instead of the whole column.
 func TestPausedEventNamesUpcomingStage(t *testing.T) {

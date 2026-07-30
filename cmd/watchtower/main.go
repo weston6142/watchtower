@@ -20,6 +20,7 @@ import (
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/herdr"
+	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
@@ -176,36 +177,41 @@ func main() {
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_decisions"})
 		for _, d := range r.Decisions {
-			fmt.Printf("[%d] %s/%s: %s\n", d.ID, d.IssueID, d.Stage, d.D.Question)
-			for i, o := range d.D.Options {
-				mark := "  "
-				if i == d.D.Recommended {
-					mark = "* "
-				}
-				fmt.Printf("    %s%d) %s\n", mark, i, o)
-			}
+			fmt.Print(formatDecision(d))
 		}
 	case "answer":
 		fs := flag.NewFlagSet("answer", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		textAnswer := fs.String("text", "", "freeform decision response")
 		fs.Parse(args)
 		rest := fs.Args()
-		if len(rest) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: watchtower answer <decision-id> <option>")
+		// The documented form puts --text after the id. The standard flag
+		// package stops at the first positional, so recognize that form
+		// explicitly while retaining normal flags-before-positionals parsing.
+		if len(rest) >= 3 && rest[1] == "--text" {
+			*textAnswer = strings.Join(rest[2:], " ")
+			rest = rest[:1]
+		}
+		if len(rest) < 1 || len(rest) > 2 || (len(rest) == 2 && *textAnswer != "") {
+			fmt.Fprintln(os.Stderr, "usage: watchtower answer <decision-id> <option> | watchtower answer <decision-id> --text <response>")
 			os.Exit(2)
 		}
 		id, err := strconv.ParseInt(rest[0], 10, 64)
 		if err != nil {
 			fatal(fmt.Errorf("bad decision-id %q: %w", rest[0], err))
 		}
-		opt, err := strconv.Atoi(rest[1])
-		if err != nil {
-			fatal(fmt.Errorf("bad option %q: %w", rest[1], err))
-		}
 		c := mustDial(*data, *repoF)
 		defer c.Close()
-		mustDo(c, proto.Command{Op: "answer_decision", DecisionID: id, Option: opt})
+		answer := proto.Command{Op: "answer_decision", DecisionID: id, Text: *textAnswer}
+		if len(rest) == 2 {
+			opt, err := strconv.Atoi(rest[1])
+			if err != nil {
+				fatal(fmt.Errorf("bad option %q: %w", rest[1], err))
+			}
+			answer.Option = &opt
+		}
+		mustDo(c, answer)
 		fmt.Println("answered")
 	case "proposals":
 		fs := flag.NewFlagSet("proposals", flag.ExitOnError)
@@ -587,6 +593,26 @@ func formatTokens(tokens int) string {
 		return fmt.Sprintf("%.0fk", float64(tokens)/1000)
 	}
 	return strconv.Itoa(tokens)
+}
+
+func formatDecision(d engine.PendingDecision) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "[%d] %s/%s: %s\n", d.ID, d.IssueID, d.Stage, d.D.Question)
+	if d.D.Kind == levers.DecisionFreeform {
+		fmt.Fprintf(&out, "    recommended: %s\n", d.D.RecommendedResponse)
+		return out.String()
+	}
+	for i, option := range d.D.Options {
+		mark := "  "
+		if i == d.D.Recommended {
+			mark = "* "
+		}
+		fmt.Fprintf(&out, "    %s%d) %s\n", mark, i, option)
+	}
+	if d.D.AllowFreeform {
+		out.WriteString("      Other... (--text)\n")
+	}
+	return out.String()
 }
 
 // fakeForFlows builds a FakeRunner that succeeds every stage and writes

@@ -23,7 +23,8 @@ type Command struct {
 	Attach     []string `json:"attach,omitempty"`
 	IssueID    string   `json:"issue_id,omitempty"`
 	DecisionID int64    `json:"decision_id,omitempty"`
-	Option     int      `json:"option,omitempty"`
+	Option     *int     `json:"option,omitempty"`
+	Text       string   `json:"text,omitempty"`
 	ProposalID int64    `json:"proposal_id,omitempty"`
 	Accept     bool     `json:"accept,omitempty"`
 	SinceSeq   int64    `json:"since_seq,omitempty"`

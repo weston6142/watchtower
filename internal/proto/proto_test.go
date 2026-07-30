@@ -116,7 +116,8 @@ func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	if r, _ = c.Do(Command{Op: "answer_decision", DecisionID: r.Decisions[0].ID, Option: 0}); !r.OK {
+	option := 0
+	if r, _ = c.Do(Command{Op: "answer_decision", DecisionID: r.Decisions[0].ID, Option: &option}); !r.OK {
 		t.Fatalf("answer failed: %+v", r)
 	}
 
@@ -173,6 +174,69 @@ func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 			t.Fatalf("second decision never appeared: %+v", r.Overview)
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+func TestAnswerDecisionAcceptsFreeformText(t *testing.T) {
+	f := oneAgentFlow("agent")
+	s, err := store.Open("file:freeform-proto?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	fr := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"run/agent": {Asks: []levers.Decision{{
+			Kind: levers.DecisionFreeform, Question: "Review spec.md",
+			RecommendedResponse: "Approve spec.md as written.",
+			Importance:          1.0,
+		}}},
+	}}
+	e := engine.New(engine.Config{
+		Store: s, Runner: fr, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),
+	})
+	sock := sockPath(t)
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	srv := NewServer(e, s)
+	srv.SetFlows(map[string]flow.Flow{"default": f})
+	go srv.Serve(l)
+	c, err := Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	r, _ := c.Do(Command{Op: "create_issue", Title: "spec", Flow: "default", Preset: "yolo"})
+	if !r.OK {
+		t.Fatalf("create: %+v", r)
+	}
+	if started, _ := c.Do(Command{Op: "start_issue", IssueID: r.IssueID}); !started.OK {
+		t.Fatalf("start: %+v", started)
+	}
+	var decisionID int64
+	deadline := time.After(5 * time.Second)
+	for decisionID == 0 {
+		pending, _ := c.Do(Command{Op: "list_decisions"})
+		if len(pending.Decisions) == 1 {
+			decisionID = pending.Decisions[0].ID
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("freeform decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	answer, _ := c.Do(Command{
+		Op: "answer_decision", DecisionID: decisionID,
+		Text: "Clarify the rollout before approval.",
+	})
+	if !answer.OK {
+		t.Fatalf("answer: %+v", answer)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/levers"
 )
 
 func TestAppendAssignsSeqAndReplays(t *testing.T) {
@@ -48,12 +49,53 @@ func TestDecisionOrderingByBlockingCost(t *testing.T) {
 	if rows[0].ID != id2 || rows[1].ID != id3 || rows[2].ID != id1 {
 		t.Fatalf("order wrong: %v %v %v", rows[0].ID, rows[1].ID, rows[2].ID)
 	}
-	if err := s.AnswerDecision(id2, 0, "answered"); err != nil {
+	if err := s.AnswerDecision(id2, levers.ChoiceResponse(0), "answered"); err != nil {
 		t.Fatal(err)
 	}
 	rows, _ = s.PendingDecisionRows()
 	if len(rows) != 2 {
 		t.Fatalf("answered row still pending: %v", rows)
+	}
+}
+
+func TestDecisionRoundTripsTypedFreeformResponse(t *testing.T) {
+	s, err := Open("file:typed-decisions?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	id, err := s.InsertDecision(DecisionRow{
+		IssueID:             "GH-1",
+		Stage:               "spec",
+		Kind:                levers.DecisionFreeform,
+		Question:            "Review spec.md",
+		RecommendedResponse: "Approve spec.md as written.",
+		Importance:          0.8,
+		Paths:               []string{"spec.md"},
+		Why:                 "It matches the approved design.",
+		Consequences:        []string{"Planning begins."},
+		Reversible:          "yes",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := levers.FreeformResponse("Clarify the rollout before approval.")
+	if err := s.AnswerDecision(id, response, "answered"); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	got := rows[0]
+	if got.Kind != levers.DecisionFreeform ||
+		got.RecommendedResponse != "Approve spec.md as written." ||
+		got.Importance != 0.8 || len(got.Paths) != 1 ||
+		got.Response.Kind != levers.DecisionFreeform ||
+		got.Response.Text != response.Text {
+		t.Fatalf("decision = %#v", got)
 	}
 }
 

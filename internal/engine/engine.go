@@ -146,7 +146,7 @@ func (e *Engine) Rehydrate() error {
 		if alive {
 			continue
 		}
-		_ = e.cfg.Store.AnswerDecision(row.ID, -1, "orphaned")
+		_ = e.cfg.Store.CloseDecision(row.ID, "orphaned")
 		e.emit(core.EvDecisionAnswered, row.IssueID, map[string]any{
 			"decision_id": row.ID, "option": -1, "orphaned": true})
 	}
@@ -338,7 +338,7 @@ func (e *Engine) dropPendingDecisions(issueID string) []int64 {
 // it must be called without e.mu held.
 func (e *Engine) markDecisionsKilled(ids []int64) {
 	for _, id := range ids {
-		_ = e.cfg.Store.AnswerDecision(id, -1, "killed")
+		_ = e.cfg.Store.CloseDecision(id, "killed")
 	}
 }
 
@@ -617,20 +617,20 @@ func (e *Engine) PendingDecisions() []PendingDecision {
 func (e *Engine) Answer(decisionID int64, response levers.Response) error {
 	e.mu.Lock()
 	p, ok := e.pend[decisionID]
-	if ok {
-		delete(e.pend, decisionID)
-	}
-	e.mu.Unlock()
 	if !ok {
+		e.mu.Unlock()
 		return fmt.Errorf("no pending decision %d", decisionID)
 	}
 	if !p.D.Accepts(response) {
+		e.mu.Unlock()
 		return fmt.Errorf("invalid response for decision %d", decisionID)
 	}
+	delete(e.pend, decisionID)
+	e.mu.Unlock()
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
 		"decision_id": p.ID, "response": response})
 	p.reply <- response
-	return e.cfg.Store.AnswerDecision(decisionID, legacyAnswer(response), "answered")
+	return e.cfg.Store.AnswerDecision(decisionID, response, "answered")
 }
 
 // escalate blocks until the human answers; returns the typed response.
@@ -638,6 +638,8 @@ func (e *Engine) escalate(issueID, stage string, d levers.Decision) levers.Respo
 	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: issueID, Stage: stage, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended,
+		Kind: d.Kind, RecommendedResponse: d.RecommendedResponse,
+		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
 		BlockingCost: e.blockingCost(issueID),
 	})
@@ -733,8 +735,11 @@ func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 	if _, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: is.id, Stage: stage, Question: a.Decision.Question,
 		Options: a.Decision.Options, Recommended: a.Decision.Recommended,
-		Why: a.Decision.Why, Consequences: a.Decision.Consequences, Reversible: a.Decision.Reversible,
-		Status: "auto", Answer: legacyAnswer(a.Decision.RecommendedAnswer()),
+		Kind: a.Decision.Kind, RecommendedResponse: a.Decision.RecommendedResponse,
+		AllowFreeform: a.Decision.AllowFreeform, Importance: a.Decision.Importance,
+		Paths: a.Decision.Paths,
+		Why:   a.Decision.Why, Consequences: a.Decision.Consequences, Reversible: a.Decision.Reversible,
+		Status: "auto", Response: a.Decision.RecommendedAnswer(),
 		BlockingCost: e.blockingCost(is.id),
 	}); err != nil {
 		panic(fmt.Sprintf("insert auto decision: %v", err))
