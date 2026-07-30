@@ -21,6 +21,7 @@ type Script struct {
 type FakeRunner struct {
 	Scripts    map[string]Script
 	OnProposal func(string, Proposal)
+	OnResponse func(issueID, stage string, response levers.Response)
 	OnLine     func(issueID, stage, line string)
 }
 
@@ -34,7 +35,7 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			return
 		}
 		for _, d := range sc.Asks {
-			reply := make(chan int, 1)
+			reply := make(chan levers.Response, 1)
 			select {
 			case asks <- Ask{Decision: d, Reply: reply}:
 			case <-ctx.Done():
@@ -42,10 +43,13 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				return
 			}
 			select {
-			case choice, ok := <-reply:
-				if !ok || choice < 0 {
+			case response, ok := <-reply:
+				if !ok || !d.Accepts(response) {
 					done <- Result{Err: context.Canceled}
 					return
+				}
+				if f.OnResponse != nil {
+					f.OnResponse(issueID, stage, response)
 				}
 			case <-ctx.Done():
 				done <- Result{Err: ctx.Err()}

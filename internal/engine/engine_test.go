@@ -96,7 +96,7 @@ func TestYoloRunEscalatesOnlyGate(t *testing.T) {
 	if pd.Stage != "spec" {
 		t.Fatalf("expected spec gate, got %+v", pd)
 	}
-	if err := e.Answer(pd.ID, 0); err != nil { // approve
+	if err := e.Answer(pd.ID, levers.ChoiceResponse(0)); err != nil { // approve
 		t.Fatal(err)
 	}
 	if err := <-errc; err != nil {
@@ -166,7 +166,7 @@ func TestFailedAgentRetriesThenFails(t *testing.T) {
 	for {
 		ds := e.PendingDecisions()
 		if len(ds) == 1 {
-			e.Answer(ds[0].ID, 0)
+			e.Answer(ds[0].ID, levers.ChoiceResponse(0))
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -214,7 +214,7 @@ func TestEngineRecordsStageRuns(t *testing.T) {
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	for {
 		if ds := e.PendingDecisions(); len(ds) == 1 {
-			e.Answer(ds[0].ID, 0)
+			e.Answer(ds[0].ID, levers.ChoiceResponse(0))
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -280,7 +280,7 @@ func TestWorktreeAcquiredOnceAndReleased(t *testing.T) {
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	for {
 		if ds := e.PendingDecisions(); len(ds) == 1 {
-			e.Answer(ds[0].ID, 0)
+			e.Answer(ds[0].ID, levers.ChoiceResponse(0))
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -332,7 +332,7 @@ func TestPauseGatesBetweenStages(t *testing.T) {
 	}
 	for {
 		if ds := e.PendingDecisions(); len(ds) == 1 {
-			if err := e.Answer(ds[0].ID, 0); err != nil {
+			if err := e.Answer(ds[0].ID, levers.ChoiceResponse(0)); err != nil {
 				t.Fatal(err)
 			}
 			break
@@ -506,7 +506,7 @@ func TestRetryStageResumesFromFailure(t *testing.T) {
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	for {
 		if ds := e.PendingDecisions(); len(ds) == 1 {
-			if err := e.Answer(ds[0].ID, 0); err != nil {
+			if err := e.Answer(ds[0].ID, levers.ChoiceResponse(0)); err != nil {
 				t.Fatal(err)
 			}
 			break
@@ -596,7 +596,7 @@ func TestTokenBudgetEscalates(t *testing.T) {
 	if !strings.Contains(pd.D.Question, "token budget") {
 		t.Fatalf("expected budget question, got %q", pd.D.Question)
 	}
-	e.Answer(pd.ID, 1) // abort
+	e.Answer(pd.ID, levers.ChoiceResponse(1)) // abort
 	if err := <-errC; err == nil {
 		t.Fatal("expected abort error")
 	}
@@ -619,7 +619,7 @@ func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	for {
 		if ds := e.PendingDecisions(); len(ds) == 1 {
-			e.Answer(ds[0].ID, 0)
+			e.Answer(ds[0].ID, levers.ChoiceResponse(0))
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -684,7 +684,7 @@ func TestMarshalReleasedAfterSuccessfulCompletionWithoutTrain(t *testing.T) {
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
 	for {
 		if ds := e.PendingDecisions(); len(ds) == 1 {
-			if err := e.Answer(ds[0].ID, 0); err != nil {
+			if err := e.Answer(ds[0].ID, levers.ChoiceResponse(0)); err != nil {
 				t.Fatal(err)
 			}
 			break
@@ -831,7 +831,7 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 		deadline := time.After(5 * time.Second)
 		for {
 			if ds := e2.PendingDecisions(); len(ds) == 1 {
-				_ = e2.Answer(ds[0].ID, 0)
+				_ = e2.Answer(ds[0].ID, levers.ChoiceResponse(0))
 				return
 			}
 			select {

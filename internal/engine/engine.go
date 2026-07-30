@@ -59,7 +59,7 @@ type PendingDecision struct {
 
 type pending struct {
 	PendingDecision
-	reply chan int
+	reply chan levers.Response
 }
 
 type issueState struct {
@@ -614,7 +614,7 @@ func (e *Engine) PendingDecisions() []PendingDecision {
 	return out
 }
 
-func (e *Engine) Answer(decisionID int64, option int) error {
+func (e *Engine) Answer(decisionID int64, response levers.Response) error {
 	e.mu.Lock()
 	p, ok := e.pend[decisionID]
 	if ok {
@@ -624,14 +624,17 @@ func (e *Engine) Answer(decisionID int64, option int) error {
 	if !ok {
 		return fmt.Errorf("no pending decision %d", decisionID)
 	}
+	if !p.D.Accepts(response) {
+		return fmt.Errorf("invalid response for decision %d", decisionID)
+	}
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
-		"decision_id": p.ID, "option": option})
-	p.reply <- option
-	return e.cfg.Store.AnswerDecision(decisionID, option, "answered")
+		"decision_id": p.ID, "response": response})
+	p.reply <- response
+	return e.cfg.Store.AnswerDecision(decisionID, legacyAnswer(response), "answered")
 }
 
-// escalate blocks until the human answers; returns chosen option.
-func (e *Engine) escalate(issueID, stage string, d levers.Decision) int {
+// escalate blocks until the human answers; returns the typed response.
+func (e *Engine) escalate(issueID, stage string, d levers.Decision) levers.Response {
 	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: issueID, Stage: stage, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended,
@@ -643,7 +646,7 @@ func (e *Engine) escalate(issueID, stage string, d levers.Decision) int {
 	}
 	p := &pending{
 		PendingDecision: PendingDecision{ID: rowID, IssueID: issueID, Stage: stage, D: d},
-		reply:           make(chan int, 1),
+		reply:           make(chan levers.Response, 1),
 	}
 	e.mu.Lock()
 	e.pend[rowID] = p
@@ -654,9 +657,16 @@ func (e *Engine) escalate(issueID, stage string, d levers.Decision) int {
 		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths})
 	choice, ok := <-p.reply
 	if !ok {
-		return -1
+		return levers.Response{}
 	}
 	return choice
+}
+
+func legacyAnswer(response levers.Response) int {
+	if response.Option == nil {
+		return -1
+	}
+	return *response.Option
 }
 
 func (e *Engine) blockingCost(issueID string) int {
@@ -724,14 +734,15 @@ func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 		IssueID: is.id, Stage: stage, Question: a.Decision.Question,
 		Options: a.Decision.Options, Recommended: a.Decision.Recommended,
 		Why: a.Decision.Why, Consequences: a.Decision.Consequences, Reversible: a.Decision.Reversible,
-		Status: "auto", Answer: a.Decision.Recommended,
+		Status: "auto", Answer: legacyAnswer(a.Decision.RecommendedAnswer()),
 		BlockingCost: e.blockingCost(is.id),
 	}); err != nil {
 		panic(fmt.Sprintf("insert auto decision: %v", err))
 	}
 	e.emit(core.EvDecisionAutoResolved, is.id, map[string]any{
-		"stage": stage, "question": a.Decision.Question, "option": a.Decision.Recommended})
-	a.Reply <- a.Decision.Recommended
+		"stage": stage, "question": a.Decision.Question,
+		"response": a.Decision.RecommendedAnswer()})
+	a.Reply <- a.Decision.RecommendedAnswer()
 }
 
 func (e *Engine) runStageOnce(ctx context.Context, is *issueState, st flow.Stage, attempt, of int) error {
@@ -920,7 +931,7 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 			Recommended: 0,
 			Importance:  1.0,
 		}
-		if e.escalate(is.id, st.Name, d) != 0 {
+		if legacyAnswer(e.escalate(is.id, st.Name, d)) != 0 {
 			if e.wasKilled(is) {
 				e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
 				return context.Canceled
@@ -1153,7 +1164,7 @@ func (e *Engine) landWithEscalation(ctx context.Context, is *issueState) error {
 			Recommended: 1,
 			Importance:  1.0,
 		}
-		if e.escalate(is.id, "merge", d) != 0 {
+		if legacyAnswer(e.escalate(is.id, "merge", d)) != 0 {
 			return err
 		}
 		err = e.cfg.Train.Land(ctx, is.id, is.branch)
@@ -1176,7 +1187,7 @@ func (e *Engine) checkBudget(is *issueState, stage string) error {
 		Recommended: 1,
 		Importance:  1.0,
 	}
-	if e.escalate(is.id, stage, d) == 0 {
+	if legacyAnswer(e.escalate(is.id, stage, d)) == 0 {
 		is.budgetWaived = true
 		return nil
 	}

@@ -187,7 +187,7 @@ func (sv *Server) exec(cmd Command) Response {
 	case "list_decisions":
 		return Response{OK: true, Decisions: sv.eng.PendingDecisions()}
 	case "answer_decision":
-		if err := sv.eng.Answer(cmd.DecisionID, cmd.Option); err != nil {
+		if err := sv.eng.Answer(cmd.DecisionID, levers.ChoiceResponse(cmd.Option)); err != nil {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true}

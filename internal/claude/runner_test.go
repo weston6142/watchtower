@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
 )
@@ -81,7 +82,7 @@ func TestDecisionRoundTrip(t *testing.T) {
 	if a.Decision.Question != "Pick one" || a.Decision.Recommended != 1 {
 		t.Fatalf("ask: %+v", a.Decision)
 	}
-	a.Reply <- 1 // choose "b"
+	a.Reply <- levers.ChoiceResponse(1) // choose "b"
 	res := <-done
 	if res.Err != nil || res.SessionID != "s-ask" {
 		t.Fatalf("res: %+v", res)
@@ -94,7 +95,7 @@ func TestRunnerCoachesIncompleteDecision(t *testing.T) {
 	if a.Decision.Why == "" || len(a.Decision.Consequences) != 2 {
 		t.Fatalf("ask not coached to v2: %+v", a.Decision)
 	}
-	a.Reply <- 0
+	a.Reply <- levers.ChoiceResponse(0)
 	if res := <-done; res.Err != nil {
 		t.Fatal(res.Err)
 	}
@@ -107,7 +108,7 @@ func TestRunnerCoachesIncompleteDecision(t *testing.T) {
 func TestMidTurnDecisionReplyDoesNotDeadlock(t *testing.T) {
 	done, asks := run(t, abs(t, "testdata/midturn.sh"), t.TempDir())
 	a := <-asks
-	a.Reply <- 0
+	a.Reply <- levers.ChoiceResponse(0)
 	select {
 	case res := <-done:
 		if res.Err != nil {
@@ -115,6 +116,26 @@ func TestMidTurnDecisionReplyDoesNotDeadlock(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("runner deadlocked: reply sent mid-turn swallowed the final result")
+	}
+}
+
+func TestDecisionRoundTripReturnsFreeformText(t *testing.T) {
+	dir := t.TempDir()
+	done, asks := run(t, abs(t, "testdata/freeform.sh"), dir)
+	a := <-asks
+	if a.Decision.Kind != levers.DecisionFreeform {
+		t.Fatalf("ask: %+v", a.Decision)
+	}
+	a.Reply <- levers.FreeformResponse("Change the retry limit to three.")
+	if res := <-done; res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "decision-reply.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "Human decision: Change the retry limit to three.") {
+		t.Fatalf("reply = %q", got)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
 )
@@ -59,8 +60,8 @@ type CodeRunner struct {
 }
 
 const coachMsg = `Your watchtower_decision is missing required fields. Re-emit the SAME decision
-as one JSON line including: "why" (one line: why you recommend option N) and
-"consequences" (one line per option, same order as options). Nothing else.`
+as one JSON line including "why" and "consequences". Choice consequences must
+match the options; freeform decisions need at least one consequence. Nothing else.`
 
 func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
 	asks chan<- runner.Ask) <-chan runner.Result {
@@ -156,28 +157,34 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		case KindAssistantText:
 			emit(ev)
 			if d, found := ExtractDecision(ev.Text); found {
-				if (d.Why == "" || len(d.Consequences) != len(d.Options)) && coachCount < 2 {
+				incomplete := d.Why == "" ||
+					(d.Kind == levers.DecisionChoice && len(d.Consequences) != len(d.Options)) ||
+					(d.Kind == levers.DecisionFreeform && len(d.Consequences) == 0)
+				if incomplete && coachCount < 2 {
 					coachCount++
 					pendingReplies = append(pendingReplies, coachMsg)
 					continue
 				}
-				reply := make(chan int, 1)
+				reply := make(chan levers.Response, 1)
 				select {
 				case asks <- runner.Ask{Decision: d, Reply: reply}:
 				case <-ctx.Done():
 					return abort(ctx.Err())
 				}
-				var choice int
+				var response levers.Response
 				select {
-				case choice = <-reply:
+				case response = <-reply:
 				case <-ctx.Done():
 					return abort(ctx.Err())
 				}
-				opt := ""
-				if choice >= 0 && choice < len(d.Options) {
-					opt = d.Options[choice]
+				if !d.Accepts(response) {
+					return abort(fmt.Errorf("invalid response for decision %q", d.Question))
 				}
-				pendingReplies = append(pendingReplies, "Human decision: "+opt)
+				answer := response.Text
+				if response.Kind == levers.DecisionChoice {
+					answer = d.Options[*response.Option]
+				}
+				pendingReplies = append(pendingReplies, "Human decision: "+answer)
 			}
 			if p, found := ExtractProposal(ev.Text); found && c.OnProposal != nil {
 				c.OnProposal(issueID, p)

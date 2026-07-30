@@ -535,7 +535,7 @@ func autoAnswerAsks() chan runner.Ask {
 	asks := make(chan runner.Ask)
 	go func() {
 		for a := range asks {
-			a.Reply <- a.Decision.Recommended
+			a.Reply <- a.Decision.RecommendedAnswer()
 		}
 	}()
 	return asks

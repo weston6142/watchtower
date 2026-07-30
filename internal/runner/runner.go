@@ -8,7 +8,7 @@ import (
 
 type Ask struct {
 	Decision levers.Decision
-	Reply    chan int
+	Reply    chan levers.Response
 }
 
 // Proposal is a suggested new issue discovered by an agent mid-flow.

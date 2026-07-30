@@ -59,6 +59,16 @@ func (d Decision) RecommendedAnswer() Response {
 	return ChoiceResponse(d.Recommended)
 }
 
+func (d Decision) Accepts(response Response) bool {
+	if response.Kind == DecisionFreeform {
+		return response.Text != "" && (d.Kind == DecisionFreeform || d.AllowFreeform)
+	}
+	if response.Kind != DecisionChoice || response.Option == nil {
+		return false
+	}
+	return *response.Option >= 0 && *response.Option < len(d.Options)
+}
+
 type Rules struct {
 	AlwaysEscalate []string
 }
