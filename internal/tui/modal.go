@@ -6,7 +6,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/priority"
-	"github.com/weston6142/watchtower/internal/projection"
 )
 
 // modalState is intentionally small: the control room only needs plain rune
@@ -195,30 +194,6 @@ func renderConfirm(prompt string, width int) string {
 	hint := keyChip("y") + dim.Render(" confirm")
 	content := boundedLines([]string{prompt, "", hint}, max(1, width-6))
 	return renderBox("confirm", "", " n cancel ", content)
-}
-
-// renderBacklog lists drafts in the same box chrome as the new-issue modal:
-// the backlog is where issues wait, so it wears the issue modal's clothes.
-func renderBacklog(entries []*projection.IssueView, sel, width int) string {
-	t := activeTheme
-	dim := lipgloss.NewStyle().Foreground(t.Dim)
-	const rowWidth = 44
-	var lines []string
-	if len(entries) == 0 {
-		lines = append(lines, dim.Render("backlog is empty — n then ctrl+s files a draft"))
-	}
-	for i, iv := range entries {
-		// Pad the unstyled label, then style: padCell truncates, and truncating
-		// an already-styled string can cut mid-escape and bleed colour into the
-		// title. Width 7 fits urgent/normal plus a space.
-		prio := lipgloss.NewStyle().Foreground(t.Structure).Render(padCell(priority.Label(iv.Priority), 7))
-		row := padCell(iv.ID, 7) + prio + iv.Title
-		lines = append(lines, cursorRow(i == sel, boundedLines([]string{row}, rowWidth), rowWidth+4))
-	}
-	lines = append(lines, "",
-		keyChip("enter")+dim.Render(" edit  ")+keyChip("l")+dim.Render(" launch  ")+
-			keyChip("X")+dim.Render(" delete  ")+keyChip("j/k")+dim.Render(" move"))
-	return renderBox("backlog", "drafts waiting to launch", " esc close ", strings.Join(lines, "\n"))
 }
 
 var leverCycle = []string{string(flow.LeverYolo), string(flow.LeverRegular), string(flow.LeverStrict)}

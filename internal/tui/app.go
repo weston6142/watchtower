@@ -1577,7 +1577,7 @@ func (m Model) View() string {
 	} else if m.backlog != nil {
 		entries := backlogEntries(m.State)
 		m.backlog.Sel = min(m.backlog.Sel, max(0, len(entries)-1))
-		overlayBox = renderBacklog(entries, m.backlog.Sel, layoutWidth)
+		overlayBox = renderBacklog(entries, m.backlog.Sel, layoutWidth, m.Height)
 	} else if m.leverEditor != nil {
 		overlayBox = renderLeverEditor(m.leverEditor.Stages, m.leverEditor.Matrix, m.leverEditor.Sel)
 	} else if m.setup != nil && m.pager.Mode == "" {
