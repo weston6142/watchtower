@@ -55,6 +55,10 @@ func (st *Steward) Observe(ev core.Event) {
 		_ = st.Store.UpsertIssue(store.IssueRow{
 			ID: ev.IssueID, Title: str("title"), Body: str("body"),
 			Flow: str("flow"), State: "running", Priority: int(prio)})
+	case core.EvIssueWaitingDependencies:
+		setState("waiting_dependencies")
+	case core.EvIssueDependenciesSatisfied:
+		setState("running")
 	case core.EvStageStarted:
 		setState("running:" + str("stage"))
 	case core.EvDecisionRequired:

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -115,6 +116,70 @@ func TestDraftIssueStaysInBacklog(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Fatalf("draft ran %d stages", len(runs))
+	}
+}
+
+func TestLaunchWaitsForUnmergedDependencyWithoutRunningStages(t *testing.T) {
+	e, st := newTestEngine(t)
+	useAutoLaunchFlow(e)
+	parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+	child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.LaunchIssue(child); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, st, child, core.EvIssueWaitingDependencies)
+	if row := issueRow(t, st, child); row.State != "waiting_dependencies" {
+		t.Fatalf("state = %q", row.State)
+	}
+	if runs, _ := st.StageRuns(child); len(runs) != 0 {
+		t.Fatalf("waiting issue ran stages: %#v", runs)
+	}
+}
+
+func TestMergedDependencyWakesWaitingIssue(t *testing.T) {
+	e, st := newTestEngine(t)
+	useAutoLaunchFlow(e)
+	parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+	child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.LaunchIssue(child); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, st, child, core.EvIssueWaitingDependencies)
+	e.emit(core.EvIssueMerged, parent, nil)
+	e.wakeDependents(context.Background(), parent)
+	waitForEvent(t, st, child, core.EvIssueDependenciesSatisfied)
+	waitForEvent(t, st, child, core.EvIssueCompleted)
+}
+
+func TestRehydratePreservesDependencyWait(t *testing.T) {
+	e, st := newTestEngine(t)
+	useAutoLaunchFlow(e)
+	parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+	child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.LaunchIssue(child); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, st, child, core.EvIssueWaitingDependencies)
+
+	restarted := newEngineOver(t, st)
+	useAutoLaunchFlow(restarted)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if runs, _ := st.StageRuns(child); len(runs) != 0 {
+		t.Fatalf("rehydrate started waiting issue: %#v", runs)
+	}
+	if state := restarted.issues[child]; state == nil || !state.waitingDependencies {
+		t.Fatalf("waiting state not rehydrated: %#v", state)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/attach"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
@@ -63,25 +64,27 @@ type pending struct {
 }
 
 type issueState struct {
-	id             string
-	title          string
-	body           string
-	flowName       string
-	matrix         levers.Matrix
-	priority       int
-	wsPath         string
-	branch         string
-	baseRef        string
-	wsRelease      func() error
-	pauseGate      chan struct{}
-	stageCancel    context.CancelFunc
-	killRequested  bool
-	stageIdx       int
-	terminal       bool
-	running        bool
-	draft          bool
-	budgetWaived   bool
-	activeTouchset *touchset.Set
+	id                  string
+	title               string
+	body                string
+	flowName            string
+	matrix              levers.Matrix
+	priority            int
+	wsPath              string
+	branch              string
+	baseRef             string
+	wsRelease           func() error
+	pauseGate           chan struct{}
+	stageCancel         context.CancelFunc
+	killRequested       bool
+	stageIdx            int
+	terminal            bool
+	running             bool
+	draft               bool
+	budgetWaived        bool
+	activeTouchset      *touchset.Set
+	dependsOn           []string
+	waitingDependencies bool
 }
 
 type Engine struct {
@@ -170,6 +173,16 @@ func (e *Engine) Rehydrate() error {
 			e.mu.Unlock()
 			continue
 		}
+		if row.State == "waiting_dependencies" {
+			e.mu.Lock()
+			e.issues[row.ID] = &issueState{
+				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+				dependsOn: append([]string(nil), row.DependsOn...), waitingDependencies: true,
+			}
+			e.mu.Unlock()
+			continue
+		}
 		e.mu.Lock()
 		_, known := e.issues[row.ID]
 		e.mu.Unlock()
@@ -212,6 +225,96 @@ func (e *Engine) Rehydrate() error {
 			"error": "daemon restarted — press R to retry", "final": true})
 	}
 	return nil
+}
+
+func matrixFromStrings(values map[string]string) levers.Matrix {
+	matrix := levers.Matrix{}
+	for stage, value := range values {
+		matrix[stage] = flow.Lever(value)
+	}
+	return matrix
+}
+
+func (e *Engine) SetDependencies(issueID string, parents []string) error {
+	graph, err := e.cfg.Store.DependencyGraph()
+	if err != nil {
+		return err
+	}
+	graph[issueID] = append([]string(nil), parents...)
+	if err := deps.Graph(graph).Validate(); err != nil {
+		return err
+	}
+	if err := e.cfg.Store.ReplaceDependencies(issueID, parents); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	if is := e.issues[issueID]; is != nil {
+		is.dependsOn = append([]string(nil), parents...)
+	}
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *Engine) unmetDependencies(issueID string) ([]string, error) {
+	rows, err := e.cfg.Store.Issues()
+	if err != nil {
+		return nil, err
+	}
+	states := map[string]string{}
+	var parents []string
+	for _, row := range rows {
+		states[row.ID] = row.State
+		if row.ID == issueID {
+			parents = row.DependsOn
+		}
+	}
+	var unmet []string
+	for _, parent := range parents {
+		if states[parent] != "merged" {
+			unmet = append(unmet, parent)
+		}
+	}
+	return unmet, nil
+}
+
+func (e *Engine) startOrWait(ctx context.Context, is *issueState) error {
+	unmet, err := e.unmetDependencies(is.id)
+	if err != nil {
+		return err
+	}
+	if len(unmet) > 0 {
+		e.mu.Lock()
+		is.waitingDependencies = true
+		e.mu.Unlock()
+		e.emit(core.EvIssueWaitingDependencies, is.id, map[string]any{"unmet": unmet})
+		return nil
+	}
+	return e.runAndRecord(ctx, is, 0)
+}
+
+func (e *Engine) wakeDependents(ctx context.Context, mergedID string) {
+	ids, err := e.cfg.Store.Dependents(mergedID)
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		e.mu.Lock()
+		is := e.issues[id]
+		waiting := is != nil && is.waitingDependencies
+		e.mu.Unlock()
+		if !waiting {
+			continue
+		}
+		unmet, err := e.unmetDependencies(id)
+		if err != nil || len(unmet) != 0 {
+			continue
+		}
+		e.mu.Lock()
+		is.waitingDependencies = false
+		e.mu.Unlock()
+		e.emit(core.EvIssueDependenciesSatisfied, id, nil)
+		go e.runAndRecord(ctx, is, 0)
+	}
 }
 
 // issueNumber extracts n from a GH-n issue ID.
@@ -586,7 +689,7 @@ func (e *Engine) LaunchIssue(id string) error {
 	}
 	e.emit(core.EvIssueCreated, id, map[string]any{
 		"title": title, "flow": flowName, "body": body, "priority": priority})
-	go e.runAndRecord(context.Background(), is, 0)
+	go e.startOrWait(context.Background(), is)
 	return nil
 }
 
@@ -1069,6 +1172,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			}
 		}
 		e.emit(core.EvIssueMerged, is.id, map[string]string{"branch": is.branch})
+		e.wakeDependents(context.Background(), is.id)
 	}
 	if e.cfg.Marshal != nil {
 		e.cfg.Marshal.Merged(is.id)
@@ -1096,7 +1200,7 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("unknown issue %s", id)
 	}
-	return e.runAndRecord(ctx, is, 0)
+	return e.startOrWait(ctx, is)
 }
 
 // RetryStage restarts a terminal issue at the stage that last failed or was

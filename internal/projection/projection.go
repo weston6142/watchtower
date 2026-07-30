@@ -109,6 +109,14 @@ func (s *State) Apply(ev core.Event) {
 			iv.AttemptOf = int(num("of"))
 			iv.LastError = ""
 		}
+	case core.EvIssueWaitingDependencies:
+		if iv != nil {
+			iv.State = "waiting_dependencies"
+		}
+	case core.EvIssueDependenciesSatisfied:
+		if iv != nil {
+			iv.State = "running"
+		}
 	case core.EvSlotQueued:
 		if iv != nil {
 			iv.State = "queued_for_slot"
