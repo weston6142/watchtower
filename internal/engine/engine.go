@@ -348,6 +348,23 @@ func (e *Engine) ActiveTouchsets() map[string][]string {
 	return out
 }
 
+// CanReset reports whether replacing the repository configuration is safe.
+// Inactive durable states survive a daemon restart; a live stage or decision
+// session does not.
+func (e *Engine) CanReset() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.pend) > 0 {
+		return fmt.Errorf("cannot reset while %d pending decision(s) are live", len(e.pend))
+	}
+	for id, issue := range e.issues {
+		if issue.running {
+			return fmt.Errorf("cannot reset while issue %s has a running stage", id)
+		}
+	}
+	return nil
+}
+
 // Pause stops an issue at the next boundary between stages.
 func (e *Engine) Pause(issueID string) error {
 	e.mu.Lock()

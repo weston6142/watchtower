@@ -318,6 +318,53 @@ func TestBacklogOps(t *testing.T) {
 	}
 }
 
+func TestCanResetAndShutdownFlushesResponse(t *testing.T) {
+	f := oneAgentFlow("agent")
+	s, err := store.Open("file:reset-proto?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	e := engine.New(engine.Config{
+		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{"run/agent": {}}},
+		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),
+	})
+	socket := sockPath(t)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(e, s)
+	server.SetFlows(map[string]flow.Flow{"default": f})
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+	client, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if response, err := client.Do(Command{Op: "can_reset"}); err != nil || !response.OK {
+		t.Fatalf("can_reset: %+v err=%v", response, err)
+	}
+	response, err := client.Do(Command{Op: "shutdown"})
+	if err != nil || !response.OK {
+		t.Fatalf("shutdown response was not flushed: %+v err=%v", response, err)
+	}
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop")
+	}
+	if replacement, err := Dial(socket); err == nil {
+		replacement.Close()
+		t.Fatal("server still accepts connections")
+	}
+}
+
 func TestDraftNotCountedInOverview(t *testing.T) {
 	c := newTestClient(t)
 	if r, err := c.Do(Command{Op: "draft_issue", Title: "t", Flow: "default", Preset: "regular"}); err != nil || !r.OK {

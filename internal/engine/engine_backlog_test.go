@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,9 +86,10 @@ func useAutoLaunchFlow(e *Engine) {
 		"default": {
 			Name: "default",
 			Stages: []flow.Stage{{
-				Name:   "run",
-				Agents: []flow.AgentRef{{Package: "agent"}},
-				Gate:   flow.GateAuto,
+				Name:       "run",
+				Agents:     []flow.AgentRef{{Package: "agent"}},
+				Gate:       flow.GateAuto,
+				Completion: flow.CompletionAll,
 			}},
 		},
 	}
@@ -181,6 +183,104 @@ func TestRehydratePreservesDependencyWait(t *testing.T) {
 	if state := restarted.issues[child]; state == nil || !state.waitingDependencies {
 		t.Fatalf("waiting state not rehydrated: %#v", state)
 	}
+}
+
+func TestCanResetRefusesActiveExecutionAndPendingDecision(t *testing.T) {
+	t.Run("active execution", func(t *testing.T) {
+		e, _ := newTestEngine(t)
+		useAutoLaunchFlow(e)
+		started := make(chan struct{})
+		release := make(chan struct{})
+		e.cfg.Runner.(*runner.FakeRunner).OnStart = func(_, _, _, _ string) error {
+			close(started)
+			<-release
+			return nil
+		}
+		id, _ := e.CreateIssue("active", "", "default", levers.Matrix{}, 0, nil)
+		done := make(chan error, 1)
+		go func() { done <- e.StartIssue(context.Background(), id) }()
+		<-started
+		if err := e.CanReset(); err == nil || !strings.Contains(err.Error(), "running") {
+			t.Fatalf("CanReset = %v", err)
+		}
+		close(release)
+		<-done
+	})
+
+	t.Run("pending decision", func(t *testing.T) {
+		e, _ := newTestEngine(t)
+		scripts := map[string]runner.Script{"ask/agent": {Asks: []levers.Decision{{
+			Question: "approve?", Options: []string{"yes", "no"}, Recommended: 0,
+			Importance: 1.0,
+		}}}}
+		e.cfg.Flows = map[string]flow.Flow{"default": {
+			Name: "default", Stages: []flow.Stage{{
+				Name: "ask", Agents: []flow.AgentRef{{Package: "agent"}}, Gate: flow.GateAuto,
+			}},
+		}}
+		e.cfg.Runner = &runner.FakeRunner{Scripts: scripts}
+		id, _ := e.CreateIssue("pending", "", "default", levers.Matrix{}, 0, nil)
+		done := make(chan error, 1)
+		go func() { done <- e.StartIssue(context.Background(), id) }()
+		deadline := time.Now().Add(2 * time.Second)
+		for len(e.PendingDecisions()) == 0 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err := e.CanReset(); err == nil || !strings.Contains(err.Error(), "pending decision") {
+			t.Fatalf("CanReset = %v", err)
+		}
+		decision := e.PendingDecisions()[0]
+		if err := e.Answer(decision.ID, levers.ChoiceResponse(0)); err != nil {
+			t.Fatal(err)
+		}
+		<-done
+	})
+}
+
+func TestCanResetAllowsInactiveIssueStates(t *testing.T) {
+	t.Run("backlog", func(t *testing.T) {
+		e, _ := newTestEngine(t)
+		if _, err := e.DraftIssue("draft", "", "default", "regular", levers.Matrix{}, 0, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.CanReset(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("dependency waiting", func(t *testing.T) {
+		e, _ := newTestEngine(t)
+		useAutoLaunchFlow(e)
+		parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+		child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+		if err := e.SetDependencies(child, []string{parent}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.LaunchIssue(child); err != nil {
+			t.Fatal(err)
+		}
+		waitForEvent(t, e.cfg.Store, child, core.EvIssueWaitingDependencies)
+		if err := e.CanReset(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("completed and held", func(t *testing.T) {
+		e, _ := newTestEngine(t)
+		useAutoLaunchFlow(e)
+		completed, _ := e.CreateIssue("done", "", "default", levers.Matrix{}, 0, nil)
+		if err := e.StartIssue(context.Background(), completed); err != nil {
+			t.Fatal(err)
+		}
+		e.cfg.Runner = &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"run/agent": {Fail: true},
+		}}
+		held, _ := e.CreateIssue("held", "", "default", levers.Matrix{}, 0, nil)
+		if err := e.StartIssue(context.Background(), held); err == nil {
+			t.Fatal("held fixture succeeded")
+		}
+		if err := e.CanReset(); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestUpdateIssueOnlyLegalFromBacklog(t *testing.T) {

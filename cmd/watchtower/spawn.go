@@ -48,26 +48,51 @@ func resolveRepo(repoFlag string) string {
 // spawns a detached daemon first if none is listening.
 func mustDial(base, repoFlag string) *proto.Client {
 	repo := resolveRepo(repoFlag)
+	client, started, err := connectOrStartDaemon(base, repo)
+	if err != nil {
+		fatal(err)
+	}
+	if started {
+		fmt.Fprintln(os.Stderr, "started daemon for", repo)
+	}
+	return client
+}
+
+func connectOrStartDaemon(base, repo string) (*proto.Client, bool, error) {
 	dataDir := repocfg.RepoDataDir(base, repo)
 	sock := filepath.Join(dataDir, sockFileName)
 	if c, err := proto.Dial(sock); err == nil {
-		return c
+		return c, false, nil
 	}
 	clearStaleSocket(dataDir, sock)
 	if err := spawnDaemon(base, repo, dataDir); err != nil {
-		fatal(fmt.Errorf("starting daemon: %w", err))
+		return nil, false, fmt.Errorf("starting daemon: %w", err)
 	}
 	deadline := time.Now().Add(daemonStartTimeout)
 	for time.Now().Before(deadline) {
 		if c, err := proto.Dial(sock); err == nil {
-			fmt.Fprintln(os.Stderr, "started daemon for", repo)
-			return c
+			return c, true, nil
 		}
 		time.Sleep(daemonPollInterval)
 	}
-	fatal(fmt.Errorf("daemon did not come up within %s; last log lines:\n%s",
-		daemonStartTimeout, tailFile(filepath.Join(dataDir, logFileName), daemonLogTailLines)))
-	return nil
+	return nil, false, fmt.Errorf("daemon did not come up within %s; last log lines:\n%s",
+		daemonStartTimeout, tailFile(filepath.Join(dataDir, logFileName), daemonLogTailLines))
+}
+
+func waitForDaemonStop(base, repo string) error {
+	dataDir := repocfg.RepoDataDir(base, repo)
+	sock := filepath.Join(dataDir, sockFileName)
+	deadline := time.Now().Add(daemonStartTimeout)
+	for time.Now().Before(deadline) {
+		client, err := proto.Dial(sock)
+		if err != nil {
+			clearStaleSocket(dataDir, sock)
+			return nil
+		}
+		client.Close()
+		time.Sleep(daemonPollInterval)
+	}
+	return fmt.Errorf("daemon did not stop within %s", daemonStartTimeout)
 }
 
 // clearStaleSocket removes a socket left behind by a dead daemon. If the

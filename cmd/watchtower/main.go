@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -47,7 +48,7 @@ func main() {
 		fatal(err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|repos|tower|new|backlog|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|reset|repos|tower|new|backlog|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -75,6 +76,10 @@ func main() {
 		}
 		fmt.Println("registered", cwd)
 		fmt.Println("next: run 'watchtower tower' — the daemon starts automatically")
+	case "reset":
+		if err := runReset(args); err != nil {
+			fatal(err)
+		}
 	case "repos":
 		fs := flag.NewFlagSet("repos", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
@@ -367,6 +372,112 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 		os.Exit(2)
 	}
+}
+
+func runReset(args []string) error {
+	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
+	data := fs.String("data", defaultData(), "data dir")
+	repoFlag := fs.String("repo", "", "target repo (default: walk up from CWD)")
+	yes := fs.Bool("yes", false, "replace defaults without confirmation")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	repo := *repoFlag
+	if repo == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		repo, err = repocfg.FindRepo(cwd)
+		if err != nil {
+			return err
+		}
+	}
+	prepared, err := scaffold.PrepareReset(repo)
+	if err != nil {
+		return err
+	}
+	defer prepared.Cancel()
+
+	if !*yes {
+		fmt.Fprint(os.Stdout, "Replace .watchtower with the current defaults? [y/N] ")
+		answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil {
+			return err
+		}
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Fprintln(os.Stdout, "reset canceled")
+			return nil
+		}
+	}
+
+	client, _, err := connectOrStartDaemon(*data, repo)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(proto.Command{Op: "can_reset"})
+	if err != nil {
+		client.Close()
+		return err
+	}
+	if !response.OK {
+		client.Close()
+		return fmt.Errorf("can_reset: %s", response.Error)
+	}
+	response, err = client.Do(proto.Command{Op: "shutdown"})
+	client.Close()
+	if err != nil {
+		return err
+	}
+	if !response.OK {
+		return fmt.Errorf("shutdown: %s", response.Error)
+	}
+	if err := waitForDaemonStop(*data, repo); err != nil {
+		return err
+	}
+
+	if err := prepared.Apply(); err != nil {
+		originalClient, _, restartErr := connectOrStartDaemon(*data, repo)
+		if originalClient != nil {
+			originalClient.Close()
+		}
+		if restartErr != nil {
+			return fmt.Errorf("apply reset: %v; restart original daemon: %w", err, restartErr)
+		}
+		return err
+	}
+	newClient, _, startErr := connectOrStartDaemon(*data, repo)
+	if startErr == nil {
+		response, startErr = newClient.Do(proto.Command{Op: "setup_outline"})
+		if startErr == nil && (!response.OK || response.Setup == nil) {
+			startErr = fmt.Errorf("setup validation: %s", response.Error)
+		}
+	}
+	if startErr != nil {
+		if newClient != nil {
+			_, _ = newClient.Do(proto.Command{Op: "shutdown"})
+			_ = newClient.Close()
+			_ = waitForDaemonStop(*data, repo)
+		}
+		if rollbackErr := prepared.Rollback(); rollbackErr != nil {
+			return fmt.Errorf("new defaults failed: %v; rollback failed: %w", startErr, rollbackErr)
+		}
+		oldClient, _, restartErr := connectOrStartDaemon(*data, repo)
+		if oldClient != nil {
+			oldClient.Close()
+		}
+		if restartErr != nil {
+			return fmt.Errorf("new defaults failed: %v; restart original daemon: %w", startErr, restartErr)
+		}
+		return fmt.Errorf("new defaults failed validation: %w", startErr)
+	}
+	newClient.Close()
+	if err := prepared.Commit(); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stdout, "replaced .watchtower defaults")
+	return nil
 }
 
 func runDaemon(args []string) {

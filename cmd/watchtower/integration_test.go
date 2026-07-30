@@ -159,6 +159,80 @@ func TestNewDraftWithDependenciesAppearsInBacklog(t *testing.T) {
 	}
 }
 
+func TestResetReplacesWatchtowerTreeAndRestartsDaemon(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	extra := filepath.Join(repo, ".watchtower", "extra.txt")
+	if err := os.WriteFile(extra, []byte("remove"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(repo, ".watchtower", "config.yaml")
+	if err := os.WriteFile(config, []byte("runner: fake\nslots: 99\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, bin, repo, "status", "--data", base)
+	output := run(t, bin, repo, "reset", "--data", base, "--yes")
+	if !strings.Contains(output, "replaced .watchtower defaults") {
+		t.Fatalf("reset output:\n%s", output)
+	}
+	if _, err := os.Stat(extra); !os.IsNotExist(err) {
+		t.Fatalf("extra file survived reset: %v", err)
+	}
+	body, err := os.ReadFile(config)
+	if err != nil || strings.Contains(string(body), "slots: 99") {
+		t.Fatalf("config not replaced: %q err=%v", body, err)
+	}
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), "watchtower-old") ||
+			strings.Contains(entry.Name(), "watchtower-reset") {
+			t.Fatalf("reset retained %s", entry.Name())
+		}
+	}
+	if status := run(t, bin, repo, "status", "--data", base); status == "" {
+		t.Fatal("restarted daemon returned empty status")
+	}
+}
+
+func TestResetYesStillRefusesPendingDecision(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	flowBody := `name: default
+stages:
+  - name: review
+    agents: [{package: reviewer}]
+    gate: approve_artifact
+    artifacts: [review.md]
+`
+	flowPath := filepath.Join(repo, ".watchtower", "flows", "default.yaml")
+	if err := os.WriteFile(flowPath, []byte(flowBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	extra := filepath.Join(repo, ".watchtower", "keep-on-refusal.txt")
+	if err := os.WriteFile(extra, []byte("still here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, bin, repo, "new", "--data", base, "--title", "pending reset guard")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if output := run(t, bin, repo, "decisions", "--data", base); strings.Contains(output, "Approve review artifacts?") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pending decision did not appear")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	output := runErr(t, bin, repo, "reset", "--data", base, "--yes")
+	if !strings.Contains(output, "pending decision") {
+		t.Fatalf("reset refusal:\n%s", output)
+	}
+	if body, err := os.ReadFile(extra); err != nil || string(body) != "still here" {
+		t.Fatalf("reset changed tree despite refusal: %q err=%v", body, err)
+	}
+}
+
 func TestNewRefusesMissingAttachment(t *testing.T) {
 	bin, base, repo := newRepo(t)
 

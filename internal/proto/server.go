@@ -9,6 +9,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/weston6142/watchtower/internal/archmap"
@@ -31,6 +32,8 @@ type Server struct {
 	pricePerMTok float64
 	budget       int
 	repoSetup    RepoSetup
+	listenerMu   sync.Mutex
+	listener     net.Listener
 }
 
 func NewServer(e *engine.Engine, s *store.Store) *Server {
@@ -56,9 +59,15 @@ func (sv *Server) SetBudget(budget int) { sv.budget = budget }
 func (sv *Server) SetRepoSetup(r RepoSetup) { sv.repoSetup = r }
 
 func (sv *Server) Serve(l net.Listener) error {
+	sv.listenerMu.Lock()
+	sv.listener = l
+	sv.listenerMu.Unlock()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
 			return err
 		}
 		go sv.handle(conn)
@@ -76,12 +85,43 @@ func (sv *Server) handle(conn net.Conn) {
 			enc.Encode(Response{Error: err.Error()})
 			continue
 		}
-		enc.Encode(sv.exec(cmd))
+		response := sv.exec(cmd)
+		if err := enc.Encode(response); err != nil {
+			return
+		}
+		if cmd.Op == "shutdown" && response.OK {
+			sv.closeListener()
+			return
+		}
+	}
+}
+
+func (sv *Server) closeListener() {
+	sv.listenerMu.Lock()
+	defer sv.listenerMu.Unlock()
+	if sv.listener != nil {
+		_ = sv.listener.Close()
 	}
 }
 
 func (sv *Server) exec(cmd Command) Response {
 	switch cmd.Op {
+	case "can_reset":
+		if sv.eng == nil {
+			return Response{Error: "engine unavailable"}
+		}
+		if err := sv.eng.CanReset(); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true}
+	case "shutdown":
+		if sv.eng == nil {
+			return Response{Error: "engine unavailable"}
+		}
+		if err := sv.eng.CanReset(); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true}
 	case "get_flow":
 		name := cmd.Flow
 		if name == "" {
