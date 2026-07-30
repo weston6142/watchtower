@@ -36,10 +36,12 @@ Four rules hold for any new overlay, not just this one:
   before acting.** `f` closes the panel, and the socket round trip it started
   can land afterwards.
 - **`overlayCenter` degrades to `lipgloss.Place` — dropping the dimmed base,
-  silently — once the box reaches the terminal's height.** So an overlay pins
-  its chrome rows to stay shorter than the terminal, and pins its content
-  column so a long value can never reflow the panel out of the 100-cell
-  `narrow` snapshot.
+  silently — once the box reaches the terminal's full width or height.** So an
+  overlay pins its chrome rows to stay shorter than the terminal, and pins its
+  content column so a long value can never reflow the panel out of the
+  100-cell `narrow` snapshot. An overlay that means to grow with the viewport
+  instead of hugging its content has more to get right — see
+  tui-overlay-sizing.
 
 Consequence for tests: `internal/tui/testdata/setup-*.golden` are geometry, not
 prose. Regenerate with `-update` deliberately and read the diff, the discipline

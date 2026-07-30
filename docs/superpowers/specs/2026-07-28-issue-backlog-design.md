@@ -1,7 +1,7 @@
 # Issue Backlog — Design
 
 **Date:** 2026-07-28
-**Status:** Approved
+**Status:** Shipped — merged to `develop` 2026-07-29; viewport sizing followed in GH-9
 
 ## Problem
 
