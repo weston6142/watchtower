@@ -364,6 +364,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setup.clampTop(m.Height)
 		return m, nil
 	case setupPromptMsg:
+		if m.setup == nil {
+			// f closed the panel while the fetch was in flight. Opening the
+			// pager now would strand it with no outline underneath and Files
+			// nil, so esc would drop the operator into an empty "no artifacts"
+			// box instead of back where they were.
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil

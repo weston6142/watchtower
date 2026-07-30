@@ -344,6 +344,20 @@ func TestSetupPromptPagerScrollsAndEscReturnsToOutline(t *testing.T) {
 	}
 }
 
+// enter fires a socket round trip, and f can close the panel before it lands.
+// The pager must not open on top of nothing: with m.setup gone there is no
+// outline to return to, and esc would fall into the artifact-list branch with
+// Files nil — an empty "no artifacts" box the operator never asked for.
+func TestSetupPromptArrivingAfterCloseIsDropped(t *testing.T) {
+	m := NewModel(nil, []string{"review"})
+	next, _ := m.Update(setupPromptMsg{stage: "review", pkg: "reviewer",
+		lines: []string{"prompt line 0"}})
+	m = next.(Model)
+	if m.pager.Mode != "" {
+		t.Fatalf("pager opened with the panel closed: %+v", m.pager)
+	}
+}
+
 func TestSetupErrorSurfacesInKeybarAndPanelStaysShut(t *testing.T) {
 	m := NewModel(nil, []string{"brainstorm"})
 	next, _ := m.Update(setupMsg{err: errors.New("unknown flow nope")})
