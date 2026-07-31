@@ -1522,7 +1522,14 @@ func (m *Model) autoRetire(now time.Time) {
 	}
 	for _, issueID := range m.State.Shipped {
 		iv := m.State.Issues[issueID]
-		if iv != nil && !iv.MergedAt.IsZero() && !now.Before(iv.MergedAt.Add(m.retireAfter)) {
+		if iv == nil || iv.MergedAt.IsZero() {
+			continue
+		}
+		// A lane merged before today began is off every surface immediately —
+		// it does not wait out retireAfter. This only discriminates in the
+		// retireAfter window just after midnight; at launch the timer below
+		// has already elapsed for any earlier day's merge.
+		if m.staleShipped(iv) || !now.Before(iv.MergedAt.Add(m.retireAfter)) {
 			m.retired[issueID] = true
 		}
 	}

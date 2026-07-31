@@ -1063,3 +1063,66 @@ func TestShelfClearsAcrossMidnightRollover(t *testing.T) {
 		t.Fatalf("after rollover: shelf items = %d (%+v), want 0", len(got), got)
 	}
 }
+
+// staleGridModel poses one lane merged just before midnight, with `now` just
+// after it, so retireAfter has deliberately not elapsed.
+func staleGridModel(t *testing.T) (Model, time.Time) {
+	t.Helper()
+	now := time.Date(2026, 7, 31, 0, 0, 20, 0, time.UTC)
+	mergedAt := time.Date(2026, 7, 30, 23, 59, 50, 0, time.UTC)
+	m := NewModel(nil, []string{"spec", "merge"})
+	m.SetRetireAfter(5 * time.Minute)
+	m.State.Order = []string{"GH-1"}
+	m.State.Issues["GH-1"] = &projection.IssueView{
+		ID: "GH-1", Title: "shipped", State: "done", Merged: true, MergedAt: mergedAt}
+	m.State.Shipped = []string{"GH-1"}
+	m.dayStart = core.StartOfDay(now)
+	if !now.Before(mergedAt.Add(m.retireAfter)) {
+		t.Fatal("setup no longer discriminates: retireAfter has already elapsed, " +
+			"so the existing timer would retire this lane on its own")
+	}
+	return m, now
+}
+
+// T4 — FR3: staleness retires a lane the retireAfter timer has not reached.
+func TestAutoRetireRetiresStaleShippedBeforeRetireAfter(t *testing.T) {
+	m, now := staleGridModel(t)
+	m.autoRetire(now)
+	if !m.retired["GH-1"] {
+		t.Fatal("lane merged before local midnight was not retired")
+	}
+}
+
+// T6 — G2: the stale lane leaves the grid, not only the shelf.
+func TestVisibleOrderDropsStaleShippedLane(t *testing.T) {
+	m, now := staleGridModel(t)
+	if got := visibleOrder(m.State, m.retired); len(got) != 1 {
+		t.Fatalf("before autoRetire: visibleOrder = %v, want [GH-1]", got)
+	}
+	m.autoRetire(now)
+	if got := visibleOrder(m.State, m.retired); len(got) != 0 {
+		t.Fatalf("stale lane still on the grid: %v", got)
+	}
+	if got := m.shelfItems(); len(got) != 0 {
+		t.Fatalf("stale lane still on the shelf: %+v", got)
+	}
+}
+
+// T7 — §11.1: retireAfter is unreachably non-positive in production, which is
+// what makes autoRetire's retained `retireAfter <= 0` early return harmless.
+// This pins existing behavior; it passes before the change too.
+func TestRetireAfterStaysPositive(t *testing.T) {
+	m := NewModel(nil, []string{"spec", "merge"})
+	if m.retireAfter <= 0 {
+		t.Fatalf("NewModel retireAfter = %v, want positive", m.retireAfter)
+	}
+	before := m.retireAfter
+	m.SetRetireAfter(0)
+	if m.retireAfter != before {
+		t.Fatalf("SetRetireAfter(0) changed retireAfter to %v, want %v", m.retireAfter, before)
+	}
+	m.SetRetireAfter(-time.Hour)
+	if m.retireAfter != before {
+		t.Fatalf("SetRetireAfter(-1h) changed retireAfter to %v, want %v", m.retireAfter, before)
+	}
+}
