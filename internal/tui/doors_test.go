@@ -159,3 +159,41 @@ func TestStreamBodyRowsAreExactlyInner(t *testing.T) {
 		t.Fatalf("empty state first row = %q", first)
 	}
 }
+
+// Follow is derived from the clamped Top, never toggled, so returning to the
+// bottom by any route re-attaches and a body that fits can never detach.
+func TestStreamScrollClampsAndDerivesFollow(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		in         streamState
+		key        string
+		rows       int
+		total      int
+		wantTop    int
+		wantFollow bool
+	}{
+		{"j from follow detaches nowhere at the bottom", streamState{Follow: true}, "j", 10, 60, 50, true},
+		{"k from follow detaches", streamState{Follow: true}, "k", 10, 60, 49, false},
+		{"j walks down", streamState{Top: 20}, "j", 10, 60, 21, false},
+		{"k walks up", streamState{Top: 20}, "k", 10, 60, 19, false},
+		{"k clamps at the oldest row", streamState{Top: 0}, "k", 10, 60, 0, false},
+		{"d pages half a window", streamState{Top: 20}, "d", 10, 60, 25, false},
+		{"u pages half a window", streamState{Top: 20}, "u", 10, 60, 15, false},
+		{"d clamps at the newest row", streamState{Top: 48}, "d", 10, 60, 50, true},
+		{"g jumps to the oldest row held", streamState{Top: 48}, "g", 10, 60, 0, false},
+		{"G re-attaches", streamState{Top: 3}, "G", 10, 60, 50, true},
+		{"a body that fits can never detach", streamState{Follow: true}, "k", 40, 5, 0, true},
+		{"g on a body that fits still follows", streamState{Top: 0}, "g", 40, 5, 0, true},
+		{"rows 0 normalises to 1", streamState{Top: 5}, "j", 0, 60, 6, false},
+		{"d does not move at one row", streamState{Top: 5}, "d", 1, 60, 5, false},
+		{"an unknown key only re-derives", streamState{Top: 20}, "x", 10, 60, 20, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := c.in.scroll(c.key, c.rows, c.total)
+			if got.Top != c.wantTop || got.Follow != c.wantFollow {
+				t.Fatalf("scroll(%q, %d, %d) = %+v, want {Top:%d Follow:%v}",
+					c.key, c.rows, c.total, got, c.wantTop, c.wantFollow)
+			}
+		})
+	}
+}

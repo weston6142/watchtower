@@ -166,6 +166,50 @@ const (
 
 const streamEmptyNotice = "nothing here yet — either the stage just started or the transcript was lost to a daemon restart"
 
+// streamState is the stream door's reading position. Follow is the default —
+// the newest output is what you opened the door to see. Top is only consulted
+// once the operator has scrolled off the bottom.
+//
+// The zero value therefore means detached at row 0, not following: Follow is
+// derived from the clamped Top, and g legitimately produces {Top: 0,
+// Follow: false} on a clipping body, so the two cannot be told apart from the
+// field values. Every construction site sets Follow: true explicitly.
+type streamState struct {
+	Top    int  // first visible body row, when detached
+	Follow bool // pinned to newest; the refetch only runs while true
+}
+
+// scroll moves the reading position over rendered body rows. The vocabulary
+// mirrors pagerState.scroll so the two reading surfaces share muscle memory.
+func (s streamState) scroll(key string, rows, total int) streamState {
+	if rows < 1 {
+		rows = 1
+	}
+	maxTop := max(0, total-rows)
+	if s.Follow {
+		s.Top = maxTop // detaching starts from where the eye already is
+	}
+	switch key {
+	case "j":
+		s.Top++
+	case "k":
+		s.Top--
+	case "d":
+		s.Top += rows / 2
+	case "u":
+		s.Top -= rows / 2
+	case "g":
+		s.Top = 0
+	case "G":
+		s.Top = maxTop
+	}
+	s.Top = min(max(s.Top, 0), maxTop)
+	// Derived, not toggled: this single line is what makes "back at the bottom
+	// means live" and "a body that fits never detaches" true by construction.
+	s.Follow = s.Top >= maxTop
+	return s
+}
+
 // streamChromeRows is what a stream-door screen spends on chrome rather than
 // body. Verified row for row against testdata/stream-wide.golden, which is 15
 // rows for a 5-row body: 1 header + 1 notice row + 4 renderBox (top border,
