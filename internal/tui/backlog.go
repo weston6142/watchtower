@@ -238,8 +238,9 @@ func backlogFooter(count, start, rows, width int) string {
 // overlay — so it lives on its own rather than inline in the footer.
 func backlogKeys() string {
 	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
-	return keyChip("enter") + dim.Render(" edit  ") + keyChip("l") + dim.Render(" launch  ") +
-		keyChip("X") + dim.Render(" delete  ") + keyChip("j/k") + dim.Render(" move")
+	return keyChip("n") + dim.Render(" new  ") + keyChip("enter") + dim.Render(" edit  ") +
+		keyChip("l") + dim.Render(" launch  ") + keyChip("X") + dim.Render(" delete  ") +
+		keyChip("j/k") + dim.Render(" move")
 }
 
 // padStyled right-pads an already-styled line to width. The padding is plain, so
