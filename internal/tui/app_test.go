@@ -856,19 +856,24 @@ func TestViewPlumbsHeightIntoStreamDoor(t *testing.T) {
 			t.Fatalf("stream-long at %dx%d rendered %d rows, want %d", size[0], size[1], got, size[1])
 		}
 		// The short fixture does not clip, so the door hugs its content.
-		short := FixtureModel("stream", size[0], size[1])
-		if got := lipgloss.Height(short.View()); got > size[1] {
+		hugs := FixtureModel("stream", size[0], size[1])
+		if got := lipgloss.Height(hugs.View()); got > size[1] {
 			t.Fatalf("stream at %dx%d rendered %d rows, want <= %d", size[0], size[1], got, size[1])
 		}
-		for _, m := range []Model{m, short} {
-			first := ansi.Strip(m.View())
-			if idx := strings.Index(first, "\n"); idx >= 0 {
-				first = first[:idx]
-			}
-			if !strings.Contains(first, "1 question for you") {
-				t.Fatalf("header row lost off the top at %dx%d: %q", size[0], size[1], first)
-			}
+		for _, m := range []Model{m, hugs} {
+			requireHeaderRow(t, m, size)
 		}
+	}
+}
+
+// requireHeaderRow is the observable form of "the screen fits the terminal":
+// bubbletea keeps only the last r.height lines of an over-tall view, so the
+// header is what overflow eats first, and it goes with no error at all.
+func requireHeaderRow(t *testing.T, m Model, size [2]int) {
+	t.Helper()
+	first, _, _ := strings.Cut(ansi.Strip(m.View()), "\n")
+	if !strings.Contains(first, "1 question for you") {
+		t.Fatalf("header row lost off the top at %dx%d: %q", size[0], size[1], first)
 	}
 }
 
@@ -886,12 +891,6 @@ func TestStreamDoorFitsTerminalWithMultiLineError(t *testing.T) {
 			t.Fatalf("stream-long with a multi-line error at %dx%d rendered %d rows, want %d",
 				size[0], size[1], got, size[1])
 		}
-		first := ansi.Strip(m.View())
-		if idx := strings.Index(first, "\n"); idx >= 0 {
-			first = first[:idx]
-		}
-		if !strings.Contains(first, "1 question for you") {
-			t.Fatalf("header row lost off the top at %dx%d: %q", size[0], size[1], first)
-		}
+		requireHeaderRow(t, m, size)
 	}
 }
