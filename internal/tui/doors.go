@@ -242,6 +242,37 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 	return renderBox("stream", subtitle, " esc close ", strings.Join(append(body, "", foot), "\n"))
 }
 
+// streamFooter is the door's internal footer: keys left, reading position
+// right. The position appears only once the body clips, as the backlog's count
+// does — a number that never changes is noise.
+//
+// "held", never "paused": ⏸ and the notice row's "issue paused" already mean a
+// stopped lane, and a frozen scroll view must not read as one.
+func streamFooter(st streamState, start, visible, total, inner int) string {
+	t := activeTheme
+	dim := lipgloss.NewStyle().Foreground(t.Dim)
+	keys := keyChip("esc") + dim.Render(" close  ") + keyChip("q") + dim.Render(" quit")
+	if total <= visible {
+		return keys
+	}
+	end := min(start+visible, total)
+	position := lipgloss.NewStyle().Foreground(t.Structure).
+		Render(fmt.Sprintf("%d–%d of %d", start+1, end, total))
+	if st.Follow {
+		// Nothing accents a live view.
+		position += dim.Render(" · following")
+	} else {
+		// The surface's single accent: on a reading surface the position
+		// indicator is the only thing allowed to claim your action.
+		position += lipgloss.NewStyle().Foreground(t.Accent).Render(" · held · G to follow")
+	}
+	gap := inner - lipgloss.Width(keys) - lipgloss.Width(position)
+	if gap < 1 {
+		return keys
+	}
+	return keys + strings.Repeat(" ", gap) + position
+}
+
 // streamBody turns transcript lines into styled body rows. Every row it returns
 // is exactly inner cells wide — renderBox sizes the frame to its widest content
 // line, so an unpadded or over-long row would move the frame as the window

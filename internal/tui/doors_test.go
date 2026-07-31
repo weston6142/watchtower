@@ -197,3 +197,24 @@ func TestStreamScrollClampsAndDerivesFollow(t *testing.T) {
 		})
 	}
 }
+
+// The keys are the way out of the door, so when the position will not fit
+// beside them the position is what yields — exactly as backlogFooter does.
+func TestStreamFooterYieldsPositionWhenNarrow(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	// inner 30: the keys (21 cells) fit, the position does not.
+	narrow := streamFooter(streamState{Top: 0}, 0, 40, 60, 30)
+	if strings.Contains(ansi.Strip(narrow), " of ") {
+		t.Fatalf("position survived a narrow footer: %q", ansi.Strip(narrow))
+	}
+	if got := lipgloss.Width(narrow); got > 30 {
+		t.Fatalf("narrow footer width = %d, want <= 30", got)
+	}
+	if !strings.Contains(ansi.Strip(narrow), "esc") {
+		t.Fatalf("keys missing from narrow footer: %q", ansi.Strip(narrow))
+	}
+	wide := ansi.Strip(streamFooter(streamState{Top: 0}, 0, 40, 60, 92))
+	if !strings.Contains(wide, "1–40 of 60") {
+		t.Fatalf("wide footer = %q", wide)
+	}
+}
