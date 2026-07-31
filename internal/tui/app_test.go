@@ -7,7 +7,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
@@ -829,5 +831,43 @@ func TestHeldTranscriptDropsLateFetch(t *testing.T) {
 	next, _ = bad.Update(transcriptMsg{err: errors.New("boom")})
 	if next.(Model).Err != "boom" {
 		t.Fatalf("error branch = %q", next.(Model).Err)
+	}
+}
+
+// The height argument has to actually reach renderStreamDoor, and the whole
+// screen has to fit the terminal — bubbletea keeps only the last r.height lines
+// when a view overflows, so the header row disappears with no error at all.
+func TestViewPlumbsHeightIntoStreamDoor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	bodyRows := func(height int) int {
+		m := FixtureModel("stream-long", 200, height)
+		return strings.Count(ansi.Strip(m.View()), "brainstorm │")
+	}
+	short, tall := bodyRows(24), bodyRows(60)
+	if tall <= short {
+		t.Fatalf("taller terminal showed no more rows: %d at 60 vs %d at 24", tall, short)
+	}
+	for _, size := range [][2]int{{200, 50}, {100, 40}} {
+		// stream-long clips at both golden sizes, so the screen fills the
+		// terminal exactly rather than merely fitting under it. If this ever
+		// reads as inequality, the ten-row chrome budget has drifted.
+		m := FixtureModel("stream-long", size[0], size[1])
+		if got := lipgloss.Height(m.View()); got != size[1] {
+			t.Fatalf("stream-long at %dx%d rendered %d rows, want %d", size[0], size[1], got, size[1])
+		}
+		// The short fixture does not clip, so the door hugs its content.
+		short := FixtureModel("stream", size[0], size[1])
+		if got := lipgloss.Height(short.View()); got > size[1] {
+			t.Fatalf("stream at %dx%d rendered %d rows, want <= %d", size[0], size[1], got, size[1])
+		}
+		for _, m := range []Model{m, short} {
+			first := ansi.Strip(m.View())
+			if idx := strings.Index(first, "\n"); idx >= 0 {
+				first = first[:idx]
+			}
+			if !strings.Contains(first, "1 question for you") {
+				t.Fatalf("header row lost off the top at %dx%d: %q", size[0], size[1], first)
+			}
+		}
 	}
 }
