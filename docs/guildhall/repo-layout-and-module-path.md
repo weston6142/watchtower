@@ -16,7 +16,9 @@ Default branch is `develop`, not `main`.
 Layout:
 
 - `cmd/watchtower/` — single binary: CLI verbs, daemon, TUI entry.
-- `internal/core/` — event types; the shared contract.
+- `internal/core/` — event types and the day-boundary helper; the shared
+  contract, and the only package both daemon and TUI may depend on for
+  agreement.
 - `internal/engine/` — the Conductor: flow execution, stage runs, decisions,
   rehydration.
 - `internal/flow/`, `internal/levers/` — flows-as-data (stages, completion
