@@ -1126,3 +1126,34 @@ func TestRetireAfterStaysPositive(t *testing.T) {
 		t.Fatalf("SetRetireAfter(-1h) changed retireAfter to %v, want %v", m.retireAfter, before)
 	}
 }
+
+// T8 — OR4/OR5: the tick assigns dayStart from a single clock read and does so
+// before autoRetire, so a stale lane is retired on that same tick.
+func TestTickRefreshesDayStartBeforeRetiring(t *testing.T) {
+	m := NewModel(nil, []string{"spec", "merge"})
+	m.SetRetireAfter(1000 * time.Hour) // the timer can never fire here
+	m.State.Order = []string{"GH-1"}
+	m.State.Issues["GH-1"] = &projection.IssueView{
+		ID: "GH-1", Title: "shipped", State: "done", Merged: true,
+		MergedAt: time.Now().Add(-24 * time.Hour)}
+	m.State.Shipped = []string{"GH-1"}
+
+	before := core.StartOfDay(time.Now())
+	next, _ := m.Update(tickMsg{})
+	after := core.StartOfDay(time.Now())
+
+	got, ok := next.(Model)
+	if !ok {
+		t.Fatalf("Update returned %T, want Model", next)
+	}
+	if !got.dayStart.Equal(before) && !got.dayStart.Equal(after) {
+		t.Fatalf("dayStart = %v, want %v or %v", got.dayStart, before, after)
+	}
+	if !got.retired["GH-1"] {
+		t.Fatal("stale lane was not retired on the tick that set dayStart — " +
+			"dayStart must be assigned before autoRetire runs")
+	}
+	if len(got.shelfItems()) != 0 {
+		t.Fatalf("stale lane still on the shelf: %+v", got.shelfItems())
+	}
+}

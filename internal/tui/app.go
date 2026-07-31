@@ -249,7 +249,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		m.ticks++
-		m.autoRetire(time.Now())
+		// One clock read feeds both statements: two independent reads could
+		// straddle midnight and evaluate staleness against the wrong day. The
+		// assignment precedes autoRetire, or the first tick would compare
+		// against the zero cutoff.
+		now := time.Now()
+		m.dayStart = core.StartOfDay(now)
+		m.autoRetire(now)
 		if m.currentMode() == "timeline" {
 			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
 		}
