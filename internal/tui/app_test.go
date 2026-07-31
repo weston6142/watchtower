@@ -871,3 +871,27 @@ func TestViewPlumbsHeightIntoStreamDoor(t *testing.T) {
 		}
 	}
 }
+
+// The ten-row chrome budget spends exactly one row on the keybar, and the
+// keybar's right slot is m.Err — which carries err.Error() from the daemon,
+// where an error wrapping a command's CombinedOutput is routinely multi-line.
+// A fetch failure while following is the case spec.md names, and it is also
+// the one that would push the header off the top with no error at all.
+func TestStreamDoorFitsTerminalWithMultiLineError(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	for _, size := range [][2]int{{200, 50}, {100, 40}} {
+		m := FixtureModel("stream-long", size[0], size[1])
+		m.Err = "git worktree add failed:\nfatal: destination path exists\nhint: retry with --force"
+		if got := lipgloss.Height(m.View()); got != size[1] {
+			t.Fatalf("stream-long with a multi-line error at %dx%d rendered %d rows, want %d",
+				size[0], size[1], got, size[1])
+		}
+		first := ansi.Strip(m.View())
+		if idx := strings.Index(first, "\n"); idx >= 0 {
+			first = first[:idx]
+		}
+		if !strings.Contains(first, "1 question for you") {
+			t.Fatalf("header row lost off the top at %dx%d: %q", size[0], size[1], first)
+		}
+	}
+}
