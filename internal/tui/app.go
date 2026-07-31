@@ -253,7 +253,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.tick()
 		}
 		cmds := []tea.Cmd{m.poll(), m.pollOverview()}
-		if m.currentMode() == "transcript" {
+		if m.followingTranscript() {
 			cmds = append(cmds, m.fetchTranscript())
 		}
 		return m, tea.Batch(cmds...)
@@ -262,7 +262,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.currentMode() == "timeline" {
 			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
 		}
-		if m.currentMode() == "transcript" {
+		if m.followingTranscript() {
 			return m, tea.Batch(m.tick(), m.fetchTranscript())
 		}
 		return m, m.tick()
@@ -290,6 +290,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transcriptMsg:
 		if msg.err != nil {
 			m.Err = msg.err.Error()
+			return m, nil
+		}
+		// The gate above stops new fetches; this drops the one already in
+		// flight when the operator scrolled up. The mode check matters: a late
+		// message arriving under the timeline door is not this door's to eat.
+		if m.currentMode() == "transcript" && !m.stream.Follow && len(m.doorLines) > 0 {
 			return m, nil
 		}
 		m.doorLines = msg.lines
@@ -1373,6 +1379,15 @@ func (m Model) currentMode() string {
 		return ""
 	}
 	return m.modes[len(m.modes)-1]
+}
+
+// followingTranscript is the refetch gate. Both refetch sites go through it so
+// they cannot disagree about when the transcript is live: m.doorLines is
+// replaced wholesale on every tick and every event batch from an evicting ring
+// buffer, so an offset alone does not anchor to content — freezing the fetch is
+// what makes reading older output stable rather than merely tolerable.
+func (m Model) followingTranscript() bool {
+	return m.currentMode() == "transcript" && m.stream.Follow
 }
 
 // layoutWidth is the one place the non-positive-width fallback lives: the whole

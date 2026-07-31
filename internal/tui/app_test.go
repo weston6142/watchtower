@@ -783,3 +783,51 @@ func TestTranscriptScrollKeys(t *testing.T) {
 		t.Fatal("re-arming follow issued no fetch")
 	}
 }
+
+// One predicate at both refetch sites, so the two cannot disagree. Batched
+// tea.Cmds are opaque, so the predicate is asserted directly.
+func TestFollowingTranscriptGatesRefetch(t *testing.T) {
+	m := Model{}
+	if m.followingTranscript() {
+		t.Fatal("no mode must not fetch")
+	}
+	m.modes = []string{"timeline"}
+	m.stream = streamState{Follow: true}
+	if m.followingTranscript() {
+		t.Fatal("timeline mode must not fetch the transcript")
+	}
+	m.modes = []string{"transcript"}
+	if !m.followingTranscript() {
+		t.Fatal("a following transcript door must keep fetching")
+	}
+	m.stream = streamState{Top: 10}
+	if m.followingTranscript() {
+		t.Fatal("a held transcript door must not fetch")
+	}
+}
+
+// The gate stops new fetches; this drops the one already in flight when the
+// operator scrolled up, which would otherwise shift the held window once.
+func TestHeldTranscriptDropsLateFetch(t *testing.T) {
+	m := Model{modes: []string{"transcript"}, stream: streamState{Top: 10},
+		doorLines: []string{"brainstorm │ held"}}
+	next, _ := m.Update(transcriptMsg{lines: []string{"brainstorm │ fresh"}})
+	if got := next.(Model).doorLines; len(got) != 1 || got[0] != "brainstorm │ held" {
+		t.Fatalf("held door took a late fetch: %v", got)
+	}
+
+	// Nothing to hold: the lines are accepted.
+	empty := Model{modes: []string{"transcript"}, stream: streamState{Top: 10}}
+	next, _ = empty.Update(transcriptMsg{lines: []string{"brainstorm │ fresh"}})
+	if got := next.(Model).doorLines; len(got) != 1 || got[0] != "brainstorm │ fresh" {
+		t.Fatalf("empty door refused the first fetch: %v", got)
+	}
+
+	// The error branch is untouched.
+	bad := Model{modes: []string{"transcript"}, stream: streamState{Top: 10},
+		doorLines: []string{"brainstorm │ held"}}
+	next, _ = bad.Update(transcriptMsg{err: errors.New("boom")})
+	if next.(Model).Err != "boom" {
+		t.Fatalf("error branch = %q", next.(Model).Err)
+	}
+}
