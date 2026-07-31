@@ -419,7 +419,7 @@ func (sv *Server) overview() (Overview, error) {
 		}
 	}
 	now := time.Now()
-	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	midnight := core.StartOfDay(now)
 	today, err := sv.st.EventsSinceTime(midnight)
 	if err != nil {
 		return Overview{}, err
