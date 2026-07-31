@@ -1451,6 +1451,24 @@ func (m *Model) updateDoorKey(key string) tea.Cmd {
 				m.popMode()
 			}
 		}
+	case "transcript":
+		switch key {
+		case "j", "k", "d", "u", "g", "G":
+		default:
+			// Every other key leaves the position alone. Routing every key
+			// through scroll would re-clamp Top against a total that ring
+			// eviction may have shrunk, silently re-attaching a held view on
+			// an unrelated keypress.
+			return nil
+		}
+		before := m.stream.Follow
+		total := len(streamBody(m.doorLines, streamInner(m.layoutWidth())))
+		m.stream = m.stream.scroll(key, streamRows(m.Height), total)
+		if !before && m.stream.Follow {
+			// Returning to live must not look stalled for up to a tick.
+			return m.fetchTranscript()
+		}
+		return nil
 	}
 	return nil
 }
@@ -1643,8 +1661,13 @@ func (m Model) View() string {
 		b.WriteString(tower)
 		b.WriteString("\n\n")
 		bindings := [][2]string{{"j/k", "select"}, {"enter", "open"}, {"esc", "back"}, {"q", "quit"}}
-		if m.currentMode() == "tray" {
+		switch m.currentMode() {
+		case "tray":
 			bindings = [][2]string{{"j/k", "select"}, {"enter", "accept → new issue"}, {"r", "reject"}, {"esc", "back"}, {"q", "quit"}}
+		case "transcript":
+			// A reading surface, not a list: "select"/"open" describe neither
+			// what the keys do here nor anything the door can act on.
+			bindings = [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "oldest/newest"}, {"esc", "back"}, {"q", "quit"}}
 		}
 		b.WriteString(renderKeybar(layoutWidth, bindings, errText(m.Err)))
 		screen := b.String()

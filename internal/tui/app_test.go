@@ -730,9 +730,11 @@ func TestPopModeResetsStreamState(t *testing.T) {
 	if !m.stream.Follow {
 		t.Fatalf("T opened the door detached: %+v", m.stream)
 	}
-	// Set the offset directly rather than through a key: the scroll arm does
-	// not exist yet, and popMode is what this test is about.
-	m.stream = streamState{Top: 40}
+	m.doorLines = deepStream(200)
+	m = pressKey(t, m, "k")
+	if m.stream.Follow || m.stream.Top == 0 {
+		t.Fatalf("k did not detach: %+v", m.stream)
+	}
 	m = pressKey(t, m, "esc")
 	if (m.stream != streamState{Top: 0, Follow: true}) {
 		t.Fatalf("popMode left a stale offset: %+v", m.stream)
@@ -740,5 +742,44 @@ func TestPopModeResetsStreamState(t *testing.T) {
 	m = pressKey(t, m, "T")
 	if (m.stream != streamState{Top: 0, Follow: true}) {
 		t.Fatalf("reopened door = %+v, want {Top:0 Follow:true}", m.stream)
+	}
+}
+
+// Inside the door j/k/d/u/g/G are the door's; re-arming follow refreshes at
+// once rather than waiting up to a tick.
+func TestTranscriptScrollKeys(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	m = pressKey(t, m, "T")
+	m.doorLines = deepStream(200)
+	m.Width, m.Height = 100, 40
+
+	m = pressKey(t, m, "k")
+	if m.stream.Follow || m.stream.Top == 0 {
+		t.Fatalf("k did not detach: %+v", m.stream)
+	}
+	up := m.stream.Top
+	m = pressKey(t, m, "down")
+	if m.stream.Top != up+1 {
+		t.Fatalf("down did not behave as j: %d then %d", up, m.stream.Top)
+	}
+	m = pressKey(t, m, "g")
+	if m.stream.Top != 0 || m.stream.Follow {
+		t.Fatalf("g did not reach the oldest row: %+v", m.stream)
+	}
+
+	// fetchTranscript returns nil without a client, and the package has no stub,
+	// so the re-arm assertion needs a client value. proto.Client's fields are all
+	// unexported and none is set; the returned closure is never invoked.
+	m.client = &proto.Client{}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+	m = next.(Model)
+	if !m.stream.Follow {
+		t.Fatalf("G did not re-attach: %+v", m.stream)
+	}
+	if cmd == nil {
+		t.Fatal("re-arming follow issued no fetch")
 	}
 }
