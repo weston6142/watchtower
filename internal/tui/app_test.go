@@ -329,6 +329,40 @@ func TestBacklogModalSubmitReturnsToBacklog(t *testing.T) {
 	}
 }
 
+// With no daemon attached the submit short-circuits before any command is sent.
+// That branch owes the return rule too — for a draft filed from the backlog and
+// for an edit of an existing one.
+func TestNilClientSubmitRestoresBacklog(t *testing.T) {
+	t.Run("from backlog", func(t *testing.T) {
+		m := Model{State: backlogFixtureState()}
+		m = pressKey(t, m, "b")
+		m = pressKey(t, m, "n")
+		m.modal.Title = "a new draft"
+		m = pressKey(t, m, "ctrl+s")
+		if m.modal != nil {
+			t.Fatal("clientless submit left the modal open")
+		}
+		if m.backlog == nil {
+			t.Fatal("clientless submit from the backlog landed on the grid")
+		}
+	})
+	t.Run("editing a draft", func(t *testing.T) {
+		m := Model{State: backlogFixtureState()}
+		m = pressKey(t, m, "b")
+		m = pressKey(t, m, "enter")
+		if m.modal == nil || m.modal.EditID == "" {
+			t.Fatalf("enter did not open an edit modal: %+v", m.modal)
+		}
+		m = pressKey(t, m, "ctrl+s")
+		if m.modal != nil {
+			t.Fatal("clientless submit left the modal open")
+		}
+		if m.backlog == nil {
+			t.Fatal("clientless submit of an edit landed on the grid")
+		}
+	})
+}
+
 func toastModel(t *testing.T) Model {
 	t.Helper()
 	m := NewModel(nil, []string{"brainstorm", "spec"})

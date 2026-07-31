@@ -478,6 +478,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.client == nil {
+					// Nothing to send, but the way back is still owed: without
+					// this the operator is dropped on the grid whenever no
+					// daemon is attached.
+					if m.modal.EditID != "" || m.modal.FromBacklog {
+						m.backlog = &backlogState{}
+					}
 					m.modal = nil
 					return m, nil
 				}
