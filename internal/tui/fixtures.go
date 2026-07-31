@@ -262,6 +262,9 @@ func FixtureModel(flowName string, width, height int) Model {
 		m.help = true
 	case "stream":
 		m.modes = []string{"transcript"}
+		// The fixture pushes modes directly rather than going through T, so it
+		// has to set the reading position itself.
+		m.stream = streamState{Follow: true}
 		m.doorLines = []string{
 			"brainstorm │ Requirements settled. brainstorm.md is written to the issue directory.",
 			"brainstorm │ ↳ Read internal/engine/engine.go",

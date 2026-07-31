@@ -670,6 +670,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.modes = append(m.modes, "transcript")
+			// Follow cannot carry a safe zero value — it is derived, and g
+			// legitimately produces {Top: 0, Follow: false} — so every site
+			// that opens the door says so.
+			m.stream = streamState{Follow: true}
 			return m, m.fetchTranscript()
 		case "u":
 			m.modes = append(m.modes, "shelf")
@@ -1391,6 +1395,7 @@ func (m *Model) popMode() {
 	m.proposals = nil
 	m.doorSel = 0
 	m.shelfSel = 0
+	m.stream = streamState{Follow: true}
 }
 
 func (m *Model) updateDoorKey(key string) tea.Cmd {

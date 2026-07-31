@@ -718,3 +718,27 @@ func TestAttachFieldTakesHAndLThroughKeyRouter(t *testing.T) {
 		t.Fatalf("typing a path cycled Priority to %d", m.modal.Priority)
 	}
 }
+
+// A stale offset on reopen is the obvious regression, and the zero streamState
+// means detached at row 0 rather than following — so popMode has to reset it.
+func TestPopModeResetsStreamState(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	m = pressKey(t, m, "T")
+	if !m.stream.Follow {
+		t.Fatalf("T opened the door detached: %+v", m.stream)
+	}
+	// Set the offset directly rather than through a key: the scroll arm does
+	// not exist yet, and popMode is what this test is about.
+	m.stream = streamState{Top: 40}
+	m = pressKey(t, m, "esc")
+	if (m.stream != streamState{Top: 0, Follow: true}) {
+		t.Fatalf("popMode left a stale offset: %+v", m.stream)
+	}
+	m = pressKey(t, m, "T")
+	if (m.stream != streamState{Top: 0, Follow: true}) {
+		t.Fatalf("reopened door = %+v, want {Top:0 Follow:true}", m.stream)
+	}
+}
