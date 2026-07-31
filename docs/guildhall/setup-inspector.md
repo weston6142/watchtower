@@ -20,7 +20,7 @@ post-flag-override on purpose, including the workspace provider, which
 byte-comparable. `LoadedAt` is formatted to a string once, at startup, and the
 TUI fixtures pin it for the same reason.
 
-Four rules hold for any new overlay, not just this one:
+Five rules hold for any new overlay, not just this one:
 
 - **It has to be ordered against the pager arms in two places.**
   `Model.Update`'s key handling and `Model.View` are each a single if/else-if
@@ -35,6 +35,19 @@ Four rules hold for any new overlay, not just this one:
 - **An arm handling an async response must re-check the overlay is still open
   before acting.** `f` closes the panel, and the socket round trip it started
   can land afterwards.
+- **A surface that polls holds its reading position by gating the poll, and
+  gating the fetch is not enough on its own.** `m.doorLines` is replaced
+  wholesale from an evicting ring buffer, so an offset alone keeps pointing at
+  content that moved — the stream door freezes the refetch instead, through the
+  single `followingTranscript()` predicate, because the transcript has *two*
+  refetch sites (the `tickMsg` arm and the `Msg` arm) that must not disagree. One
+  response is still in flight when the operator scrolls away, so the
+  `transcriptMsg` arm discards a late reply while the door is detached and
+  already holds lines — checking the current mode first, since a reply landing
+  under a different door is not this arm's to eat. And because
+  `streamState.Follow` is *derived* from the clamped `Top`, its zero value means
+  detached at row 0, not following: `T`, `popMode` and the fixtures each say
+  `Follow: true` explicitly, and a site that forgets renders the oldest rows.
 - **`overlayCenter` degrades to `lipgloss.Place` — dropping the dimmed base,
   silently — once the box reaches the terminal's full width or height.** So an
   overlay pins its chrome rows to stay shorter than the terminal, and pins its
