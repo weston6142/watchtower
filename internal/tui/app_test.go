@@ -1004,3 +1004,62 @@ func TestStreamDoorFitsTerminalWithMultiLineError(t *testing.T) {
 		requireHeaderRow(t, m, size)
 	}
 }
+
+// shelfMerged is the fixed merge instant T2/T3/T5 hang their cutoffs off.
+// Explicitly UTC so the day boundary does not depend on the machine's zone.
+var shelfMerged = time.Date(2026, 7, 31, 9, 0, 0, 0, time.UTC)
+
+// shippedShelfModel poses one retired, merged lane. Retired because shelfItems
+// only lists shipped lanes that have already left the grid.
+func shippedShelfModel(t *testing.T, mergedAt time.Time) Model {
+	t.Helper()
+	m := NewModel(nil, []string{"spec", "merge"})
+	m.State.Issues["GH-1"] = &projection.IssueView{
+		ID: "GH-1", Title: "shipped", State: "done", Merged: true, MergedAt: mergedAt}
+	m.State.Shipped = []string{"GH-1"}
+	m.retired["GH-1"] = true
+	return m
+}
+
+// T2 — the shelf covers merges at or after local midnight and nothing earlier.
+func TestShelfItemsScopesShippedToToday(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		dayStart time.Time
+		want     int
+	}{
+		{"merged today", core.StartOfDay(shelfMerged), 1},
+		{"merged before midnight", core.StartOfDay(shelfMerged.Add(24 * time.Hour)), 0},
+		{"merged exactly at the cutoff", shelfMerged, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := shippedShelfModel(t, shelfMerged)
+			m.dayStart = tc.dayStart
+			if got := m.shelfItems(); len(got) != tc.want {
+				t.Fatalf("shelf items = %d (%+v), want %d", len(got), got, tc.want)
+			}
+		})
+	}
+}
+
+// T3 — FR4: a zero MergedAt fails open and stays on the shelf.
+func TestShelfItemsKeepsShippedLaneWithZeroMergedAt(t *testing.T) {
+	m := shippedShelfModel(t, time.Time{})
+	m.dayStart = core.StartOfDay(shelfMerged)
+	if got := m.shelfItems(); len(got) != 1 || got[0].ID != "GH-1" {
+		t.Fatalf("zero MergedAt was filtered out: %+v", got)
+	}
+}
+
+// T5 — FR6: one state, evaluated either side of a midnight rollover.
+func TestShelfClearsAcrossMidnightRollover(t *testing.T) {
+	m := shippedShelfModel(t, shelfMerged)
+	m.dayStart = core.StartOfDay(shelfMerged)
+	if got := m.shelfItems(); len(got) != 1 {
+		t.Fatalf("before rollover: shelf items = %d, want 1", len(got))
+	}
+	m.dayStart = core.StartOfDay(shelfMerged.Add(24 * time.Hour))
+	if got := m.shelfItems(); len(got) != 0 {
+		t.Fatalf("after rollover: shelf items = %d (%+v), want 0", len(got), got)
+	}
+}

@@ -75,19 +75,23 @@ type Model struct {
 	warExpanded      bool
 	retireAfter      time.Duration
 	retired          map[string]bool
-	shelfSel         int
-	modal            *modalState
-	backlog          *backlogState
-	confirm          *confirmState
-	decisionEditor   *decisionEditor
-	leverEditor      *leverEditorState
-	wantLeverEditor  bool
-	setup            *setupState
-	wantSetup        bool
-	aliases          map[string]string
-	reducedMotion    bool
-	herdrReporter    overviewReporter
-	ticks            int
+	// dayStart is local midnight of the current day, refreshed on every tick.
+	// Injected rather than read from the clock so render paths stay
+	// deterministic and the goldens stay byte-comparable.
+	dayStart        time.Time
+	shelfSel        int
+	modal           *modalState
+	backlog         *backlogState
+	confirm         *confirmState
+	decisionEditor  *decisionEditor
+	leverEditor     *leverEditorState
+	wantLeverEditor bool
+	setup           *setupState
+	wantSetup       bool
+	aliases         map[string]string
+	reducedMotion   bool
+	herdrReporter   overviewReporter
+	ticks           int
 }
 
 type Msg struct{ Events []core.Event }
@@ -1502,6 +1506,13 @@ func (m *Model) updateDoorKey(key string) tea.Cmd {
 	return nil
 }
 
+// staleShipped reports whether a merged lane was merged before the current
+// day began. A zero MergedAt and a zero dayStart both fail open: a lane is
+// never hidden on a missing timestamp.
+func (m *Model) staleShipped(iv *projection.IssueView) bool {
+	return iv != nil && iv.Merged && !iv.MergedAt.IsZero() && iv.MergedAt.Before(m.dayStart)
+}
+
 func (m *Model) autoRetire(now time.Time) {
 	if m.State == nil || m.retireAfter <= 0 {
 		return
@@ -1551,6 +1562,11 @@ func (m Model) shelfItems() []shelfItem {
 			continue
 		}
 		if iv := m.State.Issues[issueID]; iv != nil {
+			// The heading says "SHIPPED today", so earlier days' merges are
+			// not on this shelf.
+			if m.staleShipped(iv) {
+				continue
+			}
 			items = append(items, shelfItem{ID: issueID, Title: iv.Title})
 			seen[issueID] = true
 		}
