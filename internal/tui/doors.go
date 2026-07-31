@@ -164,6 +164,27 @@ const (
 	streamToolPrefix = "↳ "
 )
 
+// streamChromeRows is what a stream-door screen spends on chrome rather than
+// body. Verified row for row against testdata/stream-wide.golden, which is 15
+// rows for a 5-row body: 1 header + 1 notice row + 4 renderBox (top border,
+// title band, blank, bottom border) + 2 inside the box (the door's own blank
+// line and footer) + 2 under it (blank line and keybar).
+const streamChromeRows = 10
+
+// streamInner is the door's usable content width: the border, the padding and
+// the gutter's own width come off the screen width.
+func streamInner(width int) int { return max(20, width-8) }
+
+// streamRows is how many body rows fit. A non-positive height means no
+// WindowSizeMsg has landed yet, so it borrows backlogFallbackRows rather than
+// spelling a second literal that could drift from it.
+func streamRows(height int) int {
+	if height <= 0 {
+		height = backlogFallbackRows
+	}
+	return max(1, height-streamChromeRows)
+}
+
 // renderStreamDoor is the live agent view. Unlike the timeline it is watched
 // while a stage runs, so it wears the same box chrome as the help overlay and
 // gives its content typography: dim stage gutter, prose in Text, turn markers

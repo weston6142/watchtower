@@ -1370,6 +1370,17 @@ func (m Model) currentMode() string {
 	return m.modes[len(m.modes)-1]
 }
 
+// layoutWidth is the one place the non-positive-width fallback lives: the whole
+// screen — rail, tower, keybar and the stream door's inner width — has to agree
+// on the number, and a key arm computing it separately from View is exactly the
+// disagreement these helpers exist to prevent.
+func (m Model) layoutWidth() int {
+	if m.Width <= 0 {
+		return 120
+	}
+	return m.Width
+}
+
 func (m *Model) popMode() {
 	if len(m.modes) == 0 {
 		return
@@ -1600,10 +1611,7 @@ func (m Model) writeHeaderRows(b *strings.Builder, width int) {
 }
 
 func (m Model) View() string {
-	layoutWidth := m.Width
-	if layoutWidth <= 0 {
-		layoutWidth = 120
-	}
+	layoutWidth := m.layoutWidth()
 	railWidth := max(24, min(40, layoutWidth/3))
 	towerWidth := max(1, layoutWidth-railWidth-1)
 	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth, m.warExpanded, m.retired)

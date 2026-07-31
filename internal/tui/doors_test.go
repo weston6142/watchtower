@@ -96,3 +96,27 @@ func TestStreamDoorEmpty(t *testing.T) {
 		t.Fatalf("empty door = %q", got)
 	}
 }
+
+// Update and View must agree about how many rows exist and how many fit, so the
+// geometry lives in one helper per axis and the fallbacks live inside them.
+func TestStreamGeometry(t *testing.T) {
+	if got := streamInner(200); got != 192 {
+		t.Fatalf("streamInner(200) = %d, want 192", got)
+	}
+	if got := streamInner(10); got != 20 {
+		t.Fatalf("streamInner(10) = %d, want 20 (floor)", got)
+	}
+	for _, c := range []struct{ height, want int }{
+		{50, 40}, {40, 30}, {11, 1}, {5, 1}, {0, backlogFallbackRows - streamChromeRows}, {-3, 22},
+	} {
+		if got := streamRows(c.height); got != c.want {
+			t.Fatalf("streamRows(%d) = %d, want %d", c.height, got, c.want)
+		}
+	}
+	if got := (Model{Width: 0}).layoutWidth(); got != 120 {
+		t.Fatalf("layoutWidth(0) = %d, want 120", got)
+	}
+	if got := (Model{Width: 88}).layoutWidth(); got != 88 {
+		t.Fatalf("layoutWidth(88) = %d, want 88", got)
+	}
+}
