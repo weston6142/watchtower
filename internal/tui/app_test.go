@@ -1005,7 +1005,7 @@ func TestStreamDoorFitsTerminalWithMultiLineError(t *testing.T) {
 	}
 }
 
-// shelfMerged is the fixed merge instant T2/T3/T5 hang their cutoffs off.
+// shelfMerged is the fixed merge instant the shelf tests hang their cutoffs off.
 // Explicitly UTC so the day boundary does not depend on the machine's zone.
 var shelfMerged = time.Date(2026, 7, 31, 9, 0, 0, 0, time.UTC)
 
@@ -1021,7 +1021,7 @@ func shippedShelfModel(t *testing.T, mergedAt time.Time) Model {
 	return m
 }
 
-// T2 — the shelf covers merges at or after local midnight and nothing earlier.
+// The shelf covers merges at or after local midnight and nothing earlier.
 func TestShelfItemsScopesShippedToToday(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -1042,7 +1042,7 @@ func TestShelfItemsScopesShippedToToday(t *testing.T) {
 	}
 }
 
-// T3 — FR4: a zero MergedAt fails open and stays on the shelf.
+// A zero MergedAt fails open and stays on the shelf.
 func TestShelfItemsKeepsShippedLaneWithZeroMergedAt(t *testing.T) {
 	m := shippedShelfModel(t, time.Time{})
 	m.dayStart = core.StartOfDay(shelfMerged)
@@ -1051,7 +1051,7 @@ func TestShelfItemsKeepsShippedLaneWithZeroMergedAt(t *testing.T) {
 	}
 }
 
-// T5 — FR6: one state, evaluated either side of a midnight rollover.
+// One state, evaluated either side of a midnight rollover.
 func TestShelfClearsAcrossMidnightRollover(t *testing.T) {
 	m := shippedShelfModel(t, shelfMerged)
 	m.dayStart = core.StartOfDay(shelfMerged)
@@ -1084,7 +1084,7 @@ func staleGridModel(t *testing.T) (Model, time.Time) {
 	return m, now
 }
 
-// T4 — FR3: staleness retires a lane the retireAfter timer has not reached.
+// Staleness retires a lane the retireAfter timer has not reached.
 func TestAutoRetireRetiresStaleShippedBeforeRetireAfter(t *testing.T) {
 	m, now := staleGridModel(t)
 	m.autoRetire(now)
@@ -1093,7 +1093,7 @@ func TestAutoRetireRetiresStaleShippedBeforeRetireAfter(t *testing.T) {
 	}
 }
 
-// T6 — G2: the stale lane leaves the grid, not only the shelf.
+// The stale lane leaves the grid, not only the shelf.
 func TestVisibleOrderDropsStaleShippedLane(t *testing.T) {
 	m, now := staleGridModel(t)
 	if got := visibleOrder(m.State, m.retired); len(got) != 1 {
@@ -1108,8 +1108,8 @@ func TestVisibleOrderDropsStaleShippedLane(t *testing.T) {
 	}
 }
 
-// T7 — §11.1: retireAfter is unreachably non-positive in production, which is
-// what makes autoRetire's retained `retireAfter <= 0` early return harmless.
+// retireAfter is unreachably non-positive in production, which is what makes
+// autoRetire's retained `retireAfter <= 0` early return harmless.
 // This pins existing behavior; it passes before the change too.
 func TestRetireAfterStaysPositive(t *testing.T) {
 	m := NewModel(nil, []string{"spec", "merge"})
@@ -1127,8 +1127,8 @@ func TestRetireAfterStaysPositive(t *testing.T) {
 	}
 }
 
-// T8 — OR4/OR5: the tick assigns dayStart from a single clock read and does so
-// before autoRetire, so a stale lane is retired on that same tick.
+// The tick assigns dayStart from a single clock read and does so before
+// autoRetire, so a stale lane is retired on that same tick.
 func TestTickRefreshesDayStartBeforeRetiring(t *testing.T) {
 	m := NewModel(nil, []string{"spec", "merge"})
 	m.SetRetireAfter(1000 * time.Hour) // the timer can never fire here
@@ -1158,7 +1158,7 @@ func TestTickRefreshesDayStartBeforeRetiring(t *testing.T) {
 	}
 }
 
-// G2: a lane that took a final stage failure (or was killed) and later merged
+// A lane that took a final stage failure (or was killed) and later merged
 // sits in both State.Parked and State.Shipped — GH-6 in the live store is
 // exactly this shape. Once stale it must leave the shelf outright, not slide
 // from SHIPPED today into PARKED.
