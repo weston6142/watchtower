@@ -19,7 +19,7 @@ import (
 
 // FixtureFlows lists every posable flow, in spec order.
 func FixtureFlows() []string {
-	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "backlog", "backlog-long", "levers", "arch", "pager", "help", "stream", "setup"}
+	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "backlog", "backlog-long", "levers", "arch", "pager", "help", "stream", "stream-long", "setup"}
 }
 
 func fixtureState() *projection.State {
@@ -272,6 +272,10 @@ func FixtureModel(flowName string, width, height int) Model {
 			"brainstorm │ The rename target is real: the remote is weston6142/watchtower and go.mod already agrees.",
 			"brainstorm │ — turn complete (13560 tokens) —",
 		}
+	case "stream-long":
+		m.modes = []string{"transcript"}
+		m.stream = streamState{Follow: true}
+		m.doorLines = fixtureStreamLong()
 	case "setup":
 		m.Focus = Focus{Issue: "fx-e2e"}
 		m.setup = fixtureSetup()
@@ -286,4 +290,39 @@ func SnapshotFlow(flowName string, width, height int) string {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	m := FixtureModel(flowName, width, height)
 	return m.View()
+}
+
+// fixtureStreamLong is deeper than both golden terminals, so the goldens catch
+// a height regression the five-line stream fixture cannot: a content-sized
+// fixture renders byte-identically whether or not height reaches the sizing
+// arithmetic. Every prose line is between 80 and 179 cells, so it wraps on the
+// narrow golden and not on the wide one — which is what proves wrapped rows,
+// not raw lines, feed the window.
+func fixtureStreamLong() []string {
+	prose := []string{
+		"Reading internal/tui/doors.go to see how the stream door builds its rows before touching the windowing arithmetic at all.",
+		"The stage gutter is thirteen cells wide, so prose wraps at seventy-nine cells on a narrow terminal and one hundred seventy-nine on a wide one.",
+		"renderBox sizes its frame to the widest content line it is handed, which is why every body row is padded out to exactly the inner width.",
+		"The transcript ring holds five hundred lines per issue and stage pair, and Tail merges an issue's stages together before it trims to n.",
+		"Scrolling up detaches the door from the newest output and freezes the refetch, so the window stays put while the stage keeps emitting.",
+		"Returning to the bottom by any route re-attaches, because Follow is derived from the clamped Top rather than toggled by a keypress.",
+	}
+	tools := []string{
+		"↳ Read(internal/tui/doors.go)",
+		"↳ Bash(go test ./internal/tui)",
+		"↳ Grep(renderStreamDoor)",
+		"↳ Edit(internal/tui/app.go)",
+	}
+	var lines []string
+	for i := 0; i < 60; i++ {
+		switch {
+		case i == 19 || i == 43:
+			lines = append(lines, "brainstorm │ — turn complete (13560 tokens) —")
+		case i%5 == 3:
+			lines = append(lines, "brainstorm │ "+tools[(i/5)%len(tools)])
+		default:
+			lines = append(lines, "brainstorm │ "+prose[i%len(prose)])
+		}
+	}
+	return lines
 }

@@ -309,3 +309,37 @@ func TestStreamDoorShowsHeldAndFollowing(t *testing.T) {
 		t.Fatalf("a body that fits must show no position:\n%s", short)
 	}
 }
+
+// The stream-long goldens only prove the height plumbing if the fixture wraps
+// narrow and not wide — otherwise both goldens are the same shape and the row
+// arithmetic is untested. The gutter "brainstorm │ " is 13 cells, so prose
+// wraps at 79 cells on the narrow golden and 179 on the wide one.
+func TestStreamLongFixtureWrapsNarrowOnly(t *testing.T) {
+	lines := fixtureStreamLong()
+	if len(lines) < 60 {
+		t.Fatalf("fixture is %d lines, want at least 60", len(lines))
+	}
+	prose := 0
+	for i, line := range lines {
+		stage, text, found := strings.Cut(line, streamGutterSep)
+		if !found || stage != "brainstorm" {
+			t.Fatalf("line %d has no brainstorm gutter: %q", i, line)
+		}
+		if strings.HasPrefix(text, streamToolPrefix) || strings.Contains(text, "turn complete") {
+			continue
+		}
+		prose++
+		if w := lipgloss.Width(text); w <= 79 || w > 179 {
+			t.Fatalf("line %d width %d is outside (79, 179]: %q", i, w, text)
+		}
+	}
+	if prose < 30 {
+		t.Fatalf("only %d prose lines; too few to clip the narrow golden", prose)
+	}
+	if got := len(streamBody(lines, 192)); got <= streamRows(50) {
+		t.Fatalf("wide body is %d rows, want more than %d", got, streamRows(50))
+	}
+	if got := len(streamBody(lines, 92)); got <= streamRows(40) {
+		t.Fatalf("narrow body is %d rows, want more than %d", got, streamRows(40))
+	}
+}
