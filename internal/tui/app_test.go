@@ -1157,3 +1157,16 @@ func TestTickRefreshesDayStartBeforeRetiring(t *testing.T) {
 		t.Fatalf("stale lane still on the shelf: %+v", got.shelfItems())
 	}
 }
+
+// G2: a lane that took a final stage failure (or was killed) and later merged
+// sits in both State.Parked and State.Shipped — GH-6 in the live store is
+// exactly this shape. Once stale it must leave the shelf outright, not slide
+// from SHIPPED today into PARKED.
+func TestStaleShippedDoesNotResurfaceAsParked(t *testing.T) {
+	m := shippedShelfModel(t, shelfMerged)
+	m.State.Parked = []string{"GH-1"}
+	m.dayStart = core.StartOfDay(shelfMerged.Add(24 * time.Hour))
+	if got := m.shelfItems(); len(got) != 0 {
+		t.Fatalf("stale shipped lane resurfaced on the shelf: %+v", got)
+	}
+}

@@ -1576,8 +1576,12 @@ func (m Model) shelfItems() []shelfItem {
 		}
 		if iv := m.State.Issues[issueID]; iv != nil {
 			// The heading says "SHIPPED today", so earlier days' merges are
-			// not on this shelf.
+			// not on this shelf. Mark it seen anyway: a lane that took a final
+			// stage failure before it merged is still in State.Parked, and
+			// dropping it here without claiming it would only move it under
+			// PARKED instead of taking it off the shelf.
 			if m.staleShipped(iv) {
+				seen[issueID] = true
 				continue
 			}
 			items = append(items, shelfItem{ID: issueID, Title: iv.Title})
