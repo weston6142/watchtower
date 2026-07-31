@@ -401,7 +401,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Err = msg.response.Error
 			return m, nil
 		}
-		if m.modal != nil && m.modal.EditID != "" {
+		if m.modal != nil && (m.modal.EditID != "" || m.modal.FromBacklog) {
 			m.backlog = &backlogState{}
 		}
 		m.modal = nil
@@ -468,7 +468,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.modal != nil {
 			switch key {
 			case "esc":
-				if m.modal.EditID != "" {
+				if m.modal.EditID != "" || m.modal.FromBacklog {
 					m.backlog = &backlogState{}
 				}
 				m.modal = nil

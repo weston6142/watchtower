@@ -299,6 +299,36 @@ func TestGridNLeavesFromBacklogFalse(t *testing.T) {
 	}
 }
 
+// esc out of a backlog-opened modal goes back to the backlog, the same way esc
+// out of an edit modal already does.
+func TestBacklogModalEscReturnsToBacklog(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	m = pressKey(t, m, "n")
+	m = pressKey(t, m, "esc")
+	if m.modal != nil {
+		t.Fatal("esc did not close the modal")
+	}
+	if m.backlog == nil {
+		t.Fatal("esc from a backlog-opened modal landed on the grid")
+	}
+}
+
+// A successful create lands the operator back in the backlog they filed from.
+func TestBacklogModalSubmitReturnsToBacklog(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	m = pressKey(t, m, "n")
+	next, _ := m.Update(createIssueMsg{response: proto.Response{OK: true}})
+	m = next.(Model)
+	if m.modal != nil {
+		t.Fatal("a successful create left the modal open")
+	}
+	if m.backlog == nil {
+		t.Fatal("a successful create from the backlog landed on the grid")
+	}
+}
+
 func toastModel(t *testing.T) Model {
 	t.Helper()
 	m := NewModel(nil, []string{"brainstorm", "spec"})
