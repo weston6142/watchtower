@@ -164,6 +164,8 @@ const (
 	streamToolPrefix = "↳ "
 )
 
+const streamEmptyNotice = "nothing here yet — either the stage just started or the transcript was lost to a daemon restart"
+
 // streamChromeRows is what a stream-door screen spends on chrome rather than
 // body. Verified row for row against testdata/stream-wide.golden, which is 15
 // rows for a 5-row body: 1 header + 1 notice row + 4 renderBox (top border,
@@ -190,15 +192,27 @@ func streamRows(height int) int {
 // gives its content typography: dim stage gutter, prose in Text, turn markers
 // promoted from a line of prose into a rule.
 func renderStreamDoor(subtitle string, lines []string, width int) string {
+	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
+	body := streamBody(lines, streamInner(width))
+	foot := keyChip("esc") + dim.Render(" close  ") + keyChip("q") + dim.Render(" quit")
+	return renderBox("stream", subtitle, " esc close ", strings.Join(append(body, "", foot), "\n"))
+}
+
+// streamBody turns transcript lines into styled body rows. Every row it returns
+// is exactly inner cells wide — renderBox sizes the frame to its widest content
+// line, so an unpadded or over-long row would move the frame as the window
+// scrolls over it, silently, and take the footer's gap arithmetic with it.
+func streamBody(lines []string, inner int) []string {
 	t := activeTheme
 	gutter := lipgloss.NewStyle().Foreground(t.Dimmer)
 	prose := lipgloss.NewStyle().Foreground(t.Text)
 	dim := lipgloss.NewStyle().Foreground(t.Dim)
-	inner := max(20, width-8) // border, padding, and the gutter's own width
 
 	var body []string
 	if len(lines) == 0 {
-		body = append(body, gutter.Render("nothing here yet — either the stage just started or the transcript was lost to a daemon restart"))
+		for _, row := range strings.Split(ansi.Wrap(streamEmptyNotice, inner, ""), "\n") {
+			body = append(body, padStyled(gutter.Render(row), inner))
+		}
 	}
 	for _, line := range lines {
 		stage, text, found := strings.Cut(line, streamGutterSep)
@@ -214,13 +228,22 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 		if stage != "" {
 			lead = stage + streamGutterSep
 		}
+		// "merge-verification │ " is 21 cells against an inner floor of 20, and
+		// padStyled only pads — it cannot shrink an over-wide row. Cut the plain
+		// lead before it is styled, leaving room for the tool-call prefix and at
+		// least one cell of content.
+		lead = truncate(lead, max(1, inner-lipgloss.Width(streamToolPrefix)-1))
 		if rest, ok := strings.CutPrefix(text, streamToolPrefix); ok {
+			// Tool calls are not wrapped, so the plain text is truncated before
+			// it is split and styled: cutting an already-styled string can slice
+			// an escape sequence and bleed colour into the rest of the row.
+			rest = truncate(rest, max(1, inner-lipgloss.Width(lead)-lipgloss.Width(streamToolPrefix)))
 			name, args, _ := strings.Cut(rest, "(")
 			tool := lipgloss.NewStyle().Foreground(t.Structure).Render(name)
 			if args != "" {
 				tool += prose.Render("(" + args)
 			}
-			body = append(body, gutter.Render(lead)+dim.Render(streamToolPrefix)+tool)
+			body = append(body, padStyled(gutter.Render(lead)+dim.Render(streamToolPrefix)+tool, inner))
 			continue
 		}
 		wrapWidth := max(1, inner-lipgloss.Width(lead))
@@ -230,11 +253,10 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 			if i == 0 {
 				marker = lead
 			}
-			body = append(body, gutter.Render(marker)+prose.Render(wrapped))
+			body = append(body, padStyled(gutter.Render(marker)+prose.Render(wrapped), inner))
 		}
 	}
-	foot := keyChip("esc") + dim.Render(" close  ") + keyChip("q") + dim.Render(" quit")
-	return renderBox("stream", subtitle, " esc close ", strings.Join(append(body, "", foot), "\n"))
+	return body
 }
 
 // capitalizeDoor turns legacy ALL-CAPS door names into title case.

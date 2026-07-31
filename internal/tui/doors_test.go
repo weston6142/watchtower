@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
@@ -118,5 +119,43 @@ func TestStreamGeometry(t *testing.T) {
 	}
 	if got := (Model{Width: 88}).layoutWidth(); got != 88 {
 		t.Fatalf("layoutWidth(88) = %d, want 88", got)
+	}
+}
+
+// The box frame sizes to its widest content line, so once the body is windowed
+// a single over-wide or unpadded row makes the frame wobble as the window
+// moves. Every row being exactly inner is the precondition that prevents it.
+func TestStreamBodyRowsAreExactlyInner(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	lines := []string{
+		"brainstorm │ short",
+		"brainstorm │ " + strings.Repeat("prose that has to wrap ", 20),
+		"brainstorm │ ↳ Bash(" + strings.Repeat("go test ./internal/tui ", 20) + ")",
+		"brainstorm │ — turn complete (13560 tokens) —",
+		// The longest real stage name: "merge-verification │ " is 21 cells, so
+		// at inner 20 the lead alone overruns the frame.
+		"merge-verification │ some prose here",
+		"merge-verification │ ↳ Bash(go test ./...)",
+		"no gutter at all on this one",
+	}
+	for _, inner := range []int{20, 92} {
+		rows := streamBody(lines, inner)
+		if len(rows) == 0 {
+			t.Fatalf("inner %d: no rows", inner)
+		}
+		for i, row := range rows {
+			if got := lipgloss.Width(row); got != inner {
+				t.Fatalf("inner %d: row %d width = %d, want %d: %q", inner, i, got, inner, row)
+			}
+		}
+	}
+	// The empty state is prose too: it wraps to the frame instead of past it.
+	for _, row := range streamBody(nil, 20) {
+		if got := lipgloss.Width(row); got != 20 {
+			t.Fatalf("empty-state row width = %d, want 20: %q", got, row)
+		}
+	}
+	if first := ansi.Strip(streamBody(nil, 20)[0]); !strings.HasPrefix(first, "nothing here yet") {
+		t.Fatalf("empty state first row = %q", first)
 	}
 }
