@@ -178,7 +178,7 @@ func TestProjectionTracksShippedAndParked(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "x"}))
 	s.Apply(ev(t, core.EvIssueMerged, "GH-1", nil))
-	if len(s.ShippedToday) != 1 || s.ShippedToday[0] != "GH-1" || s.Issues["GH-1"].MergedAt.IsZero() {
+	if len(s.Shipped) != 1 || s.Shipped[0] != "GH-1" || s.Issues["GH-1"].MergedAt.IsZero() {
 		t.Fatalf("shipped: %+v", s)
 	}
 	s.Apply(ev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "y"}))
@@ -213,8 +213,8 @@ func TestAbandonRemovesLaneEverywhere(t *testing.T) {
 	if len(s.Order) != 1 || s.Order[0] != "GH-2" {
 		t.Fatalf("order not cleaned: %v", s.Order)
 	}
-	if len(s.Parked) != 0 || len(s.ShippedToday) != 0 {
-		t.Fatalf("shelf not cleaned: parked=%v shipped=%v", s.Parked, s.ShippedToday)
+	if len(s.Parked) != 0 || len(s.Shipped) != 0 {
+		t.Fatalf("shelf not cleaned: parked=%v shipped=%v", s.Parked, s.Shipped)
 	}
 	if len(s.Decisions) != 0 {
 		t.Fatalf("decisions survived abandon: %v", s.Decisions)

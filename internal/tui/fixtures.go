@@ -56,7 +56,7 @@ func fixtureState() *projection.State {
 		},
 		Reversible: "Cheap to change until others clone the remote or CI points at it.",
 	}
-	st.ShippedToday = []string{"ml-retry"}
+	st.Shipped = []string{"ml-retry"}
 	st.Parked = []string{"fx-dark"}
 	st.Issues["ml-retry"] = &projection.IssueView{ID: "ml-retry", Title: "retry budget for marshal", Merged: true, State: "done"}
 	st.Issues["fx-dark"] = &projection.IssueView{

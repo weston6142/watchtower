@@ -1509,7 +1509,7 @@ func (m *Model) autoRetire(now time.Time) {
 	if m.retired == nil {
 		m.retired = map[string]bool{}
 	}
-	for _, issueID := range m.State.ShippedToday {
+	for _, issueID := range m.State.Shipped {
 		iv := m.State.Issues[issueID]
 		if iv != nil && !iv.MergedAt.IsZero() && !now.Before(iv.MergedAt.Add(m.retireAfter)) {
 			m.retired[issueID] = true
@@ -1546,7 +1546,7 @@ func (m Model) shelfItems() []shelfItem {
 	}
 	items := make([]shelfItem, 0)
 	seen := map[string]bool{}
-	for _, issueID := range m.State.ShippedToday {
+	for _, issueID := range m.State.Shipped {
 		if !m.retired[issueID] || seen[issueID] {
 			continue
 		}

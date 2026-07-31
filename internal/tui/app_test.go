@@ -448,7 +448,7 @@ func TestChoiceToastOtherOpensEmptyEditor(t *testing.T) {
 func TestShelfAutoRetiresAndUnretiresMergedIssue(t *testing.T) {
 	m := NewModel(nil, []string{"spec", "merge"})
 	m.State.Issues["GH-1"] = &projection.IssueView{ID: "GH-1", Title: "shipped", Merged: true, MergedAt: time.Now().Add(-2 * time.Minute)}
-	m.State.ShippedToday = []string{"GH-1"}
+	m.State.Shipped = []string{"GH-1"}
 	m.SetRetireAfter(time.Minute)
 	m.autoRetire(time.Now())
 	if items := m.shelfItems(); len(items) != 1 || items[0].ID != "GH-1" {
@@ -467,7 +467,7 @@ func retireModel(t *testing.T) Model {
 	m.State.Order = []string{"GH-1", "GH-2"}
 	for _, id := range m.State.Order {
 		m.State.Issues[id] = &projection.IssueView{ID: id, Title: "shipped " + id, State: "done", Merged: true, MergedAt: time.Now()}
-		m.State.ShippedToday = append(m.State.ShippedToday, id)
+		m.State.Shipped = append(m.State.Shipped, id)
 	}
 	m.Ids = map[string]Identity{"GH-1": {Tag: "G1"}, "GH-2": {Tag: "G2"}}
 	m.Width, m.Height = 120, 40

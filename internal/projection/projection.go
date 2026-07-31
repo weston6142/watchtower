@@ -64,9 +64,13 @@ type State struct {
 	Order         []string
 	ProposalCount int
 	Notices       []Notice
-	ShippedToday  []string
-	Parked        []string
-	Backlog       []string
+	// Shipped accumulates every merged lane ID in merge order. It is all-time
+	// and time-free: the projection is a deterministic fold over the event log
+	// and never reads a clock. Consumers that want a day scope filter on
+	// IssueView.MergedAt.
+	Shipped []string
+	Parked  []string
+	Backlog []string
 }
 
 func NewState() *State {
@@ -243,7 +247,7 @@ func (s *State) Apply(ev core.Event) {
 		// An abandoned lane leaves every surface: grid, shelves, and queue.
 		delete(s.Issues, ev.IssueID)
 		removeString(&s.Order, ev.IssueID)
-		removeString(&s.ShippedToday, ev.IssueID)
+		removeString(&s.Shipped, ev.IssueID)
 		removeString(&s.Parked, ev.IssueID)
 		removeString(&s.Backlog, ev.IssueID)
 		for id, d := range s.Decisions {
@@ -269,7 +273,7 @@ func (s *State) Apply(ev core.Event) {
 			iv.MergedAt = ev.At
 			iv.Behind = ""
 		}
-		appendUnique(&s.ShippedToday, ev.IssueID)
+		appendUnique(&s.Shipped, ev.IssueID)
 		for _, other := range s.Issues {
 			if other.Behind == ev.IssueID {
 				other.Behind = ""
