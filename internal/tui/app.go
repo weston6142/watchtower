@@ -65,6 +65,7 @@ type Model struct {
 	proposals        []store.ProposalRow
 	doorSel          int
 	doorLines        []string
+	stream           streamState
 	events           []core.Event
 	archMode         string
 	archSel          int
@@ -1626,7 +1627,7 @@ func (m Model) View() string {
 	case "timeline":
 		tower = renderTextDoor("TIMELINE", m.doorLines, layoutWidth)
 	case "transcript":
-		tower = renderStreamDoor(m.streamSubtitle(), m.doorLines, layoutWidth)
+		tower = renderStreamDoor(m.streamSubtitle(), m.doorLines, m.stream, layoutWidth, m.Height)
 	case "shelf":
 		tower = renderShelf(m.shelfItems(), m.Ids, layoutWidth)
 	}

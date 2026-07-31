@@ -234,12 +234,31 @@ func streamRows(height int) int {
 // renderStreamDoor is the live agent view. Unlike the timeline it is watched
 // while a stage runs, so it wears the same box chrome as the help overlay and
 // gives its content typography: dim stage gutter, prose in Text, turn markers
-// promoted from a line of prose into a rule.
-func renderStreamDoor(subtitle string, lines []string, width int) string {
-	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
-	body := streamBody(lines, streamInner(width))
-	foot := keyChip("esc") + dim.Render(" close  ") + keyChip("q") + dim.Render(" quit")
-	return renderBox("stream", subtitle, " esc close ", strings.Join(append(body, "", foot), "\n"))
+// promoted from a line of prose into a rule. It renders at most streamRows
+// body rows, so the screen fits the terminal at any transcript length.
+func renderStreamDoor(subtitle string, lines []string, st streamState, width, height int) string {
+	inner := streamInner(width)
+	visible := streamRows(height)
+	body := streamBody(lines, inner)
+	total := len(body)
+
+	start := 0
+	if total > visible {
+		// While following, Top is ignored entirely — that is what lets a
+		// refetch land without any offset fix-up in Update. The clamp happens
+		// here rather than only in Update, the way renderPager already does it,
+		// so a resize between WindowSizeMsg and the next render cannot page
+		// past the end.
+		start = total - visible
+		if !st.Follow {
+			start = min(max(st.Top, 0), total-visible)
+		}
+	}
+	// Copied, not sliced: append would otherwise write the blank line and the
+	// footer over the next two rows of body.
+	window := append([]string(nil), body[start:min(start+visible, total)]...)
+	foot := streamFooter(st, start, visible, total, inner)
+	return renderBox("stream", subtitle, " esc close ", strings.Join(append(window, "", foot), "\n"))
 }
 
 // streamFooter is the door's internal footer: keys left, reading position

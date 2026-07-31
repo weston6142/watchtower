@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -45,7 +46,7 @@ func TestStreamDoorWearsBoxChrome(t *testing.T) {
 		"brainstorm │ ↳ Bash go test ./...",
 		"brainstorm │ — turn complete (13560 tokens) —",
 	}
-	got := renderStreamDoor("GH-2 · brainstorm", lines, 100)
+	got := renderStreamDoor("GH-2 · brainstorm", lines, streamState{Follow: true}, 100, 32)
 	if !strings.Contains(got, "─") {
 		t.Fatalf("no border: %q", got)
 	}
@@ -71,7 +72,7 @@ func TestStreamDoorWearsBoxChrome(t *testing.T) {
 
 func TestStreamDoorCountsAndBrightensToolCalls(t *testing.T) {
 	lines := []string{"plan │ ↳ Bash(go test ./...)", "plan │ thinking about tests"}
-	out := renderStreamDoor("GH-1 · plan · 2 lines · 1 tool call", lines, 100)
+	out := renderStreamDoor("GH-1 · plan · 2 lines · 1 tool call", lines, streamState{Follow: true}, 100, 32)
 	if !strings.Contains(out, "Bash(go test ./...)") {
 		t.Fatal("tool line missing")
 	}
@@ -92,7 +93,7 @@ func TestStreamSubtitleCounts(t *testing.T) {
 // An empty buffer says so rather than rendering a hollow box.
 func TestStreamDoorEmpty(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
-	got := renderStreamDoor("GH-2", nil, 100)
+	got := renderStreamDoor("GH-2", nil, streamState{Follow: true}, 100, 32)
 	if !strings.Contains(got, "nothing here yet") {
 		t.Fatalf("empty door = %q", got)
 	}
@@ -216,5 +217,95 @@ func TestStreamFooterYieldsPositionWhenNarrow(t *testing.T) {
 	wide := ansi.Strip(streamFooter(streamState{Top: 0}, 0, 40, 60, 92))
 	if !strings.Contains(wide, "1–40 of 60") {
 		t.Fatalf("wide footer = %q", wide)
+	}
+}
+
+func deepStream(n int) []string {
+	lines := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		lines = append(lines, fmt.Sprintf("brainstorm │ line<%d>", i))
+	}
+	return lines
+}
+
+// The inverse of the reported bug: the door opens on the newest output.
+func TestStreamDoorFollowsNewestByDefault(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	got := ansi.Strip(renderStreamDoor("GH-1", deepStream(200), streamState{Follow: true}, 100, 40))
+	if !strings.Contains(got, "line<199>") {
+		t.Fatalf("newest line not on screen:\n%s", got)
+	}
+	if strings.Contains(got, "line<0>") {
+		t.Fatalf("oldest line still on screen — the door is not windowed:\n%s", got)
+	}
+}
+
+// Reading holds still while the stage keeps emitting. The window is what must
+// be byte-identical, not the whole door: the footer's "of N" total legitimately
+// grows with the transcript while the rows under the eye do not move.
+func TestStreamDoorHeldWindowStaysPut(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	held := streamState{Top: 40}
+	window := func(lines []string) string {
+		var body []string
+		for _, row := range strings.Split(ansi.Strip(renderStreamDoor("GH-1", lines, held, 100, 40)), "\n") {
+			if strings.Contains(row, "line<") {
+				body = append(body, row)
+			}
+		}
+		return strings.Join(body, "\n")
+	}
+	before := window(deepStream(200))
+	after := window(append(deepStream(200), deepStream(20)...))
+	if before == "" {
+		t.Fatal("no body rows matched")
+	}
+	if before != after {
+		t.Fatalf("held window moved when lines were appended:\n%s\n---\n%s", before, after)
+	}
+	if !strings.Contains(before, "line<40>") || strings.Contains(before, "line<39>") {
+		t.Fatalf("window does not start at Top 40:\n%s", before)
+	}
+}
+
+// Without the exact-inner invariant in streamBody the frame tracks whatever the
+// visible window happens to hold, and nothing else says so.
+func TestStreamDoorFrameWidthHoldsWhileScrolling(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	lines := deepStream(200)
+	lines[10] = "brainstorm │ ↳ Bash(" + strings.Repeat("go test ./internal/tui ", 20) + ")"
+	lines[11] = "brainstorm │ " + strings.Repeat("wrapping prose ", 30)
+	lines[12] = "brainstorm │ — turn complete (13560 tokens) —"
+	want := -1
+	for _, top := range []int{0, 5, 10, 12, 60, 150, 190} {
+		got := lipgloss.Width(renderStreamDoor("GH-1", lines, streamState{Top: top}, 100, 40))
+		if want == -1 {
+			want = got
+			continue
+		}
+		if got != want {
+			t.Fatalf("frame width = %d at Top %d, want %d", got, top, want)
+		}
+	}
+}
+
+// The position readout tracks the window and names the reading mode.
+func TestStreamDoorShowsHeldAndFollowing(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	deep := deepStream(200)
+	following := ansi.Strip(renderStreamDoor("GH-1", deep, streamState{Follow: true}, 100, 40))
+	if !strings.Contains(following, "· following") || !strings.Contains(following, "of ") {
+		t.Fatalf("following footer missing:\n%s", following)
+	}
+	if strings.Contains(following, "held") {
+		t.Fatalf("a live view must not read as held:\n%s", following)
+	}
+	held := ansi.Strip(renderStreamDoor("GH-1", deep, streamState{Top: 10}, 100, 40))
+	if !strings.Contains(held, "· held · G to follow") {
+		t.Fatalf("held footer missing:\n%s", held)
+	}
+	short := ansi.Strip(renderStreamDoor("GH-1", deepStream(3), streamState{Follow: true}, 100, 40))
+	if strings.Contains(short, " of ") || strings.Contains(short, "following") {
+		t.Fatalf("a body that fits must show no position:\n%s", short)
 	}
 }
