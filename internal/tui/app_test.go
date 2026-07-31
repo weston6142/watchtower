@@ -253,6 +253,52 @@ func TestBacklogViewKeys(t *testing.T) {
 	}
 }
 
+// n inside the backlog opens the same new-issue modal the grid's n opens, and
+// marks where to return.
+func TestBacklogNOpensNewIssueModal(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	m = pressKey(t, m, "n")
+	if m.modal == nil {
+		t.Fatal("n in the backlog did not open the modal")
+	}
+	if !m.modal.FromBacklog {
+		t.Errorf("modal.FromBacklog = false, want true")
+	}
+	if m.modal.EditID != "" {
+		t.Errorf("modal.EditID = %q, want empty: n creates, it does not edit", m.modal.EditID)
+	}
+	if m.modal.FlowName != "default" || m.modal.Preset != "regular" {
+		t.Errorf("modal flow/preset = %q/%q, want default/regular", m.modal.FlowName, m.modal.Preset)
+	}
+	if m.backlog != nil {
+		t.Errorf("backlog still open under the modal")
+	}
+}
+
+// Filing the first draft into an empty backlog is precisely the case
+// backlog.go:91 advertises, so n must not be gated on the selection.
+func TestBacklogNOpensModalWhenEmpty(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "b")
+	if m.backlog == nil {
+		t.Fatal("b did not open an empty backlog")
+	}
+	m = pressKey(t, m, "n")
+	if m.modal == nil || !m.modal.FromBacklog {
+		t.Fatalf("n with zero entries did not open a backlog-owned modal: %+v", m.modal)
+	}
+}
+
+// The grid's n is unchanged: its modal returns to the grid.
+func TestGridNLeavesFromBacklogFalse(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "n")
+	if m.modal == nil || m.modal.FromBacklog {
+		t.Fatalf("grid modal = %+v, want FromBacklog false", m.modal)
+	}
+}
+
 func toastModel(t *testing.T) Model {
 	t.Helper()
 	m := NewModel(nil, []string{"brainstorm", "spec"})

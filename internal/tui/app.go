@@ -542,6 +542,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.backlog.Sel = min(m.backlog.Sel+1, max(0, len(entries)-1))
 			case "k":
 				m.backlog.Sel = max(m.backlog.Sel-1, 0)
+			case "n":
+				// Ungated by Sel, unlike enter/l/X: filing the first draft into an
+				// empty backlog is the case the empty-state hint advertises. This
+				// has to live inside the backlog switch — the confirm branch above
+				// binds n as "no".
+				m.Err = ""
+				m.modal = &modalState{FlowName: "default", Preset: "regular", FromBacklog: true}
+				m.backlog = nil
 			case "enter":
 				if m.backlog.Sel < len(entries) {
 					iv := entries[m.backlog.Sel]
