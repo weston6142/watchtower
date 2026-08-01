@@ -1377,14 +1377,19 @@ func (w *countingGitWorktree) Acquire(issueID string) (string, func() error, err
 
 func (w *countingGitWorktree) Name() string { return "counting git worktree" }
 
+func (w *countingGitWorktree) ReleasePath(path string) error {
+	return (workspace.GitWorktree{Repo: w.repo}).ReleasePath(path)
+}
+
 type conflictFlowRunner struct {
-	repo            string
-	decision        string
-	gate            []string
-	originalWorkdir string
-	conflictWorkdir string
-	conflictContext string
-	currentBase     string
+	repo                     string
+	decision                 string
+	interruptAfterResolution bool
+	gate                     []string
+	originalWorkdir          string
+	conflictWorkdir          string
+	conflictContext          string
+	currentBase              string
 }
 
 func commandIn(dir string, args ...string) (string, error) {
@@ -1469,11 +1474,55 @@ func (r *conflictFlowRunner) Run(
 		if r.decision != "missing" {
 			body, _ := json.Marshal(map[string]string{"decision": r.decision})
 			result.Err = os.WriteFile(filepath.Join(workdir, "conflict-decision.json"), body, 0o644)
+			if result.Err == nil && r.interruptAfterResolution {
+				result.Err = errors.New("resolver exited after writing its decision")
+			}
 		}
 	}
 	results <- result
 	close(results)
 	return results
+}
+
+func TestRetryFinalizesResolvedConflictWithoutRerunningAgents(t *testing.T) {
+	e, s, repo, run, _, _ := conflictEngine(t, "resolved")
+	run.interruptAfterResolution = true
+	id, err := e.CreateIssue("interrupted conflict resolution", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil ||
+		!strings.Contains(err.Error(), "resolver exited") {
+		t.Fatalf("StartIssue error = %v, want resolver interruption", err)
+	}
+	runsBefore, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedHead := strings.TrimSpace(gitOutput(t, run.conflictWorkdir, "rev-parse", "HEAD"))
+	run.interruptAfterResolution = false
+	if err := e.RetryStage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runsAfter, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runsAfter) != len(runsBefore) {
+		t.Fatalf("retry reran an agent: before=%d after=%d", len(runsBefore), len(runsAfter))
+	}
+	integration, ok, err := s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationMerged {
+		t.Fatalf("integration after retry = %+v ok %v err %v", integration, ok, err)
+	}
+	if _, err := os.Stat(run.gate[1]); err != nil {
+		t.Fatalf("combined verification was not replayed: %v", err)
+	}
+	if out, err := exec.Command(
+		"git", "-C", repo, "merge-base", "--is-ancestor", resolvedHead, "main",
+	).CombinedOutput(); err != nil {
+		t.Fatalf("resolved issue was not merged: %v: %s", err, out)
+	}
 }
 
 func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, string, *conflictFlowRunner, *countingGitWorktree, string) {

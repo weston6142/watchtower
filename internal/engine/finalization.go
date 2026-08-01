@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/marshal"
@@ -243,8 +245,86 @@ func (e *Engine) retryVerifiedFinalization(
 	}
 	prepared, err := e.prepareFinalization(is)
 	if err != nil {
-		return e.recordFinalizationFailure(is, err)
+		verification, recovered, recoveryErr := e.resolvedConflictVerification(is)
+		if recoveryErr != nil {
+			return e.recordFinalizationFailure(is, recoveryErr)
+		}
+		if !recovered {
+			return e.recordFinalizationFailure(is, err)
+		}
+		prepared.Verification = verification
 	}
 	_, _, err = e.finalizeIntegration(ctx, is, prepared.Verification)
 	return err
+}
+
+// resolvedConflictVerification recovers the narrow window where a conflict
+// resolver durably records a resolved, rebased branch but exits before the
+// engine can retry the land. The original receipt still supplies the exact
+// command set, while clearing TreeSHA forces those commands to run against the
+// newly integrated tree.
+func (e *Engine) resolvedConflictVerification(
+	is *issueState,
+) (marshal.Verification, bool, error) {
+	decisionPath := filepath.Join(is.wsPath, "conflict-decision.json")
+	decision, err := loadConflictDecision(decisionPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return marshal.Verification{}, false, nil
+	}
+	if err != nil {
+		return marshal.Verification{}, true, err
+	}
+	if decision != "resolved" {
+		return marshal.Verification{}, true, fmt.Errorf(
+			"conflict decision %q cannot resume integration", decision)
+	}
+	if status, err := gitCommandOutput(
+		is.wsPath, "status", "--porcelain", "--untracked-files=no",
+	); err != nil {
+		return marshal.Verification{}, true, err
+	} else if status != "" {
+		return marshal.Verification{}, true, fmt.Errorf(
+			"resolved issue branch is dirty: %s", status)
+	}
+	baseSHA, err := gitRevision(e.cfg.Train.Repo, "HEAD")
+	if err != nil {
+		return marshal.Verification{}, true, fmt.Errorf("read current base: %w", err)
+	}
+	if output, err := exec.Command(
+		"git", "-C", is.wsPath, "merge-base", "--is-ancestor", baseSHA, "HEAD",
+	).CombinedOutput(); err != nil {
+		return marshal.Verification{}, true, fmt.Errorf(
+			"resolved issue branch is not rebased onto %s: %v: %s",
+			baseSHA, err, strings.TrimSpace(string(output)))
+	}
+	artifactDir := filepath.Join(e.issueDir(is.id), "artifacts")
+	mergeDecision, err := marshal.LoadMergeDecision(
+		filepath.Join(artifactDir, "merge-decision.json"),
+	)
+	if err != nil {
+		return marshal.Verification{}, true, fmt.Errorf("load merge decision: %w", err)
+	}
+	if mergeDecision.Decision != "merge" {
+		return marshal.Verification{}, true, fmt.Errorf(
+			"merge decision %q cannot resume integration", mergeDecision.Decision)
+	}
+	verification, err := marshal.LoadVerification(
+		filepath.Join(artifactDir, "verification.json"),
+	)
+	if err != nil {
+		return marshal.Verification{}, true, fmt.Errorf("load verification receipt: %w", err)
+	}
+	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 &&
+		!verification.Includes(e.cfg.Train.TestCmd) {
+		return marshal.Verification{}, true, fmt.Errorf(
+			"verification receipt does not include configured verification command %q",
+			e.cfg.Train.TestCmd)
+	}
+	verification.BaseSHA = baseSHA
+	verification.BranchSHA, err = gitRevision(is.wsPath, "HEAD")
+	if err != nil {
+		return marshal.Verification{}, true, fmt.Errorf("read resolved branch: %w", err)
+	}
+	verification.TreeSHA = ""
+	return verification, true, nil
 }
