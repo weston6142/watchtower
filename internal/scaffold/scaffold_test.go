@@ -56,6 +56,20 @@ func TestInitCreatesTree(t *testing.T) {
 			t.Fatalf("missing %s: %v", p, err)
 		}
 	}
+	cfg, err := os.ReadFile(filepath.Join(root, ".watchtower", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"runner: codex",
+		"codex_bin: codex",
+		"codex_model: gpt-5.6-luna",
+		"codex_effort: xhigh",
+	} {
+		if !strings.Contains(string(cfg), want) {
+			t.Errorf("generated config missing %q:\n%s", want, cfg)
+		}
+	}
 }
 
 func TestInitIdempotentAndNonDestructive(t *testing.T) {

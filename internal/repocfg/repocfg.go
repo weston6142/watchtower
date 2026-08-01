@@ -22,6 +22,9 @@ type Config struct {
 	Budget       int      `yaml:"budget"`
 	PricePerMTok float64  `yaml:"price_per_mtok"`
 	ClaudeBin    string   `yaml:"claude_bin"`
+	CodexBin     string   `yaml:"codex_bin"`
+	CodexModel   string   `yaml:"codex_model"`
+	CodexEffort  string   `yaml:"codex_effort"`
 	TestCmd      string   `yaml:"test_cmd"`
 	TestArgv     []string `yaml:"-"`
 	Theme        string   `yaml:"theme"`
@@ -31,11 +34,14 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		Flows:     filepath.Join(".watchtower", "flows"),
-		Packages:  filepath.Join(".watchtower", "packages"),
-		Runner:    "claude",
-		Slots:     4,
-		ClaudeBin: "claude",
+		Flows:       filepath.Join(".watchtower", "flows"),
+		Packages:    filepath.Join(".watchtower", "packages"),
+		Runner:      "codex",
+		Slots:       4,
+		ClaudeBin:   "claude",
+		CodexBin:    "codex",
+		CodexModel:  "gpt-5.6-luna",
+		CodexEffort: "xhigh",
 		// Fast-forwarding the base from origin is safe, so it defaults on;
 		// publishing merges is a bigger step, so pushing stays opt-in.
 		Pull: true,
@@ -157,6 +163,15 @@ func fillGaps(cfg *Config) {
 	}
 	if cfg.ClaudeBin == "" {
 		cfg.ClaudeBin = d.ClaudeBin
+	}
+	if cfg.CodexBin == "" {
+		cfg.CodexBin = d.CodexBin
+	}
+	if cfg.CodexModel == "" {
+		cfg.CodexModel = d.CodexModel
+	}
+	if cfg.CodexEffort == "" {
+		cfg.CodexEffort = d.CodexEffort
 	}
 }
 

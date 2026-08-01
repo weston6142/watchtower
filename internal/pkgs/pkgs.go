@@ -17,7 +17,7 @@ type Package struct {
 	Includes     []string `yaml:"includes"`
 	AllowedTools []string `yaml:"allowed_tools"`
 	Model        string   `yaml:"model"`
-	Effort       string   `yaml:"effort"` // low|medium|high; empty = CLI default
+	Effort       string   `yaml:"effort"` // low|medium|high|xhigh; empty = provider default
 	MaxTurns     int      `yaml:"max_turns"`
 }
 

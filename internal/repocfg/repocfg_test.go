@@ -13,7 +13,9 @@ func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Runner != "claude" || cfg.Slots != 4 || cfg.ClaudeBin != "claude" {
+	if cfg.Runner != "codex" || cfg.Slots != 4 || cfg.ClaudeBin != "claude" ||
+		cfg.CodexBin != "codex" || cfg.CodexModel != "gpt-5.6-luna" ||
+		cfg.CodexEffort != "xhigh" {
 		t.Fatalf("bad defaults: %+v", cfg)
 	}
 	if cfg.Flows != filepath.Join(root, ".watchtower", "flows") {
@@ -45,6 +47,29 @@ func TestLoadReadsFileAndFillsGaps(t *testing.T) {
 	}
 	if cfg.ClaudeBin != "claude" { // gap filled from defaults
 		t.Fatalf("gap not filled: %+v", cfg)
+	}
+	if cfg.CodexBin != "codex" || cfg.CodexModel != "gpt-5.6-luna" || cfg.CodexEffort != "xhigh" {
+		t.Fatalf("codex gaps not filled: %+v", cfg)
+	}
+}
+
+func TestLoadPreservesExplicitClaudeAndCodexOverrides(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".watchtower")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "runner: claude\ncodex_bin: /opt/codex\ncodex_model: custom-model\ncodex_effort: high\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Runner != "claude" || cfg.CodexBin != "/opt/codex" ||
+		cfg.CodexModel != "custom-model" || cfg.CodexEffort != "high" {
+		t.Fatalf("explicit values lost: %+v", cfg)
 	}
 }
 
