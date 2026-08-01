@@ -16,6 +16,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/attach"
 	"github.com/weston6142/watchtower/internal/claude"
+	"github.com/weston6142/watchtower/internal/codex"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -484,12 +485,15 @@ func runDaemon(args []string) {
 	base := fs.String("data", defaultData(), "base data dir")
 	flowsDir := fs.String("flows", "", "flows dir (default from config)")
 	slotN := fs.Int("slots", 0, "heavy slots (default from config)")
-	runnerKind := fs.String("runner", "", "claude|fake (default from config)")
+	runnerKind := fs.String("runner", "", "codex|claude|fake (default from config)")
 	repoFlag := fs.String("repo", "", "target repo (default: walk up from CWD)")
 	pkgDir := fs.String("packages", "", "agent packages dir (default from config)")
 	budget := fs.Int("budget", -1, "per-issue token budget (0=off; default from config)")
 	pricePerMTok := fs.Float64("price-per-mtok", -1, "estimated dollars per million tokens (0=hide; default from config)")
 	claudeBin := fs.String("claude-bin", "", "claude binary (default from config)")
+	codexBin := fs.String("codex-bin", "", "codex binary (default from config)")
+	codexModel := fs.String("codex-model", "", "codex model (default from config)")
+	codexEffort := fs.String("codex-effort", "", "codex reasoning effort (default from config)")
 	testCmd := fs.String("test-cmd", "", "merge-train test command (default from config)")
 	fs.Parse(args)
 
@@ -521,6 +525,15 @@ func runDaemon(args []string) {
 	}
 	if !set["claude-bin"] {
 		*claudeBin = cfg.ClaudeBin
+	}
+	if !set["codex-bin"] {
+		*codexBin = cfg.CodexBin
+	}
+	if !set["codex-model"] {
+		*codexModel = cfg.CodexModel
+	}
+	if !set["codex-effort"] {
+		*codexEffort = cfg.CodexEffort
 	}
 	if !set["test-cmd"] {
 		*testCmd = cfg.TestCmd
@@ -598,6 +611,16 @@ func runDaemon(args []string) {
 		}
 		run = &claude.CodeRunner{Bin: *claudeBin, Packages: packages}
 		ws = workspace.Detect(repo)
+	case "codex":
+		packages, err = pkgs.LoadDir(*pkgDir)
+		if err != nil {
+			fatal(err)
+		}
+		run = &codex.CodeRunner{
+			Bin: *codexBin, Packages: packages,
+			DefaultModel: *codexModel, DefaultEffort: *codexEffort,
+		}
+		ws = workspace.Detect(repo)
 	default:
 		fatal(fmt.Errorf("unknown runner %q", *runnerKind))
 	}
@@ -613,7 +636,7 @@ func runDaemon(args []string) {
 		train = &marshal.Train{Repo: repo, TestCmd: testArgv,
 			Pull: cfg.Pull, Push: cfg.Push}
 	}
-	if *runnerKind == "claude" {
+	if *runnerKind != "fake" {
 		lib = &librarian.Librarian{MemoryDir: filepath.Join(repo, "docs", "watchtower")}
 	}
 	transcriptBuffer := transcript.NewBuffer(500)
@@ -637,6 +660,9 @@ func runDaemon(args []string) {
 	}
 	switch r := run.(type) {
 	case *claude.CodeRunner:
+		r.OnProposal = fileProposal
+		r.OnProposalBatch = eng.FileProposalBatch
+	case *codex.CodeRunner:
 		r.OnProposal = fileProposal
 		r.OnProposalBatch = eng.FileProposalBatch
 	case *runner.FakeRunner:
@@ -668,6 +694,7 @@ func runDaemon(args []string) {
 	srv.SetRepoSetup(proto.RepoSetup{
 		Runner: *runnerKind, Slots: *slotN, Budget: *budget,
 		PricePerMTok: *pricePerMTok, ClaudeBin: *claudeBin, TestCmd: *testCmd,
+		CodexBin: *codexBin, CodexModel: *codexModel, CodexEffort: *codexEffort,
 		Pull: cfg.Pull, Push: cfg.Push, Workspace: wsName,
 		LoadedAt: time.Now().Format("15:04"),
 	})

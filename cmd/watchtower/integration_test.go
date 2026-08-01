@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -128,6 +129,107 @@ func newRepo(t *testing.T) (bin, base, repo string) {
 	repo = initRepo(t, bin, base)
 	t.Cleanup(func() { stopDaemons(base) })
 	return bin, base, repo
+}
+
+func TestDefaultCodexRunnerCompletesIssue(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	bin := buildBinary(t)
+	base := t.TempDir()
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-qm", "base"},
+	} {
+		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	run(t, bin, repo, "init", "--data", base)
+	t.Cleanup(func() { stopDaemons(base) })
+
+	stub := filepath.Join(t.TempDir(), "codex-stub")
+	if err := os.WriteFile(stub, []byte(`#!/bin/sh
+set -eu
+printf '%s\n' '{"type":"thread.started","thread_id":"thr-daemon"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"stub complete"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(repo, ".watchtower", "config.yaml")
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(config), "runner: codex") {
+		t.Fatalf("fresh config is not Codex-first:\n%s", config)
+	}
+	configured := strings.Replace(string(config), "codex_bin: codex", "codex_bin: "+stub, 1)
+	configured = strings.Replace(configured, "pull: true", "pull: false", 1)
+	if err := os.WriteFile(configPath, []byte(configured), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flowBody := `name: default
+stages:
+  - name: execute
+    agents: [{package: executor}]
+    gate: auto
+    workspace: worktree
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	issueID := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base, "--title", "codex stub")))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		issues := run(t, bin, repo, "issues", "--data", base)
+		if strings.Contains(issues, issueID+"  done") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Codex workflow did not finish:\n%s", issues)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	sockets, err := filepath.Glob(filepath.Join(base, "repos", "*", "watchtower.sock"))
+	if err != nil || len(sockets) != 1 {
+		t.Fatalf("sockets = %v err %v", sockets, err)
+	}
+	client, err := proto.Dial(sockets[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	response, err := client.Do(proto.Command{Op: "setup_outline"})
+	if err != nil || !response.OK || response.Setup == nil {
+		t.Fatalf("setup = %+v err %v", response, err)
+	}
+	repoSetup := response.Setup.Repo
+	if repoSetup.Runner != "codex" || repoSetup.CodexBin != stub ||
+		repoSetup.CodexModel != "gpt-5.6-luna" || repoSetup.CodexEffort != "xhigh" {
+		t.Fatalf("repo setup = %+v", repoSetup)
+	}
+
+	databases, err := filepath.Glob(filepath.Join(base, "repos", "*", "watchtower.db"))
+	if err != nil || len(databases) != 1 {
+		t.Fatalf("database paths = %v err %v", databases, err)
+	}
+	st, err := store.Open(databases[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	runs, err := st.StageRuns(issueID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("stage runs = %+v err %v", runs, err)
+	}
+	if runs[0].SessionID != "thr-daemon" || runs[0].Tokens != 15 || runs[0].Status != "succeeded" {
+		t.Fatalf("stage run = %+v", runs[0])
+	}
 }
 
 // runErr is like run but expects failure and returns the combined output.
