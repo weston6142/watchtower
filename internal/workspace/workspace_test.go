@@ -117,6 +117,50 @@ func TestTreehouseAcquireStartsFromDefaultTip(t *testing.T) {
 	}
 }
 
+func TestTreehouseReleaseForcesReturnOfArtifactWorktree(t *testing.T) {
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "treehouse.args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + logPath + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "treehouse"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	path := filepath.Join(t.TempDir(), "leased")
+	if err := (Treehouse{Repo: t.TempDir()}).ReleasePath(path); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(body)); got != "return --force "+path {
+		t.Fatalf("treehouse args = %q", got)
+	}
+}
+
+func TestTreehouseAcquireReturnsLeaseWhenBranchCheckoutFails(t *testing.T) {
+	binDir := t.TempDir()
+	leased := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "treehouse.args")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = get ]; then echo " + leased + "; exit 0; fi\n" +
+		"printf '%s\\n' \"$*\" > " + logPath + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "treehouse"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, _, err := (Treehouse{Repo: t.TempDir()}).Acquire("GH-9"); err == nil {
+		t.Fatal("checkout in a non-repository lease succeeded")
+	}
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(body)); got != "return --force "+leased {
+		t.Fatalf("rollback args = %q", got)
+	}
+}
+
 // The resolved provider is invisible otherwise: Detect picks treehouse purely
 // on PATH, and the operator has no way to see which one won. Name() is what the
 // setup inspector reports.

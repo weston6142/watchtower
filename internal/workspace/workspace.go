@@ -74,7 +74,11 @@ func (t Treehouse) Acquire(issueID string) (string, func() error, error) {
 		co = append(co, strings.TrimSpace(string(def)))
 	}
 	if out, err := exec.Command("git", co...).CombinedOutput(); err != nil {
-		return "", nil, fmt.Errorf("checkout issue branch: %v: %s", err, out)
+		checkoutErr := fmt.Errorf("checkout issue branch: %v: %s", err, out)
+		if returnErr := t.ReleasePath(path); returnErr != nil {
+			return "", nil, fmt.Errorf("%v (return failed lease: %w)", checkoutErr, returnErr)
+		}
+		return "", nil, checkoutErr
 	}
 	release := func() error {
 		return t.ReleasePath(path)
@@ -85,7 +89,7 @@ func (t Treehouse) Acquire(issueID string) (string, func() error, error) {
 func (t Treehouse) Name() string { return "treehouse" }
 
 func (t Treehouse) ReleasePath(path string) error {
-	cmd := exec.Command("treehouse", "return", path)
+	cmd := exec.Command("treehouse", "return", "--force", path)
 	cmd.Dir = t.Repo
 	out, err := cmd.CombinedOutput()
 	if err != nil {
