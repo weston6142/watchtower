@@ -1525,6 +1525,21 @@ func TestRetryFinalizesResolvedConflictWithoutRerunningAgents(t *testing.T) {
 	}
 }
 
+func TestLoadConflictDecisionAllowsNonAuthoritativeMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conflict-decision.json")
+	body := []byte(`{"decision":"resolved","issue":"GH-27","branch_commit":"abc123"}`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := loadConflictDecision(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != "resolved" {
+		t.Fatalf("decision = %q, want resolved", decision)
+	}
+}
+
 func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, string, *conflictFlowRunner, *countingGitWorktree, string) {
 	t.Helper()
 	repo := t.TempDir()

@@ -15,6 +15,15 @@ required, commit only that repair as
 `fix(conflict): reconcile integration behavior`.
 
 Write `conflict-report.md` with refs, conflicting files, resolutions, and
-targeted checks. Write `conflict-decision.json` with `resolved` or `hold`.
+targeted checks. Write `conflict-decision.json` in exactly one of these forms:
+
+```json
+{"decision":"resolved"}
+```
+
+```json
+{"decision":"hold"}
+```
+
 Integration may retry only after `resolved`; hold preserves the branch and
 durable artifacts.

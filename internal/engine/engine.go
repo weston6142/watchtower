@@ -1856,7 +1856,6 @@ func loadConflictDecision(path string) (string, error) {
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(file)
-	decoder.DisallowUnknownFields()
 	var document struct {
 		Decision string `json:"decision"`
 	}
