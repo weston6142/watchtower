@@ -408,7 +408,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Err = msg.response.Error
 			return m, nil
 		}
-		if m.modal != nil && m.modal.EditID != "" {
+		if m.modal != nil && (m.modal.EditID != "" || m.modal.FromBacklog) {
 			m.backlog = &backlogState{}
 		}
 		m.modal = nil
@@ -475,7 +475,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.modal != nil {
 			switch key {
 			case "esc":
-				if m.modal.EditID != "" {
+				if m.modal.EditID != "" || m.modal.FromBacklog {
 					m.backlog = &backlogState{}
 				}
 				m.modal = nil
@@ -485,6 +485,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.client == nil {
+					// Nothing to send, but the way back is still owed: without
+					// this the operator is dropped on the grid whenever no
+					// daemon is attached.
+					if m.modal.EditID != "" || m.modal.FromBacklog {
+						m.backlog = &backlogState{}
+					}
 					m.modal = nil
 					return m, nil
 				}
@@ -549,6 +555,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.backlog.Sel = min(m.backlog.Sel+1, max(0, len(entries)-1))
 			case "k":
 				m.backlog.Sel = max(m.backlog.Sel-1, 0)
+			case "n":
+				// Ungated by Sel, unlike enter/l/X: filing the first draft into an
+				// empty backlog is the case the empty-state hint advertises. This
+				// has to live inside the backlog switch — the confirm branch above
+				// binds n as "no".
+				m.Err = ""
+				m.modal = &modalState{FlowName: "default", Preset: "regular", FromBacklog: true}
+				m.backlog = nil
 			case "enter":
 				if m.backlog.Sel < len(entries) {
 					iv := entries[m.backlog.Sel]

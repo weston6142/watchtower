@@ -31,6 +31,11 @@ type modalState struct {
 	// zero value is priority.Levels' normal, which is what a new issue wants.
 	Priority int
 	EditID   string // non-empty: editing this backlog draft instead of creating
+	// FromBacklog records that the backlog opened this modal, so esc and a
+	// successful submit go back there instead of dumping the operator on the
+	// grid. It is a return-destination marker only: renderModal never reads it
+	// and submit dispatch never branches on it.
+	FromBacklog bool
 }
 
 // input handles text fields only. Priority is cycled by the key router

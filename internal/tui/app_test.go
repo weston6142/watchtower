@@ -255,6 +255,116 @@ func TestBacklogViewKeys(t *testing.T) {
 	}
 }
 
+// n inside the backlog opens the same new-issue modal the grid's n opens, and
+// marks where to return.
+func TestBacklogNOpensNewIssueModal(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	m = pressKey(t, m, "n")
+	if m.modal == nil {
+		t.Fatal("n in the backlog did not open the modal")
+	}
+	if !m.modal.FromBacklog {
+		t.Errorf("modal.FromBacklog = false, want true")
+	}
+	if m.modal.EditID != "" {
+		t.Errorf("modal.EditID = %q, want empty: n creates, it does not edit", m.modal.EditID)
+	}
+	if m.modal.FlowName != "default" || m.modal.Preset != "regular" {
+		t.Errorf("modal flow/preset = %q/%q, want default/regular", m.modal.FlowName, m.modal.Preset)
+	}
+	if m.backlog != nil {
+		t.Errorf("backlog still open under the modal")
+	}
+}
+
+// Filing the first draft into an empty backlog is precisely the case
+// backlog.go:91 advertises, so n must not be gated on the selection.
+func TestBacklogNOpensModalWhenEmpty(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "b")
+	if m.backlog == nil {
+		t.Fatal("b did not open an empty backlog")
+	}
+	m = pressKey(t, m, "n")
+	if m.modal == nil || !m.modal.FromBacklog {
+		t.Fatalf("n with zero entries did not open a backlog-owned modal: %+v", m.modal)
+	}
+}
+
+// The grid's n is unchanged: its modal returns to the grid.
+func TestGridNLeavesFromBacklogFalse(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "n")
+	if m.modal == nil || m.modal.FromBacklog {
+		t.Fatalf("grid modal = %+v, want FromBacklog false", m.modal)
+	}
+}
+
+// esc out of a backlog-opened modal goes back to the backlog, the same way esc
+// out of an edit modal already does.
+func TestBacklogModalEscReturnsToBacklog(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	m = pressKey(t, m, "n")
+	m = pressKey(t, m, "esc")
+	if m.modal != nil {
+		t.Fatal("esc did not close the modal")
+	}
+	if m.backlog == nil {
+		t.Fatal("esc from a backlog-opened modal landed on the grid")
+	}
+}
+
+// A successful create lands the operator back in the backlog they filed from.
+func TestBacklogModalSubmitReturnsToBacklog(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	m = pressKey(t, m, "n")
+	next, _ := m.Update(createIssueMsg{response: proto.Response{OK: true}})
+	m = next.(Model)
+	if m.modal != nil {
+		t.Fatal("a successful create left the modal open")
+	}
+	if m.backlog == nil {
+		t.Fatal("a successful create from the backlog landed on the grid")
+	}
+}
+
+// With no daemon attached the submit short-circuits before any command is sent.
+// That branch owes the return rule too — for a draft filed from the backlog and
+// for an edit of an existing one.
+func TestNilClientSubmitRestoresBacklog(t *testing.T) {
+	t.Run("from backlog", func(t *testing.T) {
+		m := Model{State: backlogFixtureState()}
+		m = pressKey(t, m, "b")
+		m = pressKey(t, m, "n")
+		m.modal.Title = "a new draft"
+		m = pressKey(t, m, "ctrl+s")
+		if m.modal != nil {
+			t.Fatal("clientless submit left the modal open")
+		}
+		if m.backlog == nil {
+			t.Fatal("clientless submit from the backlog landed on the grid")
+		}
+	})
+	t.Run("editing a draft", func(t *testing.T) {
+		m := Model{State: backlogFixtureState()}
+		m = pressKey(t, m, "b")
+		m = pressKey(t, m, "enter")
+		if m.modal == nil || m.modal.EditID == "" {
+			t.Fatalf("enter did not open an edit modal: %+v", m.modal)
+		}
+		m = pressKey(t, m, "ctrl+s")
+		if m.modal != nil {
+			t.Fatal("clientless submit left the modal open")
+		}
+		if m.backlog == nil {
+			t.Fatal("clientless submit of an edit landed on the grid")
+		}
+	})
+}
+
 func toastModel(t *testing.T) Model {
 	t.Helper()
 	m := NewModel(nil, []string{"brainstorm", "spec"})
