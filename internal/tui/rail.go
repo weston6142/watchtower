@@ -139,7 +139,7 @@ func focusStatus(state string) string {
 	case state == "verifying":
 		return "verifying"
 	case state == "waiting:integration":
-		return "waiting for integration"
+		return "verified · queued"
 	case state == "integrating":
 		return "integrating"
 	case state == "failed:finalize":

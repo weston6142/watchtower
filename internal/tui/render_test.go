@@ -70,9 +70,9 @@ func TestFinalizationStageUsesExplicitStatusLabels(t *testing.T) {
 		want  string
 	}{
 		{"verifying", "verifying"},
-		{"waiting:integration", "waiting integration"},
-		{"integrating", "integrating"},
-		{"failed:finalize", "finalize failed"},
+		{"waiting:integration", "integrate"},
+		{"integrating", "merging"},
+		{"failed:finalize", "finalize"},
 	} {
 		iv := &projection.IssueView{CurrentStage: "merge-verification", State: test.state}
 		got := ansi.Strip(cellContentForStage(

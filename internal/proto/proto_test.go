@@ -461,7 +461,7 @@ func TestOverviewClassifiesFinalizationStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if overview.Building != 2 || overview.Queued != 1 || overview.Failing != 1 {
+	if overview.Building != 3 || overview.Queued != 0 || overview.Failing != 1 {
 		t.Fatalf("overview = %+v", overview)
 	}
 }

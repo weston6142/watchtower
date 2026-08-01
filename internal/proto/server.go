@@ -399,7 +399,7 @@ func (sv *Server) overview() (Overview, error) {
 				out.Failing++
 				continue
 			case core.EvVerificationReady:
-				out.Queued++
+				out.Building++
 				continue
 			case core.EvMergeStarted:
 				out.Building++
@@ -411,9 +411,10 @@ func (sv *Server) overview() (Overview, error) {
 		switch {
 		case strings.HasPrefix(state, "failed"):
 			out.Failing++
-		case strings.HasPrefix(state, "queued"), state == "waiting:integration":
+		case strings.HasPrefix(state, "queued"):
 			out.Queued++
-		case strings.HasPrefix(state, "running"), state == "verifying", state == "integrating":
+		case strings.HasPrefix(state, "running"), state == "verifying",
+			state == "waiting:integration", state == "integrating":
 			out.Building++
 		}
 	}

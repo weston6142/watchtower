@@ -235,11 +235,11 @@ func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stag
 		case "verifying":
 			return lipgloss.NewStyle().Foreground(activeTheme.Structure).Render(glyphWorking + " verifying")
 		case "waiting:integration":
-			return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render("⧗ waiting integration")
+			return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render("⧗ integrate")
 		case "integrating":
-			return lipgloss.NewStyle().Foreground(activeTheme.Structure).Render(glyphWorking + " integrating")
+			return lipgloss.NewStyle().Foreground(activeTheme.Structure).Render(glyphWorking + " merging")
 		case "failed:finalize":
-			return styleStatusBad().Render(glyphFailed + " finalize failed")
+			return styleStatusBad().Render(glyphFailed + " finalize")
 		}
 	}
 	if iv.CurrentStage == stage && iv.State == "waiting_decision" {
