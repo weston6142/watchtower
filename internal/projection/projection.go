@@ -105,7 +105,11 @@ func (s *State) Apply(ev core.Event) {
 	case core.EvStageStarted:
 		if iv != nil {
 			iv.CurrentStage = str("stage")
-			iv.State = "running"
+			if iv.CurrentStage == "merge-verification" {
+				iv.State = "verifying"
+			} else {
+				iv.State = "running"
+			}
 			iv.Paused = false
 			iv.Killed = false
 			iv.Attempt = int(num("attempt"))
@@ -169,6 +173,22 @@ func (s *State) Apply(ev core.Event) {
 		if iv != nil {
 			iv.Completed = append(iv.Completed, str("stage"))
 			iv.LastError = ""
+		}
+	case core.EvVerificationReady:
+		if iv != nil {
+			iv.State = "waiting:integration"
+			iv.LastError = ""
+		}
+	case core.EvMergeStarted:
+		if iv != nil {
+			iv.State = "integrating"
+			iv.LastError = ""
+		}
+	case core.EvFinalizationFailed:
+		if iv != nil {
+			iv.State = "failed:finalize"
+			iv.LastError = str("error")
+			appendUnique(&s.Parked, ev.IssueID)
 		}
 	case core.EvIssueCompleted:
 		if iv != nil {
@@ -243,8 +263,6 @@ func (s *State) Apply(ev core.Event) {
 		if iv != nil {
 			iv.Behind = str("behind")
 		}
-	case core.EvMergeStarted:
-		// Merge sequencing is the meaningful projection for now.
 	case core.EvIssueMerged:
 		if iv != nil {
 			iv.Merged = true

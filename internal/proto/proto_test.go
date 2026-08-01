@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -438,6 +439,30 @@ func TestOverviewIgnoresTrailingFailureForAbandonedIssue(t *testing.T) {
 	}
 	if response.Overview.Failing != 0 || response.Overview.Building != 0 || response.Overview.NeedYou != 0 {
 		t.Fatalf("abandoned issue counted in overview: %+v", response.Overview)
+	}
+}
+
+func TestOverviewClassifiesFinalizationStates(t *testing.T) {
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	for index, state := range []string{
+		"verifying", "waiting:integration", "integrating", "failed:finalize",
+	} {
+		if err := s.UpsertIssue(store.IssueRow{
+			ID: fmt.Sprintf("GH-%d", index+1), Title: state, State: state, Flow: "default",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	overview, err := NewServer(nil, s).overview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.Building != 2 || overview.Queued != 1 || overview.Failing != 1 {
+		t.Fatalf("overview = %+v", overview)
 	}
 }
 

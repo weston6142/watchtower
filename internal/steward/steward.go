@@ -60,13 +60,23 @@ func (st *Steward) Observe(ev core.Event) {
 	case core.EvIssueDependenciesSatisfied:
 		setState("running")
 	case core.EvStageStarted:
-		setState("running:" + str("stage"))
+		if str("stage") == "merge-verification" {
+			setState("verifying")
+		} else {
+			setState("running:" + str("stage"))
+		}
 	case core.EvDecisionRequired:
 		setState("waiting_decision")
 	case core.EvDecisionAnswered:
 		setState("running")
 	case core.EvStageFailed:
 		setState("failed")
+	case core.EvVerificationReady:
+		setState("waiting:integration")
+	case core.EvMergeStarted:
+		setState("integrating")
+	case core.EvFinalizationFailed:
+		setState("failed:finalize")
 	case core.EvIssueCompleted:
 		rows, _ := st.Store.Issues()
 		for _, row := range rows {

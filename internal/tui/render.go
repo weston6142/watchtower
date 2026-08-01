@@ -230,6 +230,18 @@ func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stag
 	if (iv.Paused || iv.Killed || iv.State == "paused") && pausedAtStage(iv, stage, stageIdx) {
 		return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render(glyphParked + " paused")
 	}
+	if iv.CurrentStage == stage {
+		switch iv.State {
+		case "verifying":
+			return lipgloss.NewStyle().Foreground(activeTheme.Structure).Render(glyphWorking + " verifying")
+		case "waiting:integration":
+			return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render("⧗ waiting integration")
+		case "integrating":
+			return lipgloss.NewStyle().Foreground(activeTheme.Structure).Render(glyphWorking + " integrating")
+		case "failed:finalize":
+			return styleStatusBad().Render(glyphFailed + " finalize failed")
+		}
+	}
 	if iv.CurrentStage == stage && iv.State == "waiting_decision" {
 		return styleStatusWarn().Render(glyphNeedYou + " need-you")
 	}

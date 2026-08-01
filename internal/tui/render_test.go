@@ -64,6 +64,26 @@ func TestPausedLaneMarksOnlyItsCurrentStage(t *testing.T) {
 	}
 }
 
+func TestFinalizationStageUsesExplicitStatusLabels(t *testing.T) {
+	for _, test := range []struct {
+		state string
+		want  string
+	}{
+		{"verifying", "verifying"},
+		{"waiting:integration", "waiting integration"},
+		{"integrating", "integrating"},
+		{"failed:finalize", "finalize failed"},
+	} {
+		iv := &projection.IssueView{CurrentStage: "merge-verification", State: test.state}
+		got := ansi.Strip(cellContentForStage(
+			iv, nil, "merge-verification", 0, 0, false, true,
+		))
+		if !strings.Contains(got, test.want) {
+			t.Fatalf("state %q rendered %q, want %q", test.state, got, test.want)
+		}
+	}
+}
+
 // Rehydrated and pre-payload lanes have no usable CurrentStage; the marker
 // falls back to the first stage that has not finished.
 func TestPausedLaneWithStaleCurrentStageFallsBack(t *testing.T) {

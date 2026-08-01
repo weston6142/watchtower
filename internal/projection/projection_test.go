@@ -103,6 +103,28 @@ func TestAttemptAndErrorSurfacing(t *testing.T) {
 	}
 }
 
+func TestFinalizationLifecycleStatesAreDistinct(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "x"}))
+	s.Apply(ev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "merge-verification"}))
+	issue := s.Issues["GH-1"]
+	if issue.State != "verifying" {
+		t.Fatalf("verification state = %q", issue.State)
+	}
+	s.Apply(ev(t, core.EvVerificationReady, "GH-1", nil))
+	if issue.State != "waiting:integration" {
+		t.Fatalf("ready state = %q", issue.State)
+	}
+	s.Apply(ev(t, core.EvMergeStarted, "GH-1", nil))
+	if issue.State != "integrating" {
+		t.Fatalf("merge state = %q", issue.State)
+	}
+	s.Apply(ev(t, core.EvFinalizationFailed, "GH-1", map[string]string{"error": "dirty base"}))
+	if issue.State != "failed:finalize" || issue.LastError != "dirty base" {
+		t.Fatalf("failure state = %+v", issue)
+	}
+}
+
 func TestMergeSequencingProjection(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "a", "flow": "default"}))

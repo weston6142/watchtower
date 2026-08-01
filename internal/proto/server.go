@@ -390,13 +390,19 @@ func (sv *Server) overview() (Overview, error) {
 	out.NeedYou = len(pending)
 	for _, issue := range issues {
 		state := issue.State
-		if state == "done" || state == "abandoned" {
+		if state == "done" || state == "done (unmerged)" || state == "merged" || state == "abandoned" {
 			continue
 		}
 		if ev, ok := latest[issue.ID]; ok {
 			switch ev.Type {
-			case core.EvStageFailed:
+			case core.EvStageFailed, core.EvFinalizationFailed:
 				out.Failing++
+				continue
+			case core.EvVerificationReady:
+				out.Queued++
+				continue
+			case core.EvMergeStarted:
+				out.Building++
 				continue
 			case core.EvDecisionRequired, core.EvIssueCompleted, core.EvIssueMerged, core.EvIssueAbandoned:
 				continue
@@ -405,9 +411,9 @@ func (sv *Server) overview() (Overview, error) {
 		switch {
 		case strings.HasPrefix(state, "failed"):
 			out.Failing++
-		case strings.HasPrefix(state, "queued"):
+		case strings.HasPrefix(state, "queued"), state == "waiting:integration":
 			out.Queued++
-		case strings.HasPrefix(state, "running"):
+		case strings.HasPrefix(state, "running"), state == "verifying", state == "integrating":
 			out.Building++
 		}
 	}

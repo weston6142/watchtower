@@ -136,6 +136,14 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 
 func focusStatus(state string) string {
 	switch {
+	case state == "verifying":
+		return "verifying"
+	case state == "waiting:integration":
+		return "waiting for integration"
+	case state == "integrating":
+		return "integrating"
+	case state == "failed:finalize":
+		return "finalization failed"
 	case strings.HasPrefix(state, "running"):
 		return "building"
 	case strings.HasPrefix(state, "queued"):

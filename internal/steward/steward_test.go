@@ -71,6 +71,30 @@ func TestStewardMarksAbandoned(t *testing.T) {
 	}
 }
 
+func TestStewardProjectsFinalizationLifecycle(t *testing.T) {
+	s := newTestStore(t)
+	st := &Steward{Store: s}
+	st.Observe(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "x", "flow": "default"}))
+	for _, step := range []struct {
+		typ  core.EventType
+		want string
+	}{
+		{core.EvStageStarted, "verifying"},
+		{core.EvVerificationReady, "waiting:integration"},
+		{core.EvMergeStarted, "integrating"},
+		{core.EvFinalizationFailed, "failed:finalize"},
+	} {
+		payload := map[string]string{}
+		if step.typ == core.EvStageStarted {
+			payload["stage"] = "merge-verification"
+		}
+		st.Observe(ev(t, step.typ, "GH-1", payload))
+		if row := findRow(t, s, "GH-1"); row.State != step.want {
+			t.Fatalf("%s state = %q, want %q", step.typ, row.State, step.want)
+		}
+	}
+}
+
 func TestStewardPreservesCleanupWarningUntilCompleted(t *testing.T) {
 	s := newTestStore(t)
 	st := &Steward{Store: s}
