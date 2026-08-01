@@ -92,11 +92,14 @@ type SetupView struct {
 // RepoSetup is the repo-level config after flag overrides — what the daemon
 // holds, not what config.yaml says.
 type RepoSetup struct {
-	Runner       string  `json:"runner"` // claude|fake
+	Runner       string  `json:"runner"` // codex|claude|fake
 	Slots        int     `json:"slots"`
 	Budget       int     `json:"budget"` // 0 = off
 	PricePerMTok float64 `json:"price_per_mtok"`
 	ClaudeBin    string  `json:"claude_bin"`
+	CodexBin     string  `json:"codex_bin,omitempty"`
+	CodexModel   string  `json:"codex_model,omitempty"`
+	CodexEffort  string  `json:"codex_effort,omitempty"`
 	TestCmd      string  `json:"test_cmd,omitempty"`
 	Pull         bool    `json:"pull"`
 	Push         bool    `json:"push"`
@@ -134,6 +137,10 @@ type AgentSetup struct {
 	Effort         string   `json:"effort,omitempty"`
 	ThinkingTokens string   `json:"thinking_tokens,omitempty"` // claude.ThinkingTokens value
 	AllowedTools   []string `json:"allowed_tools,omitempty"`
+	// Codex uses its full configured tool environment. Package allowed_tools
+	// remains visible as Claude-only declaration metadata.
+	DeclaredAllowedTools []string `json:"declared_allowed_tools,omitempty"`
+	ToolSource           string   `json:"tool_source,omitempty"`
 
 	// Declared but not applied — parsed by watchtower, never passed to the CLI.
 	DeclaredModel string `json:"declared_model,omitempty"` // flow.AgentRef.Model

@@ -607,6 +607,54 @@ func fixtureRepoSetup() RepoSetup {
 	}
 }
 
+func fixtureCodexRepoSetup() RepoSetup {
+	return RepoSetup{
+		Runner: "codex", Slots: 4, CodexBin: "codex",
+		CodexModel: "gpt-5.6-luna", CodexEffort: "xhigh",
+		ClaudeBin: "claude", Workspace: "treehouse", LoadedAt: "12:55",
+	}
+}
+
+func TestCodexSetupResolvesRepoDefaultsAndLabelsClaudeTools(t *testing.T) {
+	packages := reviewPackages()
+	for name, pkg := range packages {
+		pkg.Model, pkg.Effort = "", ""
+		packages[name] = pkg
+	}
+	c, _ := newConfigClient(t, reviewFlow(), packages, fixtureCodexRepoSetup())
+	r, _ := c.Do(Command{Op: "setup_outline"})
+	ag := r.Setup.Stages[0].Agents[0]
+	if ag.Model != "gpt-5.6-luna" || ag.Effort != "xhigh" || ag.ThinkingTokens != "" {
+		t.Fatalf("effective Codex agent = %+v", ag)
+	}
+	if len(ag.AllowedTools) != 0 || len(ag.DeclaredAllowedTools) == 0 || ag.ToolSource != "codex config" {
+		t.Fatalf("Codex tools = %+v", ag)
+	}
+}
+
+func TestCodexSetupPackageModelAndEffortOverrideRepoDefaults(t *testing.T) {
+	packages := reviewPackages()
+	pkg := packages["brainstorm"]
+	pkg.Model, pkg.Effort = "custom", "high"
+	packages["brainstorm"] = pkg
+	c, _ := newConfigClient(t, reviewFlow(), packages, fixtureCodexRepoSetup())
+	r, _ := c.Do(Command{Op: "setup_outline"})
+	ag := r.Setup.Stages[0].Agents[0]
+	if ag.Model != "custom" || ag.Effort != "high" {
+		t.Fatalf("effective Codex override = %+v", ag)
+	}
+}
+
+func TestClaudeSetupRetainsThinkingBudgetAndEffectiveAllowedTools(t *testing.T) {
+	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureRepoSetup())
+	r, _ := c.Do(Command{Op: "setup_outline"})
+	ag := r.Setup.Stages[0].Agents[0]
+	if ag.ThinkingTokens != "8192" || len(ag.AllowedTools) == 0 ||
+		len(ag.DeclaredAllowedTools) != 0 || ag.ToolSource != "" {
+		t.Fatalf("effective Claude agent = %+v", ag)
+	}
+}
+
 func TestSetupOutlineReportsResolvedRepoConfig(t *testing.T) {
 	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureRepoSetup())
 	r, err := c.Do(Command{Op: "setup_outline"})
@@ -691,28 +739,31 @@ func TestSetupOutlineReportsPackageModelNotAgentRefOverride(t *testing.T) {
 // inspector reported runner truth while issue_detail kept the override, two
 // surfaces in one TUI would print different models for the same stage.
 func TestIssueDetailAgreesWithSetupOutlineOnModel(t *testing.T) {
-	c, s := newConfigClient(t, overrideFlow(), overridePackages(), fixtureRepoSetup())
-	r, err := c.Do(Command{Op: "create_issue", Title: "t", Flow: "default", Preset: "regular"})
-	if err != nil || !r.OK {
-		t.Fatalf("create: %+v %v", r, err)
-	}
-	id := r.IssueID
-	ev, err := core.NewEvent(core.EvStageStarted, id, map[string]any{"stage": "run"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Append(ev); err != nil {
-		t.Fatal(err)
-	}
-	detail, _ := c.Do(Command{Op: "issue_detail", IssueID: id})
-	outline, _ := c.Do(Command{Op: "setup_outline", IssueID: id})
-	if detail.Detail == nil || outline.Setup == nil {
-		t.Fatalf("detail=%+v outline=%+v", detail, outline)
-	}
-	// issue_detail only ever looks at Agents[0] of the stage it resolved.
-	want := outline.Setup.Stages[0].Agents[0].Model
-	if detail.Detail.Model != want {
-		t.Fatalf("issue_detail model %q, setup_outline model %q", detail.Detail.Model, want)
+	for _, setup := range []RepoSetup{fixtureRepoSetup(), fixtureCodexRepoSetup()} {
+		t.Run(setup.Runner, func(t *testing.T) {
+			c, s := newConfigClient(t, overrideFlow(), overridePackages(), setup)
+			r, err := c.Do(Command{Op: "create_issue", Title: "t", Flow: "default", Preset: "regular"})
+			if err != nil || !r.OK {
+				t.Fatalf("create: %+v %v", r, err)
+			}
+			id := r.IssueID
+			ev, err := core.NewEvent(core.EvStageStarted, id, map[string]any{"stage": "run"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Append(ev); err != nil {
+				t.Fatal(err)
+			}
+			detail, _ := c.Do(Command{Op: "issue_detail", IssueID: id})
+			outline, _ := c.Do(Command{Op: "setup_outline", IssueID: id})
+			if detail.Detail == nil || outline.Setup == nil {
+				t.Fatalf("detail=%+v outline=%+v", detail, outline)
+			}
+			want := outline.Setup.Stages[0].Agents[0].Model
+			if detail.Detail.Model != want {
+				t.Fatalf("issue_detail model %q, setup_outline model %q", detail.Detail.Model, want)
+			}
+		})
 	}
 }
 

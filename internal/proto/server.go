@@ -469,8 +469,19 @@ func (sv *Server) flowFor(name string) (flow.Flow, bool) {
 // different models for the same stage.
 func (sv *Server) effectiveAgent(ref flow.AgentRef) (pkg pkgs.Package, declaredModel string, ok bool) {
 	pkg, ok = sv.packages[ref.Package]
+	if !ok {
+		return pkg, "", false
+	}
 	if ref.Model != "" && ref.Model != pkg.Model {
 		declaredModel = ref.Model
+	}
+	if sv.repoSetup.Runner == "codex" {
+		if pkg.Model == "" {
+			pkg.Model = sv.repoSetup.CodexModel
+		}
+		if pkg.Effort == "" {
+			pkg.Effort = sv.repoSetup.CodexEffort
+		}
 	}
 	return pkg, declaredModel, ok
 }
@@ -560,8 +571,13 @@ func (sv *Server) agentSetup(ref flow.AgentRef) AgentSetup {
 		return out
 	}
 	out.Model, out.Effort = pkg.Model, pkg.Effort
-	out.ThinkingTokens = claude.ThinkingTokens(pkg.Effort)
-	out.AllowedTools = append([]string(nil), pkg.AllowedTools...)
+	if sv.repoSetup.Runner == "codex" {
+		out.DeclaredAllowedTools = append([]string(nil), pkg.AllowedTools...)
+		out.ToolSource = "codex config"
+	} else {
+		out.ThinkingTokens = claude.ThinkingTokens(pkg.Effort)
+		out.AllowedTools = append([]string(nil), pkg.AllowedTools...)
+	}
 	out.MaxTurns = pkg.MaxTurns
 	body := strings.TrimSuffix(pkg.Prompt, "\n")
 	if body == "" {
