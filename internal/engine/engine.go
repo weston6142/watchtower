@@ -164,6 +164,34 @@ func (e *Engine) Rehydrate() error {
 		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" || row.State == "abandoned" {
 			continue
 		}
+		integration, hasIntegration, err := e.cfg.Store.IssueIntegration(row.ID)
+		if err != nil {
+			return err
+		}
+		if hasIntegration && integration.State == store.IntegrationVerificationReady {
+			is := &issueState{
+				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+				dependsOn: append([]string(nil), row.DependsOn...), running: true,
+			}
+			e.mu.Lock()
+			e.issues[row.ID] = is
+			e.mu.Unlock()
+			go func(integration store.IssueIntegration) {
+				err := e.retryVerifiedFinalization(context.Background(), is, integration)
+				e.mu.Lock()
+				is.running = false
+				is.terminal = err != nil
+				if err == nil {
+					is.wsRelease = nil
+					is.wsPath = ""
+					is.branch = ""
+					is.baseRef = ""
+				}
+				e.mu.Unlock()
+			}(integration)
+			continue
+		}
 		if row.State == "backlog" {
 			e.mu.Lock()
 			if _, known := e.issues[row.ID]; !known {

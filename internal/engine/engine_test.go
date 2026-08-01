@@ -1317,6 +1317,54 @@ func TestFinalizationFailureRetriesIntegrationWithoutRerunningVerifier(t *testin
 	}
 }
 
+func TestRehydrateAutomaticallyResumesVerifiedFinalization(t *testing.T) {
+	e, s, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	fake.OnStart = func(_, stage, _, _ string) error {
+		if stage != "merge-verification" {
+			return nil
+		}
+		return os.WriteFile(filepath.Join(repo, "diff"), []byte("dirty base\n"), 0o644)
+	}
+	id, err := e.CreateIssue("restart finalization", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("dirty base unexpectedly landed")
+	}
+	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
+		t.Fatalf("repair base: %v: %s", err, out)
+	}
+	fake.OnStart = nil
+	restarted := New(e.cfg)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		integration, ok, err := s.IssueIntegration(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && integration.State == store.IntegrationMerged {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("integration did not resume: %+v", integration)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("rehydration reran verifier: %+v err %v", runs, err)
+	}
+	_, _, _, lastErr, err := s.LastStageEvents(id)
+	if err != nil || lastErr != "" {
+		t.Fatalf("restart synthesized stage failure: lastErr=%q err=%v", lastErr, err)
+	}
+}
+
 type countingGitWorktree struct {
 	repo     string
 	acquired int
