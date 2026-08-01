@@ -102,8 +102,15 @@ func setupRepoLines(r proto.RepoSetup) []string {
 	if runnerKind == "" {
 		runnerKind = "unknown runner"
 	}
+	provider := "runner_bin —"
+	switch r.Runner {
+	case "codex":
+		provider = "codex_bin " + r.CodexBin
+	case "claude":
+		provider = "claude_bin " + r.ClaudeBin
+	}
 	first := []string{runnerKind, fmt.Sprintf("%d slots", r.Slots), budget,
-		fmt.Sprintf("$%.2f/Mtok", r.PricePerMTok), "claude_bin " + r.ClaudeBin}
+		fmt.Sprintf("$%.2f/Mtok", r.PricePerMTok), provider}
 	if r.TestCmd != "" {
 		first = append(first, "test_cmd "+r.TestCmd)
 	}
@@ -116,6 +123,9 @@ func setupRepoLines(r proto.RepoSetup) []string {
 		second = append(second, "loaded "+r.LoadedAt)
 	}
 	second = append(second, ws, "pull "+setupOnOff(r.Pull), "push "+setupOnOff(r.Push))
+	if r.Runner == "codex" {
+		second = append(second, r.CodexModel+"/"+r.CodexEffort)
+	}
 	const gutter = 7
 	return []string{
 		label.Render(padCell("REPO", gutter)) + value.Render(truncate(strings.Join(first, " · "), setupRowWidth-gutter)),
@@ -209,11 +219,18 @@ func setupAgentLines(ag proto.AgentSetup, runnerKind string) []string {
 	lines := []string{lipgloss.NewStyle().Foreground(t.Bright).Render(name) +
 		lipgloss.NewStyle().Foreground(t.Structure).Render(truncate(head, setupRowWidth-24))}
 	tools := "tools —"
-	if len(ag.AllowedTools) > 0 {
+	if ag.ToolSource != "" {
+		tools = "tools " + ag.ToolSource
+	} else if len(ag.AllowedTools) > 0 {
 		tools = "tools " + strings.Join(ag.AllowedTools, ", ")
 	}
 	lines = append(lines, "    "+dim.Render(truncate(tools, setupRowWidth-6)))
 	warn := lipgloss.NewStyle().Foreground(t.Warn)
+	if len(ag.DeclaredAllowedTools) > 0 {
+		lines = append(lines, "    "+warn.Render(truncate(
+			"declared tools "+strings.Join(ag.DeclaredAllowedTools, ", ")+" — not applied",
+			setupRowWidth-6)))
+	}
 	if ag.DeclaredModel != "" {
 		lines = append(lines, "    "+warn.Render(truncate(
 			"declared model "+ag.DeclaredModel+" — not applied (runner passes the package model)",

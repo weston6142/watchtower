@@ -159,16 +159,18 @@ func fixtureArch() *archmap.Map {
 func fixtureSetup() *setupState {
 	agent := func(name string, preview string) proto.AgentSetup {
 		return proto.AgentSetup{
-			Package: name, Model: "opus", Effort: "medium", ThinkingTokens: "8192",
-			AllowedTools:  []string{"Bash", "Read", "Edit", "Glob", "Grep"},
-			PromptLines:   24,
-			PromptPreview: []string{preview},
+			Package: name, Model: "gpt-5.6-luna", Effort: "xhigh",
+			ToolSource:           "codex config",
+			DeclaredAllowedTools: []string{"Bash", "Read", "Edit", "Glob", "Grep"},
+			PromptLines:          24,
+			PromptPreview:        []string{preview},
 		}
 	}
 	view := proto.SetupView{
 		Flow: "default", IssueID: "fx-e2e", IssueTitle: "flaky e2e fix",
 		Repo: proto.RepoSetup{
-			Runner: "claude", Slots: 4, ClaudeBin: "claude",
+			Runner: "codex", Slots: 4, CodexBin: "codex",
+			CodexModel: "gpt-5.6-luna", CodexEffort: "xhigh", ClaudeBin: "claude",
 			Pull: true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
 		},
 		Stages: []proto.StageSetup{

@@ -2,17 +2,20 @@ The setup inspector (`f` from the grid, `internal/tui/setup.go` plus
 `setup_outline`/`setup_prompt` in `internal/proto/server.go`) reports **what the
 daemon is running**, not what the files on disk say. It reads the daemon's
 cached flows and packages and never stats a file, so an edit to `config.yaml`,
-a flow, or a `prompt.md` shows up only after a daemon restart. The load stamp in
-the header exists to make that lag readable rather than confusing. What the
-panel reports about agents is resolved elsewhere — see
-agent-prompt-and-model-resolution.
+a flow, or a `prompt.md` shows up only after a daemon restart. This includes
+runner, provider binary, Codex model/effort defaults, and package settings. The
+header reports the selected provider binary (`codex_bin` or `claude_bin`); for
+Codex it also reports the repository model/effort pair. The load stamp makes
+stale daemon state readable rather than confusing. What the panel reports
+about agents is resolved elsewhere — see agent-prompt-and-model-resolution.
 
 The inspector describes loaded configuration, not lane completion. In
 particular, a completed merge-verifier transcript does not make an issue done.
 Final-stage completion requires strict `merge-decision.json` and
 `verification.json` validation plus the durable `verification_ready`
-checkpoint described in lane-ops-and-issue-states. Restart the daemon after a
-prompt or flow edit so the verifier receives the current contract.
+checkpoint described in lane-ops-and-issue-states. Restart the daemon after
+any provider, config, prompt, or flow edit so the verifier receives the current
+contract.
 
 **A repo-level field is blank unless `main.go` hands it over.**
 `srv.SetRepoSetup(...)` in `runDaemon` is the only writer of `proto.RepoSetup`,

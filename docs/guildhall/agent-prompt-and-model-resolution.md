@@ -1,41 +1,62 @@
-An agent's prompt and its model come from more places than the agent package,
-and two of those places are parsed but never sent. These rules belong to
-`internal/claude/` and `internal/proto/`, not to the panel that exposes them
-(setup-inspector).
+# Agent prompt and model resolution
 
-**The prompt is assembled from three sources, and only one of them is a file
-you can edit.** `setup_prompt` shows the first two, in order:
+Watchtower supports Codex and Claude as separate runners. They share the task
+and structured marker protocol, but each runner constructs its own CLI command
+and continuation lifecycle.
 
-1. The first user message — `claude.TaskMessage(stage, issueID)` in
-   `internal/claude/runner.go`. It lives in Go source, not in any package, and
-   it is what tells the agent to read `ISSUE.md` and where earlier artifacts
-   sit. Editing `prompt.md` cannot change it.
-2. `.watchtower/packages/<pkg>/prompt.md`, passed as `--append-system-prompt`.
-   This is the agent's role.
-3. Claude Code's own base system prompt, added by the CLI. Watchtower never
-   sees it and cannot show it.
+## Prompt sources
 
-**Two declared fields are parsed and then dropped on the floor.** The runner
-passes `pkg.Model` and nothing else, so:
+Every stage begins with `agentprotocol.TaskMessage(stage, issueID)`. This
+provider-neutral user message tells the agent to read the materialized
+`ISSUE.md`, `STAGE.md`, artifacts, and decisions in the current workspace.
+`setup_prompt` displays this message verbatim.
 
-- A flow's `agents[].model` reaches `flow.AgentRef.Model` and stops there. Set
-  it and the agent still runs the package's model, silently.
-- `max_turns` in `package.yaml` reaches `pkgs.Package.MaxTurns` and stops
-  there. Watchtower never passes a turn cap to the CLI.
+The selected runner injects the composed package prompt differently:
 
-The setup inspector labels both `declared … — not applied` precisely because
-they read as effective. If you make either one real, that label is the second
-place to change.
+- Codex receives it as the `developer_instructions` config value.
+- Claude receives it through `--append-system-prompt`.
 
-**Effort reaches the CLI only as a thinking-token budget.**
-`claude.ThinkingTokens(effort)` maps the level to a bare number and `EffortEnv`
-wraps it as `MAX_THINKING_TOKENS=…`. A new effort level goes in
-`ThinkingTokens`, never in `EffortEnv`, or the number the inspector reports and
-the number the CLI receives drift apart. Empty or unknown levels mean CLI
-default, not zero.
+Both CLIs still load their normal user and repository configuration. In
+particular, Watchtower does not disable Codex user config, `AGENTS.md`, rules,
+skills, or MCP configuration. Provider-owned base instructions remain inside
+the CLI and are not visible to the setup inspector.
 
-**Resolve through `Server.effectiveAgent`, not through `sv.packages`
-directly.** It returns the effective package plus the declared-but-unapplied
-model as separate values, and both `issue_detail` and `setup_outline` go
-through it. A third surface that looks the package up itself is how two panels
-in one TUI end up printing different models for the same stage.
+## Model and effort precedence
+
+For Codex, a package's non-empty `model` or `effort` overrides the repository
+`codex_model` or `codex_effort`. Empty package values inherit the repository
+defaults. New repositories use `gpt-5.6-luna` with `xhigh` reasoning.
+
+Claude retains its existing behavior: the package model is passed when set,
+and package effort maps through `claude.ThinkingTokens` to
+`MAX_THINKING_TOKENS`. Empty or unknown Claude effort leaves the CLI default in
+place.
+
+Two parsed declarations remain unapplied for both providers:
+
+- A flow's `agents[].model` is reported as a declared model but does not
+  override the package.
+- A package's `max_turns` is reported but is not passed to either CLI.
+
+All setup and issue-detail surfaces must resolve through
+`Server.effectiveAgent`; looking directly in `sv.packages` can make two screens
+report different effective models.
+
+## Tools and unattended execution
+
+`allowed_tools` is effective only for Claude, where it becomes
+`--allowedTools`. Codex uses its normal configured tool environment; the setup
+inspector shows the package list as `declared tools ... — not applied` and
+labels the effective source `codex config`.
+
+Codex stages explicitly set `sandbox_mode="danger-full-access"` and
+`approval_policy="never"`. Watchtower does not add flags that suppress normal
+Codex configuration or make a thread ephemeral.
+
+## Decisions and continuations
+
+When an agent emits a decision, Watchtower preserves the first Codex thread
+UUID and resumes that exact thread with coaching or the human response. It
+never uses `--last`. Tokens accumulate across the initial and resumed turns,
+while proposal and dependency markers continue through the shared
+`agentprotocol` parser.

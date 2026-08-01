@@ -19,17 +19,20 @@ import (
 func fixtureSetupView() proto.SetupView {
 	agent := func(name string) proto.AgentSetup {
 		return proto.AgentSetup{
-			Package: name, Model: "opus", Effort: "medium", ThinkingTokens: "8192",
-			AllowedTools:  []string{"Bash", "Read", "Edit", "Glob", "Grep"},
-			PromptLines:   24,
-			PromptPreview: []string{"Light single-pass clean code review of the branch diff."},
+			Package: name, Model: "gpt-5.6-luna", Effort: "xhigh",
+			ToolSource:           "codex config",
+			DeclaredAllowedTools: []string{"Bash", "Read", "Edit", "Glob", "Grep"},
+			PromptLines:          24,
+			PromptPreview:        []string{"Light single-pass clean code review of the branch diff."},
 		}
 	}
 	return proto.SetupView{
 		Flow: "default", IssueID: "fx-e2e", IssueTitle: "flaky e2e fix",
 		Repo: proto.RepoSetup{
-			Runner: "claude", Slots: 4, PricePerMTok: 0, ClaudeBin: "claude",
-			Pull: true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
+			Runner: "codex", Slots: 4, PricePerMTok: 0,
+			CodexBin: "codex", CodexModel: "gpt-5.6-luna", CodexEffort: "xhigh",
+			ClaudeBin: "claude",
+			Pull:      true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
 		},
 		Stages: []proto.StageSetup{
 			{Name: "brainstorm", Gate: "decision_queue", Workspace: "none", Completion: "all",
@@ -54,6 +57,22 @@ func fixtureSetupView() proto.SetupView {
 	}
 }
 
+func fixtureClaudeSetupView() proto.SetupView {
+	v := fixtureSetupView()
+	v.Repo.Runner = "claude"
+	v.Repo.CodexBin, v.Repo.CodexModel, v.Repo.CodexEffort = "", "", ""
+	for i := range v.Stages {
+		for j := range v.Stages[i].Agents {
+			ag := &v.Stages[i].Agents[j]
+			ag.Model, ag.Effort, ag.ThinkingTokens = "opus", "medium", "8192"
+			ag.AllowedTools = append([]string(nil), ag.DeclaredAllowedTools...)
+			ag.DeclaredAllowedTools = nil
+			ag.ToolSource = ""
+		}
+	}
+	return v
+}
+
 func fixtureSetupState() setupState {
 	v := fixtureSetupView()
 	return setupState{View: &v, Expanded: map[string]bool{"review": true}}
@@ -65,7 +84,10 @@ func ptrSetupView(v proto.SetupView) *proto.SetupView { return &v }
 // worktree? — is answered on the first screen, without expanding anything.
 func TestSetupHeaderNamesResolvedWorkspace(t *testing.T) {
 	got := ansi.Strip(renderSetup(fixtureSetupState(), 120, 50))
-	for _, want := range []string{"workspace treehouse", "claude", "4 slots", "loaded 12:55", "pull on", "push on"} {
+	for _, want := range []string{
+		"workspace treehouse", "codex", "codex_bin codex", "gpt-5.6-luna", "xhigh",
+		"4 slots", "loaded 12:55", "pull on", "push on",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("header missing %q in:\n%s", want, got)
 		}
@@ -77,7 +99,8 @@ func TestSetupHeaderNamesResolvedWorkspace(t *testing.T) {
 func TestSetupExpandedStageListsEveryAgent(t *testing.T) {
 	got := ansi.Strip(renderSetup(fixtureSetupState(), 120, 50))
 	for _, want := range []string{"clean-code-reviewer", "reviewer", "doc-writer",
-		"8192 thinking tokens", "tools Bash, Read, Edit, Glob, Grep", "prompt 24 lines"} {
+		"gpt-5.6-luna · xhigh", "tools codex config",
+		"declared tools Bash, Read, Edit, Glob, Grep — not applied", "prompt 24 lines"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expanded review missing %q in:\n%s", want, got)
 		}
@@ -94,6 +117,19 @@ func TestSetupExpandedStageListsEveryAgent(t *testing.T) {
 	}
 	if !strings.Contains(shut, "review") {
 		t.Errorf("collapsed outline lost its stage rows:\n%s", shut)
+	}
+}
+
+func TestSetupClaudeRenderingRetainsBinaryThinkingAndTools(t *testing.T) {
+	v := fixtureClaudeSetupView()
+	state := setupState{View: &v, Expanded: map[string]bool{"review": true}}
+	got := ansi.Strip(renderSetup(state, 120, 50))
+	for _, want := range []string{
+		"claude_bin claude", "8192 thinking tokens", "tools Bash, Read, Edit, Glob, Grep",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Claude setup missing %q in:\n%s", want, got)
+		}
 	}
 }
 
