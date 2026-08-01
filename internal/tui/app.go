@@ -75,19 +75,23 @@ type Model struct {
 	warExpanded      bool
 	retireAfter      time.Duration
 	retired          map[string]bool
-	shelfSel         int
-	modal            *modalState
-	backlog          *backlogState
-	confirm          *confirmState
-	decisionEditor   *decisionEditor
-	leverEditor      *leverEditorState
-	wantLeverEditor  bool
-	setup            *setupState
-	wantSetup        bool
-	aliases          map[string]string
-	reducedMotion    bool
-	herdrReporter    overviewReporter
-	ticks            int
+	// dayStart is local midnight of the current day, refreshed on every tick.
+	// Injected rather than read from the clock so render paths stay
+	// deterministic and the goldens stay byte-comparable.
+	dayStart        time.Time
+	shelfSel        int
+	modal           *modalState
+	backlog         *backlogState
+	confirm         *confirmState
+	decisionEditor  *decisionEditor
+	leverEditor     *leverEditorState
+	wantLeverEditor bool
+	setup           *setupState
+	wantSetup       bool
+	aliases         map[string]string
+	reducedMotion   bool
+	herdrReporter   overviewReporter
+	ticks           int
 }
 
 type Msg struct{ Events []core.Event }
@@ -245,7 +249,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		m.ticks++
-		m.autoRetire(time.Now())
+		// One clock read feeds both statements: two independent reads could
+		// straddle midnight and evaluate staleness against the wrong day. The
+		// assignment precedes autoRetire, or the first tick would compare
+		// against the zero cutoff.
+		now := time.Now()
+		m.dayStart = core.StartOfDay(now)
+		m.autoRetire(now)
 		if m.currentMode() == "timeline" {
 			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
 		}
@@ -1502,6 +1512,13 @@ func (m *Model) updateDoorKey(key string) tea.Cmd {
 	return nil
 }
 
+// staleShipped reports whether a merged lane was merged before the current
+// day began. A zero MergedAt and a zero dayStart both fail open: a lane is
+// never hidden on a missing timestamp.
+func (m *Model) staleShipped(iv *projection.IssueView) bool {
+	return iv != nil && iv.Merged && !iv.MergedAt.IsZero() && iv.MergedAt.Before(m.dayStart)
+}
+
 func (m *Model) autoRetire(now time.Time) {
 	if m.State == nil || m.retireAfter <= 0 {
 		return
@@ -1509,9 +1526,16 @@ func (m *Model) autoRetire(now time.Time) {
 	if m.retired == nil {
 		m.retired = map[string]bool{}
 	}
-	for _, issueID := range m.State.ShippedToday {
+	for _, issueID := range m.State.Shipped {
 		iv := m.State.Issues[issueID]
-		if iv != nil && !iv.MergedAt.IsZero() && !now.Before(iv.MergedAt.Add(m.retireAfter)) {
+		if iv == nil || iv.MergedAt.IsZero() {
+			continue
+		}
+		// A lane merged before today began is off every surface immediately —
+		// it does not wait out retireAfter. This only discriminates in the
+		// retireAfter window just after midnight; at launch the timer below
+		// has already elapsed for any earlier day's merge.
+		if m.staleShipped(iv) || !now.Before(iv.MergedAt.Add(m.retireAfter)) {
 			m.retired[issueID] = true
 		}
 	}
@@ -1546,13 +1570,21 @@ func (m Model) shelfItems() []shelfItem {
 	}
 	items := make([]shelfItem, 0)
 	seen := map[string]bool{}
-	for _, issueID := range m.State.ShippedToday {
+	for _, issueID := range m.State.Shipped {
 		if !m.retired[issueID] || seen[issueID] {
 			continue
 		}
 		if iv := m.State.Issues[issueID]; iv != nil {
-			items = append(items, shelfItem{ID: issueID, Title: iv.Title})
 			seen[issueID] = true
+			// The heading says "SHIPPED today", so earlier days' merges are not
+			// on this shelf. Claimed above but not listed: a lane that took a
+			// final stage failure before it merged is also in State.Parked, so
+			// leaving it unclaimed would move it under PARKED rather than take
+			// it off the shelf.
+			if m.staleShipped(iv) {
+				continue
+			}
+			items = append(items, shelfItem{ID: issueID, Title: iv.Title})
 		}
 	}
 	for _, issueID := range m.State.Parked {

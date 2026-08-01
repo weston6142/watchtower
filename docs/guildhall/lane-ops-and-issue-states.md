@@ -9,6 +9,33 @@ interchangeable:
 | retire | `c` | none (TUI-local) | hides a *shipped* lane in this TUI session only; not durable |
 | abandon | `X` | `abandon_issue` | removes the lane everywhere, durably, forever |
 
+Retire also fires on its own, from `autoRetire` on the TUI tick: once
+`retireAfter` (5 m by default) has elapsed since `MergedAt`, and — immediately,
+without waiting it out — for any lane merged before the current day began. Both
+paths sit behind the same `retireAfter > 0` guard, so a hand-built model with a
+zero `retireAfter`, as `FixtureModel` has, retires nothing while `shelfItems`
+still filters: the stale lane leaves the shelf but stays on the grid. That
+combination is unreachable in production and test-only — see setup-inspector for
+the fixture side of the day cutoff.
+
+**"Shipped today" is scoped in the TUI, not the projection.**
+`projection.State.Shipped` is an all-time, clock-free accumulator of merged lane
+IDs, because the projection stays a deterministic fold over the event log. The
+day scope lives only in `internal/tui`, applied at exactly `autoRetire` and
+`shelfItems` against `Model.dayStart` — local midnight, refreshed every tick
+from `core.StartOfDay`. A new consumer that means "today" filters
+`IssueView.MergedAt` itself; no field name does it for you.
+
+The header's shipped-today count is a different *population*, not merely a
+different boundary: it counts raw `issue_merged` events read from the store,
+while the shelf reads `State.Shipped`, which `issue_abandoned` removes from.
+Merge a lane today and then abandon it and the header says one shipped while the
+shelf shows none. That divergence is correct — don't unify it. Separately,
+`Store.EventsSinceTime` compares RFC3339Nano strings lexicographically, so an
+exact-midnight threshold formats with no fractional digits and wrongly excludes
+events in `[midnight, midnight+1s)`; it can only under-count, and any new
+since-midnight query inherits the bug until it is fixed.
+
 Rules that hold across the daemon:
 
 - **`abandoned` is terminal.** `Rehydrate` skips it alongside `done`,

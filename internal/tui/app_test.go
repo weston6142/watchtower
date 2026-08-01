@@ -448,7 +448,7 @@ func TestChoiceToastOtherOpensEmptyEditor(t *testing.T) {
 func TestShelfAutoRetiresAndUnretiresMergedIssue(t *testing.T) {
 	m := NewModel(nil, []string{"spec", "merge"})
 	m.State.Issues["GH-1"] = &projection.IssueView{ID: "GH-1", Title: "shipped", Merged: true, MergedAt: time.Now().Add(-2 * time.Minute)}
-	m.State.ShippedToday = []string{"GH-1"}
+	m.State.Shipped = []string{"GH-1"}
 	m.SetRetireAfter(time.Minute)
 	m.autoRetire(time.Now())
 	if items := m.shelfItems(); len(items) != 1 || items[0].ID != "GH-1" {
@@ -467,7 +467,7 @@ func retireModel(t *testing.T) Model {
 	m.State.Order = []string{"GH-1", "GH-2"}
 	for _, id := range m.State.Order {
 		m.State.Issues[id] = &projection.IssueView{ID: id, Title: "shipped " + id, State: "done", Merged: true, MergedAt: time.Now()}
-		m.State.ShippedToday = append(m.State.ShippedToday, id)
+		m.State.Shipped = append(m.State.Shipped, id)
 	}
 	m.Ids = map[string]Identity{"GH-1": {Tag: "G1"}, "GH-2": {Tag: "G2"}}
 	m.Width, m.Height = 120, 40
@@ -1002,5 +1002,171 @@ func TestStreamDoorFitsTerminalWithMultiLineError(t *testing.T) {
 				size[0], size[1], got, size[1])
 		}
 		requireHeaderRow(t, m, size)
+	}
+}
+
+// shelfMerged is the fixed merge instant the shelf tests hang their cutoffs off.
+// Explicitly UTC so the day boundary does not depend on the machine's zone.
+var shelfMerged = time.Date(2026, 7, 31, 9, 0, 0, 0, time.UTC)
+
+// shippedShelfModel poses one retired, merged lane. Retired because shelfItems
+// only lists shipped lanes that have already left the grid.
+func shippedShelfModel(t *testing.T, mergedAt time.Time) Model {
+	t.Helper()
+	m := NewModel(nil, []string{"spec", "merge"})
+	m.State.Issues["GH-1"] = &projection.IssueView{
+		ID: "GH-1", Title: "shipped", State: "done", Merged: true, MergedAt: mergedAt}
+	m.State.Shipped = []string{"GH-1"}
+	m.retired["GH-1"] = true
+	return m
+}
+
+// The shelf covers merges at or after local midnight and nothing earlier.
+func TestShelfItemsScopesShippedToToday(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		dayStart time.Time
+		want     int
+	}{
+		{"merged today", core.StartOfDay(shelfMerged), 1},
+		{"merged before midnight", core.StartOfDay(shelfMerged.Add(24 * time.Hour)), 0},
+		{"merged exactly at the cutoff", shelfMerged, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := shippedShelfModel(t, shelfMerged)
+			m.dayStart = tc.dayStart
+			if got := m.shelfItems(); len(got) != tc.want {
+				t.Fatalf("shelf items = %d (%+v), want %d", len(got), got, tc.want)
+			}
+		})
+	}
+}
+
+// A zero MergedAt fails open and stays on the shelf.
+func TestShelfItemsKeepsShippedLaneWithZeroMergedAt(t *testing.T) {
+	m := shippedShelfModel(t, time.Time{})
+	m.dayStart = core.StartOfDay(shelfMerged)
+	if got := m.shelfItems(); len(got) != 1 || got[0].ID != "GH-1" {
+		t.Fatalf("zero MergedAt was filtered out: %+v", got)
+	}
+}
+
+// One state, evaluated either side of a midnight rollover.
+func TestShelfClearsAcrossMidnightRollover(t *testing.T) {
+	m := shippedShelfModel(t, shelfMerged)
+	m.dayStart = core.StartOfDay(shelfMerged)
+	if got := m.shelfItems(); len(got) != 1 {
+		t.Fatalf("before rollover: shelf items = %d, want 1", len(got))
+	}
+	m.dayStart = core.StartOfDay(shelfMerged.Add(24 * time.Hour))
+	if got := m.shelfItems(); len(got) != 0 {
+		t.Fatalf("after rollover: shelf items = %d (%+v), want 0", len(got), got)
+	}
+}
+
+// staleGridModel poses one lane merged just before midnight, with `now` just
+// after it, so retireAfter has deliberately not elapsed.
+func staleGridModel(t *testing.T) (Model, time.Time) {
+	t.Helper()
+	now := time.Date(2026, 7, 31, 0, 0, 20, 0, time.UTC)
+	mergedAt := time.Date(2026, 7, 30, 23, 59, 50, 0, time.UTC)
+	m := NewModel(nil, []string{"spec", "merge"})
+	m.SetRetireAfter(5 * time.Minute)
+	m.State.Order = []string{"GH-1"}
+	m.State.Issues["GH-1"] = &projection.IssueView{
+		ID: "GH-1", Title: "shipped", State: "done", Merged: true, MergedAt: mergedAt}
+	m.State.Shipped = []string{"GH-1"}
+	m.dayStart = core.StartOfDay(now)
+	if !now.Before(mergedAt.Add(m.retireAfter)) {
+		t.Fatal("setup no longer discriminates: retireAfter has already elapsed, " +
+			"so the existing timer would retire this lane on its own")
+	}
+	return m, now
+}
+
+// Staleness retires a lane the retireAfter timer has not reached.
+func TestAutoRetireRetiresStaleShippedBeforeRetireAfter(t *testing.T) {
+	m, now := staleGridModel(t)
+	m.autoRetire(now)
+	if !m.retired["GH-1"] {
+		t.Fatal("lane merged before local midnight was not retired")
+	}
+}
+
+// The stale lane leaves the grid, not only the shelf.
+func TestVisibleOrderDropsStaleShippedLane(t *testing.T) {
+	m, now := staleGridModel(t)
+	if got := visibleOrder(m.State, m.retired); len(got) != 1 {
+		t.Fatalf("before autoRetire: visibleOrder = %v, want [GH-1]", got)
+	}
+	m.autoRetire(now)
+	if got := visibleOrder(m.State, m.retired); len(got) != 0 {
+		t.Fatalf("stale lane still on the grid: %v", got)
+	}
+	if got := m.shelfItems(); len(got) != 0 {
+		t.Fatalf("stale lane still on the shelf: %+v", got)
+	}
+}
+
+// retireAfter is unreachably non-positive in production, which is what makes
+// autoRetire's retained `retireAfter <= 0` early return harmless.
+// This pins existing behavior; it passes before the change too.
+func TestRetireAfterStaysPositive(t *testing.T) {
+	m := NewModel(nil, []string{"spec", "merge"})
+	if m.retireAfter <= 0 {
+		t.Fatalf("NewModel retireAfter = %v, want positive", m.retireAfter)
+	}
+	before := m.retireAfter
+	m.SetRetireAfter(0)
+	if m.retireAfter != before {
+		t.Fatalf("SetRetireAfter(0) changed retireAfter to %v, want %v", m.retireAfter, before)
+	}
+	m.SetRetireAfter(-time.Hour)
+	if m.retireAfter != before {
+		t.Fatalf("SetRetireAfter(-1h) changed retireAfter to %v, want %v", m.retireAfter, before)
+	}
+}
+
+// The tick assigns dayStart from a single clock read and does so before
+// autoRetire, so a stale lane is retired on that same tick.
+func TestTickRefreshesDayStartBeforeRetiring(t *testing.T) {
+	m := NewModel(nil, []string{"spec", "merge"})
+	m.SetRetireAfter(1000 * time.Hour) // the timer can never fire here
+	m.State.Order = []string{"GH-1"}
+	m.State.Issues["GH-1"] = &projection.IssueView{
+		ID: "GH-1", Title: "shipped", State: "done", Merged: true,
+		MergedAt: time.Now().Add(-24 * time.Hour)}
+	m.State.Shipped = []string{"GH-1"}
+
+	before := core.StartOfDay(time.Now())
+	next, _ := m.Update(tickMsg{})
+	after := core.StartOfDay(time.Now())
+
+	got, ok := next.(Model)
+	if !ok {
+		t.Fatalf("Update returned %T, want Model", next)
+	}
+	if !got.dayStart.Equal(before) && !got.dayStart.Equal(after) {
+		t.Fatalf("dayStart = %v, want %v or %v", got.dayStart, before, after)
+	}
+	if !got.retired["GH-1"] {
+		t.Fatal("stale lane was not retired on the tick that set dayStart — " +
+			"dayStart must be assigned before autoRetire runs")
+	}
+	if len(got.shelfItems()) != 0 {
+		t.Fatalf("stale lane still on the shelf: %+v", got.shelfItems())
+	}
+}
+
+// A lane that took a final stage failure (or was killed) and later merged
+// sits in both State.Parked and State.Shipped — GH-6 in the live store is
+// exactly this shape. Once stale it must leave the shelf outright, not slide
+// from SHIPPED today into PARKED.
+func TestStaleShippedDoesNotResurfaceAsParked(t *testing.T) {
+	m := shippedShelfModel(t, shelfMerged)
+	m.State.Parked = []string{"GH-1"}
+	m.dayStart = core.StartOfDay(shelfMerged.Add(24 * time.Hour))
+	if got := m.shelfItems(); len(got) != 0 {
+		t.Fatalf("stale shipped lane resurfaced on the shelf: %+v", got)
 	}
 }

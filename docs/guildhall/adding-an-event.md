@@ -9,7 +9,7 @@ The full sweep for a new lane-affecting event:
 2. `internal/engine/` — whoever emits it, via `e.emit(...)`.
 3. `internal/steward/steward.go` — durable `IssueRow.State` for restarts.
 4. `internal/projection/projection.go` — in-memory `State` the TUI renders.
-   Deleting a lane means `Issues`, `Order`, `ShippedToday`, `Parked`, *and* its
+   Deleting a lane means `Issues`, `Order`, `Shipped`, `Parked`, *and* its
    decisions.
 5. `internal/proto/server.go` — the op name, if operators can trigger it.
 6. `cmd/watchtower/main.go` — the CLI verb, in the `ops` map beside

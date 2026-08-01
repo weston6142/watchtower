@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -21,6 +22,11 @@ import (
 func FixtureFlows() []string {
 	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "backlog", "backlog-long", "levers", "arch", "pager", "help", "stream", "stream-long", "setup"}
 }
+
+// fixtureNow is the fixed instant every fixture timestamp hangs off. Midday and
+// explicitly UTC, so core.StartOfDay(fixtureNow) is identical on every machine
+// and a negative offset of a few hours stays inside the same calendar day.
+var fixtureNow = time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 
 func fixtureState() *projection.State {
 	st := projection.NewState()
@@ -56,9 +62,11 @@ func fixtureState() *projection.State {
 		},
 		Reversible: "Cheap to change until others clone the remote or CI points at it.",
 	}
-	st.ShippedToday = []string{"ml-retry"}
+	st.Shipped = []string{"ml-retry"}
 	st.Parked = []string{"fx-dark"}
-	st.Issues["ml-retry"] = &projection.IssueView{ID: "ml-retry", Title: "retry budget for marshal", Merged: true, State: "done"}
+	st.Issues["ml-retry"] = &projection.IssueView{
+		ID: "ml-retry", Title: "retry budget for marshal", Merged: true, State: "done",
+		MergedAt: fixtureNow.Add(-2 * time.Hour)}
 	st.Issues["fx-dark"] = &projection.IssueView{
 		ID: "fx-dark", Title: "dark-mode audit", Flow: "default",
 		Completed: []string{"brainstorm"}, CurrentStage: "spec",
@@ -221,6 +229,7 @@ func FixtureModel(flowName string, width, height int) Model {
 	}
 	m.dismissed = map[int64]bool{}
 	m.retired = map[string]bool{"ml-retry": true} // shipped lanes appear on the shelf once retired
+	m.dayStart = core.StartOfDay(fixtureNow)
 	m.evidenceOpened = map[int64]bool{}
 	switch flowName {
 	case "rows":

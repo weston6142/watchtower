@@ -25,7 +25,11 @@ post-flag-override on purpose, including the workspace provider, which
 
 **No render path may call `time.Now()`,** or the goldens stop being
 byte-comparable. `LoadedAt` is formatted to a string once, at startup, and the
-TUI fixtures pin it for the same reason.
+TUI fixtures pin it for the same reason. The shipped shelf's day cutoff obeys the
+same rule: `Model.dayStart` is injected on the tick, never read where anything
+renders, and `FixtureModel` pins it from a fixed `fixtureNow`. Keep the
+fixture's merge offset inside `fixtureNow`'s calendar day — push it across the
+boundary and `ml-retry` leaves the shelf, churning many goldens at once.
 
 Five rules hold for any new overlay, not just this one:
 
