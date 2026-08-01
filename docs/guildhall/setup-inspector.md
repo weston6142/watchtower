@@ -7,6 +7,13 @@ the header exists to make that lag readable rather than confusing. What the
 panel reports about agents is resolved elsewhere — see
 agent-prompt-and-model-resolution.
 
+The inspector describes loaded configuration, not lane completion. In
+particular, a completed merge-verifier transcript does not make an issue done.
+Final-stage completion requires strict `merge-decision.json` and
+`verification.json` validation plus the durable `verification_ready`
+checkpoint described in lane-ops-and-issue-states. Restart the daemon after a
+prompt or flow edit so the verifier receives the current contract.
+
 **A repo-level field is blank unless `main.go` hands it over.**
 `srv.SetRepoSetup(...)` in `runDaemon` is the only writer of `proto.RepoSetup`,
 and it is deliberately one setter for all of it. Add a field to `RepoSetup`

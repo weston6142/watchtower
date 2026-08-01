@@ -5,7 +5,7 @@ interchangeable:
 |---|---|---|---|
 | pause / resume | `p` (toggle) | `pause_issue` / `resume_issue` | issue keeps its place; reversible |
 | kill | `x` | `kill_stage` | cancels the *running stage* only; the lane stays |
-| retry | `R` | `retry_stage` | re-runs a failed/killed stage, or retries only pending publication/cleanup |
+| retry | `R` | `retry_stage` | re-runs an invalid/unvalidated final verifier, or resumes verified integration/publication/cleanup without a model call |
 | retire | `c` | none (TUI-local) | hides a *shipped* lane in this TUI session only; not durable |
 | abandon | `X` | `abandon_issue` | removes the lane everywhere, durably, forever |
 
@@ -28,12 +28,30 @@ Rules that hold across the daemon:
   the keybar hint `nothing running — R retries · X abandons`. The daemon still
   errors on a kill with no running stage, so any new client needs its own guard.
 
+Finalization has a durable boundary that is independent of an agent transcript:
+
+- `merge-report.md` contains rich human evidence. `merge-decision.json` and
+  `verification.json` are strict machine receipts; unknown fields and missing
+  merge identity are rejected.
+- The engine validates both receipts against the current branch, base, tree,
+  and configured verification command, then persists `verification_ready`
+  before emitting final-stage completion.
+- A failure before that checkpoint belongs to the final verifier, so `R`
+  reruns that stage. A failure after it belongs to finalization, so `R` retries
+  integration without calling a model. `publish_pending` and `cleanup_needed`
+  retries are likewise model-free.
+- Restart automatically resumes only `verification_ready` finalization. Other
+  interrupted stages fail visibly and wait for an operator retry.
+- Transcript completion is never lifecycle authority. Only validated receipts,
+  durable integration state, and completion/merge events can finish a lane.
+
 Two state vocabularies exist and do not match — reading the wrong one is a
 live source of bugs:
 
 - **Store** (`IssueRow.State`) is written only by the steward's `setState` (plus
   the initial `running` from `Engine.CreateIssue`). It uses a stage-qualified
-  running form — `running:spec` — plus `waiting_decision`, `failed`, `done`,
+  running form — `running:spec` — plus `verifying`, `waiting:integration`,
+  `integrating`, `failed`, `failed:finalize`, `waiting_decision`, `done`,
   `done (unmerged)`, `merged`, `cleanup_needed`, `abandoned`. A
   `cleanup_needed` issue is already semantically merged: dependents wake, while
   the exact worktree-release or safe branch-delete operation remains visible
@@ -43,7 +61,11 @@ live source of bugs:
   purely in-memory `pauseGate`. Pause does not survive a daemon restart.
 - **Projection** (`IssueView.State`, what the TUI sees) uses plain `running`,
   never `running:<stage>`; the stage lives in `CurrentStage`. It adds
-  `queued_for_slot` and `paused`.
+  `queued_for_slot` and `paused`, and shares the four explicit finalization
+  states above. Overview counts verifying, waiting-for-integration, and
+  integrating lanes as building; `failed:finalize` is failing. Herdr derives
+  its working/blocked/idle report from those overview totals. Terminal,
+  abandoned, decision-waiting, and cleanup-only lanes are not builders.
 
 Compare against the projection vocabulary in TUI code, against the store
 vocabulary in daemon/rehydrate code.

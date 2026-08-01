@@ -36,3 +36,17 @@ Where things live:
 header + body, then the attachments section if the issue has any, then the
 injected project memory. Earlier stages' artifacts (`brainstorm.md`, `spec.md`,
 `plan.md`, …) sit alongside it in the same workdir.
+
+Final verification has three artifacts with deliberately separate ownership:
+
+- `merge-report.md` is human-readable evidence and may contain explanations,
+  rationale, and command output.
+- `merge-decision.json` and `verification.json` are engine-owned machine
+  contracts. Their fields are exact; prose or extra keys belong in the report.
+- The engine injects the canonical contract into `STAGE.md`, validates the
+  archived receipts, and persists `verification_ready` before it declares the
+  stage complete. Transcript completion is never lifecycle authority.
+
+After that checkpoint, integration, publication, cleanup retry, and automatic
+restart recovery are non-model operations. Only an invalid or unvalidated
+receipt causes `R` to rerun the merge verifier.
