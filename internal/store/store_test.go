@@ -60,6 +60,17 @@ func TestIssueIntegrationLifecycle(t *testing.T) {
 	if _, ok, err := s.IssueIntegration("GH-1"); err != nil || ok {
 		t.Fatalf("missing integration = ok %v err %v", ok, err)
 	}
+	ready := IssueIntegration{
+		IssueID: "GH-1", State: IntegrationVerificationReady, PreSHA: "base",
+	}
+	if err := s.SetIssueIntegration(ready); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.IssueIntegration("GH-1")
+	if err != nil || !ok || got.State != IntegrationVerificationReady || got.PreSHA != "base" {
+		t.Fatalf("ready integration = %+v ok %v err %v", got, ok, err)
+	}
+
 	pending := IssueIntegration{
 		IssueID: "GH-1", State: IntegrationPublishPending, BaseBranch: "main",
 		PreSHA: "before", LandedSHA: "merged", LastError: "push failed",
@@ -68,7 +79,7 @@ func TestIssueIntegrationLifecycle(t *testing.T) {
 	if err := s.SetIssueIntegration(pending); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := s.IssueIntegration("GH-1")
+	got, ok, err = s.IssueIntegration("GH-1")
 	if err != nil || !ok || got.IssueID != pending.IssueID ||
 		got.State != pending.State || got.BaseBranch != pending.BaseBranch ||
 		got.PreSHA != pending.PreSHA || got.LandedSHA != pending.LandedSHA ||

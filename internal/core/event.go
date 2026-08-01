@@ -28,6 +28,8 @@ const (
 	EvIssueMerged                EventType = "issue_merged"
 	EvMergeSequenced             EventType = "merge_sequenced"
 	EvMergeStarted               EventType = "merge_started"
+	EvVerificationReady          EventType = "verification_ready"
+	EvFinalizationFailed         EventType = "finalization_failed"
 	EvBaseStale                  EventType = "base_stale"
 	EvMergeConflict              EventType = "merge_conflict"
 	EvPublishPending             EventType = "publish_pending"

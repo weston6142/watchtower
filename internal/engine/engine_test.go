@@ -1032,7 +1032,12 @@ func verificationEngine(
 	if err != nil {
 		t.Fatal(err)
 	}
-	decisionBody, err := json.Marshal(map[string]string{"decision": decision})
+	decisionReceipt := marshal.MergeDecision{Decision: decision}
+	if decision == "merge" {
+		decisionReceipt.BranchCommit = base
+		decisionReceipt.BaseCommit = base
+	}
+	decisionBody, err := json.Marshal(decisionReceipt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1054,6 +1059,58 @@ func verificationEngine(
 		}},
 	})
 	return e, s, repo
+}
+
+func TestMalformedFinalReceiptFailsBeforeStageCompletion(t *testing.T) {
+	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	script := fake.Scripts["merge-verification/merge-verifier"]
+	script.Artifacts["merge-decision.json"] =
+		`{"decision":"merge","branch_commit":"b","base_commit":"a","rationale":"rich"}`
+	fake.Scripts["merge-verification/merge-verifier"] = script
+	id, err := e.CreateIssue("bad receipt", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("malformed receipt completed")
+	}
+	events, _ := s.EventsSince(0)
+	var completed, failed bool
+	for _, event := range events {
+		if event.IssueID != id {
+			continue
+		}
+		completed = completed || event.Type == core.EvStageCompleted
+		failed = failed || event.Type == core.EvStageFailed
+	}
+	if completed || !failed {
+		t.Fatalf("completed=%v failed=%v", completed, failed)
+	}
+}
+
+func TestVerificationReadyPrecedesMerge(t *testing.T) {
+	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	id, err := e.CreateIssue("ready", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := s.EventsSince(0)
+	positions := map[core.EventType]int{}
+	for index, event := range events {
+		if event.IssueID == id {
+			positions[event.Type] = index + 1
+		}
+	}
+	if positions[core.EvStageCompleted] == 0 || positions[core.EvVerificationReady] == 0 ||
+		positions[core.EvMergeStarted] == 0 ||
+		positions[core.EvStageCompleted] > positions[core.EvVerificationReady] ||
+		positions[core.EvVerificationReady] > positions[core.EvMergeStarted] {
+		t.Fatalf("event positions=%v", positions)
+	}
 }
 
 func TestMergeVerificationHoldPreservesBranchWithoutLanding(t *testing.T) {
@@ -1253,7 +1310,9 @@ func (r *conflictFlowRunner) Run(
 			BaseSHA: base, BranchSHA: branch, TreeSHA: tree, Passed: true,
 			Commands: [][]string{r.gate},
 		})
-		decision, _ := json.Marshal(map[string]string{"decision": "merge"})
+		decision, _ := json.Marshal(marshal.MergeDecision{
+			Decision: "merge", BranchCommit: branch, BaseCommit: base,
+		})
 		for name, body := range map[string][]byte{
 			"merge-report.md":     []byte("verified\n"),
 			"merge-decision.json": decision,

@@ -153,9 +153,10 @@ type IssueRow struct {
 }
 
 const (
-	IntegrationPublishPending = "publish_pending"
-	IntegrationCleanupNeeded  = "cleanup_needed"
-	IntegrationMerged         = "merged"
+	IntegrationVerificationReady = "verification_ready"
+	IntegrationPublishPending    = "publish_pending"
+	IntegrationCleanupNeeded     = "cleanup_needed"
+	IntegrationMerged            = "merged"
 )
 
 type IssueIntegration struct {

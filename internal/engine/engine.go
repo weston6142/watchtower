@@ -1312,6 +1312,17 @@ func (e *Engine) runStageOnce(
 		}
 		return errDependenciesDiscovered
 	}
+	if st.Name == "merge-verification" {
+		prepared, err := e.prepareFinalization(is)
+		if err != nil {
+			return err
+		}
+		if prepared.Decision.Decision == "merge" {
+			if err := e.checkpointVerificationReady(is); err != nil {
+				return fmt.Errorf("persist verification ready: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -1419,7 +1430,21 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 			e.cfg.Marshal.PlanApproved(is.id, ts)
 		}
 	}
+	verificationReady := false
+	if st.Name == "merge-verification" {
+		integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
+		if err != nil {
+			e.emit(core.EvStageFailed, is.id, map[string]any{
+				"stage": st.Name, "error": err.Error(), "attempt": of, "of": of, "final": true,
+			})
+			return err
+		}
+		verificationReady = ok && integration.State == store.IntegrationVerificationReady
+	}
 	e.emit(core.EvStageCompleted, is.id, map[string]string{"stage": st.Name})
+	if verificationReady {
+		e.emit(core.EvVerificationReady, is.id, nil)
+	}
 	return nil
 }
 
@@ -1590,80 +1615,14 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 	return nil
 }
 
-type mergeDecision struct {
-	Decision     string `json:"decision"`
-	BranchCommit string `json:"branch_commit,omitempty"`
-	BaseCommit   string `json:"base_commit,omitempty"`
-}
-
 func (e *Engine) finalVerificationDecision(
 	is *issueState,
 ) (string, marshal.Verification, error) {
-	artifactDir := filepath.Join(e.issueDir(is.id), "artifacts")
-	decisionPath := filepath.Join(artifactDir, "merge-decision.json")
-	file, err := os.Open(decisionPath)
+	prepared, err := e.prepareFinalization(is)
 	if err != nil {
-		return "", marshal.Verification{}, fmt.Errorf("read merge decision: %w", err)
+		return "", marshal.Verification{}, err
 	}
-	defer file.Close()
-	decoder := json.NewDecoder(file)
-	decoder.DisallowUnknownFields()
-	var decision mergeDecision
-	if err := decoder.Decode(&decision); err != nil {
-		return "", marshal.Verification{}, fmt.Errorf("decode merge decision: %w", err)
-	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		return "", marshal.Verification{}, fmt.Errorf("decode merge decision: %w", err)
-	}
-	if decision.Decision != "merge" && decision.Decision != "hold" {
-		return "", marshal.Verification{}, fmt.Errorf(
-			"invalid merge decision %q: want merge or hold", decision.Decision)
-	}
-	if decision.Decision == "hold" {
-		return decision.Decision, marshal.Verification{}, nil
-	}
-
-	receipt, err := marshal.LoadVerification(filepath.Join(artifactDir, "verification.json"))
-	if err != nil {
-		return "", marshal.Verification{}, fmt.Errorf("load verification receipt: %w", err)
-	}
-	branchSHA, err := gitRevision(is.wsPath, "HEAD")
-	if err != nil {
-		return "", marshal.Verification{}, fmt.Errorf("read verification branch commit: %w", err)
-	}
-	treeSHA, err := gitRevision(is.wsPath, "HEAD^{tree}")
-	if err != nil {
-		return "", marshal.Verification{}, fmt.Errorf("read verified tree: %w", err)
-	}
-	if receipt.BaseSHA != is.baseRef {
-		return "", marshal.Verification{}, fmt.Errorf(
-			"verification base %s does not match issue base %s", receipt.BaseSHA, is.baseRef)
-	}
-	if receipt.BranchSHA != branchSHA {
-		return "", marshal.Verification{}, fmt.Errorf(
-			"verification branch %s does not match current branch %s", receipt.BranchSHA, branchSHA)
-	}
-	if !receipt.AppliesTo(treeSHA) {
-		return "", marshal.Verification{}, fmt.Errorf(
-			"verified tree %s does not match current tree %s", receipt.TreeSHA, treeSHA)
-	}
-	if decision.BranchCommit != "" && decision.BranchCommit != branchSHA {
-		return "", marshal.Verification{}, fmt.Errorf(
-			"merge decision branch %s does not match current branch %s",
-			decision.BranchCommit, branchSHA)
-	}
-	if decision.BaseCommit != "" && decision.BaseCommit != is.baseRef {
-		return "", marshal.Verification{}, fmt.Errorf(
-			"merge decision base %s does not match issue base %s",
-			decision.BaseCommit, is.baseRef)
-	}
-	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 &&
-		!receipt.Includes(e.cfg.Train.TestCmd) {
-		return "", marshal.Verification{}, fmt.Errorf(
-			"verification receipt does not include configured verification command %q",
-			e.cfg.Train.TestCmd)
-	}
-	return decision.Decision, receipt, nil
+	return prepared.Decision.Decision, prepared.Verification, nil
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {
