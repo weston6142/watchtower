@@ -65,6 +65,7 @@ type Model struct {
 	proposals        []store.ProposalRow
 	doorSel          int
 	doorLines        []string
+	stream           streamState
 	events           []core.Event
 	archMode         string
 	archSel          int
@@ -252,7 +253,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.tick()
 		}
 		cmds := []tea.Cmd{m.poll(), m.pollOverview()}
-		if m.currentMode() == "transcript" {
+		if m.followingTranscript() {
 			cmds = append(cmds, m.fetchTranscript())
 		}
 		return m, tea.Batch(cmds...)
@@ -261,7 +262,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.currentMode() == "timeline" {
 			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
 		}
-		if m.currentMode() == "transcript" {
+		if m.followingTranscript() {
 			return m, tea.Batch(m.tick(), m.fetchTranscript())
 		}
 		return m, m.tick()
@@ -289,6 +290,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transcriptMsg:
 		if msg.err != nil {
 			m.Err = msg.err.Error()
+			return m, nil
+		}
+		// The gate above stops new fetches; this drops the one already in
+		// flight when the operator scrolled up. The mode check matters: a late
+		// message arriving under the timeline door is not this door's to eat.
+		if m.currentMode() == "transcript" && !m.stream.Follow && len(m.doorLines) > 0 {
 			return m, nil
 		}
 		m.doorLines = msg.lines
@@ -669,6 +676,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.modes = append(m.modes, "transcript")
+			// Follow cannot carry a safe zero value — it is derived, and g
+			// legitimately produces {Top: 0, Follow: false} — so every site
+			// that opens the door says so.
+			m.stream = streamState{Follow: true}
 			return m, m.fetchTranscript()
 		case "u":
 			m.modes = append(m.modes, "shelf")
@@ -1370,6 +1381,26 @@ func (m Model) currentMode() string {
 	return m.modes[len(m.modes)-1]
 }
 
+// followingTranscript is the refetch gate. Both refetch sites go through it so
+// they cannot disagree about when the transcript is live: m.doorLines is
+// replaced wholesale on every tick and every event batch from an evicting ring
+// buffer, so an offset alone does not anchor to content — freezing the fetch is
+// what makes reading older output stable rather than merely tolerable.
+func (m Model) followingTranscript() bool {
+	return m.currentMode() == "transcript" && m.stream.Follow
+}
+
+// layoutWidth is the one place the non-positive-width fallback lives: the whole
+// screen — rail, tower, keybar and the stream door's inner width — has to agree
+// on the number, and a key arm computing it separately from View is exactly the
+// disagreement these helpers exist to prevent.
+func (m Model) layoutWidth() int {
+	if m.Width <= 0 {
+		return 120
+	}
+	return m.Width
+}
+
 func (m *Model) popMode() {
 	if len(m.modes) == 0 {
 		return
@@ -1379,6 +1410,7 @@ func (m *Model) popMode() {
 	m.proposals = nil
 	m.doorSel = 0
 	m.shelfSel = 0
+	m.stream = streamState{Follow: true}
 }
 
 func (m *Model) updateDoorKey(key string) tea.Cmd {
@@ -1434,6 +1466,24 @@ func (m *Model) updateDoorKey(key string) tea.Cmd {
 				m.popMode()
 			}
 		}
+	case "transcript":
+		switch key {
+		case "j", "k", "d", "u", "g", "G":
+		default:
+			// Every other key leaves the position alone. Routing every key
+			// through scroll would re-clamp Top against a total that ring
+			// eviction may have shrunk, silently re-attaching a held view on
+			// an unrelated keypress.
+			return nil
+		}
+		before := m.stream.Follow
+		total := len(streamBody(m.doorLines, streamInner(m.layoutWidth())))
+		m.stream = m.stream.scroll(key, streamRows(m.Height), total)
+		if !before && m.stream.Follow {
+			// Returning to live must not look stalled for up to a tick.
+			return m.fetchTranscript()
+		}
+		return nil
 	}
 	return nil
 }
@@ -1600,10 +1650,7 @@ func (m Model) writeHeaderRows(b *strings.Builder, width int) {
 }
 
 func (m Model) View() string {
-	layoutWidth := m.Width
-	if layoutWidth <= 0 {
-		layoutWidth = 120
-	}
+	layoutWidth := m.layoutWidth()
 	railWidth := max(24, min(40, layoutWidth/3))
 	towerWidth := max(1, layoutWidth-railWidth-1)
 	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth, m.warExpanded, m.retired)
@@ -1618,7 +1665,7 @@ func (m Model) View() string {
 	case "timeline":
 		tower = renderTextDoor("TIMELINE", m.doorLines, layoutWidth)
 	case "transcript":
-		tower = renderStreamDoor(m.streamSubtitle(), m.doorLines, layoutWidth)
+		tower = renderStreamDoor(m.streamSubtitle(), m.doorLines, m.stream, layoutWidth, m.Height)
 	case "shelf":
 		tower = renderShelf(m.shelfItems(), m.Ids, layoutWidth)
 	}
@@ -1629,8 +1676,13 @@ func (m Model) View() string {
 		b.WriteString(tower)
 		b.WriteString("\n\n")
 		bindings := [][2]string{{"j/k", "select"}, {"enter", "open"}, {"esc", "back"}, {"q", "quit"}}
-		if m.currentMode() == "tray" {
+		switch m.currentMode() {
+		case "tray":
 			bindings = [][2]string{{"j/k", "select"}, {"enter", "accept → new issue"}, {"r", "reject"}, {"esc", "back"}, {"q", "quit"}}
+		case "transcript":
+			// A reading surface, not a list: "select"/"open" describe neither
+			// what the keys do here nor anything the door can act on.
+			bindings = [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "oldest/newest"}, {"esc", "back"}, {"q", "quit"}}
 		}
 		b.WriteString(renderKeybar(layoutWidth, bindings, errText(m.Err)))
 		screen := b.String()

@@ -7,7 +7,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
@@ -716,5 +718,179 @@ func TestAttachFieldTakesHAndLThroughKeyRouter(t *testing.T) {
 	}
 	if m.modal.Priority != 0 {
 		t.Fatalf("typing a path cycled Priority to %d", m.modal.Priority)
+	}
+}
+
+// A stale offset on reopen is the obvious regression, and the zero streamState
+// means detached at row 0 rather than following — so popMode has to reset it.
+func TestPopModeResetsStreamState(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	m = pressKey(t, m, "T")
+	if !m.stream.Follow {
+		t.Fatalf("T opened the door detached: %+v", m.stream)
+	}
+	m.doorLines = deepStream(200)
+	m = pressKey(t, m, "k")
+	if m.stream.Follow || m.stream.Top == 0 {
+		t.Fatalf("k did not detach: %+v", m.stream)
+	}
+	m = pressKey(t, m, "esc")
+	if (m.stream != streamState{Top: 0, Follow: true}) {
+		t.Fatalf("popMode left a stale offset: %+v", m.stream)
+	}
+	m = pressKey(t, m, "T")
+	if (m.stream != streamState{Top: 0, Follow: true}) {
+		t.Fatalf("reopened door = %+v, want {Top:0 Follow:true}", m.stream)
+	}
+}
+
+// Inside the door j/k/d/u/g/G are the door's; re-arming follow refreshes at
+// once rather than waiting up to a tick.
+func TestTranscriptScrollKeys(t *testing.T) {
+	m := laneModel(t,
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+	)
+	m = pressKey(t, m, "T")
+	m.doorLines = deepStream(200)
+	m.Width, m.Height = 100, 40
+
+	m = pressKey(t, m, "k")
+	if m.stream.Follow || m.stream.Top == 0 {
+		t.Fatalf("k did not detach: %+v", m.stream)
+	}
+	up := m.stream.Top
+	m = pressKey(t, m, "down")
+	if m.stream.Top != up+1 {
+		t.Fatalf("down did not behave as j: %d then %d", up, m.stream.Top)
+	}
+	m = pressKey(t, m, "g")
+	if m.stream.Top != 0 || m.stream.Follow {
+		t.Fatalf("g did not reach the oldest row: %+v", m.stream)
+	}
+
+	// fetchTranscript returns nil without a client, and the package has no stub,
+	// so the re-arm assertion needs a client value. proto.Client's fields are all
+	// unexported and none is set; the returned closure is never invoked.
+	m.client = &proto.Client{}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+	m = next.(Model)
+	if !m.stream.Follow {
+		t.Fatalf("G did not re-attach: %+v", m.stream)
+	}
+	if cmd == nil {
+		t.Fatal("re-arming follow issued no fetch")
+	}
+}
+
+// One predicate at both refetch sites, so the two cannot disagree. Batched
+// tea.Cmds are opaque, so the predicate is asserted directly.
+func TestFollowingTranscriptGatesRefetch(t *testing.T) {
+	m := Model{}
+	if m.followingTranscript() {
+		t.Fatal("no mode must not fetch")
+	}
+	m.modes = []string{"timeline"}
+	m.stream = streamState{Follow: true}
+	if m.followingTranscript() {
+		t.Fatal("timeline mode must not fetch the transcript")
+	}
+	m.modes = []string{"transcript"}
+	if !m.followingTranscript() {
+		t.Fatal("a following transcript door must keep fetching")
+	}
+	m.stream = streamState{Top: 10}
+	if m.followingTranscript() {
+		t.Fatal("a held transcript door must not fetch")
+	}
+}
+
+// The gate stops new fetches; this drops the one already in flight when the
+// operator scrolled up, which would otherwise shift the held window once.
+func TestHeldTranscriptDropsLateFetch(t *testing.T) {
+	m := Model{modes: []string{"transcript"}, stream: streamState{Top: 10},
+		doorLines: []string{"brainstorm │ held"}}
+	next, _ := m.Update(transcriptMsg{lines: []string{"brainstorm │ fresh"}})
+	if got := next.(Model).doorLines; len(got) != 1 || got[0] != "brainstorm │ held" {
+		t.Fatalf("held door took a late fetch: %v", got)
+	}
+
+	// Nothing to hold: the lines are accepted.
+	empty := Model{modes: []string{"transcript"}, stream: streamState{Top: 10}}
+	next, _ = empty.Update(transcriptMsg{lines: []string{"brainstorm │ fresh"}})
+	if got := next.(Model).doorLines; len(got) != 1 || got[0] != "brainstorm │ fresh" {
+		t.Fatalf("empty door refused the first fetch: %v", got)
+	}
+
+	// The error branch is untouched.
+	bad := Model{modes: []string{"transcript"}, stream: streamState{Top: 10},
+		doorLines: []string{"brainstorm │ held"}}
+	next, _ = bad.Update(transcriptMsg{err: errors.New("boom")})
+	if next.(Model).Err != "boom" {
+		t.Fatalf("error branch = %q", next.(Model).Err)
+	}
+}
+
+// The height argument has to actually reach renderStreamDoor, and the whole
+// screen has to fit the terminal — bubbletea keeps only the last r.height lines
+// when a view overflows, so the header row disappears with no error at all.
+func TestViewPlumbsHeightIntoStreamDoor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	bodyRows := func(height int) int {
+		m := FixtureModel("stream-long", 200, height)
+		return strings.Count(ansi.Strip(m.View()), "brainstorm │")
+	}
+	short, tall := bodyRows(24), bodyRows(60)
+	if tall <= short {
+		t.Fatalf("taller terminal showed no more rows: %d at 60 vs %d at 24", tall, short)
+	}
+	for _, size := range [][2]int{{200, 50}, {100, 40}} {
+		// stream-long clips at both golden sizes, so the screen fills the
+		// terminal exactly rather than merely fitting under it. If this ever
+		// reads as inequality, the ten-row chrome budget has drifted.
+		m := FixtureModel("stream-long", size[0], size[1])
+		if got := lipgloss.Height(m.View()); got != size[1] {
+			t.Fatalf("stream-long at %dx%d rendered %d rows, want %d", size[0], size[1], got, size[1])
+		}
+		// The short fixture does not clip, so the door hugs its content.
+		hugs := FixtureModel("stream", size[0], size[1])
+		if got := lipgloss.Height(hugs.View()); got > size[1] {
+			t.Fatalf("stream at %dx%d rendered %d rows, want <= %d", size[0], size[1], got, size[1])
+		}
+		for _, m := range []Model{m, hugs} {
+			requireHeaderRow(t, m, size)
+		}
+	}
+}
+
+// requireHeaderRow is the observable form of "the screen fits the terminal":
+// bubbletea keeps only the last r.height lines of an over-tall view, so the
+// header is what overflow eats first, and it goes with no error at all.
+func requireHeaderRow(t *testing.T, m Model, size [2]int) {
+	t.Helper()
+	first, _, _ := strings.Cut(ansi.Strip(m.View()), "\n")
+	if !strings.Contains(first, "1 question for you") {
+		t.Fatalf("header row lost off the top at %dx%d: %q", size[0], size[1], first)
+	}
+}
+
+// The ten-row chrome budget spends exactly one row on the keybar, and the
+// keybar's right slot is m.Err — which carries err.Error() from the daemon,
+// where an error wrapping a command's CombinedOutput is routinely multi-line.
+// A fetch failure while following is the case spec.md names, and it is also
+// the one that would push the header off the top with no error at all.
+func TestStreamDoorFitsTerminalWithMultiLineError(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	for _, size := range [][2]int{{200, 50}, {100, 40}} {
+		m := FixtureModel("stream-long", size[0], size[1])
+		m.Err = "git worktree add failed:\nfatal: destination path exists\nhint: retry with --force"
+		if got := lipgloss.Height(m.View()); got != size[1] {
+			t.Fatalf("stream-long with a multi-line error at %dx%d rendered %d rows, want %d",
+				size[0], size[1], got, size[1])
+		}
+		requireHeaderRow(t, m, size)
 	}
 }

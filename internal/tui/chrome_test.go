@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -23,6 +24,23 @@ func TestKeybarDocksErrorRight(t *testing.T) {
 	got := ansi.Strip(renderKeybar(100, [][2]string{{"j/k", "floors"}, {"?", "help"}}, errText("no pending decision 1")))
 	if !strings.Contains(got, "no pending decision 1") || !strings.Contains(got, "floors") {
 		t.Errorf("keybar wrong: %q", got)
+	}
+}
+
+// The keybar is a reserved single row that every screen's height budget counts
+// on — the stream door's is exact. m.Err carries err.Error() from the daemon,
+// and errors that wrap a command's CombinedOutput are routinely multi-line, so
+// the row has to collapse them the way renderNoticeRow already does.
+func TestKeybarStaysOneRowWithMultiLineError(t *testing.T) {
+	got := renderKeybar(100, [][2]string{{"j/k", "floors"}}, errText("git worktree add failed:\nfatal: destination path exists\nhint: use --force"))
+	if rows := lipgloss.Height(got); rows != 1 {
+		t.Fatalf("keybar rendered %d rows, want 1: %q", rows, ansi.Strip(got))
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("keybar still holds a newline: %q", ansi.Strip(got))
+	}
+	if plain := ansi.Strip(got); !strings.Contains(plain, "git worktree add failed: fatal: destination path exists") {
+		t.Fatalf("collapsed error lost its text: %q", plain)
 	}
 }
 

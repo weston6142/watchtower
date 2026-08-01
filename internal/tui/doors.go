@@ -164,20 +164,149 @@ const (
 	streamToolPrefix = "↳ "
 )
 
+const streamEmptyNotice = "nothing here yet — either the stage just started or the transcript was lost to a daemon restart"
+
+// streamState is the stream door's reading position. Follow is the default —
+// the newest output is what you opened the door to see. Top is only consulted
+// once the operator has scrolled off the bottom.
+//
+// The zero value therefore means detached at row 0, not following: Follow is
+// derived from the clamped Top, and g legitimately produces {Top: 0,
+// Follow: false} on a clipping body, so the two cannot be told apart from the
+// field values. Every construction site sets Follow: true explicitly.
+type streamState struct {
+	Top    int  // first visible body row, when detached
+	Follow bool // pinned to newest; the refetch only runs while true
+}
+
+// scroll moves the reading position over rendered body rows. The vocabulary
+// mirrors pagerState.scroll so the two reading surfaces share muscle memory.
+func (s streamState) scroll(key string, rows, total int) streamState {
+	if rows < 1 {
+		rows = 1
+	}
+	maxTop := max(0, total-rows)
+	if s.Follow {
+		s.Top = maxTop // detaching starts from where the eye already is
+	}
+	switch key {
+	case "j":
+		s.Top++
+	case "k":
+		s.Top--
+	case "d":
+		s.Top += rows / 2
+	case "u":
+		s.Top -= rows / 2
+	case "g":
+		s.Top = 0
+	case "G":
+		s.Top = maxTop
+	}
+	s.Top = min(max(s.Top, 0), maxTop)
+	// Derived, not toggled: this single line is what makes "back at the bottom
+	// means live" and "a body that fits never detaches" true by construction.
+	s.Follow = s.Top >= maxTop
+	return s
+}
+
+// streamChromeRows is what a stream-door screen spends on chrome rather than
+// body. Verified row for row against testdata/stream-wide.golden, which is 15
+// rows for a 5-row body: 1 header + 1 notice row + 4 renderBox (top border,
+// title band, blank, bottom border) + 2 inside the box (the door's own blank
+// line and footer) + 2 under it (blank line and keybar).
+const streamChromeRows = 10
+
+// streamInner is the door's usable content width: the border, the padding and
+// the gutter's own width come off the screen width.
+func streamInner(width int) int { return max(20, width-8) }
+
+// streamRows is how many body rows fit. A non-positive height means no
+// WindowSizeMsg has landed yet, so it borrows backlogFallbackRows rather than
+// spelling a second literal that could drift from it.
+func streamRows(height int) int {
+	if height <= 0 {
+		height = backlogFallbackRows
+	}
+	return max(1, height-streamChromeRows)
+}
+
 // renderStreamDoor is the live agent view. Unlike the timeline it is watched
 // while a stage runs, so it wears the same box chrome as the help overlay and
 // gives its content typography: dim stage gutter, prose in Text, turn markers
-// promoted from a line of prose into a rule.
-func renderStreamDoor(subtitle string, lines []string, width int) string {
+// promoted from a line of prose into a rule. It renders at most streamRows
+// body rows, so the screen fits the terminal at any transcript length.
+func renderStreamDoor(subtitle string, lines []string, st streamState, width, height int) string {
+	inner := streamInner(width)
+	visible := streamRows(height)
+	body := streamBody(lines, inner)
+	total := len(body)
+
+	start := 0
+	if total > visible {
+		// While following, Top is ignored entirely — that is what lets a
+		// refetch land without any offset fix-up in Update. The clamp happens
+		// here rather than only in Update, the way renderPager already does it,
+		// so a resize between WindowSizeMsg and the next render cannot page
+		// past the end.
+		start = total - visible
+		if !st.Follow {
+			start = min(max(st.Top, 0), total-visible)
+		}
+	}
+	// Copied, not sliced: append would otherwise write the blank line and the
+	// footer over the next two rows of body.
+	window := append([]string(nil), body[start:min(start+visible, total)]...)
+	foot := streamFooter(st, start, visible, total, inner)
+	return renderBox("stream", subtitle, " esc close ", strings.Join(append(window, "", foot), "\n"))
+}
+
+// streamFooter is the door's internal footer: keys left, reading position
+// right. The position appears only once the body clips, as the backlog's count
+// does — a number that never changes is noise.
+//
+// "held", never "paused": ⏸ and the notice row's "issue paused" already mean a
+// stopped lane, and a frozen scroll view must not read as one.
+func streamFooter(st streamState, start, visible, total, inner int) string {
+	t := activeTheme
+	dim := lipgloss.NewStyle().Foreground(t.Dim)
+	keys := keyChip("esc") + dim.Render(" close  ") + keyChip("q") + dim.Render(" quit")
+	if total <= visible {
+		return keys
+	}
+	end := min(start+visible, total)
+	position := lipgloss.NewStyle().Foreground(t.Structure).
+		Render(fmt.Sprintf("%d–%d of %d", start+1, end, total))
+	if st.Follow {
+		// Nothing accents a live view.
+		position += dim.Render(" · following")
+	} else {
+		// The surface's single accent: on a reading surface the position
+		// indicator is the only thing allowed to claim your action.
+		position += lipgloss.NewStyle().Foreground(t.Accent).Render(" · held · G to follow")
+	}
+	gap := inner - lipgloss.Width(keys) - lipgloss.Width(position)
+	if gap < 1 {
+		return keys
+	}
+	return keys + strings.Repeat(" ", gap) + position
+}
+
+// streamBody turns transcript lines into styled body rows. Every row it returns
+// is exactly inner cells wide — renderBox sizes the frame to its widest content
+// line, so an unpadded or over-long row would move the frame as the window
+// scrolls over it, silently, and take the footer's gap arithmetic with it.
+func streamBody(lines []string, inner int) []string {
 	t := activeTheme
 	gutter := lipgloss.NewStyle().Foreground(t.Dimmer)
 	prose := lipgloss.NewStyle().Foreground(t.Text)
 	dim := lipgloss.NewStyle().Foreground(t.Dim)
-	inner := max(20, width-8) // border, padding, and the gutter's own width
 
 	var body []string
 	if len(lines) == 0 {
-		body = append(body, gutter.Render("nothing here yet — either the stage just started or the transcript was lost to a daemon restart"))
+		for _, row := range strings.Split(ansi.Wrap(streamEmptyNotice, inner, ""), "\n") {
+			body = append(body, padStyled(gutter.Render(row), inner))
+		}
 	}
 	for _, line := range lines {
 		stage, text, found := strings.Cut(line, streamGutterSep)
@@ -193,13 +322,22 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 		if stage != "" {
 			lead = stage + streamGutterSep
 		}
+		// "merge-verification │ " is 21 cells against an inner floor of 20, and
+		// padStyled only pads — it cannot shrink an over-wide row. Cut the plain
+		// lead before it is styled, leaving room for the tool-call prefix and at
+		// least one cell of content.
+		lead = truncate(lead, max(1, inner-lipgloss.Width(streamToolPrefix)-1))
 		if rest, ok := strings.CutPrefix(text, streamToolPrefix); ok {
+			// Tool calls are not wrapped, so the plain text is truncated before
+			// it is split and styled: cutting an already-styled string can slice
+			// an escape sequence and bleed colour into the rest of the row.
+			rest = truncate(rest, max(1, inner-lipgloss.Width(lead)-lipgloss.Width(streamToolPrefix)))
 			name, args, _ := strings.Cut(rest, "(")
 			tool := lipgloss.NewStyle().Foreground(t.Structure).Render(name)
 			if args != "" {
 				tool += prose.Render("(" + args)
 			}
-			body = append(body, gutter.Render(lead)+dim.Render(streamToolPrefix)+tool)
+			body = append(body, padStyled(gutter.Render(lead)+dim.Render(streamToolPrefix)+tool, inner))
 			continue
 		}
 		wrapWidth := max(1, inner-lipgloss.Width(lead))
@@ -209,11 +347,10 @@ func renderStreamDoor(subtitle string, lines []string, width int) string {
 			if i == 0 {
 				marker = lead
 			}
-			body = append(body, gutter.Render(marker)+prose.Render(wrapped))
+			body = append(body, padStyled(gutter.Render(marker)+prose.Render(wrapped), inner))
 		}
 	}
-	foot := keyChip("esc") + dim.Render(" close  ") + keyChip("q") + dim.Render(" quit")
-	return renderBox("stream", subtitle, " esc close ", strings.Join(append(body, "", foot), "\n"))
+	return body
 }
 
 // capitalizeDoor turns legacy ALL-CAPS door names into title case.

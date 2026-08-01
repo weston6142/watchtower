@@ -73,10 +73,18 @@ func renderKeybar(width int, bindings [][2]string, right string) string {
 }
 
 // errText styles a transient error for the keybar's right slot.
+//
+// The newlines are collapsed for the same reason renderNoticeRow collapses
+// them: this is a reserved single row that every screen's height budget counts
+// on, and m.Err carries err.Error() straight from the daemon, where an error
+// wrapping a command's CombinedOutput is routinely multi-line. chromeBar caps
+// the width but cannot cap the height, so an uncollapsed error adds a screen
+// row per newline and bubbletea silently drops the header off the top.
 func errText(s string) string {
 	if s == "" {
 		return ""
 	}
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", " "), "\n", " ")
 	return lipgloss.NewStyle().Foreground(activeTheme.Err).Render(glyphFailed + " " + s)
 }
 
