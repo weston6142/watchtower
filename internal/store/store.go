@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS issue_integration(
   pre_sha TEXT,
   landed_sha TEXT,
   last_error TEXT,
+  worktree TEXT NOT NULL DEFAULT '',
+  branch TEXT NOT NULL DEFAULT '',
   cleanup TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL);
 `
@@ -166,6 +168,8 @@ type IssueIntegration struct {
 	PreSHA     string
 	LandedSHA  string
 	LastError  string
+	Worktree   string
+	Branch     string
 	Cleanup    []string
 	UpdatedAt  time.Time
 }
@@ -197,6 +201,14 @@ func Open(path string) (*Store, error) {
 	}
 	if err := ensureColumn(db, "issue_integration", "cleanup",
 		`ALTER TABLE issue_integration ADD COLUMN cleanup TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(db, "issue_integration", "worktree",
+		`ALTER TABLE issue_integration ADD COLUMN worktree TEXT NOT NULL DEFAULT ''`); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(db, "issue_integration", "branch",
+		`ALTER TABLE issue_integration ADD COLUMN branch TEXT NOT NULL DEFAULT ''`); err != nil {
 		return nil, err
 	}
 	var max sql.NullInt64
@@ -287,19 +299,22 @@ func (s *Store) SetIssueIntegration(integration IssueIntegration) error {
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO issue_integration(
-		   issue_id,state,base_branch,pre_sha,landed_sha,last_error,cleanup,updated_at
-		 ) VALUES(?,?,?,?,?,?,?,?)
+		   issue_id,state,base_branch,pre_sha,landed_sha,last_error,worktree,branch,cleanup,updated_at
+		 ) VALUES(?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(issue_id) DO UPDATE SET
 		   state=excluded.state,
 		   base_branch=excluded.base_branch,
 		   pre_sha=excluded.pre_sha,
 		   landed_sha=excluded.landed_sha,
 		   last_error=excluded.last_error,
+		   worktree=excluded.worktree,
+		   branch=excluded.branch,
 		   cleanup=excluded.cleanup,
 		   updated_at=excluded.updated_at`,
 		integration.IssueID, integration.State, integration.BaseBranch,
 		integration.PreSHA, integration.LandedSHA, integration.LastError,
-		string(cleanup), updatedAt.Format(time.RFC3339Nano))
+		integration.Worktree, integration.Branch, string(cleanup),
+		updatedAt.Format(time.RFC3339Nano))
 	return err
 }
 
@@ -309,10 +324,11 @@ func (s *Store) IssueIntegration(issueID string) (IssueIntegration, bool, error)
 	var integration IssueIntegration
 	var cleanup, updatedAt string
 	err := s.db.QueryRow(
-		`SELECT issue_id,state,base_branch,pre_sha,landed_sha,last_error,cleanup,updated_at
+		`SELECT issue_id,state,base_branch,pre_sha,landed_sha,last_error,worktree,branch,cleanup,updated_at
 		 FROM issue_integration WHERE issue_id=?`, issueID,
 	).Scan(&integration.IssueID, &integration.State, &integration.BaseBranch,
-		&integration.PreSHA, &integration.LandedSHA, &integration.LastError, &cleanup, &updatedAt)
+		&integration.PreSHA, &integration.LandedSHA, &integration.LastError,
+		&integration.Worktree, &integration.Branch, &cleanup, &updatedAt)
 	if err == sql.ErrNoRows {
 		return IssueIntegration{}, false, nil
 	}

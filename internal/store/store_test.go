@@ -62,12 +62,14 @@ func TestIssueIntegrationLifecycle(t *testing.T) {
 	}
 	ready := IssueIntegration{
 		IssueID: "GH-1", State: IntegrationVerificationReady, PreSHA: "base",
+		Worktree: "/tmp/GH-1", Branch: "issue/GH-1",
 	}
 	if err := s.SetIssueIntegration(ready); err != nil {
 		t.Fatal(err)
 	}
 	got, ok, err := s.IssueIntegration("GH-1")
-	if err != nil || !ok || got.State != IntegrationVerificationReady || got.PreSHA != "base" {
+	if err != nil || !ok || got.State != IntegrationVerificationReady || got.PreSHA != "base" ||
+		got.Worktree != "/tmp/GH-1" || got.Branch != "issue/GH-1" {
 		t.Fatalf("ready integration = %+v ok %v err %v", got, ok, err)
 	}
 

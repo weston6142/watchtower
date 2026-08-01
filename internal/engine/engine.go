@@ -1556,62 +1556,12 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 		}
 		verification = receipt
 	}
-	if e.cfg.Train != nil && is.branch != "" {
-		e.emit(core.EvMergeStarted, is.id, map[string]string{"branch": is.branch})
-		result, err := e.landWithEscalation(ctx, is, verification)
-		if err != nil {
-			var pending *marshal.PublishPendingError
-			if errors.As(err, &pending) {
-				integration := store.IssueIntegration{
-					IssueID: is.id, State: store.IntegrationPublishPending,
-					BaseBranch: result.BaseBranch, PreSHA: result.PreSHA,
-					LandedSHA: result.LandedSHA, LastError: err.Error(),
-					Cleanup: cleanupOperations(is.wsPath, is.branch),
-				}
-				if storeErr := e.cfg.Store.SetIssueIntegration(integration); storeErr != nil {
-					return fmt.Errorf("%v (persist publish pending: %w)", err, storeErr)
-				}
-				e.emit(core.EvPublishPending, is.id, map[string]string{
-					"branch": result.BaseBranch, "commit": result.LandedSHA,
-					"error": err.Error(),
-				})
-				preserveWorkspace = true
-				return err
-			}
-			if errors.Is(err, errConflictHeld) {
-				e.emit(core.EvIssueCompleted, is.id, map[string]string{
-					"merge": "left-unmerged", "branch": is.branch})
-				if e.cfg.Marshal != nil {
-					e.cfg.Marshal.Merged(is.id)
-				}
-				aborted = false
-				return nil
-			}
-			return err
-		}
-		landed = true
-		if e.cfg.Train.Push {
-			e.emit(core.EvPublishSucceeded, is.id, map[string]string{
-				"branch": result.BaseBranch, "commit": result.LandedSHA})
-		}
-		e.emit(core.EvIssueMerged, is.id, map[string]string{"branch": is.branch})
-		e.wakeDependents(context.Background(), is.id)
-		integration := store.IssueIntegration{
-			IssueID: is.id, State: store.IntegrationMerged,
-			BaseBranch: result.BaseBranch, PreSHA: result.PreSHA,
-			LandedSHA: result.LandedSHA,
-		}
-		if err := e.finishLandingCleanup(
-			is.id, integration, is.wsPath, is.branch, is.wsRelease,
-		); err != nil {
-			return err
-		}
-	}
-	if e.cfg.Marshal != nil {
-		e.cfg.Marshal.Merged(is.id)
+	var err error
+	landed, preserveWorkspace, err = e.finalizeIntegration(ctx, is, verification)
+	if err != nil {
+		return err
 	}
 	aborted = false
-	e.emit(core.EvIssueCompleted, is.id, nil)
 	return nil
 }
 
@@ -1699,6 +1649,24 @@ func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
 		e.mu.Lock()
 		is.running = false
 		is.terminal = err != nil
+		e.mu.Unlock()
+		return err
+	}
+	if publishPending && integration.State == store.IntegrationVerificationReady {
+		is.running = true
+		is.terminal = false
+		is.killRequested = false
+		e.mu.Unlock()
+		err := e.retryVerifiedFinalization(ctx, is, integration)
+		e.mu.Lock()
+		is.running = false
+		is.terminal = err != nil
+		if err == nil {
+			is.wsRelease = nil
+			is.wsPath = ""
+			is.branch = ""
+			is.baseRef = ""
+		}
 		e.mu.Unlock()
 		return err
 	}

@@ -1260,6 +1260,63 @@ func TestPushFailurePersistsAndRetryPublishesWithoutRerunningStage(t *testing.T)
 	}
 }
 
+func TestFinalizationFailureRetriesIntegrationWithoutRerunningVerifier(t *testing.T) {
+	e, s, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	fake.OnStart = func(_, stage, _, _ string) error {
+		if stage != "merge-verification" {
+			return nil
+		}
+		return os.WriteFile(filepath.Join(repo, "diff"), []byte("dirty base\n"), 0o644)
+	}
+	id, err := e.CreateIssue("retry finalization", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.StartIssue(context.Background(), id)
+	if err == nil || !strings.Contains(err.Error(), "base checkout is dirty") {
+		t.Fatalf("StartIssue error = %v", err)
+	}
+	integration, ok, err := s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationVerificationReady ||
+		!strings.Contains(integration.LastError, "base checkout is dirty") {
+		t.Fatalf("integration = %+v ok %v err %v", integration, ok, err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("stage runs before retry = %+v err %v", runs, err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
+		t.Fatalf("repair base: %v: %s", err, out)
+	}
+	fake.OnStart = nil
+	if err := e.RetryStage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runs, err = s.StageRuns(id)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("finalization retry reran verifier: %+v err %v", runs, err)
+	}
+	integration, ok, err = s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationMerged {
+		t.Fatalf("integration after retry = %+v ok %v err %v", integration, ok, err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed, merged bool
+	for _, event := range events {
+		if event.IssueID == id {
+			failed = failed || event.Type == core.EvFinalizationFailed
+			merged = merged || event.Type == core.EvIssueMerged
+		}
+	}
+	if !failed || !merged {
+		t.Fatalf("finalization_failed=%v merged=%v", failed, merged)
+	}
+}
+
 type countingGitWorktree struct {
 	repo     string
 	acquired int
