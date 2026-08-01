@@ -1181,11 +1181,16 @@ func (e *Engine) runStageOnce(
 			"do not commit ISSUE.md, STAGE.md, decisions.md, or materialized workflow artifacts",
 		}
 	}
+	finalizationContract := ""
+	if st.Name == "merge-verification" {
+		finalizationContract = marshal.FinalizationContractMarkdown()
+	}
 	if err := contextpack.WriteStageBrief(workdir, contextpack.Brief{
 		IssueID: is.id, Stage: st.Name, StartCommit: startCommit,
 		BaseCommit: is.baseRef, Branch: branch, RequiredInputs: requiredInputs,
 		ExpectedOutputs: expectedOutputs, ProhibitedActions: prohibited,
-		VerificationOwner: "merge-verification", Recovery: recovery,
+		VerificationOwner: "merge-verification", FinalizationContract: finalizationContract,
+		Recovery: recovery,
 	}); err != nil {
 		return err
 	}

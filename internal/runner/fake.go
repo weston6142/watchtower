@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/marshal"
 )
 
 type Script struct {
@@ -119,41 +120,58 @@ func (f *FakeRunner) SetOnLine(fn func(issueID, stage, line string)) { f.OnLine 
 func generatedFakeArtifact(name, workdir string) (string, error) {
 	switch name {
 	case "merge-decision.json":
-		return `{"decision":"merge"}`, nil
+		base, branch, _, err := fakeVerificationIdentity(workdir)
+		if err != nil {
+			return "", err
+		}
+		document, err := json.Marshal(marshal.MergeDecision{
+			Decision: "merge", BranchCommit: branch, BaseCommit: base,
+		})
+		return string(document), err
 	case "verification.json":
-		stageBrief, err := os.ReadFile(filepath.Join(workdir, "STAGE.md"))
+		base, branch, tree, err := fakeVerificationIdentity(workdir)
 		if err != nil {
 			return "", err
 		}
-		base := ""
-		for _, line := range strings.Split(string(stageBrief), "\n") {
-			if strings.HasPrefix(line, "- Base commit: ") {
-				base = strings.TrimSpace(strings.TrimPrefix(line, "- Base commit: "))
-				break
-			}
-		}
-		revision := func(ref string) (string, error) {
-			output, err := exec.Command("git", "-C", workdir, "rev-parse", ref).CombinedOutput()
-			if err != nil {
-				return "", fmt.Errorf("fake verification %s: %v: %s",
-					ref, err, strings.TrimSpace(string(output)))
-			}
-			return strings.TrimSpace(string(output)), nil
-		}
-		branch, err := revision("HEAD")
-		if err != nil {
-			return "", err
-		}
-		tree, err := revision("HEAD^{tree}")
-		if err != nil {
-			return "", err
-		}
-		document, err := json.Marshal(map[string]any{
-			"base_sha": base, "branch_sha": branch, "tree_sha": tree,
-			"passed": true, "commands": [][]string{{"true"}},
+		document, err := json.Marshal(marshal.Verification{
+			BaseSHA: base, BranchSHA: branch, TreeSHA: tree,
+			Passed: true, Commands: [][]string{{"true"}},
 		})
 		return string(document), err
 	default:
 		return "", nil
 	}
+}
+
+func fakeVerificationIdentity(workdir string) (base, branch, tree string, err error) {
+	stageBrief, err := os.ReadFile(filepath.Join(workdir, "STAGE.md"))
+	if err != nil {
+		return "", "", "", err
+	}
+	for _, line := range strings.Split(string(stageBrief), "\n") {
+		if strings.HasPrefix(line, "- Base commit: ") {
+			base = strings.TrimSpace(strings.TrimPrefix(line, "- Base commit: "))
+			break
+		}
+	}
+	if base == "" || base == "unknown" {
+		return "", "", "", fmt.Errorf("fake verification: STAGE.md has no base commit")
+	}
+	revision := func(ref string) (string, error) {
+		output, revisionErr := exec.Command("git", "-C", workdir, "rev-parse", ref).CombinedOutput()
+		if revisionErr != nil {
+			return "", fmt.Errorf("fake verification %s: %v: %s",
+				ref, revisionErr, strings.TrimSpace(string(output)))
+		}
+		return strings.TrimSpace(string(output)), nil
+	}
+	branch, err = revision("HEAD")
+	if err != nil {
+		return "", "", "", err
+	}
+	tree, err = revision("HEAD^{tree}")
+	if err != nil {
+		return "", "", "", err
+	}
+	return base, branch, tree, nil
 }

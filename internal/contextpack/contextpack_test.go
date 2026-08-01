@@ -12,6 +12,23 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 )
 
+func TestStageBriefIncludesFinalizationContract(t *testing.T) {
+	dir := t.TempDir()
+	contract := "## Finalization artifact contract\n\nstrict receipts\n"
+	if err := WriteStageBrief(dir, Brief{
+		IssueID: "GH-1", Stage: "merge-verification", FinalizationContract: contract,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "STAGE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), contract) {
+		t.Fatalf("stage brief missing contract:\n%s", body)
+	}
+}
+
 func TestArchiveAndMaterializeDeclaredArtifact(t *testing.T) {
 	source := t.TempDir()
 	issueDir := t.TempDir()

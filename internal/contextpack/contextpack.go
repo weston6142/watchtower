@@ -38,16 +38,17 @@ type Recovery struct {
 }
 
 type Brief struct {
-	IssueID           string
-	Stage             string
-	StartCommit       string
-	BaseCommit        string
-	Branch            string
-	RequiredInputs    []string
-	ExpectedOutputs   []string
-	ProhibitedActions []string
-	VerificationOwner string
-	Recovery          *Recovery
+	IssueID              string
+	Stage                string
+	StartCommit          string
+	BaseCommit           string
+	Branch               string
+	RequiredInputs       []string
+	ExpectedOutputs      []string
+	ProhibitedActions    []string
+	VerificationOwner    string
+	FinalizationContract string
+	Recovery             *Recovery
 }
 
 func Archive(sourceDir, issueDir string, names []string) ([]Artifact, error) {
@@ -185,6 +186,9 @@ func WriteStageBrief(workdir string, brief Brief) error {
 	writeList(&body, "Prohibited actions", brief.ProhibitedActions)
 	body.WriteString("\n## Verification ownership\n\n")
 	body.WriteString(valueOrUnknown(brief.VerificationOwner) + "\n")
+	if brief.FinalizationContract != "" {
+		body.WriteString("\n" + brief.FinalizationContract)
+	}
 	if brief.Recovery != nil {
 		body.WriteString("\n## Recovery\n\n")
 		body.WriteString("- Last successful stage: " + valueOrUnknown(brief.Recovery.LastSuccessfulStage) + "\n")
