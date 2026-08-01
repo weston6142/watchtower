@@ -4,11 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
+	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
 )
@@ -204,5 +207,237 @@ printf '"}}\n'`)
 	res := runTurn(t, context.Background(), testRunner(bin), t.TempDir())
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "JSONL") {
 		t.Fatalf("result = %+v", res)
+	}
+}
+
+func statefulStub(t *testing.T, turns ...string) (string, string) {
+	t.Helper()
+	state := t.TempDir()
+	var body strings.Builder
+	body.WriteString(`
+count=0
+if [ -f "$STATE/count" ]; then count=$(cat "$STATE/count"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$STATE/count"
+: > "$STATE/args-$count"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$STATE/args-$count"; done
+case "$count" in
+`)
+	for index, turn := range turns {
+		body.WriteString(strconv.Itoa(index + 1))
+		body.WriteString(")\n")
+		body.WriteString(turn)
+		body.WriteString("\n;;\n")
+	}
+	body.WriteString(`*) exit 91 ;; esac`)
+	return writeStub(t, body.String()), state
+}
+
+func stageRun(r *CodeRunner, pkg, stage string) (<-chan runner.Result, chan runner.Ask) {
+	asks := make(chan runner.Ask, 1)
+	return r.Run(context.Background(), "GH-1", stage, pkg, os.TempDir(), asks), asks
+}
+
+func readCapturedArgs(t *testing.T, state string, invocation int) []string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(state, "args-"+strconv.Itoa(invocation)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
+}
+
+func TestDecisionResumesCapturedThreadAndAccumulatesTokens(t *testing.T) {
+	bin, state := statefulStub(t,
+		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-choice"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"kind\":\"choice\",\"question\":\"Ship it?\",\"options\":[\"Ship it\",\"Hold\"],\"recommended\":0,\"importance\":0.8,\"why\":\"Ready.\",\"consequences\":[\"Ships.\",\"Waits.\"],\"reversible\":\"yes\"}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":10}}'`,
+		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"continued"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":8,"output_tokens":4}}'`,
+	)
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	ask := <-asks
+	if ask.Decision.Question != "Ship it?" {
+		t.Fatalf("ask = %+v", ask.Decision)
+	}
+	ask.Reply <- levers.ChoiceResponse(0)
+	res := <-done
+	if res.Err != nil || res.SessionID != "thr-choice" || res.Tokens != 42 {
+		t.Fatalf("result = %+v", res)
+	}
+	args := readCapturedArgs(t, state, 2)
+	joined := strings.Join(args, "\n")
+	for _, want := range []string{"exec", "resume", "thr-choice", "Human decision: Ship it"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("resume argv missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "--last") {
+		t.Fatalf("resume used --last:\n%s", joined)
+	}
+}
+
+func TestFreeformDecisionResumesWithHumanText(t *testing.T) {
+	bin, state := statefulStub(t,
+		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-freeform"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"kind\":\"freeform\",\"question\":\"What limit?\",\"recommended_response\":\"Three.\",\"why\":\"Bounded.\",\"consequences\":[\"Retries change.\"],\"reversible\":\"yes\"}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":3}}'`,
+		`printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":7}}'`,
+	)
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	ask := <-asks
+	ask.Reply <- levers.FreeformResponse("Use four retries.")
+	res := <-done
+	if res.Err != nil || res.Tokens != 17 {
+		t.Fatalf("result = %+v", res)
+	}
+	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "Human decision: Use four retries.") {
+		t.Fatalf("resume argv = %q", got)
+	}
+}
+
+func TestCoachRepairsDecisionBeforeAsking(t *testing.T) {
+	bin, state := statefulStub(t,
+		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-coach"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"]}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+		`printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+	)
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	ask := <-asks
+	if ask.Decision.Why != "Safe." {
+		t.Fatalf("ask was not repaired: %+v", ask.Decision)
+	}
+	ask.Reply <- levers.ChoiceResponse(0)
+	if res := <-done; res.Err != nil || res.Tokens != 6 {
+		t.Fatalf("result = %+v", res)
+	}
+	coachingCapture, err := os.ReadFile(filepath.Join(state, "args-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(coachingCapture), agentprotocol.CoachMessage) {
+		t.Fatalf("coaching argv does not contain the shared prompt: %q", coachingCapture)
+	}
+	if got := readCapturedArgs(t, state, 3); got[len(got)-1] != "Human decision: Yes" {
+		t.Fatalf("human prompt = %q", got[len(got)-1])
+	}
+}
+
+func TestCoachStopsAfterTwoIncompleteRetries(t *testing.T) {
+	incomplete := `printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`
+	bin, state := statefulStub(t,
+		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-incomplete"}'`+"\n"+incomplete,
+		incomplete,
+		incomplete,
+	)
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, _ := stageRun(r, "executor", "execute")
+	res := <-done
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "remained incomplete after 2 coaching attempts") {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestProposalCallbacksReceiveSingleAndBatchMarkers(t *testing.T) {
+	bin := writeStub(t, `
+printf '%s\n' '{"type":"thread.started","thread_id":"thr-proposals"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_proposal\":{\"title\":\"Single\",\"body\":\"One\"}}\n{\"watchtower_proposal_batch\":{\"tasks\":[{\"key\":\"a\",\"title\":\"First\",\"body\":\"A\"},{\"key\":\"b\",\"title\":\"Second\",\"body\":\"B\",\"depends_on\":[\"a\"]}]}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`)
+	r := testRunner(bin)
+	var single runner.Proposal
+	var batch []runner.Proposal
+	r.OnProposal = func(_ string, proposal runner.Proposal) { single = proposal }
+	r.OnProposalBatch = func(_ string, proposals []runner.Proposal) { batch = proposals }
+	res := runTurn(t, context.Background(), r, t.TempDir())
+	if res.Err != nil || single.Title != "Single" || len(batch) != 2 || batch[1].DependsOn[0] != "a" {
+		t.Fatalf("result=%+v single=%+v batch=%+v", res, single, batch)
+	}
+}
+
+func TestDependencyRequiresAcceptedDecision(t *testing.T) {
+	bin := writeStub(t, `
+printf '%s\n' '{"type":"thread.started","thread_id":"thr-dependency"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_dependency\":{\"depends_on\":[\"GH-2\"]}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`)
+	res := runTurn(t, context.Background(), testRunner(bin), t.TempDir())
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "without an accepted decision") {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestDependencyAfterAcceptedDecisionIsReturned(t *testing.T) {
+	bin, state := statefulStub(t,
+		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-dependency"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"]}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_dependency\":{\"depends_on\":[\" GH-2 \",\"GH-3\",\"GH-2\"]}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+	)
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	(<-asks).Reply <- levers.ChoiceResponse(0)
+	res := <-done
+	if res.Err != nil || len(res.DependsOn) != 2 || res.DependsOn[0] != "GH-2" || res.DependsOn[1] != "GH-3" {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestConcurrentDecisionThreadsNeverCross(t *testing.T) {
+	bin := writeStub(t, `
+count=0
+if [ -f "$STATE/count" ]; then count=$(cat "$STATE/count"); fi
+count=$((count + 1)); printf '%s' "$count" > "$STATE/count"
+: > "$STATE/args-$count"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$STATE/args-$count"; done
+if [ "$count" -eq 1 ]; then
+  printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"thr-$IDENT\"}"
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"]}}"}}'
+fi
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`)
+	type invocation struct {
+		id    string
+		state string
+	}
+	invocations := []invocation{{id: "alpha", state: t.TempDir()}, {id: "beta", state: t.TempDir()}}
+	var wg sync.WaitGroup
+	for _, invocation := range invocations {
+		invocation := invocation
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := testRunner(bin)
+			r.ExtraEnv = []string{"STATE=" + invocation.state, "IDENT=" + invocation.id}
+			done, asks := stageRun(r, "executor", "execute")
+			(<-asks).Reply <- levers.ChoiceResponse(0)
+			if res := <-done; res.Err != nil {
+				t.Errorf("%s result = %+v", invocation.id, res)
+			}
+		}()
+	}
+	wg.Wait()
+	for _, invocation := range invocations {
+		got := strings.Join(readCapturedArgs(t, invocation.state, 2), "\n")
+		if !strings.Contains(got, "thr-"+invocation.id) {
+			t.Errorf("%s resume missing own thread: %s", invocation.id, got)
+		}
+		other := "alpha"
+		if invocation.id == "alpha" {
+			other = "beta"
+		}
+		if strings.Contains(got, "thr-"+other) {
+			t.Errorf("%s resume contains %s thread: %s", invocation.id, other, got)
+		}
 	}
 }
