@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weston6142/watchtower/internal/claude"
+	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -809,7 +809,7 @@ func TestSetupPromptIncludesTaskLineAndPrompt(t *testing.T) {
 	joined := strings.Join(r.Lines, "\n")
 	// The synthesized first user message lives in Go source and is invisible in
 	// the package files — showing it verbatim is the point of the op.
-	if !strings.Contains(joined, claude.TaskMessage("review", unscopedIssueID)) {
+	if !strings.Contains(joined, agentprotocol.TaskMessage("review", unscopedIssueID)) {
 		t.Errorf("task line missing from:\n%s", joined)
 	}
 	if r.Lines[0] != promptTaskHeading {
@@ -844,7 +844,7 @@ func TestSetupPromptScopedToIssueNamesIt(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("setup_prompt: %+v", r)
 	}
-	want := claude.TaskMessage("review", created.IssueID)
+	want := agentprotocol.TaskMessage("review", created.IssueID)
 	if !strings.Contains(strings.Join(r.Lines, "\n"), want) {
 		t.Errorf("task line does not name %s", created.IssueID)
 	}

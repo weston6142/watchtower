@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
@@ -43,13 +44,6 @@ func EffortEnv(effort string) string {
 	return ""
 }
 
-// TaskMessage is the first user message watchtower sends an agent. Exported so
-// the setup inspector can show it verbatim: it lives in Go source and is
-// invisible in the package files.
-func TaskMessage(stage, issueID string) string {
-	return fmt.Sprintf("Task: run the %s stage for issue %s. Read ISSUE.md and STAGE.md in the current directory, then use only the materialized artifacts and decisions.md named there. Work in the current directory.", stage, issueID)
-}
-
 // CodeRunner drives a claude CLI subprocess in stream-json mode, translating
 // its output into runner.Result and decision markers into runner.Ask.
 type CodeRunner struct {
@@ -60,10 +54,6 @@ type CodeRunner struct {
 	OnProposalBatch func(string, []runner.Proposal)
 	OnLine          func(issueID, stage, line string)
 }
-
-const coachMsg = `Your watchtower_decision is missing required fields. Re-emit the SAME decision
-as one JSON line including "why" and "consequences". Choice consequences must
-match the options; freeform decisions need at least one consequence. Nothing else.`
 
 func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
 	asks chan<- runner.Ask) <-chan runner.Result {
@@ -112,7 +102,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		return runner.Result{Err: err}
 	}
 
-	task := TaskMessage(stage, issueID)
+	task := agentprotocol.TaskMessage(stage, issueID)
 	if _, err := stdin.Write(UserMessage(task)); err != nil {
 		cmd.Process.Kill()
 		return runner.Result{Err: err}
@@ -159,13 +149,13 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			res.SessionID = ev.SessionID
 		case KindAssistantText:
 			emit(ev)
-			if d, found := ExtractDecision(ev.Text); found {
+			if d, found := agentprotocol.ExtractDecision(ev.Text); found {
 				incomplete := d.Why == "" ||
 					(d.Kind == levers.DecisionChoice && len(d.Consequences) != len(d.Options)) ||
 					(d.Kind == levers.DecisionFreeform && len(d.Consequences) == 0)
 				if incomplete && coachCount < 2 {
 					coachCount++
-					pendingReplies = append(pendingReplies, coachMsg)
+					pendingReplies = append(pendingReplies, agentprotocol.CoachMessage)
 					continue
 				}
 				reply := make(chan levers.Response, 1)
@@ -190,13 +180,13 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				}
 				pendingReplies = append(pendingReplies, "Human decision: "+answer)
 			}
-			if p, found := ExtractProposal(ev.Text); found && c.OnProposal != nil {
+			if p, found := agentprotocol.ExtractProposal(ev.Text); found && c.OnProposal != nil {
 				c.OnProposal(issueID, p)
 			}
-			if batch, found := ExtractProposalBatch(ev.Text); found && c.OnProposalBatch != nil {
+			if batch, found := agentprotocol.ExtractProposalBatch(ev.Text); found && c.OnProposalBatch != nil {
 				c.OnProposalBatch(issueID, batch)
 			}
-			if dependsOn, found := ExtractDependency(ev.Text); found {
+			if dependsOn, found := agentprotocol.ExtractDependency(ev.Text); found {
 				if !decisionAccepted {
 					return abort(fmt.Errorf("dependency marker emitted without an accepted decision"))
 				}

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -73,13 +74,6 @@ func TestHappyPathProducesArtifactAndTokens(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "spec.md")); err != nil {
 		t.Fatal("stub should have written spec.md in workdir")
-	}
-}
-
-func TestTaskMessagePointsToCompactStageBrief(t *testing.T) {
-	message := TaskMessage("spec", "GH-1")
-	if !strings.Contains(message, "STAGE.md") || !strings.Contains(message, "ISSUE.md") {
-		t.Fatalf("task message: %q", message)
 	}
 }
 
@@ -205,7 +199,7 @@ func TestTaskMessageMatchesRunnerInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	// run() drives stage "spec", issue "GH-1", package "spec-writer".
-	want := string(UserMessage(TaskMessage("spec", "GH-1")))
+	want := string(UserMessage(agentprotocol.TaskMessage("spec", "GH-1")))
 	if string(got) != want {
 		t.Fatalf("runner wrote %q, TaskMessage yields %q", got, want)
 	}

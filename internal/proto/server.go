@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/archmap"
 	"github.com/weston6142/watchtower/internal/claude"
 	"github.com/weston6142/watchtower/internal/core"
@@ -639,7 +640,7 @@ func (sv *Server) setupPrompt(cmd Command) ([]string, error) {
 	}
 	lines := []string{
 		promptTaskHeading, "",
-		claude.TaskMessage(cmd.Stage, issueID), "",
+		agentprotocol.TaskMessage(cmd.Stage, issueID), "",
 		promptSystemHeadingPrefix + cmd.Package + "/prompt.md", "",
 	}
 	lines = append(lines, promptBody(pkg.Prompt)...)

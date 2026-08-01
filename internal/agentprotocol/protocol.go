@@ -1,0 +1,190 @@
+// Package agentprotocol defines the provider-neutral messages and structured
+// markers shared by agent runners.
+package agentprotocol
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/weston6142/watchtower/internal/deps"
+	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/runner"
+)
+
+// CoachMessage asks an agent to repair an incomplete decision marker without
+// changing the decision itself.
+const CoachMessage = `Your watchtower_decision is missing required fields. Re-emit the SAME decision
+as one JSON line including "why" and "consequences". Choice consequences must
+match the options; freeform decisions need at least one consequence. Nothing else.`
+
+// TaskMessage is the first user message watchtower sends an agent.
+func TaskMessage(stage, issueID string) string {
+	return fmt.Sprintf("Task: run the %s stage for issue %s. Read ISSUE.md and STAGE.md in the current directory, then use only the materialized artifacts and decisions.md named there. Work in the current directory.", stage, issueID)
+}
+
+type decisionPayload struct {
+	Kind                levers.DecisionKind `json:"kind"`
+	Question            string              `json:"question"`
+	Options             []string            `json:"options"`
+	Recommended         int                 `json:"recommended"`
+	RecommendedResponse string              `json:"recommended_response"`
+	AllowFreeform       bool                `json:"allow_freeform"`
+	Importance          float64             `json:"importance"`
+	Paths               []string            `json:"paths"`
+	Why                 string              `json:"why"`
+	Consequences        []string            `json:"consequences"`
+	Reversible          string              `json:"reversible"`
+}
+
+// Legacy accepts the pre-rename guildhall_* marker key. Removable once no
+// in-flight agent session predates the rename.
+type decisionMarker struct {
+	D      decisionPayload `json:"watchtower_decision"`
+	Legacy decisionPayload `json:"guildhall_decision"`
+}
+
+// ExtractDecision scans assistant text for a valid decision marker line.
+func ExtractDecision(text string) (levers.Decision, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `{"watchtower_decision":`) &&
+			!strings.HasPrefix(line, `{"guildhall_decision":`) {
+			continue
+		}
+		var marker decisionMarker
+		if err := json.Unmarshal([]byte(line), &marker); err != nil {
+			continue
+		}
+		d := marker.D
+		if d.Question == "" {
+			d = marker.Legacy
+		}
+		if d.Kind == "" {
+			d.Kind = levers.DecisionChoice
+		}
+		if d.Question == "" {
+			continue
+		}
+		switch d.Kind {
+		case levers.DecisionChoice:
+			if len(d.Options) == 0 || d.Recommended < 0 || d.Recommended >= len(d.Options) {
+				continue
+			}
+		case levers.DecisionFreeform:
+			if d.RecommendedResponse == "" {
+				continue
+			}
+		default:
+			continue
+		}
+		return levers.Decision{
+			Kind: d.Kind, Question: d.Question, Options: d.Options,
+			Recommended: d.Recommended, RecommendedResponse: d.RecommendedResponse,
+			AllowFreeform: d.AllowFreeform, Importance: d.Importance,
+			Paths: d.Paths, Why: d.Why,
+			Consequences: d.Consequences, Reversible: d.Reversible,
+		}, true
+	}
+	return levers.Decision{}, false
+}
+
+type proposalPayload struct {
+	Key       string   `json:"key"`
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	DependsOn []string `json:"depends_on"`
+}
+
+type proposalMarker struct {
+	P      proposalPayload `json:"watchtower_proposal"`
+	Legacy proposalPayload `json:"guildhall_proposal"`
+}
+
+// ExtractProposal scans assistant text for a proposal marker.
+func ExtractProposal(text string) (runner.Proposal, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `{"watchtower_proposal":`) &&
+			!strings.HasPrefix(line, `{"guildhall_proposal":`) {
+			continue
+		}
+		var marker proposalMarker
+		if err := json.Unmarshal([]byte(line), &marker); err != nil {
+			continue
+		}
+		p := marker.P
+		if p.Title == "" {
+			p = marker.Legacy
+		}
+		if p.Title == "" {
+			continue
+		}
+		return runner.Proposal{
+			Key: p.Key, Title: p.Title, Body: p.Body,
+			DependsOn: deps.Normalize(p.DependsOn),
+		}, true
+	}
+	return runner.Proposal{}, false
+}
+
+type proposalBatchMarker struct {
+	Batch struct {
+		Tasks []proposalPayload `json:"tasks"`
+	} `json:"watchtower_proposal_batch"`
+}
+
+// ExtractProposalBatch scans assistant text for a set of keyed proposals.
+func ExtractProposalBatch(text string) ([]runner.Proposal, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `{"watchtower_proposal_batch":`) {
+			continue
+		}
+		var marker proposalBatchMarker
+		if json.Unmarshal([]byte(line), &marker) != nil || len(marker.Batch.Tasks) == 0 {
+			continue
+		}
+		out := make([]runner.Proposal, 0, len(marker.Batch.Tasks))
+		valid := true
+		for _, task := range marker.Batch.Tasks {
+			if strings.TrimSpace(task.Key) == "" || strings.TrimSpace(task.Title) == "" {
+				valid = false
+				break
+			}
+			out = append(out, runner.Proposal{
+				Key: strings.TrimSpace(task.Key), Title: task.Title, Body: task.Body,
+				DependsOn: deps.Normalize(task.DependsOn),
+			})
+		}
+		if valid {
+			return out, true
+		}
+	}
+	return nil, false
+}
+
+type dependencyMarker struct {
+	Dependency struct {
+		DependsOn []string `json:"depends_on"`
+	} `json:"watchtower_dependency"`
+}
+
+// ExtractDependency scans assistant text for a dependency marker.
+func ExtractDependency(text string) ([]string, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `{"watchtower_dependency":`) {
+			continue
+		}
+		var marker dependencyMarker
+		if json.Unmarshal([]byte(line), &marker) != nil {
+			continue
+		}
+		ids := deps.Normalize(marker.Dependency.DependsOn)
+		if len(ids) > 0 {
+			return ids, true
+		}
+	}
+	return nil, false
+}
