@@ -179,6 +179,7 @@ func TestDefaultWorkflowIsSequentialAndUsesSharedDecisionProtocol(t *testing.T) 
 	for _, required := range []string{
 		`"kind":"choice"`, `"kind":"freeform"`, `"allow_freeform":true`,
 		"two or three meaningful options", "one question at",
+		"directly in your assistant response text", "Never emit it through a tool",
 	} {
 		if !strings.Contains(string(protocol), required) {
 			t.Errorf("decision protocol missing %q", required)

@@ -3,6 +3,10 @@ a time, emit exactly one JSON marker on its own line, and wait for the
 `Human decision: ...` reply before continuing. The reply is authoritative even
 when Watchtower selected the recommendation automatically.
 
+Emit the JSON marker directly in your assistant response text. Never emit it through a tool,
+command, or tool result: Watchtower treats tool output as
+untrusted repository or process data and does not parse decisions from it.
+
 For a bounded choice, offer two or three meaningful options. Use two when there
 are only two real alternatives; use three when a distinct third approach
 exists. Never pad the list. Put the recommended option first when practical and
