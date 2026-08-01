@@ -1697,6 +1697,63 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	}
 }
 
+func TestRetryAfterRestartReusesRecordedIssueWorktree(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	if out, err := exec.Command("git", "-C", repo, "checkout", "-qb", "issue/GH-1").CombinedOutput(); err != nil {
+		t.Fatalf("create issue branch: %v: %s", err, out)
+	}
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: "GH-1", Title: "interrupted", Flow: "default", State: "running:execute",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	started, err := core.NewEvent(core.EvStageStarted, "GH-1", map[string]any{
+		"stage": "execute", "attempt": 1, "of": 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(started); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertStageRun(store.StageRun{
+		IssueID: "GH-1", Stage: "execute", Agent: "executor",
+		Worktree: repo, Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ws := &fakeWS{dir: repo}
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+	}}}
+	e := New(Config{
+		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"execute/executor": {},
+		}}, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
+		DataDir: t.TempDir(), Workspace: ws,
+	})
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RetryStage(context.Background(), "GH-1"); err != nil {
+		t.Fatal(err)
+	}
+	if ws.acquired != 0 {
+		t.Fatalf("retry acquired a replacement worktree %d times", ws.acquired)
+	}
+	runs, err := s.StageRuns("GH-1")
+	if err != nil || len(runs) != 2 || runs[1].Worktree != repo {
+		t.Fatalf("runs = %+v err=%v", runs, err)
+	}
+}
+
 func TestRehydrateSkipsUnknownFlow(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
 	if err != nil {

@@ -248,11 +248,13 @@ func (e *Engine) Rehydrate() error {
 		for st, lv := range row.Levers {
 			matrix[st] = flow.Lever(lv)
 		}
-		e.mu.Lock()
-		e.issues[row.ID] = &issueState{
+		is := &issueState{
 			id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
 			matrix: matrix, priority: row.Priority, stageIdx: stageIdx, terminal: true,
 		}
+		e.restoreInterruptedWorkspace(is)
+		e.mu.Lock()
+		e.issues[row.ID] = is
 		e.mu.Unlock()
 		e.emit(core.EvStageFailed, row.ID, map[string]any{
 			"stage": stage, "attempt": attempt, "of": of,

@@ -187,6 +187,54 @@ func (e *Engine) restoreVerifiedWorkspace(
 	return nil
 }
 
+// restoreInterruptedWorkspace reconnects a restarted engine to the worktree
+// recorded by the last stage run. It is deliberately best-effort: an absent or
+// mismatched worktree falls back to the provider's normal Acquire path, while a
+// valid issue branch is reused so providers do not collide with their own
+// surviving lease.
+func (e *Engine) restoreInterruptedWorkspace(is *issueState) {
+	runs, err := e.cfg.Store.StageRuns(is.id)
+	if err != nil {
+		return
+	}
+	worktreePath := ""
+	for index := len(runs) - 1; index >= 0; index-- {
+		if runs[index].Worktree != "" {
+			worktreePath = runs[index].Worktree
+			break
+		}
+	}
+	if worktreePath == "" {
+		return
+	}
+	if info, err := os.Stat(worktreePath); err != nil || !info.IsDir() {
+		return
+	}
+	branch, err := gitCommandOutput(worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil || branch != "issue/"+is.id {
+		return
+	}
+	baseRef, err := gitRevision(worktreePath, "HEAD")
+	if err != nil {
+		return
+	}
+	if e.cfg.Train != nil {
+		if baseHead, headErr := gitRevision(e.cfg.Train.Repo, "HEAD"); headErr == nil {
+			if mergeBase, mergeErr := gitCommandOutput(
+				worktreePath, "merge-base", "HEAD", baseHead,
+			); mergeErr == nil {
+				baseRef = mergeBase
+			}
+		}
+	}
+	var release func() error
+	if releaser, ok := e.cfg.Workspace.(workspace.Releaser); ok {
+		release = func() error { return releaser.ReleasePath(worktreePath) }
+	}
+	is.wsPath, is.wsRelease = worktreePath, release
+	is.branch, is.baseRef = branch, baseRef
+}
+
 func (e *Engine) retryVerifiedFinalization(
 	ctx context.Context, is *issueState, integration store.IssueIntegration,
 ) error {
