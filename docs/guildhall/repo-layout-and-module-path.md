@@ -30,8 +30,8 @@ Layout:
 - `internal/projection/` — event log → renderable `State`.
 - `internal/tui/` — Bubble Tea client; goldens in `internal/tui/testdata/`.
 - `internal/proto/` — Unix-socket JSONL commands/ops.
-- `internal/runner/`, `internal/claude/` — the `Runner` interface and the
-  headless `claude -p --output-format stream-json` implementation.
+- `internal/runner/`, `internal/codex/`, `internal/claude/` — the provider-neutral
+  `Runner` interface plus headless Codex JSONL and Claude stream-JSON implementations.
 - `internal/slots/`, `internal/workspace/` — the heavy-slot pool, and workspace
   provisioning (one per issue, with a release func). Two providers:
   `workspace.Detect` prefers `treehouse` leases when that binary is on `PATH`
