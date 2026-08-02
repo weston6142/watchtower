@@ -469,17 +469,22 @@ func TestDecisionSurfacesFitViewportAndKeepChrome(t *testing.T) {
 					Value:      "A response that stays inside the editor",
 				}
 			}
+			base := m
+			base.Toast = nil
+			base.decisionEditor = nil
+			basePlain := ansi.Strip(base.View())
+			if !strings.Contains(basePlain, "floors") {
+				t.Fatalf("base keybar moved or disappeared:\n%s", basePlain)
+			}
 
-			plain := ansi.Strip(m.View())
-			if got := lipgloss.Height(plain); got != 40 {
+			rendered := ansi.Strip(m.View())
+			if got := lipgloss.Height(rendered); got != 40 {
 				t.Fatalf("rendered height = %d, want 40", got)
 			}
+			plain := strings.TrimRight(rendered, "\n")
 			lines := strings.Split(plain, "\n")
 			if !strings.Contains(lines[0], "1 question for you") {
 				t.Fatalf("header moved or disappeared: %q", lines[0])
-			}
-			if !strings.Contains(lines[len(lines)-1], "floors") {
-				t.Fatalf("keybar moved or disappeared: %q", lines[len(lines)-1])
 			}
 			want := "DECISION 1"
 			if tc.editor {

@@ -1765,13 +1765,9 @@ func (m Model) View() string {
 	} else if m.evidenceDecision != nil {
 		tower = renderEvidenceFallback(*m.evidenceDecision, m.Detail, towerWidth)
 	} else if m.decisionEditor != nil && m.Toast != nil {
-		editor := renderDecisionEditor(*m.Toast, *m.decisionEditor, towerWidth)
-		tower = lipgloss.JoinVertical(lipgloss.Left, tower, "", editor)
+		overlayBox = renderDecisionEditor(*m.Toast, *m.decisionEditor, layoutWidth)
 	} else if m.Toast != nil {
-		// The toast never replaces the grid — spatial memory rule: the tower
-		// stays visible and the toast stacks beneath it, above the shelf.
-		toast := renderToast(*m.Toast, m.Ids[m.Toast.IssueID], m.toastSel, m.acceptStreak, towerWidth)
-		tower = lipgloss.JoinVertical(lipgloss.Left, tower, "", toast)
+		overlayBox = renderToast(*m.Toast, m.Ids[m.Toast.IssueID], m.toastSel, m.acceptStreak, layoutWidth)
 	}
 	var body string
 	if m.archMode == "full" {
