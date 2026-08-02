@@ -18,6 +18,23 @@ still filters: the stale lane leaves the shelf but stays on the grid. That
 combination is unreachable in production and test-only — see setup-inspector for
 the fixture side of the day cutoff.
 
+**Focus follows the rendered grid.**
+`Model.Focus` is transient TUI state. A lane is eligible for focus only when its
+ID is in `projection.State.Order`, its issue still exists in `State.Issues`, it
+is not locally retired, and its current stage resolves to a configured,
+renderable floor. Whenever an eligible lane exists, focus names exactly one;
+empty focus is normal only when no eligible lane can be rendered.
+
+The TUI normalizes focus after event batches and replay, navigation and explicit
+focus requests, and local or automatic retirement. It preserves the current
+eligible lane and recomputes its floor/card coordinates. If the current focus
+is missing or stale, it selects the first eligible lane in `State.Order` after
+the existing visibility and renderability filters. An unavailable explicit
+target leaves a valid current focus unchanged. When the last eligible lane
+leaves the grid focus becomes empty, and the first lane becoming eligible
+restores focus automatically. Because focus is transient, replay repairs it
+from the current projection; no focus field is persisted or migrated.
+
 **"Shipped today" is scoped in the TUI, not the projection.**
 `projection.State.Shipped` is an all-time, clock-free accumulator of merged lane
 IDs, because the projection stays a deterministic fold over the event log. The

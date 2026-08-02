@@ -1142,7 +1142,11 @@ func parseDependencies(value string) []string {
 }
 
 func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
-	m.Focus = focusIssue(m.State, m.stages, issueID, m.retired)
+	requested := requestFocus(m.Focus, m.State, m.stages, issueID, m.retired)
+	m.Focus = requested
+	if issueID == "" || requested.Issue != issueID {
+		return nil
+	}
 	m.Detail = nil
 	m.openArtifacts = true
 	if m.Toast != nil {
@@ -1152,7 +1156,11 @@ func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
 }
 
 func (m *Model) openEvidenceFor(issueID string, decisionID int64) tea.Cmd {
-	m.Focus = focusIssue(m.State, m.stages, issueID, m.retired)
+	requested := requestFocus(m.Focus, m.State, m.stages, issueID, m.retired)
+	m.Focus = requested
+	if issueID == "" || requested.Issue != issueID {
+		return nil
+	}
 	m.Detail = nil
 	m.Evidence = nil
 	m.EvidenceTitle = issueID
@@ -1340,6 +1348,7 @@ func (m Model) applyEvents(evs []core.Event) Model {
 		titles[id] = issue.Title
 	}
 	m.Ids = Identify(m.State.Order, titles)
+	m.Focus = normalizeFocus(m.Focus, m.State, m.stages, m.retired)
 	if m.dismissed == nil {
 		m.dismissed = map[int64]bool{}
 	}
@@ -1484,6 +1493,7 @@ func (m *Model) updateDoorKey(key string) tea.Cmd {
 		case "enter":
 			if m.shelfSel < len(items) && !items[m.shelfSel].Parked {
 				delete(m.retired, items[m.shelfSel].ID)
+				m.refocusVisible()
 				m.popMode()
 			}
 		}
@@ -1542,9 +1552,7 @@ func (m *Model) autoRetire(now time.Time) {
 // refocusVisible pulls focus off a lane that has just left the grid, so the
 // rail can never keep rendering a lane the tower already dropped.
 func (m *Model) refocusVisible() {
-	if m.retired[m.Focus.Issue] {
-		m.Focus = resolveFocus(m.Focus, m.State, m.stages, m.retired)
-	}
+	m.Focus = normalizeFocus(m.Focus, m.State, m.stages, m.retired)
 }
 
 func (m *Model) retireFocused() {
