@@ -346,6 +346,13 @@ func (s *Store) IssueIntegration(issueID string) (IssueIntegration, bool, error)
 	return integration, true, nil
 }
 
+func (s *Store) DeleteIssueIntegration(issueID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM issue_integration WHERE issue_id=?`, issueID)
+	return err
+}
+
 // EventsSinceTime returns events at or after t in sequence order.
 func (s *Store) EventsSinceTime(t time.Time) ([]core.Event, error) {
 	s.mu.Lock()

@@ -11,6 +11,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/steward"
@@ -335,6 +336,156 @@ func TestRehydrateKeepsDraftsInert(t *testing.T) {
 	nid, _ := e2.CreateIssue("n", "", "default", levers.Matrix{}, 0, nil)
 	if nid == id {
 		t.Fatal("id collision after rehydrate")
+	}
+}
+
+func newClaimTestEngine(t *testing.T) (*Engine, *store.Store, string, *countingGitWorktree) {
+	t.Helper()
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	st, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ws := &countingGitWorktree{repo: repo}
+	eng := New(Config{
+		Store: st, Runner: &runner.FakeRunner{Scripts: scripts()}, Pool: slots.NewPool(2),
+		Flows: map[string]flow.Flow{"default": testFlow()}, DataDir: t.TempDir(),
+		Workspace: ws, Train: &marshal.Train{Repo: repo},
+		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
+	})
+	return eng, st, repo, ws
+}
+
+func TestClaimIssueCreatesOneDurableIsolatedWorkspace(t *testing.T) {
+	e, st, repo, ws := newClaimTestEngine(t)
+	id, err := e.DraftIssue("explore", "details", "default", "regular", levers.Matrix{}, 2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := e.ClaimIssue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claim.IssueID != id || claim.Repository != repo || claim.Branch != "issue/"+id ||
+		claim.Worktree == "" || claim.BaseSHA == "" {
+		t.Fatalf("claim = %+v", claim)
+	}
+	if _, err := os.Stat(claim.Worktree); err != nil {
+		t.Fatalf("claimed worktree: %v", err)
+	}
+	if row := issueRow(t, st, id); row.State != "claimed" {
+		t.Fatalf("state = %q", row.State)
+	}
+	if runs, _ := st.StageRuns(id); len(runs) != 0 {
+		t.Fatalf("claim started stages: %+v", runs)
+	}
+	again, err := e.ClaimIssue(id)
+	if err != nil || again != claim || ws.acquired != 1 {
+		t.Fatalf("idempotent claim = %+v err=%v acquired=%d", again, err, ws.acquired)
+	}
+}
+
+func TestClaimIssueRequiresDurablyMergedDependencies(t *testing.T) {
+	e, st, _, _ := newClaimTestEngine(t)
+	parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+	child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ClaimIssue(child); err == nil || !strings.Contains(err.Error(), parent) {
+		t.Fatalf("blocked claim error = %v", err)
+	}
+	if row := issueRow(t, st, child); row.State != "backlog" {
+		t.Fatalf("blocked claim changed state to %q", row.State)
+	}
+	if err := st.SetIssueIntegration(store.IssueIntegration{
+		IssueID: parent, State: store.IntegrationMerged, LandedSHA: "merged",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ClaimIssue(child); err != nil {
+		t.Fatalf("claim after durable merge: %v", err)
+	}
+}
+
+type failingClaimWorkspace struct{}
+
+func (failingClaimWorkspace) Acquire(string) (string, func() error, error) {
+	return "", nil, os.ErrPermission
+}
+
+func (failingClaimWorkspace) Name() string { return "failing" }
+
+func TestClaimWorkspaceFailureLeavesIssueInBacklog(t *testing.T) {
+	e, st, _, _ := newClaimTestEngine(t)
+	e.cfg.Workspace = failingClaimWorkspace{}
+	id, _ := e.DraftIssue("explore", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if _, err := e.ClaimIssue(id); err == nil {
+		t.Fatal("claim with failing workspace succeeded")
+	}
+	if row := issueRow(t, st, id); row.State != "backlog" {
+		t.Fatalf("failed claim state = %q", row.State)
+	}
+	if _, ok, err := st.IssueIntegration(id); err != nil || ok {
+		t.Fatalf("failed claim persisted integration: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestReleaseClaimRefusesToDiscardWorkAndRehydrateResumes(t *testing.T) {
+	e, st, _, ws := newClaimTestEngine(t)
+	id, _ := e.DraftIssue("explore", "", "default", "regular", levers.Matrix{}, 0, nil)
+	claim, err := e.ClaimIssue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(e.cfg)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := restarted.Claims()
+	if err != nil || len(claims) != 1 || claims[0] != claim || ws.acquired != 1 {
+		t.Fatalf("rehydrated claims=%+v err=%v acquired=%d", claims, err, ws.acquired)
+	}
+	changed := filepath.Join(claim.Worktree, "notes.txt")
+	if err := os.WriteFile(changed, []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ReleaseClaim(id); err == nil {
+		t.Fatal("release discarded uncommitted work")
+	}
+	if err := os.Remove(changed); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ReleaseClaim(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(claim.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("released worktree still exists: %v", err)
+	}
+	if row := issueRow(t, st, id); row.State != "backlog" {
+		t.Fatalf("released state = %q", row.State)
+	}
+	if _, ok, err := st.IssueIntegration(id); err != nil || ok {
+		t.Fatalf("claim record remains: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestReleaseClaimRefusesCommittedWork(t *testing.T) {
+	e, _, _, _ := newClaimTestEngine(t)
+	id, _ := e.DraftIssue("explore", "", "default", "regular", levers.Matrix{}, 0, nil)
+	claim, err := e.ClaimIssue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claim.Worktree, "result.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, claim.Worktree, "add", "result.txt")
+	gitOutput(t, claim.Worktree, "commit", "-qm", "result")
+	if err := e.ReleaseClaim(id); err == nil {
+		t.Fatal("release discarded committed work")
 	}
 }
 
