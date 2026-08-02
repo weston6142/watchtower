@@ -1,7 +1,10 @@
-Overlays in `internal/tui` hug their content, because they are prompts. Two
-surfaces are exceptions, because they are read rather than answered:
-`renderBacklog` and `renderStreamDoor` take width *and* height from the viewport
-and window their content to fit. Every other door still hugs — and
+Overlays in `internal/tui` generally hug their content, because they are
+prompts. The raised decision card and response editor are width-only
+exceptions: they are composited over the unchanged base and receive the full
+layout width, while remaining content-sized vertically. Two read-only surfaces
+are full viewport-sizing exceptions: `renderBacklog` and `renderStreamDoor`
+take width *and* height from the viewport and window their content to fit.
+Every other door still hugs — and
 `renderTextDoor` (timeline, decisions, tray, shelf) is therefore still unbounded
 in height, so a long-lived lane's timeline overflows the terminal. That is a
 known gap, not a design choice. Any surface that wants to grow with the viewport
@@ -14,6 +17,11 @@ applies to overlays only.
   that point, and the fallback drops the dimmed base with it — silently, no
   error. So a viewport-sized box reserves margin rather than fills; the
   backlog's chrome constants are that margin, not cosmetic slack.
+- **A full-layout decision overlay still has to keep every emitted row inside
+  its inner width.** The decision question is wrapped before it reaches the
+  editor box; otherwise an over-wide row can trigger the fallback above at the
+  narrow snapshot width and make the response editor look like a modal-only
+  replacement instead of an overlay.
 - **`renderBox` sizes to its widest content line, so a viewport-sized pane has
   to pad every line it emits.** One short line anywhere in the content collapses
   the whole frame back to content width. That is why the backlog pads through
