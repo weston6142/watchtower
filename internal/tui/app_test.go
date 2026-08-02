@@ -449,6 +449,104 @@ func TestChoiceToastAddNoteOpensEmptyEditor(t *testing.T) {
 	}
 }
 
+func TestDecisionSurfacesFitViewportAndKeepChrome(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	for _, tc := range []struct {
+		name   string
+		editor bool
+	}{
+		{name: "card"},
+		{name: "editor", editor: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := FixtureModel("decision", 100, 40)
+			if m.Toast == nil {
+				t.Fatal("decision fixture did not raise a toast")
+			}
+			if tc.editor {
+				m.decisionEditor = &decisionEditor{
+					DecisionID: m.Toast.ID,
+					Value:      "A response that stays inside the editor",
+				}
+			}
+
+			plain := ansi.Strip(m.View())
+			if got := lipgloss.Height(plain); got != 40 {
+				t.Fatalf("rendered height = %d, want 40", got)
+			}
+			lines := strings.Split(plain, "\n")
+			if !strings.Contains(lines[0], "1 question for you") {
+				t.Fatalf("header moved or disappeared: %q", lines[0])
+			}
+			if !strings.Contains(lines[len(lines)-1], "floors") {
+				t.Fatalf("keybar moved or disappeared: %q", lines[len(lines)-1])
+			}
+			want := "DECISION 1"
+			if tc.editor {
+				want = "RESPONSE 1"
+			}
+			if !strings.Contains(plain, want) {
+				t.Fatalf("visible surface %q missing from view:\n%s", want, plain)
+			}
+		})
+	}
+}
+
+func TestDecisionEditorEscReturnsToCardOverlay(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	m := FixtureModel("decision", 100, 40)
+	if m.Toast == nil {
+		t.Fatal("decision fixture did not raise a toast")
+	}
+	m.decisionEditor = &decisionEditor{DecisionID: m.Toast.ID, Value: "draft response"}
+
+	m = pressKey(t, m, "esc")
+	if m.decisionEditor != nil {
+		t.Fatal("esc left the response editor open")
+	}
+	if m.Toast == nil {
+		t.Fatal("esc dismissed the card instead of returning to it")
+	}
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "DECISION 1") || strings.Contains(plain, "RESPONSE 1") {
+		t.Fatalf("view did not return to the decision card:\n%s", plain)
+	}
+	if got := lipgloss.Height(plain); got != 40 {
+		t.Fatalf("card height after esc = %d, want 40", got)
+	}
+}
+
+func TestDecisionAnswerResponsesKeepSurfaceContract(t *testing.T) {
+	base := FixtureModel("decision", 100, 40)
+	if base.Toast == nil {
+		t.Fatal("decision fixture did not raise a toast")
+	}
+	base.decisionEditor = &decisionEditor{DecisionID: base.Toast.ID, Value: "draft response"}
+
+	succeeded, _ := base.Update(answerMsg{
+		decisionID: base.Toast.ID,
+		response:   proto.Response{OK: true},
+	})
+	successModel := succeeded.(Model)
+	if successModel.Toast != nil || successModel.decisionEditor != nil {
+		t.Fatalf("successful answer kept active surface: toast=%+v editor=%+v",
+			successModel.Toast, successModel.decisionEditor)
+	}
+
+	failed, _ := base.Update(answerMsg{
+		decisionID: base.Toast.ID,
+		response:   proto.Response{Error: "answer rejected"},
+	})
+	failureModel := failed.(Model)
+	if failureModel.Toast == nil || failureModel.decisionEditor == nil {
+		t.Fatalf("failed answer discarded active surface: toast=%+v editor=%+v",
+			failureModel.Toast, failureModel.decisionEditor)
+	}
+	if failureModel.Err != "answer rejected" {
+		t.Fatalf("failure error = %q, want answer rejected", failureModel.Err)
+	}
+}
+
 func TestShelfAutoRetiresAndUnretiresMergedIssue(t *testing.T) {
 	m := NewModel(nil, []string{"spec", "merge"})
 	m.State.Issues["GH-1"] = &projection.IssueView{ID: "GH-1", Title: "shipped", Merged: true, MergedAt: time.Now().Add(-2 * time.Minute)}
