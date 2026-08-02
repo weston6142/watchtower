@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -67,6 +69,9 @@ func newFlowE2E(t *testing.T, options e2eOptions) *flowE2E {
 	t.Setenv("WT_E2E_LANES", h.lanes)
 	t.Setenv("WT_E2E_LOG", h.log)
 	t.Setenv("WT_E2E_MODE", options.mode)
+	if options.mode == "publish-fail" {
+		h.git(h.repo, "remote", "set-url", "origin", filepath.Join(root, "missing-origin.git"))
+	}
 	t.Cleanup(func() {
 		stopDaemons(h.base)
 		_ = os.RemoveAll(root)
@@ -133,8 +138,97 @@ func (h *flowE2E) waitForIssueState(issueID, state string, timeout time.Duration
 	h.t.Fatalf("issue %s did not reach %q\n%s", issueID, state, h.diagnostics(issueID))
 }
 
+func (h *flowE2E) waitForIntegrationState(issueID, state string, timeout time.Duration) {
+	h.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if detail, err := h.tryIssueDetail(issueID); err == nil && detail.IntegrationState == state {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	h.t.Fatalf("issue %s integration did not reach %q\n%s", issueID, state, h.diagnostics(issueID))
+}
+
+func (h *flowE2E) eventExists(issueID, eventType string) bool {
+	client, err := proto.Dial(h.socketPath())
+	if err != nil {
+		return false
+	}
+	defer client.Close()
+	response, err := client.Do(proto.Command{Op: "tail", SinceSeq: 0})
+	if err != nil || !response.OK {
+		return false
+	}
+	for _, event := range response.Events {
+		if event.IssueID == issueID && string(event.Type) == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *flowE2E) mergeCommitCount() int {
+	h.t.Helper()
+	count := strings.TrimSpace(h.git(h.repo, "rev-list", "--count", "main"))
+	value, err := strconv.Atoi(count)
+	if err != nil {
+		h.t.Fatalf("merge commit count %q: %v", count, err)
+	}
+	return value
+}
+
+func (h *flowE2E) repairOrigin() {
+	h.t.Helper()
+	h.git(h.repo, "remote", "set-url", "origin", h.remote)
+}
+
+func (h *flowE2E) waitForFile(path string, timeout time.Duration) {
+	h.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	h.t.Fatalf("file %s did not appear\n%s", path, h.diagnostics(""))
+}
+
+func (h *flowE2E) killDaemon() {
+	h.t.Helper()
+	pidPath := filepath.Join(repocfg.RepoDataDir(h.base, h.repo), "daemon.pid")
+	body, err := os.ReadFile(pidPath)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		h.t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	h.t.Fatalf("daemon %d did not stop", pid)
+}
+
 func (h *flowE2E) diagnostics(issueID string) string {
 	var out strings.Builder
+	if issueID != "" {
+		if detail, err := h.tryIssueDetail(issueID); err != nil {
+			fmt.Fprintf(&out, "issue detail (err=%v)\n", err)
+		} else {
+			fmt.Fprintf(&out, "issue detail: state=%s integration=%s error=%q runs=%+v\n",
+				detail.Issue.State, detail.IntegrationState, detail.LastError, detail.Runs)
+		}
+	}
 	for _, args := range [][]string{
 		{"issues", "--data", h.base, "--json"},
 		{"tail", "--data", h.base},
@@ -158,6 +252,9 @@ func (h *flowE2E) diagnostics(issueID string) string {
 	for _, path := range logs {
 		body, _ := os.ReadFile(path)
 		fmt.Fprintf(&out, "%s:\n%s\n", path, tailBytes(body, 16<<10))
+	}
+	if body, err := os.ReadFile(h.log); err == nil {
+		fmt.Fprintf(&out, "%s:\n%s\n", h.log, body)
 	}
 	if issueID != "" {
 		fmt.Fprintf(&out, "issue: %s\n", issueID)
@@ -277,12 +374,33 @@ case "$stage" in
     printf 'prepared\n' > prepared.txt
     ;;
   change-repository)
+	printf 'codex change start pid=%s parent=%s\n' "$$" "$PPID" >> "$WT_E2E_LOG"
+    if [ "${WT_E2E_MODE:-}" = "pause-change" ] && [ ! -f "$WT_E2E_LANES/change-released" ]; then
+      touch "$WT_E2E_LANES/change-started"
+      parent=$PPID
+      while [ ! -f "$WT_E2E_LANES/change-released" ]; do
+		if ! kill -0 "$parent" 2>/dev/null; then
+		  printf 'codex change parent-dead pid=%s parent=%s\n' "$$" "$parent" >> "$WT_E2E_LOG"
+		  touch "$WT_E2E_LANES/change-aborted"
+		  exit 143
+		fi
+        sleep 0.02
+      done
+		printf 'codex change released pid=%s parent=%s\n' "$$" "$parent" >> "$WT_E2E_LOG"
+    fi
     printf 'delivered\n' > feature.txt
     git add feature.txt
     git commit -qm 'test: deliver synthetic change'
+	printf 'codex change committed pid=%s parent=%s\n' "$$" "$PPID" >> "$WT_E2E_LOG"
     ;;
   integrate-safely)
     ./verify-e2e.sh
+    if [ "${WT_E2E_MODE:-}" = "advance-base" ] && [ ! -f "$WT_E2E_LANES/.base-advanced" ]; then
+      printf 'advanced\n' > "$WT_E2E_REPO/base-advanced.txt"
+      git -C "$WT_E2E_REPO" add base-advanced.txt
+      git -C "$WT_E2E_REPO" commit -qm 'test: advance base'
+      touch "$WT_E2E_LANES/.base-advanced"
+    fi
     branch=$(git rev-parse HEAD)
     tree=$(git rev-parse 'HEAD^{tree}')
     printf 'verification passed\n' > merge-report.md

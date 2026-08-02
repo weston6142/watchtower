@@ -1605,15 +1605,17 @@ func TestFinalizationFailureRetriesIntegrationWithoutRerunningVerifier(t *testin
 }
 
 func TestRehydrateAutomaticallyResumesVerifiedFinalization(t *testing.T) {
-	e, s, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	e, s, repo := verificationEngineForFlow(
+		t, renamedVerificationFlow(), "merge", [][]string{{"true"}}, "",
+	)
 	fake := e.cfg.Runner.(*runner.FakeRunner)
 	fake.OnStart = func(_, stage, _, _ string) error {
-		if stage != "merge-verification" {
+		if stage != "integrate-safely" {
 			return nil
 		}
 		return os.WriteFile(filepath.Join(repo, "diff"), []byte("dirty base\n"), 0o644)
 	}
-	id, err := e.CreateIssue("restart finalization", "", "default", levers.Matrix{}, 0, nil)
+	id, err := e.CreateIssue("restart finalization", "", "custom", levers.Matrix{}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1643,8 +1645,15 @@ func TestRehydrateAutomaticallyResumesVerifiedFinalization(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	runs, err := s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil {
 		t.Fatalf("rehydration reran verifier: %+v err %v", runs, err)
+	}
+	counts := map[string]int{}
+	for _, run := range runs {
+		counts[run.Stage]++
+	}
+	if counts["integrate-safely"] != 1 {
+		t.Fatalf("verified finalization reran agent: %+v", runs)
 	}
 	_, _, _, lastErr, err := s.LastStageEvents(id)
 	if err != nil || lastErr != "" {
@@ -1824,7 +1833,7 @@ func (r *conflictFlowRunner) Run(
 		if output, err := commandIn(workdir, "commit", "-qam", "issue change"); err != nil {
 			result.Err = fmt.Errorf("commit issue: %v: %s", err, output)
 		}
-	case "merge-verification":
+	case "integrate-safely":
 		base, _ := commandIn(workdir, "merge-base", "main", "HEAD")
 		branch, _ := commandIn(workdir, "rev-parse", "HEAD")
 		tree, _ := commandIn(workdir, "rev-parse", "HEAD^{tree}")
@@ -1923,6 +1932,13 @@ func TestRetryFinalizesResolvedConflictWithoutRerunningAgents(t *testing.T) {
 	if len(runsAfter) != len(runsBefore) {
 		t.Fatalf("retry reran an agent: before=%d after=%d", len(runsBefore), len(runsAfter))
 	}
+	counts := map[string]int{}
+	for _, stageRun := range runsAfter {
+		counts[stageRun.Stage]++
+	}
+	if counts["integrate-safely"] != 1 || counts["conflict-resolution"] != 1 {
+		t.Fatalf("stage counts = %+v", counts)
+	}
 	integration, ok, err := s.IssueIntegration(id)
 	if err != nil || !ok || integration.State != store.IntegrationMerged {
 		t.Fatalf("integration after retry = %+v ok %v err %v", integration, ok, err)
@@ -1934,6 +1950,9 @@ func TestRetryFinalizesResolvedConflictWithoutRerunningAgents(t *testing.T) {
 		"git", "-C", repo, "merge-base", "--is-ancestor", resolvedHead, "main",
 	).CombinedOutput(); err != nil {
 		t.Fatalf("resolved issue was not merged: %v: %s", err, out)
+	}
+	if !hasEvent(t, s, id, core.EvIssueMerged) {
+		t.Fatal("resolved conflict did not merge")
 	}
 }
 
@@ -1967,7 +1986,7 @@ func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, strin
 	f := flow.Flow{Name: "default", Stages: []flow.Stage{
 		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
 			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll},
-		{Name: "merge-verification", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
+		{Name: "integrate-safely", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
 			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
 			MergeBarrier: true,
 			Artifacts:    []string{"merge-report.md", "merge-decision.json", "verification.json"}},
@@ -2014,6 +2033,17 @@ func TestConflictResolutionUsesOriginalIssueWorktree(t *testing.T) {
 			if ws.acquired != 1 || run.conflictWorkdir != run.originalWorkdir {
 				t.Fatalf("acquired=%d original=%q conflict=%q",
 					ws.acquired, run.originalWorkdir, run.conflictWorkdir)
+			}
+			runs, err := s.StageRuns(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			counts := map[string]int{}
+			for _, stageRun := range runs {
+				counts[stageRun.Stage]++
+			}
+			if counts["integrate-safely"] != 1 || counts["conflict-resolution"] != 1 {
+				t.Fatalf("stage counts = %+v", counts)
 			}
 			for _, want := range []string{
 				"issue/" + id, originalBase, run.currentBase, "diff", "merge conflict",
