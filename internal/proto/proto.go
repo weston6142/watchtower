@@ -20,20 +20,22 @@ type Command struct {
 	// Attach carries absolute paths, never bytes: maxMessageBytes bounds a wire
 	// message well under the per-file cap, so the daemon reads the files off the
 	// shared filesystem itself. A bare name retains an existing attachment.
-	Attach     []string `json:"attach,omitempty"`
-	DependsOn  []string `json:"depends_on,omitempty"`
-	IssueID    string   `json:"issue_id,omitempty"`
-	DecisionID int64    `json:"decision_id,omitempty"`
-	Option     *int     `json:"option,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	ProposalID int64    `json:"proposal_id,omitempty"`
-	Accept     bool     `json:"accept,omitempty"`
-	SinceSeq   int64    `json:"since_seq,omitempty"`
-	Repo       string   `json:"repo,omitempty"`
-	Stage      string   `json:"stage,omitempty"`
-	Lever      string   `json:"lever,omitempty"`
-	Package    string   `json:"package,omitempty"` // setup_prompt: which agent package
-	N          int      `json:"n,omitempty"`
+	Attach        []string `json:"attach,omitempty"`
+	DependsOn     []string `json:"depends_on,omitempty"`
+	IssueID       string   `json:"issue_id,omitempty"`
+	Worktree      string   `json:"worktree,omitempty"`
+	AllowNoChange bool     `json:"allow_no_change,omitempty"`
+	DecisionID    int64    `json:"decision_id,omitempty"`
+	Option        *int     `json:"option,omitempty"`
+	Text          string   `json:"text,omitempty"`
+	ProposalID    int64    `json:"proposal_id,omitempty"`
+	Accept        bool     `json:"accept,omitempty"`
+	SinceSeq      int64    `json:"since_seq,omitempty"`
+	Repo          string   `json:"repo,omitempty"`
+	Stage         string   `json:"stage,omitempty"`
+	Lever         string   `json:"lever,omitempty"`
+	Package       string   `json:"package,omitempty"` // setup_prompt: which agent package
+	N             int      `json:"n,omitempty"`
 }
 
 type Response struct {

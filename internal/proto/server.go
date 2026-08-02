@@ -216,6 +216,19 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}
+	case "claim_for_worktree":
+		claim, err := sv.eng.ClaimForWorktree(cmd.Worktree)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: claim.IssueID, Claim: &claim}
+	case "finish_claim":
+		if err := sv.eng.FinishClaim(engine.FinishClaimRequest{
+			IssueID: cmd.IssueID, Worktree: cmd.Worktree, AllowNoChange: cmd.AllowNoChange,
+		}); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
 	case "start_issue":
 		// Runs asynchronously; failures surface as stage_failed events
 		// in the log rather than in this response.

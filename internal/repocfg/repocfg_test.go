@@ -207,6 +207,73 @@ func TestFindRepoFromLinkedWorktreeReturnsMainCheckout(t *testing.T) {
 	}
 }
 
+func TestFindRepoFromLinkedWorktreeIgnoresWorktreeWatchtowerDirectory(t *testing.T) {
+	repo := t.TempDir()
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(repo, "init", "-q", "-b", "develop")
+	git(repo, "config", "user.email", "test@example.com")
+	git(repo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("watchtower\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(repo, "add", "README.md")
+	git(repo, "commit", "-qm", "initial")
+	if err := os.Mkdir(filepath.Join(repo, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(t.TempDir(), "GH-42")
+	git(repo, "worktree", "add", "-q", "-b", "issue/GH-42", worktree)
+	if err := os.Mkdir(filepath.Join(worktree, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FindRepo(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(repo)
+	got, _ = filepath.EvalSymlinks(got)
+	if got != want {
+		t.Fatalf("FindRepo(linked worktree with .watchtower) = %q, want %q", got, want)
+	}
+}
+
+func TestFindRepoUsesDurableClaimBindingForExternalWorkspace(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := t.TempDir()
+	cmd := exec.Command("git", "-C", worktree, "init", "-q")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	if err := os.Mkdir(filepath.Join(worktree, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := BindWorktree(repo, worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FindRepo(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(repo)
+	got, _ = filepath.EvalSymlinks(got)
+	if got != want {
+		t.Fatalf("FindRepo(external claimed workspace) = %q, want %q", got, want)
+	}
+}
+
 func TestRepoIDStableAndShort(t *testing.T) {
 	a := RepoID("/some/repo")
 	if a != RepoID("/some/repo") || len(a) != 12 {
@@ -214,6 +281,17 @@ func TestRepoIDStableAndShort(t *testing.T) {
 	}
 	if a == RepoID("/other/repo") {
 		t.Fatal("ids collide")
+	}
+}
+
+func TestRepoIDTreatsSymlinkAliasesAsOneRepository(t *testing.T) {
+	repo := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(repo, alias); err != nil {
+		t.Fatal(err)
+	}
+	if RepoID(repo) != RepoID(alias) {
+		t.Fatalf("RepoID differs for repository and symlink alias: %s != %s", RepoID(repo), RepoID(alias))
 	}
 }
 

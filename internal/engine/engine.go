@@ -24,6 +24,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/store"
@@ -109,6 +110,12 @@ type Claim struct {
 	BaseSHA    string `json:"base_sha"`
 }
 
+type FinishClaimRequest struct {
+	IssueID       string
+	Worktree      string
+	AllowNoChange bool
+}
+
 type Engine struct {
 	cfg    Config
 	mu     sync.Mutex
@@ -184,12 +191,22 @@ func (e *Engine) Rehydrate() error {
 		if err != nil {
 			return err
 		}
-		if hasIntegration && integration.State == store.IntegrationClaimed && row.State == "claimed" {
+		if hasIntegration && integration.State == store.IntegrationClaimed &&
+			(row.State == "claimed" || row.State == "failed") {
+			finalIdx := 0
+			if row.State == "failed" {
+				var finalErr error
+				finalIdx, finalErr = finalStageIndex(e.cfg.Flows[row.Flow])
+				if finalErr != nil {
+					return finalErr
+				}
+			}
 			is := &issueState{
 				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
 				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
 				dependsOn: append([]string(nil), row.DependsOn...),
-				claimed:   true, externalSession: true,
+				claimed:   row.State == "claimed", externalSession: true,
+				terminal: row.State == "failed", stageIdx: finalIdx,
 			}
 			if err := e.restoreClaimedWorkspace(is, integration); err != nil {
 				return fmt.Errorf("restore claim %s: %w", row.ID, err)
@@ -849,6 +866,12 @@ func (e *Engine) ClaimIssue(id string) (Claim, error) {
 		rollback(nil)
 		return Claim{}, err
 	}
+	if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
+		if err := repocfg.BindWorktree(e.cfg.Train.Repo, path); err != nil {
+			rollback(release)
+			return Claim{}, err
+		}
+	}
 	branch, err := gitCommandOutput(path, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		rollback(release)
@@ -906,6 +929,31 @@ func (e *Engine) Claims() ([]Claim, error) {
 	return claims, nil
 }
 
+func (e *Engine) ClaimForWorktree(path string) (Claim, error) {
+	requested, err := canonicalWorktreePath(path)
+	if err != nil {
+		return Claim{}, err
+	}
+	claims, err := e.Claims()
+	if err != nil {
+		return Claim{}, err
+	}
+	var matches []Claim
+	for _, claim := range claims {
+		recorded, pathErr := canonicalWorktreePath(claim.Worktree)
+		if pathErr == nil && recorded == requested {
+			matches = append(matches, claim)
+		}
+	}
+	if len(matches) == 0 {
+		return Claim{}, fmt.Errorf("no claim for worktree %s", path)
+	}
+	if len(matches) > 1 {
+		return Claim{}, fmt.Errorf("multiple claims for worktree %s", path)
+	}
+	return matches[0], nil
+}
+
 func (e *Engine) claimFromState(is *issueState) Claim {
 	repository := ""
 	if e.cfg.Train != nil {
@@ -936,6 +984,11 @@ func (e *Engine) restoreClaimedWorkspace(is *issueState, integration store.Issue
 	releaser, ok := e.cfg.Workspace.(workspace.Releaser)
 	if !ok {
 		return fmt.Errorf("workspace provider cannot restore claimed worktrees")
+	}
+	if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
+		if err := repocfg.BindWorktree(e.cfg.Train.Repo, integration.Worktree); err != nil {
+			return err
+		}
 	}
 	is.wsPath = integration.Worktree
 	is.wsRelease = func() error { return releaser.ReleasePath(integration.Worktree) }
@@ -1023,6 +1076,104 @@ func (e *Engine) ReleaseClaim(id string) error {
 	e.mu.Unlock()
 	e.emit(core.EvIssueReleased, id, nil)
 	return nil
+}
+
+func (e *Engine) FinishClaim(req FinishClaimRequest) error {
+	e.mu.Lock()
+	is, ok := e.issues[req.IssueID]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", req.IssueID)
+	}
+	if !is.claimed || is.running {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is not an idle claim", req.IssueID)
+	}
+	e.mu.Unlock()
+
+	integration, ok, err := e.cfg.Store.IssueIntegration(req.IssueID)
+	if err != nil {
+		return err
+	}
+	if !ok || integration.State != store.IntegrationClaimed {
+		return fmt.Errorf("issue %s has no durable claim", req.IssueID)
+	}
+	requested, err := canonicalWorktreePath(req.Worktree)
+	if err != nil {
+		return err
+	}
+	recorded, err := canonicalWorktreePath(integration.Worktree)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(requested) != filepath.Clean(recorded) {
+		return fmt.Errorf("worktree %s does not match claim %s", requested, recorded)
+	}
+	branch, err := gitCommandOutput(recorded, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	if branch != integration.Branch {
+		return fmt.Errorf("branch %s does not match claim %s", branch, integration.Branch)
+	}
+	status, err := gitCommandOutput(recorded, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if status != "" {
+		return fmt.Errorf("issue %s worktree has uncommitted changes", req.IssueID)
+	}
+	head, err := gitRevision(recorded, "HEAD")
+	if err != nil {
+		return err
+	}
+	if head == integration.PreSHA && !req.AllowNoChange {
+		return fmt.Errorf("issue %s has no commits beyond the claim base", req.IssueID)
+	}
+	finalIdx, err := finalStageIndex(e.cfg.Flows[is.flowName])
+	if err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	if !is.claimed || is.running {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is no longer ready to finish", req.IssueID)
+	}
+	is.claimed = false
+	is.draft = false
+	is.externalSession = true
+	is.stageIdx = finalIdx
+	e.mu.Unlock()
+	e.emit(core.EvIssueCreated, is.id, map[string]any{
+		"title": is.title, "body": is.body, "flow": is.flowName, "priority": is.priority,
+	})
+	go func() { _ = e.runAndRecord(context.Background(), is, finalIdx) }()
+	return nil
+}
+
+func canonicalWorktreePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func finalStageIndex(f flow.Flow) (int, error) {
+	if len(f.Stages) == 0 || f.Stages[len(f.Stages)-1].Name != "merge-verification" {
+		return 0, fmt.Errorf("flow %q does not end with merge-verification", f.Name)
+	}
+	for i := range f.Stages[:len(f.Stages)-1] {
+		if f.Stages[i].Name == "merge-verification" {
+			return 0, fmt.Errorf("flow %q repeats merge-verification", f.Name)
+		}
+	}
+	return len(f.Stages) - 1, nil
 }
 
 // LaunchIssue promotes a backlog draft into a running lane: the row flips to
@@ -1774,13 +1925,16 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 		e.mu.Lock()
 		is.activeTouchset = nil
 		release := is.wsRelease
-		is.wsRelease = nil
-		is.wsPath = ""
-		is.branch = ""
-		is.baseRef = ""
+		preserveExternal := aborted && is.externalSession
+		if !preserveExternal {
+			is.wsRelease = nil
+			is.wsPath = ""
+			is.branch = ""
+			is.baseRef = ""
+		}
 		is.running = false
 		e.mu.Unlock()
-		if release != nil && !landed && !preserveWorkspace {
+		if release != nil && !landed && !preserveWorkspace && !preserveExternal {
 			_ = release()
 		}
 		if aborted && e.cfg.Marshal != nil {

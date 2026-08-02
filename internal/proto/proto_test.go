@@ -390,6 +390,16 @@ func TestClaimProtocolReturnsStructuredReadyBlockedAndResumableTasks(t *testing.
 	if !claimed.OK || claimed.Claim == nil || claimed.Claim.IssueID != parent {
 		t.Fatalf("claim_issue = %+v", claimed)
 	}
+	resolved := srv.exec(Command{Op: "claim_for_worktree", Worktree: claimed.Claim.Worktree})
+	if !resolved.OK || resolved.Claim == nil || resolved.Claim.IssueID != parent {
+		t.Fatalf("claim_for_worktree = %+v", resolved)
+	}
+	finish := srv.exec(Command{
+		Op: "finish_claim", IssueID: parent, Worktree: claimed.Claim.Worktree,
+	})
+	if finish.OK || !strings.Contains(finish.Error, "no commits beyond") {
+		t.Fatalf("finish_claim without work = %+v", finish)
+	}
 	listed = srv.exec(Command{Op: "list_backlog"})
 	if len(listed.Claims) != 1 || listed.Claims[0].IssueID != parent {
 		t.Fatalf("resumable claims = %+v", listed.Claims)

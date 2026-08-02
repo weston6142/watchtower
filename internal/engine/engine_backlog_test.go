@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -486,6 +487,160 @@ func TestReleaseClaimRefusesCommittedWork(t *testing.T) {
 	gitOutput(t, claim.Worktree, "commit", "-qm", "result")
 	if err := e.ReleaseClaim(id); err == nil {
 		t.Fatal("release discarded committed work")
+	}
+}
+
+func prepareFinishClaim(t *testing.T) (*Engine, *store.Store, Claim) {
+	t.Helper()
+	e, st, _, _ := newClaimTestEngine(t)
+	f := verificationFlow()
+	e.cfg.Flows = map[string]flow.Flow{"default": f}
+	e.cfg.Runner = &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"merge-verification/merge-verifier": {Artifacts: map[string]string{
+			"merge-report.md": "", "merge-decision.json": "", "verification.json": "",
+		}},
+	}}
+	e.cfg.Train.TestCmd = []string{"true"}
+	id, _ := e.DraftIssue("explore", "", "default", "regular", levers.Matrix{}, 0, nil)
+	claim, err := e.ClaimIssue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e, st, claim
+}
+
+func TestFinishClaimRejectsMismatchedDirtyAndNoChangeWorktrees(t *testing.T) {
+	t.Run("mismatched path", func(t *testing.T) {
+		e, _, claim := prepareFinishClaim(t)
+		err := e.FinishClaim(FinishClaimRequest{IssueID: claim.IssueID, Worktree: t.TempDir()})
+		if err == nil || !strings.Contains(err.Error(), "does not match") {
+			t.Fatalf("FinishClaim mismatch = %v", err)
+		}
+	})
+	t.Run("dirty", func(t *testing.T) {
+		e, _, claim := prepareFinishClaim(t)
+		if err := os.WriteFile(filepath.Join(claim.Worktree, "notes.txt"), []byte("work\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err := e.FinishClaim(FinishClaimRequest{IssueID: claim.IssueID, Worktree: claim.Worktree})
+		if err == nil || !strings.Contains(err.Error(), "uncommitted") {
+			t.Fatalf("FinishClaim dirty = %v", err)
+		}
+	})
+	t.Run("no change", func(t *testing.T) {
+		e, _, claim := prepareFinishClaim(t)
+		err := e.FinishClaim(FinishClaimRequest{IssueID: claim.IssueID, Worktree: claim.Worktree})
+		if err == nil || !strings.Contains(err.Error(), "no commits beyond") {
+			t.Fatalf("FinishClaim no-change = %v", err)
+		}
+	})
+	t.Run("canonical path alias", func(t *testing.T) {
+		e, _, claim := prepareFinishClaim(t)
+		alias := filepath.Join(t.TempDir(), "claim-link")
+		if err := os.Symlink(claim.Worktree, alias); err != nil {
+			t.Fatal(err)
+		}
+		resolved, err := e.ClaimForWorktree(alias)
+		if err != nil || resolved.IssueID != claim.IssueID {
+			t.Fatalf("ClaimForWorktree(alias) = %+v, %v", resolved, err)
+		}
+		err = e.FinishClaim(FinishClaimRequest{IssueID: claim.IssueID, Worktree: alias})
+		if err == nil || !strings.Contains(err.Error(), "no commits beyond") {
+			t.Fatalf("FinishClaim alias = %v", err)
+		}
+	})
+}
+
+func TestFinishClaimRunsOnlyMergeVerificationAndCompletes(t *testing.T) {
+	e, st, claim := prepareFinishClaim(t)
+	if err := os.WriteFile(filepath.Join(claim.Worktree, "result.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, claim.Worktree, "add", "result.txt")
+	gitOutput(t, claim.Worktree, "commit", "-qm", "result")
+	if err := e.FinishClaim(FinishClaimRequest{
+		IssueID: claim.IssueID, Worktree: claim.Worktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, st, claim.IssueID, core.EvIssueCompleted)
+	events, err := st.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stages []string
+	for _, event := range events {
+		if event.IssueID != claim.IssueID || event.Type != core.EvStageStarted {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		stages = append(stages, payload["stage"].(string))
+	}
+	if len(stages) != 1 || stages[0] != "merge-verification" {
+		t.Fatalf("started stages = %v", stages)
+	}
+	if row := issueRow(t, st, claim.IssueID); row.State != "done" {
+		t.Fatalf("finished row = %+v", row)
+	}
+}
+
+func TestFinishClaimVerifierFailurePreservesWorkspaceForRetry(t *testing.T) {
+	e, st, claim := prepareFinishClaim(t)
+	if err := os.WriteFile(filepath.Join(claim.Worktree, "result.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, claim.Worktree, "add", "result.txt")
+	gitOutput(t, claim.Worktree, "commit", "-qm", "result")
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	script := fake.Scripts["merge-verification/merge-verifier"]
+	script.Fail = true
+	fake.Scripts["merge-verification/merge-verifier"] = script
+	var worktrees []string
+	fake.OnStart = func(_, _, _, worktree string) error {
+		worktrees = append(worktrees, worktree)
+		return nil
+	}
+
+	if err := e.FinishClaim(FinishClaimRequest{
+		IssueID: claim.IssueID, Worktree: claim.Worktree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, st, claim.IssueID, core.EvStageFailed)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		e.mu.Lock()
+		terminal := e.issues[claim.IssueID].terminal
+		e.mu.Unlock()
+		if terminal {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("failed verifier did not become retryable")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(claim.Worktree); err != nil {
+		t.Fatalf("failed verifier removed claimed worktree: %v", err)
+	}
+	integration, ok, err := st.IssueIntegration(claim.IssueID)
+	if err != nil || !ok || integration.State != store.IntegrationClaimed {
+		t.Fatalf("claim checkpoint after verifier failure = %+v, %v, %v", integration, ok, err)
+	}
+
+	script.Fail = false
+	fake.Scripts["merge-verification/merge-verifier"] = script
+	if err := e.RetryStage(context.Background(), claim.IssueID); err != nil {
+		t.Fatal(err)
+	}
+	if len(worktrees) != 2 || worktrees[0] != claim.Worktree || worktrees[1] != claim.Worktree {
+		t.Fatalf("verification worktrees = %v, want original %q twice", worktrees, claim.Worktree)
+	}
+	if row := issueRow(t, st, claim.IssueID); row.State != "done" {
+		t.Fatalf("retried row = %+v", row)
 	}
 }
 

@@ -49,7 +49,7 @@ func main() {
 		fatal(err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|reset|repos|tower|new|backlog|claim|release|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|reset|repos|tower|new|backlog|claim|release|finish|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -345,6 +345,46 @@ func main() {
 		} else {
 			fmt.Println("released", issueID)
 		}
+	case "finish":
+		filtered, jsonOut := removeFlag(args, "--json")
+		filtered, allowNoChange := removeFlag(filtered, "--allow-no-change")
+		fs := flag.NewFlagSet("finish", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		fs.Parse(filtered)
+		if len(fs.Args()) > 1 {
+			fmt.Fprintln(os.Stderr, "usage: watchtower finish [issue-id] [--allow-no-change] [--json]")
+			os.Exit(2)
+		}
+		worktree, err := os.Getwd()
+		if err != nil {
+			fatal(err)
+		}
+		worktree, err = filepath.Abs(worktree)
+		if err != nil {
+			fatal(err)
+		}
+		c := mustDial(*data, *repoF)
+		defer c.Close()
+		issueID := ""
+		if len(fs.Args()) == 1 {
+			issueID = fs.Args()[0]
+		} else {
+			claim := mustDo(c, proto.Command{Op: "claim_for_worktree", Worktree: worktree})
+			issueID = claim.IssueID
+		}
+		mustDo(c, proto.Command{
+			Op: "finish_claim", IssueID: issueID, Worktree: worktree,
+			AllowNoChange: allowNoChange,
+		})
+		if jsonOut {
+			printJSON(struct {
+				OK      bool   `json:"ok"`
+				IssueID string `json:"issue_id"`
+			}{OK: true, IssueID: issueID})
+			break
+		}
+		fmt.Println("finalization started", issueID)
 	case "status":
 		fs := flag.NewFlagSet("status", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
