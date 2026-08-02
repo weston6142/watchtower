@@ -1142,7 +1142,11 @@ func parseDependencies(value string) []string {
 }
 
 func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
-	m.Focus = focusIssue(m.State, m.stages, issueID, m.retired)
+	requested := requestFocus(m.Focus, m.State, m.stages, issueID, m.retired)
+	if requested.Issue != issueID {
+		return nil
+	}
+	m.Focus = requested
 	m.Detail = nil
 	m.openArtifacts = true
 	if m.Toast != nil {
@@ -1152,7 +1156,11 @@ func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
 }
 
 func (m *Model) openEvidenceFor(issueID string, decisionID int64) tea.Cmd {
-	m.Focus = focusIssue(m.State, m.stages, issueID, m.retired)
+	requested := requestFocus(m.Focus, m.State, m.stages, issueID, m.retired)
+	if requested.Issue != issueID {
+		return nil
+	}
+	m.Focus = requested
 	m.Detail = nil
 	m.Evidence = nil
 	m.EvidenceTitle = issueID

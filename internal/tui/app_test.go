@@ -695,14 +695,58 @@ func TestRetireHidesLaneFromGridAndRestoresItFromShelf(t *testing.T) {
 	if strings.Contains(renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, nil, false, 0, 100, false, m.retired), "GH-1") {
 		t.Fatal("tower still renders the retired lane")
 	}
-	if m.Focus.Issue == "GH-1" {
-		t.Fatal("focus stayed on the retired lane")
+	if m.Focus.Issue != "GH-2" {
+		t.Fatalf("replacement focus = %q, want GH-2", m.Focus.Issue)
 	}
 
 	m = pressKey(t, m, "u")
 	m = pressKey(t, m, "enter")
 	if cards := floorCards(m.State, m.stages, len(m.stages), m.retired); len(cards) != 2 {
 		t.Fatalf("un-retire did not restore the lane: %v", cards)
+	}
+}
+
+func TestUnavailableExplicitFocusPreservesCurrentFocus(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "not renderable", "flow": "default"}),
+		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "focused", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "spec"}),
+	})
+	if m.Focus.Issue != "GH-2" {
+		t.Fatalf("initial focus = %+v, want GH-2", m.Focus)
+	}
+	m = pressKey(t, m, "1")
+	if m.Focus.Issue != "GH-2" {
+		t.Fatalf("invalid numeric target changed focus to %+v", m.Focus)
+	}
+}
+
+func TestRetiringFocusedLaneSelectsFirstRemainingEligibleLane(t *testing.T) {
+	m := retireModel(t)
+	m = pressKey(t, m, "1")
+	m = pressKey(t, m, "c")
+	if m.Focus.Issue != "GH-2" {
+		t.Fatalf("replacement focus = %+v, want GH-2", m.Focus)
+	}
+	m = pressKey(t, m, "c")
+	if m.Focus.Issue != "" {
+		t.Fatalf("final focus = %+v, want empty", m.Focus)
+	}
+}
+
+func TestEmptyFocusReconcilesToStableFirstLane(t *testing.T) {
+	m := NewModel(nil, []string{"spec", "execute"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "first", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "second", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "execute"}),
+	})
+	m.Focus = Focus{}
+	m = m.applyEvents(nil)
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("reconciled focus = %+v, want GH-1", m.Focus)
 	}
 }
 

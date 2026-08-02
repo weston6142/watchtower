@@ -45,6 +45,13 @@ func firstEligibleFocus(st *projection.State, stages []string, retired map[strin
 	return Focus{}
 }
 
+func requestFocus(current Focus, st *projection.State, stages []string, issueID string, retired map[string]bool) Focus {
+	if requested := focusIssue(st, stages, issueID, retired); requested.Issue != "" {
+		return requested
+	}
+	return normalizeFocus(current, st, stages, retired)
+}
+
 func focusIssue(st *projection.State, stages []string, issueID string, retired map[string]bool) Focus {
 	for floor := 1; floor <= len(stages); floor++ {
 		for card, id := range floorCards(st, stages, floor, retired) {
@@ -88,12 +95,12 @@ func moveFocus(f Focus, st *projection.State, stages []string, key string, retir
 				break
 			}
 		}
-		return focusIssue(st, stages, items[(current+1)%len(items)], retired)
+		return requestFocus(f, st, stages, items[(current+1)%len(items)], retired)
 	default:
 		if len(key) == 1 && key >= "1" && key <= "9" {
 			index := int(key[0] - '1')
 			if lanes := visibleOrder(st, retired); index < len(lanes) {
-				return focusIssue(st, stages, lanes[index], retired)
+				return requestFocus(f, st, stages, lanes[index], retired)
 			}
 		}
 	}
