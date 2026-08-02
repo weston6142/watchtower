@@ -19,6 +19,7 @@ import (
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/steward"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
 	"github.com/weston6142/watchtower/internal/workspace"
@@ -1233,6 +1234,77 @@ func TestMergeVerificationHoldPreservesBranchWithoutLanding(t *testing.T) {
 	}
 	if branch := gitOutput(t, repo, "branch", "--list", "issue/"+id); strings.TrimSpace(branch) == "" {
 		t.Fatal("held branch was deleted")
+	}
+}
+
+func TestRetryStageReopensDoneUnmergedIssueAfterRestart(t *testing.T) {
+	e, s, repo := verificationEngine(t, "hold", [][]string{{"true"}}, "")
+	e.cfg.Observers = append(e.cfg.Observers, (&steward.Steward{Store: s}).Observe)
+	f := e.cfg.Flows["default"]
+	f.Stages = append([]flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+	}}, f.Stages...)
+	e.cfg.Flows["default"] = f
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	fake.Scripts["execute/executor"] = runner.Script{}
+
+	id, err := e.CreateIssue("retry held issue", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runsBefore, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := New(e.cfg)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, reopened := restarted.issues[id]; reopened {
+		t.Fatal("rehydration reopened a held issue without an explicit retry")
+	}
+	// This engine test uses the plain GitWorktree provider, which only creates
+	// new issue branches. Branch-preserving reacquisition is covered by the
+	// Treehouse workspace regression test.
+	if out, err := exec.Command("git", "-C", repo, "branch", "-D", "issue/"+id).CombinedOutput(); err != nil {
+		t.Fatalf("remove test issue branch: %v %s", err, out)
+	}
+
+	base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	script := fake.Scripts["merge-verification/merge-verifier"]
+	script.Artifacts["merge-decision.json"] = fmt.Sprintf(
+		`{"decision":"merge","branch_commit":%q,"base_commit":%q}`, base, base)
+	fake.Scripts["merge-verification/merge-verifier"] = script
+
+	if err := restarted.RetryStage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runsAfter, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, run := range runsAfter {
+		counts[run.Stage]++
+	}
+	if len(runsAfter) != len(runsBefore)+1 || counts["execute"] != 1 || counts["merge-verification"] != 2 {
+		t.Fatalf("stage runs after retry = %+v, counts=%v", runsAfter, counts)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := false
+	for _, event := range events {
+		merged = merged || event.IssueID == id && event.Type == core.EvIssueMerged
+	}
+	if !merged {
+		t.Fatal("retried held issue did not merge")
 	}
 }
 

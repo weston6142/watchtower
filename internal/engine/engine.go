@@ -2071,14 +2071,62 @@ func (e *Engine) StartIssue(ctx context.Context, id string) error {
 	return e.startOrWait(ctx, is)
 }
 
+func (e *Engine) loadDoneUnmergedForRetry(issueID string) (*issueState, error) {
+	rows, err := e.cfg.Store.Issues()
+	if err != nil {
+		return nil, err
+	}
+	var found *store.IssueRow
+	for i := range rows {
+		if rows[i].ID == issueID {
+			found = &rows[i]
+			break
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("unknown issue %s", issueID)
+	}
+	if found.State != "done (unmerged)" {
+		return nil, fmt.Errorf("unknown issue %s", issueID)
+	}
+	f, ok := e.cfg.Flows[found.Flow]
+	if !ok {
+		return nil, fmt.Errorf("flow %q no longer configured", found.Flow)
+	}
+	stageIdx, err := finalStageIndex(f)
+	if err != nil {
+		return nil, err
+	}
+	is := &issueState{
+		id: found.ID, title: found.Title, body: found.Body, flowName: found.Flow,
+		matrix: matrixFromStrings(found.Levers), priority: found.Priority,
+		dependsOn: append([]string(nil), found.DependsOn...),
+		stageIdx:  stageIdx, terminal: true,
+	}
+	e.restoreInterruptedWorkspace(is)
+	return is, nil
+}
+
 // RetryStage restarts a terminal issue at the stage that last failed or was
-// killed. Earlier successful stages are not repeated.
+// killed. A persisted unmerged hold is loaded on demand so it stays inert
+// across daemon restarts until the operator explicitly retries it. Earlier
+// successful stages are not repeated.
 func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
 	e.mu.Lock()
 	is, ok := e.issues[issueID]
 	if !ok {
 		e.mu.Unlock()
-		return fmt.Errorf("unknown issue %s", issueID)
+		loaded, err := e.loadDoneUnmergedForRetry(issueID)
+		if err != nil {
+			return err
+		}
+		e.mu.Lock()
+		if existing, exists := e.issues[issueID]; exists {
+			is = existing
+		} else {
+			is = loaded
+			e.issues[issueID] = loaded
+		}
 	}
 	if is.running {
 		e.mu.Unlock()
