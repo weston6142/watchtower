@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,9 +11,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/store"
 )
+
+func TestBacklogClaimReleaseJSON(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	run(t, "git", repo, "init", "-q", "-b", "develop")
+	run(t, "git", repo, "config", "user.email", "test@example.com")
+	run(t, "git", repo, "config", "user.name", "Test")
+	run(t, "git", repo, "add", "-A")
+	run(t, "git", repo, "commit", "-qm", "base")
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "explore", "--body", "full body")))
+
+	var listed struct {
+		Backlog []proto.BacklogItem `json:"backlog"`
+		Claims  []engine.Claim      `json:"claims"`
+	}
+	if out := run(t, bin, repo, "backlog", "--data", base, "--json"); json.Unmarshal([]byte(out), &listed) != nil {
+		t.Fatalf("backlog --json = %q", out)
+	}
+	if len(listed.Backlog) != 1 || listed.Backlog[0].Issue.ID != id {
+		t.Fatalf("backlog JSON = %+v", listed)
+	}
+	var claim engine.Claim
+	if out := run(t, bin, repo, "claim", "--data", base, id, "--json"); json.Unmarshal([]byte(out), &claim) != nil {
+		t.Fatalf("claim --json = %q", out)
+	}
+	if claim.IssueID != id || claim.Branch != "issue/"+id {
+		t.Fatalf("claim JSON = %+v", claim)
+	}
+	run(t, bin, repo, "release", "--data", base, id, "--json")
+}
 
 // buildBinary compiles watchtower once into a temp dir.
 func buildBinary(t *testing.T) string {

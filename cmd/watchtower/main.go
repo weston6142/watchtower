@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -48,7 +49,7 @@ func main() {
 		fatal(err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|reset|repos|tower|new|backlog|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|reset|repos|tower|new|backlog|claim|release|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -181,10 +182,15 @@ func main() {
 		fs := flag.NewFlagSet("decisions", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		jsonOut := fs.Bool("json", false, "emit JSON")
 		fs.Parse(args)
 		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_decisions"})
+		if *jsonOut {
+			printJSON(r.Decisions)
+			break
+		}
 		for _, d := range r.Decisions {
 			fmt.Print(formatDecision(d))
 		}
@@ -265,10 +271,15 @@ func main() {
 		fs := flag.NewFlagSet("issues", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		jsonOut := fs.Bool("json", false, "emit JSON")
 		fs.Parse(args)
 		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "list_issues"})
+		if *jsonOut {
+			printJSON(r.Issues)
+			break
+		}
 		for _, issue := range r.Issues {
 			fmt.Printf("%s  %s  %s\n", issue.ID, issue.State, issue.Title)
 		}
@@ -276,9 +287,18 @@ func main() {
 		fs := flag.NewFlagSet("backlog", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		jsonOut := fs.Bool("json", false, "emit JSON")
 		fs.Parse(args)
 		c := mustDial(*data, *repoF)
 		defer c.Close()
+		if *jsonOut {
+			r := mustDo(c, proto.Command{Op: "list_backlog"})
+			printJSON(struct {
+				Backlog []proto.BacklogItem `json:"backlog"`
+				Claims  []engine.Claim      `json:"claims"`
+			}{Backlog: r.Backlog, Claims: r.Claims})
+			break
+		}
 		r := mustDo(c, proto.Command{Op: "list_issues"})
 		for _, issue := range r.Issues {
 			if issue.State != "backlog" {
@@ -291,14 +311,53 @@ func main() {
 			fmt.Printf("%s  %-7s  %s  %s%s\n",
 				issue.ID, priority.Label(issue.Priority), issue.Flow, issue.Title, dependencySuffix)
 		}
+	case "claim", "release":
+		filtered, jsonOut := removeFlag(args, "--json")
+		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		fs.Parse(filtered)
+		if len(fs.Args()) != 1 {
+			fmt.Fprintf(os.Stderr, "usage: watchtower %s <issue-id> [--json]\n", cmd)
+			os.Exit(2)
+		}
+		c := mustDial(*data, *repoF)
+		defer c.Close()
+		issueID := fs.Args()[0]
+		op := "claim_issue"
+		if cmd == "release" {
+			op = "release_claim"
+		}
+		r := mustDo(c, proto.Command{Op: op, IssueID: issueID})
+		if jsonOut {
+			if cmd == "claim" {
+				printJSON(r.Claim)
+			} else {
+				printJSON(struct {
+					OK      bool   `json:"ok"`
+					IssueID string `json:"issue_id"`
+				}{OK: true, IssueID: issueID})
+			}
+			break
+		}
+		if cmd == "claim" {
+			fmt.Printf("claimed %s  %s  %s\n", issueID, r.Claim.Branch, r.Claim.Worktree)
+		} else {
+			fmt.Println("released", issueID)
+		}
 	case "status":
 		fs := flag.NewFlagSet("status", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		jsonOut := fs.Bool("json", false, "emit JSON")
 		fs.Parse(args)
 		c := mustDial(*data, *repoF)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "overview"})
+		if *jsonOut {
+			printJSON(r.Overview)
+			break
+		}
 		fmt.Println(statusSentence(r.Overview))
 	case "pause", "resume", "kill", "retry", "abandon", "launch":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
@@ -733,6 +792,27 @@ func statusSentence(o *proto.Overview) string {
 	return fmt.Sprintf("%s●%s %s — %d building, %d shipped today · %s tokens%s",
 		color, reset, strings.Join(attention, ", "), o.Building, o.ShippedToday,
 		formatTokens(o.TokensTotal), cost)
+}
+
+func printJSON(value any) {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(value); err != nil {
+		fatal(err)
+	}
+}
+
+func removeFlag(args []string, target string) ([]string, bool) {
+	filtered := make([]string, 0, len(args))
+	found := false
+	for _, arg := range args {
+		if arg == target {
+			found = true
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	return filtered, found
 }
 
 func formatTokens(tokens int) string {

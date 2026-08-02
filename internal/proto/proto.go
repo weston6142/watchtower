@@ -43,6 +43,9 @@ type Response struct {
 	Decisions  []engine.PendingDecision `json:"decisions,omitempty"`
 	Proposals  []store.ProposalRow      `json:"proposals,omitempty"`
 	Issues     []store.IssueRow         `json:"issues,omitempty"`
+	Backlog    []BacklogItem            `json:"backlog,omitempty"`
+	Claims     []engine.Claim           `json:"claims,omitempty"`
+	Claim      *engine.Claim            `json:"claim,omitempty"`
 	Events     []core.Event             `json:"events,omitempty"`
 	Lines      []string                 `json:"lines,omitempty"`
 	Overview   *Overview                `json:"overview,omitempty"`
@@ -50,6 +53,18 @@ type Response struct {
 	FlowStages []string                 `json:"flow_stages,omitempty"`
 	Arch       *archmap.Map             `json:"arch,omitempty"`
 	Setup      *SetupView               `json:"setup,omitempty"`
+}
+
+type AttachmentSummary struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+type BacklogItem struct {
+	Issue       store.IssueRow      `json:"issue"`
+	Attachments []AttachmentSummary `json:"attachments,omitempty"`
+	Claimable   bool                `json:"claimable"`
+	BlockedBy   []string            `json:"blocked_by,omitempty"`
 }
 
 type Overview struct {

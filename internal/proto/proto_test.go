@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,11 +15,14 @@ import (
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/steward"
 	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/workspace"
 )
 
 func TestSetupOutlineReportsShippedSequentialWorkflow(t *testing.T) {
@@ -330,6 +334,69 @@ func TestBacklogOps(t *testing.T) {
 	r, _ = c.Do(Command{Op: "launch_issue", IssueID: id})
 	if r.OK {
 		t.Fatal("second launch succeeded")
+	}
+}
+
+func TestClaimProtocolReturnsStructuredReadyBlockedAndResumableTasks(t *testing.T) {
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "-q", "-b", "develop")
+	git("config", "user.email", "test@example.com")
+	git("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "README.md")
+	git("commit", "-qm", "base")
+
+	st, err := store.Open("file:claim-protocol?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	fl := flow.Flow{Name: "default", Stages: []flow.Stage{{Name: "merge-verification"}}}
+	eng := engine.New(engine.Config{
+		Store: st, Runner: &runner.FakeRunner{}, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{"default": fl}, DataDir: t.TempDir(),
+		Workspace: workspace.GitWorktree{Repo: repo}, Train: &marshal.Train{Repo: repo},
+		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
+	})
+	parent, _ := eng.DraftIssue("ready", "full body", "default", "regular", levers.Matrix{}, 2, nil)
+	child, _ := eng.DraftIssue("blocked", "", "default", "regular", levers.Matrix{}, 1, nil)
+	if err := eng.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(eng, st)
+
+	listed := srv.exec(Command{Op: "list_backlog"})
+	if !listed.OK || len(listed.Backlog) != 2 || len(listed.Claims) != 0 {
+		t.Fatalf("list_backlog = %+v", listed)
+	}
+	byID := map[string]BacklogItem{}
+	for _, item := range listed.Backlog {
+		byID[item.Issue.ID] = item
+	}
+	if !byID[parent].Claimable || byID[parent].Issue.Body != "full body" ||
+		byID[child].Claimable || len(byID[child].BlockedBy) != 1 || byID[child].BlockedBy[0] != parent {
+		t.Fatalf("backlog items = %+v", byID)
+	}
+	claimed := srv.exec(Command{Op: "claim_issue", IssueID: parent})
+	if !claimed.OK || claimed.Claim == nil || claimed.Claim.IssueID != parent {
+		t.Fatalf("claim_issue = %+v", claimed)
+	}
+	listed = srv.exec(Command{Op: "list_backlog"})
+	if len(listed.Claims) != 1 || listed.Claims[0].IssueID != parent {
+		t.Fatalf("resumable claims = %+v", listed.Claims)
+	}
+	released := srv.exec(Command{Op: "release_claim", IssueID: parent})
+	if !released.OK {
+		t.Fatalf("release_claim = %+v", released)
 	}
 }
 

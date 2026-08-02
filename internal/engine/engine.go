@@ -963,6 +963,10 @@ func (e *Engine) unmetMergedDependencies(issueID string) ([]string, error) {
 	return unmet, nil
 }
 
+func (e *Engine) ClaimBlockers(issueID string) ([]string, error) {
+	return e.unmetMergedDependencies(issueID)
+}
+
 func (e *Engine) ReleaseClaim(id string) error {
 	e.mu.Lock()
 	is, ok := e.issues[id]
