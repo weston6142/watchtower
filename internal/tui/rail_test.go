@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/evidence"
@@ -193,6 +194,21 @@ func TestRenderRailFocusV2(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestDetailRailShowsPreservedNonIntegratedWork(t *testing.T) {
+	detail := &proto.IssueDetail{
+		Issue:            store.IssueRow{ID: "GH-1", State: "done (unmerged)"},
+		IntegrationState: store.IntegrationPreserved,
+		Branch:           "issue/GH-1",
+		Worktree:         "/tmp/GH-1",
+	}
+	plain := ansi.Strip(renderRail(nil, map[string]Identity{}, detail, 80))
+	for _, want := range []string{"preserved", "issue/GH-1", "/tmp/GH-1"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("detail rail missing %q:\n%s", want, plain)
 		}
 	}
 }

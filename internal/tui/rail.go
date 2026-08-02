@@ -11,6 +11,7 @@ import (
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func boundedLines(lines []string, width int) string {
@@ -79,6 +80,12 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 		}
 		if det.Issue.State == "cleanup_needed" {
 			lines = append(lines, "cleanup needed: "+strings.Join(det.Cleanup, ", "))
+		}
+		if det.IntegrationState == store.IntegrationPreserved {
+			lines = append(lines,
+				"preserved: "+det.Branch,
+				"worktree: "+det.Worktree,
+			)
 		}
 		if det.Budget > 0 {
 			percent := det.Tokens * 100 / det.Budget

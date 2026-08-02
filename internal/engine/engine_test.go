@@ -452,8 +452,9 @@ func TestWorktreeAcquiredOnceAndReleased(t *testing.T) {
 	if err := <-errC; err != nil {
 		t.Fatal(err)
 	}
-	// default.yaml has two worktree stages (execute, review) — one acquire, one release
-	if ws.acquired != 1 || ws.released != 1 {
+	// The worktree is acquired once across both stages. Its produced artifacts
+	// are changed work, so a zero-barrier flow preserves rather than releases it.
+	if ws.acquired != 1 || ws.released != 0 {
 		t.Fatalf("acquired=%d released=%d", ws.acquired, ws.released)
 	}
 	evs, _ := s.EventsSince(0)
@@ -1654,17 +1655,142 @@ func TestRehydrateAutomaticallyResumesVerifiedFinalization(t *testing.T) {
 type countingGitWorktree struct {
 	repo     string
 	acquired int
+	releases int
 }
 
 func (w *countingGitWorktree) Acquire(issueID string) (string, func() error, error) {
 	w.acquired++
-	return (workspace.GitWorktree{Repo: w.repo}).Acquire(issueID)
+	path, release, err := (workspace.GitWorktree{Repo: w.repo}).Acquire(issueID)
+	if err != nil {
+		return "", nil, err
+	}
+	return path, func() error {
+		w.releases++
+		return release()
+	}, nil
 }
 
 func (w *countingGitWorktree) Name() string { return "counting git worktree" }
 
 func (w *countingGitWorktree) ReleasePath(path string) error {
+	w.releases++
 	return (workspace.GitWorktree{Repo: w.repo}).ReleasePath(path)
+}
+
+func engineForFlow(
+	t *testing.T, ws workspace.Provider, f flow.Flow, r runner.Runner,
+) (*Engine, *store.Store) {
+	t.Helper()
+	return newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.Workspace = ws
+	})
+}
+
+func hasCompletionPayload(
+	t *testing.T, s *store.Store, issueID, merge, worktree string,
+) bool {
+	t.Helper()
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.IssueID != issueID || event.Type != core.EvIssueCompleted {
+			continue
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload["merge"] == merge && payload["worktree"] == worktree
+	}
+	return false
+}
+
+func TestFlowWithoutBarrierReleasesUnchangedWorkspaceWithoutMerging(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	ws := &countingGitWorktree{repo: repo}
+	f := flow.Flow{Name: "research", Stages: []flow.Stage{{
+		Name: "inspect", Agents: []flow.AgentRef{{Package: "explorer"}},
+		Workspace: "worktree", Gate: flow.GateAuto,
+	}}}
+	e, s := engineForFlow(t, ws, f, &runner.FakeRunner{
+		Scripts: map[string]runner.Script{"inspect/explorer": {}},
+	})
+	id, err := e.CreateIssue("inspect", "", "research", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD")); head != base {
+		t.Fatalf("non-integrating flow moved default branch: %s -> %s", base, head)
+	}
+	if ws.releases != 1 {
+		t.Fatalf("workspace releases = %d", ws.releases)
+	}
+	if _, ok, err := s.IssueIntegration(id); err != nil || ok {
+		t.Fatalf("unchanged integration row exists: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestFlowWithoutBarrierPreservesChangedWorkspaceAndReportsIdentity(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("committed=%t", committed), func(t *testing.T) {
+			repo := t.TempDir()
+			initGitRepo(t, repo)
+			base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+			ws := &countingGitWorktree{repo: repo}
+			run := &runner.FakeRunner{Scripts: map[string]runner.Script{"explore/researcher": {}}}
+			run.OnStart = func(_, _, _, workdir string) error {
+				if err := os.WriteFile(filepath.Join(workdir, "finding.md"), []byte("finding\n"), 0o644); err != nil {
+					return err
+				}
+				if !committed {
+					return nil
+				}
+				for _, args := range [][]string{{"add", "finding.md"}, {"commit", "-qm", "record finding"}} {
+					if output, err := exec.Command("git", append([]string{"-C", workdir}, args...)...).CombinedOutput(); err != nil {
+						return fmt.Errorf("git %v: %v: %s", args, err, output)
+					}
+				}
+				return nil
+			}
+			f := flow.Flow{Name: "research", Stages: []flow.Stage{{
+				Name: "explore", Agents: []flow.AgentRef{{Package: "researcher"}},
+				Workspace: "worktree", Gate: flow.GateAuto,
+			}}}
+			e, s := engineForFlow(t, ws, f, run)
+			id, err := e.CreateIssue("research", "", "research", levers.Matrix{}, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.StartIssue(context.Background(), id); err != nil {
+				t.Fatal(err)
+			}
+			if head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD")); head != base {
+				t.Fatalf("non-integrating flow moved default branch: %s -> %s", base, head)
+			}
+			integration, ok, err := s.IssueIntegration(id)
+			if err != nil || !ok || integration.State != store.IntegrationPreserved ||
+				integration.Worktree == "" || integration.Branch != "issue/"+id {
+				t.Fatalf("preserved integration = %+v ok %v err %v", integration, ok, err)
+			}
+			if _, err := os.Stat(integration.Worktree); err != nil {
+				t.Fatalf("preserved worktree: %v", err)
+			}
+			if ws.releases != 0 {
+				t.Fatalf("preserved workspace was released %d times", ws.releases)
+			}
+			if !hasCompletionPayload(t, s, id, "left-unmerged", integration.Worktree) {
+				t.Fatal("completion did not expose preserved work")
+			}
+		})
+	}
 }
 
 type conflictFlowRunner struct {
@@ -2321,10 +2447,7 @@ func (w *failOnceReleaseWorkspace) Name() string { return "fail-once worktree" }
 func TestMergedCleanupFailureIsDurableAndRetryDoesNotReland(t *testing.T) {
 	repo := t.TempDir()
 	initGitRepo(t, repo)
-	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
-		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
-		Gate: flow.GateAuto, Workspace: "worktree", Completion: flow.CompletionAll,
-	}}}
+	f := verificationFlow()
 	s, err := store.Open("file:cleanup-retry?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatal(err)
@@ -2333,7 +2456,9 @@ func TestMergedCleanupFailureIsDurableAndRetryDoesNotReland(t *testing.T) {
 	ws := &failOnceReleaseWorkspace{delegate: workspace.GitWorktree{Repo: repo}}
 	e := New(Config{
 		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
-			"execute/executor": {},
+			"merge-verification/merge-verifier": {Artifacts: map[string]string{
+				"merge-report.md": "", "merge-decision.json": "", "verification.json": "",
+			}},
 		}},
 		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
 		DataDir: t.TempDir(), Workspace: ws, Train: &marshal.Train{Repo: repo},

@@ -160,6 +160,7 @@ const (
 	IntegrationPublishPending    = "publish_pending"
 	IntegrationCleanupNeeded     = "cleanup_needed"
 	IntegrationMerged            = "merged"
+	IntegrationPreserved         = "preserved"
 )
 
 type IssueIntegration struct {

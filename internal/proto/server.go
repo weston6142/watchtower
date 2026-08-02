@@ -355,6 +355,8 @@ func (sv *Server) exec(cmd Command) Response {
 			Model: model, Effort: effort,
 			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf, Budget: sv.budget, Levers: issue.Levers,
 			Cleanup: integration.Cleanup, Dollars: float64(tokens) / 1_000_000 * sv.pricePerMTok,
+			IntegrationState: integration.State,
+			Worktree:         integration.Worktree, Branch: integration.Branch,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

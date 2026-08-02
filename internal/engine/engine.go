@@ -1932,7 +1932,8 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 		is.activeTouchset = nil
 		release := is.wsRelease
 		preserveExternal := aborted && is.externalSession
-		if !preserveExternal {
+		preserveIdentity := preserveWorkspace || preserveExternal
+		if !preserveIdentity {
 			is.wsRelease = nil
 			is.wsPath = ""
 			is.branch = ""
@@ -2011,6 +2012,15 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			return err
 		}
 	}
+	if _, _, integrating := f.IntegrationStage(); !integrating {
+		var err error
+		preserveWorkspace, err = e.completeWithoutIntegration(is)
+		if err != nil {
+			return err
+		}
+		aborted = false
+		return nil
+	}
 	if _, _, integrating := f.IntegrationStage(); integrating {
 		decision, receipt, err := e.finalVerificationDecision(is)
 		if err != nil {
@@ -2034,6 +2044,43 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 	}
 	aborted = false
 	return nil
+}
+
+func (e *Engine) completeWithoutIntegration(is *issueState) (bool, error) {
+	if is.wsPath == "" || is.branch == "" {
+		e.emit(core.EvIssueCompleted, is.id, map[string]string{"merge": "none"})
+		return false, nil
+	}
+	head, err := gitRevision(is.wsPath, "HEAD")
+	if err != nil {
+		return false, err
+	}
+	_, _, dirty := repositoryState(is.wsPath, nil)
+	if !dirty && head == is.baseRef {
+		if is.wsRelease != nil {
+			if err := is.wsRelease(); err != nil {
+				return false, err
+			}
+			is.wsRelease = nil
+		}
+		if e.cfg.Train != nil {
+			if err := e.cfg.Train.DeleteBranch(is.branch); err != nil {
+				return false, err
+			}
+		}
+		e.emit(core.EvIssueCompleted, is.id, map[string]string{"merge": "none"})
+		return false, nil
+	}
+	if err := e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
+		IssueID: is.id, State: store.IntegrationPreserved, PreSHA: is.baseRef,
+		Worktree: is.wsPath, Branch: is.branch,
+	}); err != nil {
+		return false, err
+	}
+	e.emit(core.EvIssueCompleted, is.id, map[string]string{
+		"merge": "left-unmerged", "branch": is.branch, "worktree": is.wsPath,
+	})
+	return true, nil
 }
 
 func (e *Engine) finalVerificationDecision(

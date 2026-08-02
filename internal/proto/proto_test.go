@@ -772,6 +772,28 @@ func TestIssueDetailReportsPackageModelNotAgentRefOverride(t *testing.T) {
 	}
 }
 
+func TestIssueDetailExposesPreservedWork(t *testing.T) {
+	c, s := newConfigClient(t, oneAgentFlow("agent"), overridePackages(), RepoSetup{})
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: "GH-1", Title: "research", State: "done (unmerged)", Flow: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetIssueIntegration(store.IssueIntegration{
+		IssueID: "GH-1", State: store.IntegrationPreserved,
+		Worktree: "/tmp/GH-1", Branch: "issue/GH-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := c.Do(Command{Op: "issue_detail", IssueID: "GH-1"})
+	if err != nil || !response.OK || response.Detail == nil ||
+		response.Detail.IntegrationState != store.IntegrationPreserved ||
+		response.Detail.Worktree != "/tmp/GH-1" ||
+		response.Detail.Branch != "issue/GH-1" {
+		t.Fatalf("detail = %+v err=%v", response.Detail, err)
+	}
+}
+
 // reviewFlow mirrors the shape of .watchtower/flows/default.yaml's review
 // stage: three agents, parallel, heavy, worktree. A stage→one-package model is
 // wrong and this is the fixture that proves it.

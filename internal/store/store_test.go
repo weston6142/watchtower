@@ -72,6 +72,19 @@ func TestIssueIntegrationLifecycle(t *testing.T) {
 		got.Worktree != "/tmp/GH-1" || got.Branch != "issue/GH-1" {
 		t.Fatalf("ready integration = %+v ok %v err %v", got, ok, err)
 	}
+	preserved := IssueIntegration{
+		IssueID: "GH-1", State: IntegrationPreserved, PreSHA: "preserved-base",
+		Worktree: "/tmp/preserved-GH-1", Branch: "issue/GH-1",
+	}
+	if err := s.SetIssueIntegration(preserved); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err = s.IssueIntegration("GH-1")
+	if err != nil || !ok || got.State != IntegrationPreserved ||
+		got.PreSHA != preserved.PreSHA || got.Worktree != preserved.Worktree ||
+		got.Branch != preserved.Branch {
+		t.Fatalf("preserved integration = %+v ok %v err %v", got, ok, err)
+	}
 
 	pending := IssueIntegration{
 		IssueID: "GH-1", State: IntegrationPublishPending, BaseBranch: "main",
