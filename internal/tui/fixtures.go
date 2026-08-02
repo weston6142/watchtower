@@ -20,7 +20,7 @@ import (
 
 // FixtureFlows lists every posable flow, in spec order.
 func FixtureFlows() []string {
-	return []string{"floor", "rows", "decision", "decisions-door", "tray", "modal", "backlog", "backlog-long", "levers", "arch", "pager", "help", "stream", "stream-long", "setup"}
+	return []string{"floor", "rows", "decision", "decision-editor", "decisions-door", "tray", "modal", "backlog", "backlog-long", "levers", "arch", "pager", "help", "stream", "stream-long", "setup"}
 }
 
 // fixtureNow is the fixed instant every fixture timestamp hangs off. Midday and
@@ -239,6 +239,13 @@ func FixtureModel(flowName string, width, height int) Model {
 	case "decision":
 		d := m.State.Decisions[1]
 		m.Toast = &d
+	case "decision-editor":
+		d := m.State.Decisions[1]
+		m.Toast = &d
+		m.decisionEditor = &decisionEditor{
+			DecisionID: d.ID,
+			Value:      "Local git repo plus a hosted GitHub remote, pushed",
+		}
 	case "decisions-door":
 		m.modes = []string{"decisions"}
 	case "tray":

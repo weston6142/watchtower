@@ -267,7 +267,7 @@ func renderDecisionEditor(d projection.DecisionView, editor decisionEditor, widt
 		value = "…"
 	}
 	content := strings.Join([]string{
-		d.Question,
+		strings.Join(wrapIndent(d.Question, inner, ""), "\n"),
 		"",
 		lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 			BorderForeground(activeTheme.Accent).Padding(0, 1).Width(inner - 4).
