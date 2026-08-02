@@ -1,0 +1,326 @@
+package main_test
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/repocfg"
+)
+
+type e2eOptions struct {
+	mode string
+}
+
+type flowE2E struct {
+	t      *testing.T
+	bin    string
+	root   string
+	base   string
+	repo   string
+	remote string
+	lanes  string
+	log    string
+}
+
+func newFlowE2E(t *testing.T, options e2eOptions) *flowE2E {
+	t.Helper()
+	t.Setenv("TMPDIR", "/tmp")
+	root, err := os.MkdirTemp("/tmp", "watchtower-flow-e2e-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &flowE2E{
+		t: t, bin: buildBinary(t), root: root,
+		base: filepath.Join(root, "data"), repo: filepath.Join(root, "repo"),
+		remote: filepath.Join(root, "origin.git"), lanes: filepath.Join(root, "lanes"),
+		log: filepath.Join(root, "treehouse.log"),
+	}
+	for _, dir := range []string{h.base, h.repo, h.remote, h.lanes, filepath.Join(root, "bin")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.git(h.repo, "init", "-q", "-b", "main")
+	h.git(h.repo, "config", "user.email", "test@example.com")
+	h.git(h.repo, "config", "user.name", "Test")
+	verify := "#!/bin/sh\nset -eu\ntest \"$(cat feature.txt)\" = delivered\n"
+	if err := os.WriteFile(filepath.Join(h.repo, "verify-e2e.sh"), []byte(verify), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.git(h.repo, "add", "verify-e2e.sh")
+	h.git(h.repo, "commit", "-qm", "base")
+	h.git(h.remote, "init", "--bare", "-q")
+	h.git(h.repo, "remote", "add", "origin", h.remote)
+	h.git(h.repo, "push", "-qu", "origin", "main")
+	run(t, h.bin, h.repo, "init", "--data", h.base)
+	h.writeSyntheticFlow(options)
+	h.installTreehouseShim(options)
+	h.installCodexShim(options)
+	t.Setenv("PATH", filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WT_E2E_REPO", h.repo)
+	t.Setenv("WT_E2E_LANES", h.lanes)
+	t.Setenv("WT_E2E_LOG", h.log)
+	t.Setenv("WT_E2E_MODE", options.mode)
+	t.Cleanup(func() {
+		stopDaemons(h.base)
+		_ = os.RemoveAll(root)
+	})
+	return h
+}
+
+func (h *flowE2E) git(dir string, args ...string) string {
+	h.t.Helper()
+	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	body, err := command.CombinedOutput()
+	if err != nil {
+		h.t.Fatalf("git -C %s %s: %v: %s", dir, strings.Join(args, " "), err, body)
+	}
+	return string(body)
+}
+
+func (h *flowE2E) createIssue(title string) string {
+	h.t.Helper()
+	id := strings.TrimSpace(lastLine(run(h.t, h.bin, h.repo, "new", "--data", h.base,
+		"--draft", "--flow", "synthetic", "--title", title)))
+	run(h.t, h.bin, h.repo, "launch", "--data", h.base, id)
+	return id
+}
+
+func (h *flowE2E) socketPath() string {
+	return filepath.Join(repocfg.RepoDataDir(h.base, h.repo), "watchtower.sock")
+}
+
+func (h *flowE2E) tryIssueDetail(issueID string) (*proto.IssueDetail, error) {
+	client, err := proto.Dial(h.socketPath())
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	response, err := client.Do(proto.Command{Op: "issue_detail", IssueID: issueID})
+	if err != nil {
+		return nil, err
+	}
+	if !response.OK || response.Detail == nil {
+		return nil, fmt.Errorf("issue detail: %s", response.Error)
+	}
+	return response.Detail, nil
+}
+
+func (h *flowE2E) issueDetail(issueID string) *proto.IssueDetail {
+	h.t.Helper()
+	detail, err := h.tryIssueDetail(issueID)
+	if err != nil {
+		h.t.Fatalf("issue detail %s: %v\n%s", issueID, err, h.diagnostics(issueID))
+	}
+	return detail
+}
+
+func (h *flowE2E) waitForIssueState(issueID, state string, timeout time.Duration) {
+	h.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if detail, err := h.tryIssueDetail(issueID); err == nil && detail.Issue.State == state {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	h.t.Fatalf("issue %s did not reach %q\n%s", issueID, state, h.diagnostics(issueID))
+}
+
+func (h *flowE2E) diagnostics(issueID string) string {
+	var out strings.Builder
+	for _, args := range [][]string{
+		{"issues", "--data", h.base, "--json"},
+		{"tail", "--data", h.base},
+	} {
+		command := exec.Command(h.bin, args...)
+		command.Dir = h.repo
+		body, err := command.CombinedOutput()
+		fmt.Fprintf(&out, "watchtower %s (err=%v):\n%s\n", strings.Join(args, " "), err, body)
+	}
+	for _, args := range [][]string{
+		{"status", "--short", "--branch"},
+		{"branch", "-avv"},
+		{"worktree", "list", "--porcelain"},
+		{"log", "--oneline", "--decorate", "-12"},
+	} {
+		command := exec.Command("git", append([]string{"-C", h.repo}, args...)...)
+		body, err := command.CombinedOutput()
+		fmt.Fprintf(&out, "git %s (err=%v):\n%s\n", strings.Join(args, " "), err, body)
+	}
+	logs, _ := filepath.Glob(filepath.Join(h.base, "repos", "*", "daemon.log"))
+	for _, path := range logs {
+		body, _ := os.ReadFile(path)
+		fmt.Fprintf(&out, "%s:\n%s\n", path, tailBytes(body, 16<<10))
+	}
+	if issueID != "" {
+		fmt.Fprintf(&out, "issue: %s\n", issueID)
+	}
+	return out.String()
+}
+
+func tailBytes(body []byte, limit int) string {
+	if len(body) > limit {
+		body = body[len(body)-limit:]
+	}
+	return string(body)
+}
+
+func (h *flowE2E) writeSyntheticFlow(_ e2eOptions) {
+	h.t.Helper()
+	flowBody := `name: synthetic
+stages:
+  - name: prepare-input
+    agents: [{package: preparer}]
+    workspace: worktree
+    gate: auto
+    artifacts: [prepared.txt]
+  - name: change-repository
+    agents: [{package: changer}]
+    workspace: worktree
+    gate: auto
+  - name: integrate-safely
+    agents: [{package: integrator}]
+    workspace: worktree
+    gate: auto
+    merge_barrier: true
+    artifacts: [merge-report.md, merge-decision.json, verification.json]
+`
+	watchtower := filepath.Join(h.repo, ".watchtower")
+	if err := os.WriteFile(filepath.Join(watchtower, "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	config := fmt.Sprintf(`runner: codex
+codex_bin: %s
+codex_model: test-model
+codex_effort: low
+test_cmd: ./verify-e2e.sh
+pull: false
+push: true
+`, filepath.Join(h.root, "bin", "codex-e2e"))
+	if err := os.WriteFile(filepath.Join(watchtower, "config.yaml"), []byte(config), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	for _, name := range []string{"preparer", "changer", "integrator"} {
+		dir := filepath.Join(watchtower, "packages", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			h.t.Fatal(err)
+		}
+		packageBody := "allowed_tools: [Bash, Read, Write]\neffort: low\n"
+		if err := os.WriteFile(filepath.Join(dir, "package.yaml"), []byte(packageBody), 0o644); err != nil {
+			h.t.Fatal(err)
+		}
+		prompt := "Follow STAGE.md and produce only the declared outputs.\n"
+		if err := os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o644); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
+func (h *flowE2E) installTreehouseShim(_ e2eOptions) {
+	h.t.Helper()
+	body := `#!/bin/sh
+set -eu
+
+case "$1" in
+  get)
+    holder=""
+    shift
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--lease-holder" ]; then
+        holder="$2"
+        shift 2
+      else
+        shift
+      fi
+    done
+    lane="$WT_E2E_LANES/$holder"
+    git -C "$WT_E2E_REPO" worktree add -q --detach "$lane" HEAD
+    printf 'get %s\n' "$lane" >> "$WT_E2E_LOG"
+    printf '%s\n' "$lane"
+    ;;
+  return)
+    shift
+    if [ "${1:-}" = "--force" ]; then shift; fi
+    lane="$1"
+    if [ "${WT_E2E_MODE:-}" = "cleanup-fail-once" ] && [ ! -f "$WT_E2E_LANES/.return-failed" ]; then
+      touch "$WT_E2E_LANES/.return-failed"
+      exit 1
+    fi
+    git -C "$WT_E2E_REPO" worktree remove --force "$lane"
+    printf 'return %s\n' "$lane" >> "$WT_E2E_LOG"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+`
+	h.writeExecutable(filepath.Join(h.root, "bin", "treehouse"), body)
+}
+
+func (h *flowE2E) installCodexShim(_ e2eOptions) {
+	h.t.Helper()
+	body := `#!/bin/sh
+set -eu
+
+stage=$(sed -n 's/^- Stage: //p' STAGE.md | head -1)
+base=$(sed -n 's/^- Base commit: //p' STAGE.md | head -1)
+
+case "$stage" in
+  prepare-input)
+    printf 'prepared\n' > prepared.txt
+    ;;
+  change-repository)
+    printf 'delivered\n' > feature.txt
+    git add feature.txt
+    git commit -qm 'test: deliver synthetic change'
+    ;;
+  integrate-safely)
+    ./verify-e2e.sh
+    branch=$(git rev-parse HEAD)
+    tree=$(git rev-parse 'HEAD^{tree}')
+    printf 'verification passed\n' > merge-report.md
+    printf '{"decision":"merge","branch_commit":"%s","base_commit":"%s"}\n' "$branch" "$base" > merge-decision.json
+    printf '{"base_sha":"%s","branch_sha":"%s","tree_sha":"%s","passed":true,"commands":[["./verify-e2e.sh"]]}\n' "$base" "$branch" "$tree" > verification.json
+    ;;
+  *)
+    printf 'unexpected stage %s\n' "$stage" >&2
+    exit 3
+    ;;
+esac
+
+safe_stage=$(printf '%s' "$stage" | tr -cd 'A-Za-z0-9_-')
+printf '{"type":"thread.started","thread_id":"thr-%s"}\n' "$safe_stage"
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"synthetic stage complete"}}\n'
+printf '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n'
+`
+	h.writeExecutable(filepath.Join(h.root, "bin", "codex-e2e"), body)
+}
+
+func (h *flowE2E) writeExecutable(path, body string) {
+	h.t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *flowE2E) treehouseReturnCount() int {
+	body, _ := os.ReadFile(h.log)
+	count := 0
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, "return ") {
+			count++
+		}
+	}
+	return count
+}
+
+func (h *flowE2E) leasedWorktree(issueID string) string {
+	return filepath.Join(h.lanes, issueID)
+}
