@@ -493,11 +493,20 @@ func runReset(args []string) error {
 			return err
 		}
 	}
+	currentConfig, err := repocfg.Load(repo)
+	if err != nil {
+		return err
+	}
 	prepared, err := scaffold.PrepareReset(repo)
 	if err != nil {
 		return err
 	}
 	defer prepared.Cancel()
+	if currentConfig.TestCmd != "" {
+		if err := prepared.SetTestCommand(currentConfig.TestCmd); err != nil {
+			return err
+		}
+	}
 
 	if !*yes {
 		fmt.Fprint(os.Stdout, "Replace .watchtower with the current defaults? [y/N] ")
@@ -668,6 +677,11 @@ func runDaemon(args []string) {
 	}
 	if len(flows) == 0 {
 		fatal(fmt.Errorf("no flows found in %s (configured in %s)", *flowsDir, repocfg.ConfigPath(repo)))
+	}
+	for _, configuredFlow := range flows {
+		if err := configuredFlow.ValidateIntegration(testArgv); err != nil {
+			fatal(err)
+		}
 	}
 	if os.Getenv("WATCHTOWER_FAKE") == "1" {
 		*runnerKind = "fake"

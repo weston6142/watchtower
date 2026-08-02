@@ -64,7 +64,7 @@ func TestFinishClaimMergesPushesMarksDoneAndCleansWorkspace(t *testing.T) {
 	run(t, "git", repo, "config", "user.email", "test@example.com")
 	run(t, "git", repo, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "config.yaml"),
-		[]byte("runner: fake\npull: false\npush: true\n"), 0o644); err != nil {
+		[]byte("runner: fake\ntest_cmd: true\npull: false\npush: true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	run(t, "git", repo, "add", "-A")
@@ -211,7 +211,7 @@ func initRepo(t *testing.T, bin, base string) string {
 	repo := t.TempDir()
 	run(t, bin, repo, "init", "--data", base)
 	cfg := filepath.Join(repo, ".watchtower", "config.yaml")
-	if err := os.WriteFile(cfg, []byte("runner: fake\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("runner: fake\ntest_cmd: true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return repo
@@ -439,7 +439,7 @@ func TestResetReplacesWatchtowerTreeAndRestartsDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := filepath.Join(repo, ".watchtower", "config.yaml")
-	if err := os.WriteFile(config, []byte("runner: fake\nslots: 99\n"), 0o644); err != nil {
+	if err := os.WriteFile(config, []byte("runner: fake\ntest_cmd: true\nslots: 99\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	run(t, bin, repo, "status", "--data", base)
@@ -451,7 +451,8 @@ func TestResetReplacesWatchtowerTreeAndRestartsDaemon(t *testing.T) {
 		t.Fatalf("extra file survived reset: %v", err)
 	}
 	body, err := os.ReadFile(config)
-	if err != nil || strings.Contains(string(body), "slots: 99") {
+	if err != nil || strings.Contains(string(body), "slots: 99") ||
+		!strings.Contains(string(body), `test_cmd: "true"`) {
 		t.Fatalf("config not replaced: %q err=%v", body, err)
 	}
 	entries, err := os.ReadDir(repo)
@@ -470,7 +471,8 @@ func TestResetReplacesWatchtowerTreeAndRestartsDaemon(t *testing.T) {
 	fresh := t.TempDir()
 	run(t, bin, fresh, "init", "--data", base)
 	if output, err := exec.Command(
-		"diff", "-ru", filepath.Join(fresh, ".watchtower"), filepath.Join(repo, ".watchtower"),
+		"diff", "-ru", "-x", "config.yaml",
+		filepath.Join(fresh, ".watchtower"), filepath.Join(repo, ".watchtower"),
 	).CombinedOutput(); err != nil {
 		t.Fatalf("reset differs from fresh init: %v\n%s", err, output)
 	}
@@ -535,7 +537,7 @@ func TestDependencyWorkflowUsesEightSessionsAndLandedBase(t *testing.T) {
 	run(t, bin, repo, "init", "--data", base)
 	if err := os.WriteFile(
 		filepath.Join(repo, ".watchtower", "config.yaml"),
-		[]byte("runner: fake\npull: false\npush: false\n"),
+		[]byte("runner: fake\ntest_cmd: true\npull: false\npush: false\n"),
 		0o644,
 	); err != nil {
 		t.Fatal(err)
@@ -624,7 +626,7 @@ func TestFakeRunnerChangesFirstMutableStageRegardlessOfName(t *testing.T) {
 	run(t, bin, repo, "init", "--data", base)
 	t.Cleanup(func() { stopDaemons(base) })
 	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "config.yaml"), []byte(
-		"runner: fake\npull: false\npush: false\n"), 0o644); err != nil {
+		"runner: fake\ntest_cmd: true\npull: false\npush: false\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	flowBody := `name: synthetic
@@ -659,6 +661,33 @@ stages:
 	body, err := os.ReadFile(filepath.Join(repo, "watchtower-fake", id+".txt"))
 	if err != nil || strings.TrimSpace(string(body)) != id {
 		t.Fatalf("landed fake change = %q err %v", body, err)
+	}
+}
+
+func TestIntegratingFlowRefusesMissingVerificationCommand(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	bin := buildBinary(t)
+	base, err := os.MkdirTemp("/tmp", "wt-missing-gate-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopDaemons(base)
+		_ = os.RemoveAll(base)
+	})
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-qm", "base"},
+	} {
+		run(t, "git", repo, args...)
+	}
+	run(t, bin, repo, "init", "--data", base)
+	out := runErr(t, bin, repo, "status", "--data", base)
+	if !strings.Contains(out, `flow "default" requires test_cmd`) {
+		t.Fatalf("status error:\n%s", out)
 	}
 }
 

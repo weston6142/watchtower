@@ -10,6 +10,7 @@ import (
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/repocfg"
+	"gopkg.in/yaml.v3"
 )
 
 type PreparedReset struct {
@@ -154,6 +155,42 @@ func (p *PreparedReset) Apply() error {
 	}
 	p.applied = true
 	return nil
+}
+
+func (p *PreparedReset) SetTestCommand(command string) error {
+	if p == nil || p.applied || p.finished {
+		return fmt.Errorf("reset is not awaiting configuration")
+	}
+	if _, err := repocfg.ParseCommand(command); err != nil {
+		return fmt.Errorf("test command: %w", err)
+	}
+	path := filepath.Join(p.Staged, "config.yaml")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	encodedCommand, err := yaml.Marshal(command)
+	if err != nil {
+		return err
+	}
+	scalar := strings.TrimSpace(string(encodedCommand))
+	lines := strings.Split(string(body), "\n")
+	for index, line := range lines {
+		content, comment, _ := strings.Cut(line, "#")
+		colon := strings.Index(content, ":")
+		if colon < 0 || strings.TrimSpace(content[:colon]) != "test_cmd" {
+			continue
+		}
+		afterColon := content[colon+1:]
+		leadingSpace := afterColon[:len(afterColon)-len(strings.TrimLeft(afterColon, " \t"))]
+		trailingSpace := afterColon[len(strings.TrimRight(afterColon, " \t")):]
+		lines[index] = content[:colon+1] + leadingSpace + scalar + trailingSpace
+		if comment != "" {
+			lines[index] += "#" + comment
+		}
+		return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+	}
+	return fmt.Errorf("reset config has no test_cmd field")
 }
 
 func (p *PreparedReset) Commit() error {

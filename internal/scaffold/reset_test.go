@@ -8,7 +8,36 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/weston6142/watchtower/internal/repocfg"
 )
+
+func TestPreparedResetCarriesForwardVerificationCommand(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareReset(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.SetTestCommand(`scripts/verify --scope "all packages"`); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	config, err := repocfg.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.TestCmd != `scripts/verify --scope "all packages"` {
+		t.Fatalf("test command = %q", config.TestCmd)
+	}
+}
 
 func TestResetReplacesCustomizedAndExtraFilesWithoutBackup(t *testing.T) {
 	root := t.TempDir()

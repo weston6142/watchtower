@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export TMPDIR="${TMPDIR:-/tmp}"
+export GOCACHE="${GOCACHE:-/tmp/guildhall-go-build}"
+export GOMODCACHE="${GOMODCACHE:-/tmp/guildhall-go-modcache}"
+export GOSUMDB="${GOSUMDB:-off}"
+
+go test ./... -race
+go vet ./...
+go build ./...
+git diff --check
