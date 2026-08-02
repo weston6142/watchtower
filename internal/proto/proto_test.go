@@ -471,6 +471,26 @@ func TestDraftNotCountedInOverview(t *testing.T) {
 	}
 }
 
+func TestClaimedNotCountedInOverview(t *testing.T) {
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: "GH-9", Title: "explore", State: "claimed", Flow: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	overview, err := NewServer(nil, s).overview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.Building != 0 || overview.Queued != 0 || overview.Failing != 0 || overview.NeedYou != 0 {
+		t.Fatalf("claimed issue counted in overview: %+v", overview)
+	}
+}
+
 func TestOverviewIgnoresTrailingFailureForAbandonedIssue(t *testing.T) {
 	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
 	if err != nil {

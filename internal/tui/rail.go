@@ -136,6 +136,8 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 
 func focusStatus(state string) string {
 	switch {
+	case state == "claimed":
+		return "claimed · external session"
 	case state == "verifying":
 		return "verifying"
 	case state == "waiting:integration":
