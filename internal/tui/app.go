@@ -1340,6 +1340,7 @@ func (m Model) applyEvents(evs []core.Event) Model {
 		titles[id] = issue.Title
 	}
 	m.Ids = Identify(m.State.Order, titles)
+	m.Focus = normalizeFocus(m.Focus, m.State, m.stages, m.retired)
 	if m.dismissed == nil {
 		m.dismissed = map[int64]bool{}
 	}
@@ -1542,9 +1543,7 @@ func (m *Model) autoRetire(now time.Time) {
 // refocusVisible pulls focus off a lane that has just left the grid, so the
 // rail can never keep rendering a lane the tower already dropped.
 func (m *Model) refocusVisible() {
-	if m.retired[m.Focus.Issue] {
-		m.Focus = resolveFocus(m.Focus, m.State, m.stages, m.retired)
-	}
+	m.Focus = normalizeFocus(m.Focus, m.State, m.stages, m.retired)
 }
 
 func (m *Model) retireFocused() {

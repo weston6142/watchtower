@@ -75,6 +75,107 @@ func TestApplyEventsBuildsStateAndToast(t *testing.T) {
 	}
 }
 
+func TestApplyEventsAutomaticallyFocusesFirstEligibleLane(t *testing.T) {
+	m := NewModel(nil, []string{"spec", "execute"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "later floor", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "execute"}),
+		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "first floor", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "spec"}),
+	})
+	if m.Focus.Issue != "GH-1" || m.Focus.Floor != 2 {
+		t.Fatalf("focus = %+v, want GH-1 at floor 2", m.Focus)
+	}
+}
+
+func TestApplyEventsPreservesFocusAndRepairsStaleFocus(t *testing.T) {
+	m := NewModel(nil, []string{"spec", "execute"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "one", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+	})
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("initial focus = %+v, want GH-1", m.Focus)
+	}
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "two", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "execute"}),
+	})
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("unrelated addition changed focus to %+v", m.Focus)
+	}
+	m.Focus = Focus{Issue: "missing"}
+	m = m.applyEvents(nil)
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("stale focus = %+v, want GH-1", m.Focus)
+	}
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "execute"}),
+	})
+	if m.Focus.Issue != "GH-1" || m.Focus.Floor != 2 {
+		t.Fatalf("moved focus = %+v, want GH-1 at floor 2", m.Focus)
+	}
+}
+
+func TestAbandoningFocusedLaneSelectsReplacementOrEmpty(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "one", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "two", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "spec"}),
+	})
+	m = m.applyEvents([]core.Event{mkev(t, core.EvIssueAbandoned, "GH-1", nil)})
+	if m.Focus.Issue != "GH-2" {
+		t.Fatalf("replacement focus = %+v, want GH-2", m.Focus)
+	}
+	m = m.applyEvents([]core.Event{mkev(t, core.EvIssueAbandoned, "GH-2", nil)})
+	if m.Focus.Issue != "" {
+		t.Fatalf("final focus = %+v, want empty", m.Focus)
+	}
+}
+
+func TestZeroEligibleLaneFocusRestoresOnFirstLane(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	if m.Focus.Issue != "" {
+		t.Fatalf("new-model focus = %+v, want empty", m.Focus)
+	}
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "one", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+	})
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("restored focus = %+v, want GH-1", m.Focus)
+	}
+}
+
+func TestFocusNormalizationIsStable(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "one", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+	})
+	want := m.Focus
+	m = m.applyEvents(nil)
+	if m.Focus != want {
+		t.Fatalf("first reconciliation = %+v, want %+v", m.Focus, want)
+	}
+	m = m.applyEvents(nil)
+	if m.Focus != want {
+		t.Fatalf("second reconciliation = %+v, want %+v", m.Focus, want)
+	}
+}
+
+func TestNoConfiguredStageLeavesFocusEmpty(t *testing.T) {
+	m := NewModel(nil, nil)
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "one", "flow": "default"}),
+	})
+	if m.Focus.Issue != "" {
+		t.Fatalf("focus = %+v, want empty", m.Focus)
+	}
+}
+
 func pressKey(t *testing.T, m Model, key string) Model {
 	t.Helper()
 	var msg tea.KeyMsg
@@ -616,12 +717,8 @@ func TestDigitKeysSkipRetiredLanes(t *testing.T) {
 
 func TestIssueOpKeysHintWhenNothingFocused(t *testing.T) {
 	m := NewModel(nil, []string{"brainstorm", "spec", "execute", "review", "merge"})
-	m = m.applyEvents([]core.Event{
-		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "payment adapter", "flow": "default"}),
-		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
-	})
 	if m.Focus.Issue != "" {
-		t.Fatalf("expected empty focus at startup, got %q", m.Focus.Issue)
+		t.Fatalf("expected empty focus with no eligible lanes, got %q", m.Focus.Issue)
 	}
 	for _, key := range []string{"L", "p", "R"} {
 		m = pressKey(t, m, key)
@@ -631,14 +728,6 @@ func TestIssueOpKeysHintWhenNothingFocused(t *testing.T) {
 		if m.leverEditor != nil {
 			t.Fatal("lever editor should not open without focus")
 		}
-	}
-	// Focusing a lane clears the hint.
-	m = pressKey(t, m, "j")
-	if m.Focus.Issue == "" {
-		t.Fatal("expected j to focus a lane")
-	}
-	if m.Err != "" {
-		t.Fatalf("expected hint cleared after focus, got %q", m.Err)
 	}
 }
 
@@ -658,10 +747,6 @@ func laneModel(t *testing.T, evs ...core.Event) Model {
 // why is the same silent no-op those keys were fixed for.
 func TestTranscriptKeyHintsWhenNothingFocused(t *testing.T) {
 	m := NewModel(nil, []string{"brainstorm", "spec", "execute", "review", "merge"})
-	m = m.applyEvents([]core.Event{
-		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
-		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
-	})
 	m = pressKey(t, m, "T")
 	if m.Err != "no lane focused — press j or 1-9 to focus" {
 		t.Fatalf("expected no-focus hint, got %q", m.Err)
@@ -698,6 +783,9 @@ func TestTimelineRequiresFocus(t *testing.T) {
 
 func TestTimelineRefreshesOnEvents(t *testing.T) {
 	m := NewModel(nil, []string{"brainstorm", "plan"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+	})
 	m.Focus.Issue = "GH-1"
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
 	nm := next.(Model)
