@@ -735,6 +735,38 @@ func TestRetiringFocusedLaneSelectsFirstRemainingEligibleLane(t *testing.T) {
 	}
 }
 
+func TestUnretiringOnlyVisibleLaneRestoresFocus(t *testing.T) {
+	m := retireModel(t)
+	m = pressKey(t, m, "1")
+	m = pressKey(t, m, "c")
+	m = pressKey(t, m, "c")
+	if m.Focus.Issue != "" {
+		t.Fatalf("focus after retiring all lanes = %+v, want empty", m.Focus)
+	}
+
+	m = pressKey(t, m, "u")
+	m = pressKey(t, m, "enter")
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("focus after unretiring first lane = %+v, want GH-1", m.Focus)
+	}
+}
+
+func TestRejectedArtifactFocusRepairsStaleCurrentFocus(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "focused", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+	})
+	m.Focus = Focus{Issue: "missing"}
+
+	if cmd := m.openArtifactsFor("missing"); cmd != nil {
+		t.Fatal("rejected artifact request returned a fetch command")
+	}
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("focus after rejected artifact request = %+v, want GH-1", m.Focus)
+	}
+}
+
 func TestEmptyFocusReconcilesToStableFirstLane(t *testing.T) {
 	m := NewModel(nil, []string{"spec", "execute"})
 	m = m.applyEvents([]core.Event{

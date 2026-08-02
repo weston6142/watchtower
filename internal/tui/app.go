@@ -1143,10 +1143,10 @@ func parseDependencies(value string) []string {
 
 func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
 	requested := requestFocus(m.Focus, m.State, m.stages, issueID, m.retired)
-	if requested.Issue != issueID {
+	m.Focus = requested
+	if issueID == "" || requested.Issue != issueID {
 		return nil
 	}
-	m.Focus = requested
 	m.Detail = nil
 	m.openArtifacts = true
 	if m.Toast != nil {
@@ -1157,10 +1157,10 @@ func (m *Model) openArtifactsFor(issueID string) tea.Cmd {
 
 func (m *Model) openEvidenceFor(issueID string, decisionID int64) tea.Cmd {
 	requested := requestFocus(m.Focus, m.State, m.stages, issueID, m.retired)
-	if requested.Issue != issueID {
+	m.Focus = requested
+	if issueID == "" || requested.Issue != issueID {
 		return nil
 	}
-	m.Focus = requested
 	m.Detail = nil
 	m.Evidence = nil
 	m.EvidenceTitle = issueID
@@ -1493,6 +1493,7 @@ func (m *Model) updateDoorKey(key string) tea.Cmd {
 		case "enter":
 			if m.shelfSel < len(items) && !items[m.shelfSel].Parked {
 				delete(m.retired, items[m.shelfSel].ID)
+				m.refocusVisible()
 				m.popMode()
 			}
 		}
