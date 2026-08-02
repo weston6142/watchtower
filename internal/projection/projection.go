@@ -102,6 +102,19 @@ func (s *State) Apply(ev core.Event) {
 		view.Attachments = stringsFromPayload(p["attachments"])
 		view.DependsOn = stringsFromPayload(p["depends_on"])
 		view.State = "backlog"
+	case core.EvIssueClaimed:
+		if iv != nil {
+			iv.State = "claimed"
+			iv.CurrentStage = ""
+			removeString(&s.Backlog, ev.IssueID)
+			appendUnique(&s.Order, ev.IssueID)
+		}
+	case core.EvIssueReleased:
+		if iv != nil {
+			iv.State = "backlog"
+			removeString(&s.Order, ev.IssueID)
+			appendUnique(&s.Backlog, ev.IssueID)
+		}
 	case core.EvIssueCreated:
 		s.Issues[ev.IssueID] = &IssueView{ID: ev.IssueID, Title: str("title"), Flow: str("flow"), State: "running", AreaWeights: map[string]int{}}
 		s.Order = append(s.Order, ev.IssueID)

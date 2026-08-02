@@ -66,6 +66,33 @@ func TestIssueCompletedSetsDone(t *testing.T) {
 	}
 }
 
+func TestClaimAndReleasePreserveDraftMetadata(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueDrafted, "GH-41", map[string]any{
+		"title": "explore", "body": "details", "flow": "default",
+		"preset": "regular", "priority": 3,
+		"attachments": []string{"trace.log"}, "depends_on": []string{"GH-40"},
+	}))
+	s.Apply(ev(t, core.EvIssueClaimed, "GH-41", map[string]any{
+		"worktree": "/tmp/GH-41", "branch": "issue/GH-41", "base_sha": "abc",
+	}))
+	issue := s.Issues["GH-41"]
+	if issue.State != "claimed" || issue.Title != "explore" || issue.Body != "details" ||
+		issue.Priority != 3 || len(issue.Attachments) != 1 || issue.Attachments[0] != "trace.log" ||
+		len(issue.DependsOn) != 1 || issue.DependsOn[0] != "GH-40" {
+		t.Fatalf("claimed issue = %+v", issue)
+	}
+	if len(s.Backlog) != 0 || len(s.Order) != 1 || s.Order[0] != "GH-41" {
+		t.Fatalf("claimed membership: backlog=%v order=%v", s.Backlog, s.Order)
+	}
+
+	s.Apply(ev(t, core.EvIssueReleased, "GH-41", nil))
+	if issue.State != "backlog" || len(s.Order) != 0 ||
+		len(s.Backlog) != 1 || s.Backlog[0] != "GH-41" {
+		t.Fatalf("released issue=%+v backlog=%v order=%v", issue, s.Backlog, s.Order)
+	}
+}
+
 func TestCleanupWarningSurvivesIssueCompletion(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "x"}))

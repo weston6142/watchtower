@@ -50,6 +50,10 @@ func (st *Steward) Observe(ev core.Event) {
 			ID: ev.IssueID, Title: str("title"), Body: str("body"),
 			Flow: str("flow"), State: "backlog", Priority: int(prio),
 			Levers: leverMap()})
+	case core.EvIssueClaimed:
+		setState("claimed")
+	case core.EvIssueReleased:
+		setState("backlog")
 	case core.EvIssueCreated:
 		prio, _ := p["priority"].(float64)
 		_ = st.Store.UpsertIssue(store.IssueRow{

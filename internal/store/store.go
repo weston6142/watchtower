@@ -155,6 +155,7 @@ type IssueRow struct {
 }
 
 const (
+	IntegrationClaimed           = "claimed"
 	IntegrationVerificationReady = "verification_ready"
 	IntegrationPublishPending    = "publish_pending"
 	IntegrationCleanupNeeded     = "cleanup_needed"
