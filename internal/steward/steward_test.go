@@ -133,3 +133,21 @@ func TestObserveDraftAndUpdate(t *testing.T) {
 		t.Fatalf("updated row wrong: %+v", row)
 	}
 }
+
+func TestStewardProjectsClaimAndRelease(t *testing.T) {
+	s := newTestStore(t)
+	st := &Steward{Store: s}
+	st.Observe(ev(t, core.EvIssueDrafted, "GH-41", map[string]any{
+		"title": "explore", "body": "details", "flow": "default", "priority": 3,
+	}))
+	st.Observe(ev(t, core.EvIssueClaimed, "GH-41", map[string]any{
+		"worktree": "/tmp/GH-41", "branch": "issue/GH-41", "base_sha": "abc",
+	}))
+	if row := findRow(t, s, "GH-41"); row.State != "claimed" || row.Title != "explore" {
+		t.Fatalf("claimed row = %+v", row)
+	}
+	st.Observe(ev(t, core.EvIssueReleased, "GH-41", nil))
+	if row := findRow(t, s, "GH-41"); row.State != "backlog" || row.Body != "details" {
+		t.Fatalf("released row = %+v", row)
+	}
+}

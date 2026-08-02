@@ -11,6 +11,8 @@ const (
 	EvIssueCreated               EventType = "issue_created"
 	EvIssueDrafted               EventType = "issue_drafted"
 	EvIssueUpdated               EventType = "issue_updated"
+	EvIssueClaimed               EventType = "issue_claimed"
+	EvIssueReleased              EventType = "issue_released"
 	EvIssueWaitingDependencies   EventType = "issue_waiting_dependencies"
 	EvIssueDependenciesSatisfied EventType = "issue_dependencies_satisfied"
 	EvStageStarted               EventType = "stage_started"

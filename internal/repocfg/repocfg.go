@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -175,19 +176,116 @@ func fillGaps(cfg *Config) {
 	}
 }
 
-// FindRepo walks up from startDir to the first directory containing .watchtower/.
+// FindRepo resolves linked worktrees to their common checkout, then walks up
+// from ordinary checkouts to the first directory containing .watchtower/.
 func FindRepo(startDir string) (string, error) {
-	dir, err := filepath.Abs(startDir)
+	start, err := filepath.Abs(startDir)
 	if err != nil {
 		return "", err
 	}
+	if repo, ok := boundRepository(start); ok {
+		return repo, nil
+	}
+	gitDir, gitDirErr := gitDirectory(start, "--git-dir")
+	commonDir, commonDirErr := gitDirectory(start, "--git-common-dir")
+	if gitDirErr == nil && commonDirErr == nil && filepath.Clean(gitDir) != filepath.Clean(commonDir) {
+		candidate := filepath.Dir(commonDir)
+		if info, statErr := os.Stat(filepath.Join(candidate, ".watchtower")); statErr == nil && info.IsDir() {
+			return candidate, nil
+		}
+	}
+	if repo, ok := findWatchtowerParent(start); ok {
+		return repo, nil
+	}
+	if commonDirErr == nil {
+		candidate := filepath.Dir(commonDir)
+		if info, statErr := os.Stat(filepath.Join(candidate, ".watchtower")); statErr == nil && info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no .watchtower found above %s (run 'watchtower init' in your repo)", startDir)
+}
+
+const repositoryMarker = "watchtower-repository"
+
+// BindWorktree records the initialized repository that owns a claimed
+// workspace in Git-private metadata. This also supports providers whose
+// workspace is not linked to the repository's common Git directory.
+func BindWorktree(repoRoot, worktree string) error {
+	repo, err := canonicalPath(repoRoot)
+	if err != nil {
+		return err
+	}
+	marker, err := gitPath(worktree, repositoryMarker)
+	if err != nil {
+		return fmt.Errorf("locate claimed-workspace metadata: %w", err)
+	}
+	if err := os.WriteFile(marker, []byte(repo+"\n"), 0o644); err != nil {
+		return fmt.Errorf("bind claimed workspace: %w", err)
+	}
+	return nil
+}
+
+func boundRepository(start string) (string, bool) {
+	marker, err := gitPath(start, repositoryMarker)
+	if err != nil {
+		return "", false
+	}
+	body, err := os.ReadFile(marker)
+	if err != nil {
+		return "", false
+	}
+	repo, err := canonicalPath(strings.TrimSpace(string(body)))
+	if err != nil {
+		return "", false
+	}
+	if info, err := os.Stat(filepath.Join(repo, ".watchtower")); err == nil && info.IsDir() {
+		return repo, true
+	}
+	return "", false
+}
+
+func gitPath(start, name string) (string, error) {
+	cmd := exec.Command(
+		"git", "-C", start, "rev-parse", "--path-format=absolute", "--git-path", name,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func canonicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved, nil
+	}
+	return abs, nil
+}
+
+func gitDirectory(start, flag string) (string, error) {
+	cmd := exec.Command("git", "-C", start, "rev-parse", "--path-format=absolute", flag)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func findWatchtowerParent(start string) (string, bool) {
+	dir := start
 	for {
 		if fi, err := os.Stat(filepath.Join(dir, ".watchtower")); err == nil && fi.IsDir() {
-			return dir, nil
+			return dir, true
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("no .watchtower found above %s (run 'watchtower init' in your repo)", startDir)
+			return "", false
 		}
 		dir = parent
 	}
@@ -199,7 +297,7 @@ const repoIDLen = 12
 
 // RepoID is a short stable identifier for a repo path.
 func RepoID(repoRoot string) string {
-	abs, err := filepath.Abs(repoRoot)
+	abs, err := canonicalPath(repoRoot)
 	if err != nil {
 		abs = repoRoot
 	}

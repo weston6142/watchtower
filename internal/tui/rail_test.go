@@ -206,6 +206,16 @@ func TestRailShowsCleanupOperations(t *testing.T) {
 	}
 }
 
+func TestRailShowsClaimedExternalSession(t *testing.T) {
+	det := &proto.IssueDetail{Issue: store.IssueRow{
+		ID: "GH-9", Title: "explore", Flow: "default", State: "claimed",
+	}}
+	out := renderRail(nil, map[string]Identity{}, det, 80)
+	if !strings.Contains(out, "claimed · external session") || strings.Contains(out, "building") {
+		t.Fatalf("claimed rail = %q", out)
+	}
+}
+
 func TestRailIsBoxed(t *testing.T) {
 	out := renderRail(nil, map[string]Identity{}, nil, 40)
 	if !strings.Contains(out, "─") || !strings.Contains(out, "│") {

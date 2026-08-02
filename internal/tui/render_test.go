@@ -84,6 +84,26 @@ func TestFinalizationStageUsesExplicitStatusLabels(t *testing.T) {
 	}
 }
 
+func TestClaimedLaneMarksFirstIncompleteStageAsExternalSession(t *testing.T) {
+	iv := &projection.IssueView{
+		ID: "GH-9", State: "claimed", Completed: []string{"brainstorm"},
+	}
+	stages := []string{"brainstorm", "spec", "execute"}
+	var got []string
+	for i, stage := range stages {
+		got = append(got, ansi.Strip(cellContentForStage(iv, nil, stage, i, 0, false, true)))
+	}
+	if !strings.Contains(got[0], glyphDone) {
+		t.Fatalf("completed stage lost its tick: %q", got[0])
+	}
+	if !strings.Contains(got[1], "claimed") || strings.Contains(got[1], "working") {
+		t.Fatalf("claimed stage = %q", got[1])
+	}
+	if strings.Contains(got[2], "claimed") || strings.Contains(got[2], glyphDone) {
+		t.Fatalf("later stage changed by claim: %q", got[2])
+	}
+}
+
 // Rehydrated and pre-payload lanes have no usable CurrentStage; the marker
 // falls back to the first stage that has not finished.
 func TestPausedLaneWithStaleCurrentStageFallsBack(t *testing.T) {

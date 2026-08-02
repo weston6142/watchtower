@@ -205,6 +205,30 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}
+	case "claim_issue":
+		claim, err := sv.eng.ClaimIssue(cmd.IssueID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID, Claim: &claim}
+	case "release_claim":
+		if err := sv.eng.ReleaseClaim(cmd.IssueID); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
+	case "claim_for_worktree":
+		claim, err := sv.eng.ClaimForWorktree(cmd.Worktree)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: claim.IssueID, Claim: &claim}
+	case "finish_claim":
+		if err := sv.eng.FinishClaim(engine.FinishClaimRequest{
+			IssueID: cmd.IssueID, Worktree: cmd.Worktree, AllowNoChange: cmd.AllowNoChange,
+		}); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
 	case "start_issue":
 		// Runs asynchronously; failures surface as stage_failed events
 		// in the log rather than in this response.
@@ -269,6 +293,12 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, Issues: issues}
+	case "list_backlog":
+		items, claims, err := sv.backlogItems()
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Backlog: items, Claims: claims}
 	case "issue_detail":
 		issues, err := sv.st.Issues()
 		if err != nil {
@@ -438,6 +468,42 @@ func (sv *Server) overview() (Overview, error) {
 		out.DollarsTotal = float64(out.TokensTotal) / 1_000_000 * sv.pricePerMTok
 	}
 	return out, nil
+}
+
+func (sv *Server) backlogItems() ([]BacklogItem, []engine.Claim, error) {
+	issues, err := sv.st.Issues()
+	if err != nil {
+		return nil, nil, err
+	}
+	items := make([]BacklogItem, 0)
+	for _, issue := range issues {
+		if issue.State != "backlog" {
+			continue
+		}
+		blockedBy, err := sv.eng.ClaimBlockers(issue.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		attachments, err := sv.st.Attachments(issue.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		summaries := make([]AttachmentSummary, 0, len(attachments))
+		for _, attachment := range attachments {
+			summaries = append(summaries, AttachmentSummary{
+				Name: attachment.Name, Size: attachment.Size,
+			})
+		}
+		items = append(items, BacklogItem{
+			Issue: issue, Attachments: summaries,
+			Claimable: len(blockedBy) == 0, BlockedBy: blockedBy,
+		})
+	}
+	claims, err := sv.eng.Claims()
+	if err != nil {
+		return nil, nil, err
+	}
+	return items, claims, nil
 }
 
 // flowAndPreset resolves the command's flow and clamps its preset to a

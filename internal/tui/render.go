@@ -230,6 +230,9 @@ func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stag
 	if (iv.Paused || iv.Killed || iv.State == "paused") && pausedAtStage(iv, stage, stageIdx) {
 		return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render(glyphParked + " paused")
 	}
+	if iv.State == "claimed" && stageIdx == len(iv.Completed) {
+		return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render(glyphParked + " claimed")
+	}
 	if iv.CurrentStage == stage {
 		switch iv.State {
 		case "verifying":

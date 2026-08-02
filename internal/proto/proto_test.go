@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,11 +15,14 @@ import (
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/steward"
 	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/workspace"
 )
 
 func TestSetupOutlineReportsShippedSequentialWorkflow(t *testing.T) {
@@ -333,6 +337,79 @@ func TestBacklogOps(t *testing.T) {
 	}
 }
 
+func TestClaimProtocolReturnsStructuredReadyBlockedAndResumableTasks(t *testing.T) {
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "-q", "-b", "develop")
+	git("config", "user.email", "test@example.com")
+	git("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "README.md")
+	git("commit", "-qm", "base")
+
+	st, err := store.Open("file:claim-protocol?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	fl := flow.Flow{Name: "default", Stages: []flow.Stage{{Name: "merge-verification"}}}
+	eng := engine.New(engine.Config{
+		Store: st, Runner: &runner.FakeRunner{}, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{"default": fl}, DataDir: t.TempDir(),
+		Workspace: workspace.GitWorktree{Repo: repo}, Train: &marshal.Train{Repo: repo},
+		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
+	})
+	parent, _ := eng.DraftIssue("ready", "full body", "default", "regular", levers.Matrix{}, 2, nil)
+	child, _ := eng.DraftIssue("blocked", "", "default", "regular", levers.Matrix{}, 1, nil)
+	if err := eng.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(eng, st)
+
+	listed := srv.exec(Command{Op: "list_backlog"})
+	if !listed.OK || len(listed.Backlog) != 2 || len(listed.Claims) != 0 {
+		t.Fatalf("list_backlog = %+v", listed)
+	}
+	byID := map[string]BacklogItem{}
+	for _, item := range listed.Backlog {
+		byID[item.Issue.ID] = item
+	}
+	if !byID[parent].Claimable || byID[parent].Issue.Body != "full body" ||
+		byID[child].Claimable || len(byID[child].BlockedBy) != 1 || byID[child].BlockedBy[0] != parent {
+		t.Fatalf("backlog items = %+v", byID)
+	}
+	claimed := srv.exec(Command{Op: "claim_issue", IssueID: parent})
+	if !claimed.OK || claimed.Claim == nil || claimed.Claim.IssueID != parent {
+		t.Fatalf("claim_issue = %+v", claimed)
+	}
+	resolved := srv.exec(Command{Op: "claim_for_worktree", Worktree: claimed.Claim.Worktree})
+	if !resolved.OK || resolved.Claim == nil || resolved.Claim.IssueID != parent {
+		t.Fatalf("claim_for_worktree = %+v", resolved)
+	}
+	finish := srv.exec(Command{
+		Op: "finish_claim", IssueID: parent, Worktree: claimed.Claim.Worktree,
+	})
+	if finish.OK || !strings.Contains(finish.Error, "no commits beyond") {
+		t.Fatalf("finish_claim without work = %+v", finish)
+	}
+	listed = srv.exec(Command{Op: "list_backlog"})
+	if len(listed.Claims) != 1 || listed.Claims[0].IssueID != parent {
+		t.Fatalf("resumable claims = %+v", listed.Claims)
+	}
+	released := srv.exec(Command{Op: "release_claim", IssueID: parent})
+	if !released.OK {
+		t.Fatalf("release_claim = %+v", released)
+	}
+}
+
 func TestCanResetAndShutdownFlushesResponse(t *testing.T) {
 	f := oneAgentFlow("agent")
 	s, err := store.Open("file:reset-proto?mode=memory&cache=shared")
@@ -391,6 +468,26 @@ func TestDraftNotCountedInOverview(t *testing.T) {
 	}
 	if r.Overview.Building != 0 || r.Overview.Failing != 0 || r.Overview.Queued != 0 {
 		t.Fatalf("draft counted in overview: %+v", r.Overview)
+	}
+}
+
+func TestClaimedNotCountedInOverview(t *testing.T) {
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: "GH-9", Title: "explore", State: "claimed", Flow: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	overview, err := NewServer(nil, s).overview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.Building != 0 || overview.Queued != 0 || overview.Failing != 0 || overview.NeedYou != 0 {
+		t.Fatalf("claimed issue counted in overview: %+v", overview)
 	}
 }
 

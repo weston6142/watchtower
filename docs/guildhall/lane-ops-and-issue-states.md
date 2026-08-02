@@ -55,6 +55,36 @@ Rules that hold across the daemon:
   the keybar hint `nothing running — R retries · X abandons`. The daemon still
   errors on a kill with no running stage, so any new client needs its own guard.
 
+Externally worked tasks have a deliberately small lifecycle:
+
+```text
+backlog -> claimed -> verifying -> integrating -> merged -> done
+```
+
+`watchtower claim <issue-id>` atomically reserves a ready backlog item and
+returns its durable issue branch, base commit, and isolated worktree. Repeating
+the command resumes the same valid claim; it does not create another workspace.
+The conversation and implementation inside that worktree are intentionally not
+constrained by Watchtower's normal stage flow.
+
+`watchtower release <issue-id>` is only for an unused claim. It returns the task
+to `backlog` when the worktree is clean and the issue branch has no commits past
+the recorded base. It refuses to discard either committed or uncommitted work.
+
+`watchtower finish [<issue-id>]` is the explicit handoff. It accepts only the
+exact clean worktree and branch recorded by the claim, then enters the normal
+merge-verification and durable finalization path. A claim with no new commit is
+rejected unless the operator explicitly supplies `--allow-no-change` after
+acknowledging that outcome. Daemon restart restores idle claims and failed
+external verification from the recorded workspace identity; retry reuses that
+workspace. Publication and cleanup failures retain their existing durable retry
+states.
+
+Neither a skill nor a client may declare the task complete from a successful
+command invocation or transcript. Only Watchtower may emit terminal completion,
+after verification receipts, merge, configured push, and cleanup have reached
+their durable checkpoints.
+
 Finalization has a durable boundary that is independent of an agent transcript:
 
 - `merge-report.md` contains rich human evidence. `merge-decision.json` and
@@ -77,7 +107,7 @@ live source of bugs:
 
 - **Store** (`IssueRow.State`) is written only by the steward's `setState` (plus
   the initial `running` from `Engine.CreateIssue`). It uses a stage-qualified
-  running form — `running:spec` — plus `verifying`, `waiting:integration`,
+  running form — `running:spec` — plus `backlog`, `claimed`, `verifying`, `waiting:integration`,
   `integrating`, `failed`, `failed:finalize`, `waiting_decision`, `done`,
   `done (unmerged)`, `merged`, `cleanup_needed`, `abandoned`. A
   `cleanup_needed` issue is already semantically merged: dependents wake, while
@@ -88,11 +118,11 @@ live source of bugs:
   purely in-memory `pauseGate`. Pause does not survive a daemon restart.
 - **Projection** (`IssueView.State`, what the TUI sees) uses plain `running`,
   never `running:<stage>`; the stage lives in `CurrentStage`. It adds
-  `queued_for_slot` and `paused`, and shares the four explicit finalization
+  `queued_for_slot`, `claimed`, and `paused`, and shares the four explicit finalization
   states above. Overview counts verifying, waiting-for-integration, and
   integrating lanes as building; `failed:finalize` is failing. Herdr derives
   its working/blocked/idle report from those overview totals. Terminal,
-  abandoned, decision-waiting, and cleanup-only lanes are not builders.
+  claimed, abandoned, decision-waiting, and cleanup-only lanes are not builders.
 
 Compare against the projection vocabulary in TUI code, against the store
 vocabulary in daemon/rehydrate code.

@@ -20,20 +20,22 @@ type Command struct {
 	// Attach carries absolute paths, never bytes: maxMessageBytes bounds a wire
 	// message well under the per-file cap, so the daemon reads the files off the
 	// shared filesystem itself. A bare name retains an existing attachment.
-	Attach     []string `json:"attach,omitempty"`
-	DependsOn  []string `json:"depends_on,omitempty"`
-	IssueID    string   `json:"issue_id,omitempty"`
-	DecisionID int64    `json:"decision_id,omitempty"`
-	Option     *int     `json:"option,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	ProposalID int64    `json:"proposal_id,omitempty"`
-	Accept     bool     `json:"accept,omitempty"`
-	SinceSeq   int64    `json:"since_seq,omitempty"`
-	Repo       string   `json:"repo,omitempty"`
-	Stage      string   `json:"stage,omitempty"`
-	Lever      string   `json:"lever,omitempty"`
-	Package    string   `json:"package,omitempty"` // setup_prompt: which agent package
-	N          int      `json:"n,omitempty"`
+	Attach        []string `json:"attach,omitempty"`
+	DependsOn     []string `json:"depends_on,omitempty"`
+	IssueID       string   `json:"issue_id,omitempty"`
+	Worktree      string   `json:"worktree,omitempty"`
+	AllowNoChange bool     `json:"allow_no_change,omitempty"`
+	DecisionID    int64    `json:"decision_id,omitempty"`
+	Option        *int     `json:"option,omitempty"`
+	Text          string   `json:"text,omitempty"`
+	ProposalID    int64    `json:"proposal_id,omitempty"`
+	Accept        bool     `json:"accept,omitempty"`
+	SinceSeq      int64    `json:"since_seq,omitempty"`
+	Repo          string   `json:"repo,omitempty"`
+	Stage         string   `json:"stage,omitempty"`
+	Lever         string   `json:"lever,omitempty"`
+	Package       string   `json:"package,omitempty"` // setup_prompt: which agent package
+	N             int      `json:"n,omitempty"`
 }
 
 type Response struct {
@@ -43,6 +45,9 @@ type Response struct {
 	Decisions  []engine.PendingDecision `json:"decisions,omitempty"`
 	Proposals  []store.ProposalRow      `json:"proposals,omitempty"`
 	Issues     []store.IssueRow         `json:"issues,omitempty"`
+	Backlog    []BacklogItem            `json:"backlog,omitempty"`
+	Claims     []engine.Claim           `json:"claims,omitempty"`
+	Claim      *engine.Claim            `json:"claim,omitempty"`
 	Events     []core.Event             `json:"events,omitempty"`
 	Lines      []string                 `json:"lines,omitempty"`
 	Overview   *Overview                `json:"overview,omitempty"`
@@ -50,6 +55,18 @@ type Response struct {
 	FlowStages []string                 `json:"flow_stages,omitempty"`
 	Arch       *archmap.Map             `json:"arch,omitempty"`
 	Setup      *SetupView               `json:"setup,omitempty"`
+}
+
+type AttachmentSummary struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+type BacklogItem struct {
+	Issue       store.IssueRow      `json:"issue"`
+	Attachments []AttachmentSummary `json:"attachments,omitempty"`
+	Claimable   bool                `json:"claimable"`
+	BlockedBy   []string            `json:"blocked_by,omitempty"`
 }
 
 type Overview struct {

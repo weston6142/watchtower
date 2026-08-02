@@ -100,6 +100,29 @@ func TestIssueIntegrationLifecycle(t *testing.T) {
 	}
 }
 
+func TestClaimedIssueIntegrationPreservesWorkspaceIdentity(t *testing.T) {
+	s, err := Open("file:claimed-integration?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := IssueIntegration{
+		IssueID: "GH-41", State: IntegrationClaimed, PreSHA: "base",
+		Worktree: "/tmp/GH-41", Branch: "issue/GH-41",
+	}
+	if err := s.SetIssueIntegration(want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.IssueIntegration(want.IssueID)
+	if err != nil || !ok {
+		t.Fatalf("IssueIntegration() = %+v, %v, %v", got, ok, err)
+	}
+	if got.State != want.State || got.PreSHA != want.PreSHA ||
+		got.Worktree != want.Worktree || got.Branch != want.Branch {
+		t.Fatalf("claim identity = %+v, want %+v", got, want)
+	}
+}
+
 func TestAppendAssignsSeqAndReplays(t *testing.T) {
 	s, err := Open("file:t1?mode=memory&cache=shared")
 	if err != nil {

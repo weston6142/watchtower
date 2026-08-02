@@ -155,6 +155,7 @@ type IssueRow struct {
 }
 
 const (
+	IntegrationClaimed           = "claimed"
 	IntegrationVerificationReady = "verification_ready"
 	IntegrationPublishPending    = "publish_pending"
 	IntegrationCleanupNeeded     = "cleanup_needed"
@@ -343,6 +344,13 @@ func (s *Store) IssueIntegration(issueID string) (IssueIntegration, bool, error)
 		return IssueIntegration{}, false, fmt.Errorf("parse integration update time: %w", err)
 	}
 	return integration, true, nil
+}
+
+func (s *Store) DeleteIssueIntegration(issueID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM issue_integration WHERE issue_id=?`, issueID)
+	return err
 }
 
 // EventsSinceTime returns events at or after t in sequence order.

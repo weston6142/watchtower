@@ -1,6 +1,8 @@
 package main_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,9 +12,145 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/store"
 )
+
+func TestBacklogClaimReleaseJSON(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	run(t, "git", repo, "init", "-q", "-b", "develop")
+	run(t, "git", repo, "config", "user.email", "test@example.com")
+	run(t, "git", repo, "config", "user.name", "Test")
+	run(t, "git", repo, "add", "-A")
+	run(t, "git", repo, "commit", "-qm", "base")
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "explore", "--body", "full body")))
+
+	var listed struct {
+		Backlog []proto.BacklogItem `json:"backlog"`
+		Claims  []engine.Claim      `json:"claims"`
+	}
+	if out := run(t, bin, repo, "backlog", "--data", base, "--json"); json.Unmarshal([]byte(out), &listed) != nil {
+		t.Fatalf("backlog --json = %q", out)
+	}
+	if len(listed.Backlog) != 1 || listed.Backlog[0].Issue.ID != id {
+		t.Fatalf("backlog JSON = %+v", listed)
+	}
+	var claim engine.Claim
+	if out := run(t, bin, repo, "claim", "--data", base, id, "--json"); json.Unmarshal([]byte(out), &claim) != nil {
+		t.Fatalf("claim --json = %q", out)
+	}
+	if claim.IssueID != id || claim.Branch != "issue/"+id {
+		t.Fatalf("claim JSON = %+v", claim)
+	}
+	run(t, bin, repo, "release", "--data", base, id, "--json")
+}
+
+func TestFinishClaimMergesPushesMarksDoneAndCleansWorkspace(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	bin := buildBinary(t)
+	base, err := os.MkdirTemp("/tmp", "wt-finish-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopDaemons(base)
+		_ = os.RemoveAll(base)
+	})
+	repo := initRepo(t, bin, base)
+	run(t, "git", repo, "init", "-q", "-b", "develop")
+	run(t, "git", repo, "config", "user.email", "test@example.com")
+	run(t, "git", repo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "config.yaml"),
+		[]byte("runner: fake\npull: false\npush: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, "git", repo, "add", "-A")
+	run(t, "git", repo, "commit", "-qm", "base")
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	run(t, "git", repo, "init", "--bare", "-q", remote)
+	run(t, "git", repo, "remote", "add", "origin", remote)
+	run(t, "git", repo, "push", "-qu", "origin", "develop")
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "explore")))
+	var claim engine.Claim
+	if out := run(t, bin, repo, "claim", "--data", base, id, "--json"); json.Unmarshal([]byte(out), &claim) != nil {
+		t.Fatalf("claim --json = %q", out)
+	}
+	if err := os.WriteFile(filepath.Join(claim.Worktree, "result.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, "git", claim.Worktree, "add", "result.txt")
+	run(t, "git", claim.Worktree, "commit", "-qm", "result")
+	finish := exec.Command(bin, "finish", "--data", base, id, "--json")
+	finish.Dir = claim.Worktree
+	if out, err := finish.CombinedOutput(); err != nil {
+		resolved, resolveErr := repocfg.FindRepo(claim.Worktree)
+		logs, _ := filepath.Glob(filepath.Join(base, "repos", "*", "daemon.log"))
+		var diagnostics strings.Builder
+		for _, path := range logs {
+			body, _ := os.ReadFile(path)
+			fmt.Fprintf(&diagnostics, "\n%s:\n%s", path, body)
+		}
+		t.Fatalf("finish: %v: %s\nrepo=%q id=%s claim=%+v resolved=%q resolved_id=%s resolve_err=%v%s",
+			err, out, repo, repocfg.RepoID(repo), claim, resolved, repocfg.RepoID(resolved), resolveErr,
+			diagnostics.String())
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		var issues []store.IssueRow
+		out := run(t, bin, repo, "issues", "--data", base, "--json")
+		if err := json.Unmarshal([]byte(out), &issues); err != nil {
+			t.Fatalf("issues --json = %q: %v", out, err)
+		}
+		state := ""
+		for _, issue := range issues {
+			if issue.ID == id {
+				state = issue.State
+			}
+		}
+		if state == "done" {
+			break
+		}
+		if time.Now().After(deadline) {
+			dbPath := filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.db")
+			st, openErr := store.Open(dbPath)
+			var integration store.IssueIntegration
+			var integrationOK bool
+			var integrationErr error
+			if openErr == nil {
+				integration, integrationOK, integrationErr = st.IssueIntegration(id)
+				_ = st.Close()
+			}
+			logBody, _ := os.ReadFile(filepath.Join(repocfg.RepoDataDir(base, repo), "daemon.log"))
+			t.Fatalf("issue %s did not finish; state=%s integration=%+v ok=%v open_err=%v integration_err=%v\n%s",
+				id, state, integration, integrationOK, openErr, integrationErr, logBody)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	local := strings.TrimSpace(run(t, "git", repo, "rev-parse", "develop"))
+	remoteHead := strings.TrimSpace(run(t, "git", remote, "rev-parse", "develop"))
+	if local != remoteHead {
+		cfg, cfgErr := repocfg.Load(repo)
+		st, openErr := store.Open(filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.db"))
+		var integration store.IssueIntegration
+		var integrationOK bool
+		var integrationErr error
+		if openErr == nil {
+			integration, integrationOK, integrationErr = st.IssueIntegration(id)
+			_ = st.Close()
+		}
+		remoteURL := strings.TrimSpace(run(t, "git", repo, "remote", "get-url", "origin"))
+		t.Fatalf("develop=%s origin/develop=%s remote=%q cfg=%+v cfg_err=%v integration=%+v ok=%v open_err=%v integration_err=%v",
+			local, remoteHead, remoteURL, cfg, cfgErr, integration, integrationOK, openErr, integrationErr)
+	}
+	if _, err := os.Stat(claim.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("claimed worktree still exists: %v", err)
+	}
+}
 
 // buildBinary compiles watchtower once into a temp dir.
 func buildBinary(t *testing.T) string {

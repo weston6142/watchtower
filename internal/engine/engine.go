@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/store"
@@ -87,10 +89,31 @@ type issueState struct {
 	terminal            bool
 	running             bool
 	draft               bool
+	claiming            bool
+	claimed             bool
+	externalSession     bool
 	budgetWaived        bool
 	activeTouchset      *touchset.Set
 	dependsOn           []string
 	waitingDependencies bool
+}
+
+type Claim struct {
+	IssueID    string `json:"issue_id"`
+	Title      string `json:"title"`
+	Body       string `json:"body"`
+	Priority   int    `json:"priority"`
+	Flow       string `json:"flow"`
+	Repository string `json:"repository"`
+	Worktree   string `json:"worktree"`
+	Branch     string `json:"branch"`
+	BaseSHA    string `json:"base_sha"`
+}
+
+type FinishClaimRequest struct {
+	IssueID       string
+	Worktree      string
+	AllowNoChange bool
 }
 
 type Engine struct {
@@ -167,6 +190,31 @@ func (e *Engine) Rehydrate() error {
 		integration, hasIntegration, err := e.cfg.Store.IssueIntegration(row.ID)
 		if err != nil {
 			return err
+		}
+		if hasIntegration && integration.State == store.IntegrationClaimed &&
+			(row.State == "claimed" || row.State == "failed") {
+			finalIdx := 0
+			if row.State == "failed" {
+				var finalErr error
+				finalIdx, finalErr = finalStageIndex(e.cfg.Flows[row.Flow])
+				if finalErr != nil {
+					return finalErr
+				}
+			}
+			is := &issueState{
+				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+				dependsOn: append([]string(nil), row.DependsOn...),
+				claimed:   row.State == "claimed", externalSession: true,
+				terminal: row.State == "failed", stageIdx: finalIdx,
+			}
+			if err := e.restoreClaimedWorkspace(is, integration); err != nil {
+				return fmt.Errorf("restore claim %s: %w", row.ID, err)
+			}
+			e.mu.Lock()
+			e.issues[row.ID] = is
+			e.mu.Unlock()
+			continue
 		}
 		if hasIntegration && integration.State == store.IntegrationVerificationReady {
 			is := &issueState{
@@ -751,6 +799,381 @@ func (e *Engine) UpdateIssueWithDependencies(id, title, body, flowName, preset s
 		"priority": priority, "levers": matrixStrings(m), "attachments": set.Names(),
 		"depends_on": dependsOn})
 	return nil
+}
+
+func (e *Engine) ClaimIssue(id string) (Claim, error) {
+	e.mu.Lock()
+	is, ok := e.issues[id]
+	if !ok {
+		e.mu.Unlock()
+		return Claim{}, fmt.Errorf("unknown issue %s", id)
+	}
+	if is.claimed {
+		claim := e.claimFromState(is)
+		e.mu.Unlock()
+		return claim, nil
+	}
+	if is.claiming {
+		e.mu.Unlock()
+		return Claim{}, fmt.Errorf("issue %s claim is already in progress", id)
+	}
+	if !is.draft {
+		e.mu.Unlock()
+		return Claim{}, fmt.Errorf("issue %s is not in the backlog", id)
+	}
+	e.mu.Unlock()
+
+	unmet, err := e.unmetMergedDependencies(id)
+	if err != nil {
+		return Claim{}, err
+	}
+	if len(unmet) > 0 {
+		return Claim{}, fmt.Errorf("issue %s is blocked by %s", id, strings.Join(unmet, ", "))
+	}
+	if e.cfg.Workspace == nil {
+		return Claim{}, fmt.Errorf("issue %s cannot be claimed: no workspace provider", id)
+	}
+
+	e.mu.Lock()
+	if is.claimed {
+		claim := e.claimFromState(is)
+		e.mu.Unlock()
+		return claim, nil
+	}
+	if is.claiming || !is.draft {
+		e.mu.Unlock()
+		return Claim{}, fmt.Errorf("issue %s is no longer available to claim", id)
+	}
+	is.claiming = true
+	e.mu.Unlock()
+
+	rollback := func(release func() error) {
+		if release != nil {
+			_ = release()
+		}
+		e.mu.Lock()
+		is.claiming = false
+		is.claimed = false
+		is.draft = true
+		is.wsPath = ""
+		is.wsRelease = nil
+		is.branch = ""
+		is.baseRef = ""
+		e.mu.Unlock()
+	}
+	path, release, err := e.cfg.Workspace.Acquire(id)
+	if err != nil {
+		rollback(nil)
+		return Claim{}, err
+	}
+	if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
+		if err := repocfg.BindWorktree(e.cfg.Train.Repo, path); err != nil {
+			rollback(release)
+			return Claim{}, err
+		}
+	}
+	branch, err := gitCommandOutput(path, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		rollback(release)
+		return Claim{}, fmt.Errorf("read claimed branch: %w", err)
+	}
+	baseSHA, err := gitRevision(path, "HEAD")
+	if err != nil {
+		rollback(release)
+		return Claim{}, fmt.Errorf("read claim base: %w", err)
+	}
+	if branch != "issue/"+id {
+		rollback(release)
+		return Claim{}, fmt.Errorf("claimed branch %s does not match issue/%s", branch, id)
+	}
+	if err := e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
+		IssueID: id, State: store.IntegrationClaimed, PreSHA: baseSHA,
+		Worktree: path, Branch: branch,
+	}); err != nil {
+		rollback(release)
+		return Claim{}, err
+	}
+	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
+		ID: id, Title: is.title, Body: is.body, State: "claimed", Flow: is.flowName,
+		Levers: matrixStrings(is.matrix), Priority: is.priority,
+	}); err != nil {
+		_ = e.cfg.Store.DeleteIssueIntegration(id)
+		rollback(release)
+		return Claim{}, err
+	}
+	e.mu.Lock()
+	is.claiming = false
+	is.claimed = true
+	is.draft = false
+	is.externalSession = true
+	is.wsPath, is.wsRelease = path, release
+	is.branch, is.baseRef = branch, baseSHA
+	claim := e.claimFromState(is)
+	e.mu.Unlock()
+	e.emit(core.EvIssueClaimed, id, map[string]string{
+		"worktree": path, "branch": branch, "base_sha": baseSHA,
+	})
+	return claim, nil
+}
+
+func (e *Engine) Claims() ([]Claim, error) {
+	e.mu.Lock()
+	claims := make([]Claim, 0)
+	for _, is := range e.issues {
+		if is.claimed {
+			claims = append(claims, e.claimFromState(is))
+		}
+	}
+	e.mu.Unlock()
+	sort.Slice(claims, func(i, j int) bool { return claims[i].IssueID < claims[j].IssueID })
+	return claims, nil
+}
+
+func (e *Engine) ClaimForWorktree(path string) (Claim, error) {
+	requested, err := canonicalWorktreePath(path)
+	if err != nil {
+		return Claim{}, err
+	}
+	claims, err := e.Claims()
+	if err != nil {
+		return Claim{}, err
+	}
+	var matches []Claim
+	for _, claim := range claims {
+		recorded, pathErr := canonicalWorktreePath(claim.Worktree)
+		if pathErr == nil && recorded == requested {
+			matches = append(matches, claim)
+		}
+	}
+	if len(matches) == 0 {
+		return Claim{}, fmt.Errorf("no claim for worktree %s", path)
+	}
+	if len(matches) > 1 {
+		return Claim{}, fmt.Errorf("multiple claims for worktree %s", path)
+	}
+	return matches[0], nil
+}
+
+func (e *Engine) claimFromState(is *issueState) Claim {
+	repository := ""
+	if e.cfg.Train != nil {
+		repository = e.cfg.Train.Repo
+	}
+	return Claim{
+		IssueID: is.id, Title: is.title, Body: is.body, Priority: is.priority,
+		Flow: is.flowName, Repository: repository, Worktree: is.wsPath,
+		Branch: is.branch, BaseSHA: is.baseRef,
+	}
+}
+
+func (e *Engine) restoreClaimedWorkspace(is *issueState, integration store.IssueIntegration) error {
+	if integration.Worktree == "" || integration.Branch == "" || integration.PreSHA == "" {
+		return fmt.Errorf("claim is missing workspace identity")
+	}
+	info, err := os.Stat(integration.Worktree)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("claimed worktree %s is unavailable", integration.Worktree)
+	}
+	branch, err := gitCommandOutput(integration.Worktree, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	if branch != integration.Branch {
+		return fmt.Errorf("claimed branch changed: current %s, claim %s", branch, integration.Branch)
+	}
+	releaser, ok := e.cfg.Workspace.(workspace.Releaser)
+	if !ok {
+		return fmt.Errorf("workspace provider cannot restore claimed worktrees")
+	}
+	if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
+		if err := repocfg.BindWorktree(e.cfg.Train.Repo, integration.Worktree); err != nil {
+			return err
+		}
+	}
+	is.wsPath = integration.Worktree
+	is.wsRelease = func() error { return releaser.ReleasePath(integration.Worktree) }
+	is.branch = integration.Branch
+	is.baseRef = integration.PreSHA
+	return nil
+}
+
+func (e *Engine) unmetMergedDependencies(issueID string) ([]string, error) {
+	parents, err := e.cfg.Store.Dependencies(issueID)
+	if err != nil {
+		return nil, err
+	}
+	var unmet []string
+	for _, parent := range parents {
+		integration, ok, err := e.cfg.Store.IssueIntegration(parent)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || (integration.State != store.IntegrationMerged &&
+			integration.State != store.IntegrationCleanupNeeded) {
+			unmet = append(unmet, parent)
+		}
+	}
+	return unmet, nil
+}
+
+func (e *Engine) ClaimBlockers(issueID string) ([]string, error) {
+	return e.unmetMergedDependencies(issueID)
+}
+
+func (e *Engine) ReleaseClaim(id string) error {
+	e.mu.Lock()
+	is, ok := e.issues[id]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", id)
+	}
+	if !is.claimed || is.running {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is not an idle claim", id)
+	}
+	path, branch, baseSHA, release := is.wsPath, is.branch, is.baseRef, is.wsRelease
+	e.mu.Unlock()
+	if status, err := gitCommandOutput(path, "status", "--porcelain"); err != nil {
+		return err
+	} else if status != "" {
+		return fmt.Errorf("issue %s worktree has uncommitted changes", id)
+	}
+	head, err := gitRevision(path, "HEAD")
+	if err != nil {
+		return err
+	}
+	if head != baseSHA {
+		return fmt.Errorf("issue %s branch has commits beyond claim base", id)
+	}
+	currentBranch, err := gitCommandOutput(path, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	if currentBranch != branch {
+		return fmt.Errorf("issue %s branch changed: current %s, claim %s", id, currentBranch, branch)
+	}
+	if release == nil {
+		return fmt.Errorf("issue %s claim has no workspace release", id)
+	}
+	if err := release(); err != nil {
+		return err
+	}
+	if err := e.cfg.Store.DeleteIssueIntegration(id); err != nil {
+		return err
+	}
+	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
+		ID: id, Title: is.title, Body: is.body, State: "backlog", Flow: is.flowName,
+		Levers: matrixStrings(is.matrix), Priority: is.priority,
+	}); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	is.draft = true
+	is.claimed = false
+	is.externalSession = false
+	is.wsPath, is.wsRelease = "", nil
+	is.branch, is.baseRef = "", ""
+	e.mu.Unlock()
+	e.emit(core.EvIssueReleased, id, nil)
+	return nil
+}
+
+func (e *Engine) FinishClaim(req FinishClaimRequest) error {
+	e.mu.Lock()
+	is, ok := e.issues[req.IssueID]
+	if !ok {
+		e.mu.Unlock()
+		return fmt.Errorf("unknown issue %s", req.IssueID)
+	}
+	if !is.claimed || is.running {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is not an idle claim", req.IssueID)
+	}
+	e.mu.Unlock()
+
+	integration, ok, err := e.cfg.Store.IssueIntegration(req.IssueID)
+	if err != nil {
+		return err
+	}
+	if !ok || integration.State != store.IntegrationClaimed {
+		return fmt.Errorf("issue %s has no durable claim", req.IssueID)
+	}
+	requested, err := canonicalWorktreePath(req.Worktree)
+	if err != nil {
+		return err
+	}
+	recorded, err := canonicalWorktreePath(integration.Worktree)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(requested) != filepath.Clean(recorded) {
+		return fmt.Errorf("worktree %s does not match claim %s", requested, recorded)
+	}
+	branch, err := gitCommandOutput(recorded, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	if branch != integration.Branch {
+		return fmt.Errorf("branch %s does not match claim %s", branch, integration.Branch)
+	}
+	status, err := gitCommandOutput(recorded, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if status != "" {
+		return fmt.Errorf("issue %s worktree has uncommitted changes", req.IssueID)
+	}
+	head, err := gitRevision(recorded, "HEAD")
+	if err != nil {
+		return err
+	}
+	if head == integration.PreSHA && !req.AllowNoChange {
+		return fmt.Errorf("issue %s has no commits beyond the claim base", req.IssueID)
+	}
+	finalIdx, err := finalStageIndex(e.cfg.Flows[is.flowName])
+	if err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	if !is.claimed || is.running {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is no longer ready to finish", req.IssueID)
+	}
+	is.claimed = false
+	is.draft = false
+	is.externalSession = true
+	is.stageIdx = finalIdx
+	e.mu.Unlock()
+	e.emit(core.EvIssueCreated, is.id, map[string]any{
+		"title": is.title, "body": is.body, "flow": is.flowName, "priority": is.priority,
+	})
+	go func() { _ = e.runAndRecord(context.Background(), is, finalIdx) }()
+	return nil
+}
+
+func canonicalWorktreePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func finalStageIndex(f flow.Flow) (int, error) {
+	if len(f.Stages) == 0 || f.Stages[len(f.Stages)-1].Name != "merge-verification" {
+		return 0, fmt.Errorf("flow %q does not end with merge-verification", f.Name)
+	}
+	for i := range f.Stages[:len(f.Stages)-1] {
+		if f.Stages[i].Name == "merge-verification" {
+			return 0, fmt.Errorf("flow %q repeats merge-verification", f.Name)
+		}
+	}
+	return len(f.Stages) - 1, nil
 }
 
 // LaunchIssue promotes a backlog draft into a running lane: the row flips to
@@ -1502,13 +1925,16 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 		e.mu.Lock()
 		is.activeTouchset = nil
 		release := is.wsRelease
-		is.wsRelease = nil
-		is.wsPath = ""
-		is.branch = ""
-		is.baseRef = ""
+		preserveExternal := aborted && is.externalSession
+		if !preserveExternal {
+			is.wsRelease = nil
+			is.wsPath = ""
+			is.branch = ""
+			is.baseRef = ""
+		}
 		is.running = false
 		e.mu.Unlock()
-		if release != nil && !landed && !preserveWorkspace {
+		if release != nil && !landed && !preserveWorkspace && !preserveExternal {
 			_ = release()
 		}
 		if aborted && e.cfg.Marshal != nil {
