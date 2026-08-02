@@ -55,3 +55,47 @@ func TestRecommendedAnswerMatchesDecisionKind(t *testing.T) {
 		t.Fatalf("freeform answer = %#v", freeformAnswer)
 	}
 }
+
+func TestDecisionAcceptsFreeformForChoice(t *testing.T) {
+	cases := []struct {
+		name     string
+		decision Decision
+		response Response
+		want     bool
+	}{
+		{name: "choice without legacy flag", decision: Decision{
+			Kind: DecisionChoice, Options: []string{"approve", "hold"},
+		}, response: FreeformResponse("Clarify the rollout."), want: true},
+		{name: "choice with legacy flag false", decision: Decision{
+			Kind: DecisionChoice, Options: []string{"approve", "hold"}, AllowFreeform: false,
+		}, response: FreeformResponse("Clarify the rollout."), want: true},
+		{name: "choice with legacy flag true", decision: Decision{
+			Kind: DecisionChoice, Options: []string{"approve", "hold"}, AllowFreeform: true,
+		}, response: FreeformResponse("Clarify the rollout."), want: true},
+		{name: "legacy zero-value choice", decision: Decision{
+			Options: []string{"approve", "hold"},
+		}, response: FreeformResponse("Clarify the rollout."), want: true},
+		{name: "freeform", decision: Decision{
+			Kind: DecisionFreeform,
+		}, response: FreeformResponse("Clarify the rollout."), want: true},
+		{name: "empty text", decision: Decision{
+			Kind: DecisionChoice, Options: []string{"approve"},
+		}, response: FreeformResponse(""), want: false},
+		{name: "invalid option", decision: Decision{
+			Kind: DecisionChoice, Options: []string{"approve"},
+		}, response: ChoiceResponse(1), want: false},
+		{name: "nil option", decision: Decision{
+			Kind: DecisionChoice, Options: []string{"approve"},
+		}, response: Response{Kind: DecisionChoice}, want: false},
+		{name: "unsupported response kind", decision: Decision{
+			Kind: DecisionChoice, Options: []string{"approve"},
+		}, response: Response{Kind: DecisionKind("unsupported"), Text: "Clarify"}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.decision.Accepts(tc.response); got != tc.want {
+				t.Fatalf("Accepts(%#v) = %v, want %v", tc.response, got, tc.want)
+			}
+		})
+	}
+}

@@ -292,6 +292,103 @@ func TestAnswerDecisionAcceptsFreeformText(t *testing.T) {
 	}
 }
 
+func TestAnswerDecisionAcceptsChoiceNoteText(t *testing.T) {
+	f := oneAgentFlow("agent")
+	s, err := store.Open("file:choice-note-proto?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	responses := make(chan levers.Response, 1)
+	fr := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"run/agent": {Asks: []levers.Decision{{
+			Kind: levers.DecisionChoice, Question: "Proceed?",
+			Options: []string{"approve", "hold"}, Recommended: 0,
+			AllowFreeform: false, Importance: 1.0,
+		}}},
+	}, OnResponse: func(_ string, _ string, response levers.Response) { responses <- response }}
+	e := engine.New(engine.Config{
+		Store: s, Runner: fr, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),
+	})
+	sock := sockPath(t)
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	srv := NewServer(e, s)
+	srv.SetFlows(map[string]flow.Flow{"default": f})
+	go srv.Serve(l)
+	c, err := Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	created, _ := c.Do(Command{Op: "create_issue", Title: "choice note", Flow: "default", Preset: "yolo"})
+	if !created.OK {
+		t.Fatalf("create: %+v", created)
+	}
+	if started, _ := c.Do(Command{Op: "start_issue", IssueID: created.IssueID}); !started.OK {
+		t.Fatalf("start: %+v", started)
+	}
+	var decisionID int64
+	deadline := time.After(5 * time.Second)
+	for decisionID == 0 {
+		pending, _ := c.Do(Command{Op: "list_decisions"})
+		if len(pending.Decisions) == 1 {
+			decisionID = pending.Decisions[0].ID
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("choice decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	answer, _ := c.Do(Command{
+		Op: "answer_decision", DecisionID: decisionID,
+		Text: "Clarify the rollout before approval.",
+	})
+	if !answer.OK {
+		t.Fatalf("answer: %+v", answer)
+	}
+	deadline = time.After(5 * time.Second)
+	for {
+		pending, _ := c.Do(Command{Op: "list_decisions"})
+		if len(pending.Decisions) == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("decision remains listed: %+v", pending.Decisions)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	select {
+	case got := <-responses:
+		if got.Kind != levers.DecisionFreeform || got.Text != "Clarify the rollout before approval." {
+			t.Fatalf("runner response = %#v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not receive choice note")
+	}
+	for {
+		events, _ := c.Do(Command{Op: "tail"})
+		for _, event := range events.Events {
+			if event.IssueID == created.IssueID && event.Type == core.EvIssueCompleted {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("issue did not complete")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func TestBacklogOps(t *testing.T) {
 	c := newTestClient(t)
 	parent, err := c.Do(Command{Op: "draft_issue", Title: "parent", Flow: "default", Preset: "regular"})

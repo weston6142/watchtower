@@ -159,6 +159,26 @@ func TestDecisionRoundTripReturnsFreeformText(t *testing.T) {
 	}
 }
 
+func TestChoiceDecisionRoundTripReturnsFreeformText(t *testing.T) {
+	dir := t.TempDir()
+	done, asks := run(t, abs(t, "testdata/choice-note.sh"), dir)
+	a := <-asks
+	if a.Decision.Kind != levers.DecisionChoice || a.Decision.AllowFreeform {
+		t.Fatalf("ask = %+v", a.Decision)
+	}
+	a.Reply <- levers.FreeformResponse("Use four retries.")
+	if res := <-done; res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "decision-reply.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "Human decision: Use four retries.") {
+		t.Fatalf("reply = %q", got)
+	}
+}
+
 func TestErrorResultFails(t *testing.T) {
 	done, _ := run(t, abs(t, "testdata/failer.sh"), t.TempDir())
 	if res := <-done; res.Err == nil {

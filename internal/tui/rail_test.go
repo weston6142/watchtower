@@ -26,18 +26,40 @@ func TestRenderToastMarksRecommended(t *testing.T) {
 	}
 }
 
-func TestRenderToastShowsOtherOnlyWhenAllowed(t *testing.T) {
+func TestRenderToastAlwaysShowsAddNote(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
+	for _, allow := range []bool{false, true} {
+		d := projection.DecisionView{
+			ID: 4, Stage: "merge", Question: "Repair?",
+			Options: []string{"Apply fix", "Hold"}, Recommended: 0, AllowFreeform: allow,
+		}
+		out := renderToast(d, Identity{Tag: "GH"}, len(d.Options), 0, 60)
+		if !strings.Contains(out, "Add note...") || !strings.Contains(out, "send feedback instead of selecting an option") {
+			t.Fatalf("allow_freeform=%v note row missing:\n%s", allow, out)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "Add note...") && !strings.Contains(line, "◉") {
+				t.Fatalf("allow_freeform=%v note row is not selected:\n%s", allow, out)
+			}
+		}
+	}
+
 	d := projection.DecisionView{
 		ID: 4, Stage: "merge", Question: "Repair?",
-		Options: []string{"Apply fix", "Hold"}, Recommended: 0, AllowFreeform: true,
+		Options: []string{"Apply fix", "Hold"}, Recommended: 0,
 	}
-	if out := renderToast(d, Identity{Tag: "GH"}, 2, 0, 60); !strings.Contains(out, "Other...") {
-		t.Fatalf("allowed Other missing:\n%s", out)
-	}
-	d.AllowFreeform = false
-	if out := renderToast(d, Identity{Tag: "GH"}, 0, 0, 60); strings.Contains(out, "Other...") {
-		t.Fatalf("disallowed Other rendered:\n%s", out)
+	for _, width := range []int{48, 100} {
+		out := renderToast(d, Identity{Tag: "GH"}, len(d.Options), 0, width)
+		if !strings.Contains(out, "Add note...") || !strings.Contains(out, "send feedback instead of selecting") || !strings.Contains(out, "an option") {
+			t.Fatalf("width %d wrapped note text missing:\n%s", width, out)
+		}
+		if width == 100 {
+			for lineNo, line := range strings.Split(out, "\n") {
+				if lipgloss.Width(line) > width {
+					t.Fatalf("width %d line %d is %d cells wide:\n%s", width, lineNo, lipgloss.Width(line), out)
+				}
+			}
+		}
 	}
 }
 

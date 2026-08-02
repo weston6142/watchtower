@@ -390,12 +390,16 @@ func TestToastJKAndArrowsMoveSelection(t *testing.T) {
 		t.Fatalf("after j: toastSel = %d, want 2", m.toastSel)
 	}
 	m = pressKey(t, m, "j")
-	if m.toastSel != 2 {
-		t.Fatalf("j did not clamp at last option: %d", m.toastSel)
+	if m.toastSel != 3 {
+		t.Fatalf("after j: toastSel = %d, want Add note index 3", m.toastSel)
+	}
+	m = pressKey(t, m, "j")
+	if m.toastSel != 3 {
+		t.Fatalf("j did not clamp at Add note: %d", m.toastSel)
 	}
 	m = pressKey(t, m, "up")
-	if m.toastSel != 1 {
-		t.Fatalf("after up: toastSel = %d, want 1", m.toastSel)
+	if m.toastSel != 2 {
+		t.Fatalf("after up: toastSel = %d, want 2", m.toastSel)
 	}
 	m = pressKey(t, m, "k")
 	m = pressKey(t, m, "k")
@@ -431,13 +435,13 @@ func TestFreeformToastEnterOpensRecommendedResponseEditor(t *testing.T) {
 	}
 }
 
-func TestChoiceToastOtherOpensEmptyEditor(t *testing.T) {
+func TestChoiceToastAddNoteOpensEmptyEditor(t *testing.T) {
 	m := toastModel(t)
-	m.Toast.AllowFreeform = true
+	m = pressKey(t, m, "j")
 	m = pressKey(t, m, "j")
 	m = pressKey(t, m, "j")
 	if m.toastSel != len(m.Toast.Options) {
-		t.Fatalf("selection = %d, want Other index %d", m.toastSel, len(m.Toast.Options))
+		t.Fatalf("selection = %d, want Add note index %d", m.toastSel, len(m.Toast.Options))
 	}
 	m = pressKey(t, m, "enter")
 	if m.decisionEditor == nil || m.decisionEditor.Value != "" {

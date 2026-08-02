@@ -146,8 +146,8 @@ func TestInvalidResponseLeavesDecisionPending(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	if err := e.Answer(pending.ID, levers.FreeformResponse("not allowed")); err == nil {
-		t.Fatal("invalid freeform response was accepted for a choice decision")
+	if err := e.Answer(pending.ID, levers.FreeformResponse("")); err == nil {
+		t.Fatal("empty freeform response was accepted for a choice decision")
 	}
 	if decisions := e.PendingDecisions(); len(decisions) != 1 || decisions[0].ID != pending.ID {
 		t.Fatalf("invalid answer consumed pending decision: %#v", decisions)
@@ -157,6 +157,99 @@ func TestInvalidResponseLeavesDecisionPending(t *testing.T) {
 	}
 	if err := <-errc; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestChoiceNoteAnswerResolvesDecision(t *testing.T) {
+	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
+		Name: "run", Agents: []flow.AgentRef{{Package: "agent"}},
+		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
+	}}}
+	responses := make(chan levers.Response, 1)
+	fr := &runner.FakeRunner{
+		Scripts: map[string]runner.Script{
+			"run/agent": {Asks: []levers.Decision{{
+				Kind: levers.DecisionChoice, Question: "Proceed?",
+				Options: []string{"approve", "hold"}, Recommended: 0,
+				AllowFreeform: false, Importance: 1.0,
+			}}},
+		},
+		OnResponse: func(_ string, _ string, response levers.Response) { responses <- response },
+	}
+	e, s := newEngineCfg(t, fr, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"default": f}
+	})
+	id, err := e.CreateIssue("choice note", "", "default", levers.Preset(f, flow.LeverStrict), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errC := make(chan error, 1)
+	go func() { errC <- e.StartIssue(context.Background(), id) }()
+
+	var pending PendingDecision
+	deadline := time.After(5 * time.Second)
+	for pending.ID == 0 {
+		if decisions := e.PendingDecisions(); len(decisions) == 1 {
+			pending = decisions[0]
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("choice decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(len(pending.D.Options))); err == nil {
+		t.Fatal("invalid option was accepted")
+	}
+	if err := e.Answer(pending.ID, levers.FreeformResponse("")); err == nil {
+		t.Fatal("empty note was accepted")
+	}
+	if decisions := e.PendingDecisions(); len(decisions) != 1 || decisions[0].ID != pending.ID {
+		t.Fatalf("invalid answers consumed pending decision: %#v", decisions)
+	}
+
+	const note = "Clarify the rollout before approval."
+	if err := e.Answer(pending.ID, levers.FreeformResponse(note)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Answer(pending.ID, levers.FreeformResponse("second answer")); err == nil {
+		t.Fatal("answered decision accepted a second response")
+	}
+	if err := <-errC; err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-responses:
+		if got.Kind != levers.DecisionFreeform || got.Text != note {
+			t.Fatalf("runner response = %#v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not receive note")
+	}
+	if decisions := e.PendingDecisions(); len(decisions) != 0 {
+		t.Fatalf("decision remains pending: %#v", decisions)
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("decision rows = %#v, err = %v", rows, err)
+	}
+	if rows[0].Status != "answered" || rows[0].Response.Kind != levers.DecisionFreeform || rows[0].Response.Text != note {
+		t.Fatalf("stored answer = %#v", rows[0])
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := 0
+	for _, event := range events {
+		if event.Type == core.EvDecisionAnswered {
+			answered++
+		}
+	}
+	if answered != 1 {
+		t.Fatalf("decision_answered events = %d, want 1", answered)
 	}
 }
 

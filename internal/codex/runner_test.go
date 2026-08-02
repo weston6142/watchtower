@@ -300,6 +300,30 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens
 	}
 }
 
+func TestChoiceDecisionResumesWithHumanText(t *testing.T) {
+	bin, state := statefulStub(t,
+		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-choice-note"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"kind\":\"choice\",\"question\":\"What retry limit?\",\"options\":[\"Three\",\"Four\"],\"recommended\":0,\"allow_freeform\":false,\"importance\":0.8,\"why\":\"Bounded retries.\",\"consequences\":[\"Three retries.\",\"Four retries.\"],\"reversible\":\"yes\"}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":3}}'`,
+		`printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":7}}'`,
+	)
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	ask := <-asks
+	if ask.Decision.Kind != levers.DecisionChoice || ask.Decision.AllowFreeform {
+		t.Fatalf("ask = %+v", ask.Decision)
+	}
+	ask.Reply <- levers.FreeformResponse("Use four retries.")
+	res := <-done
+	if res.Err != nil || res.Tokens != 17 {
+		t.Fatalf("result = %+v", res)
+	}
+	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "Human decision: Use four retries.") {
+		t.Fatalf("resume argv = %q", got)
+	}
+}
+
 func TestCoachRepairsDecisionBeforeAsking(t *testing.T) {
 	bin, state := statefulStub(t,
 		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-coach"}'

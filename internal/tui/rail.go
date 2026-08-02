@@ -211,8 +211,8 @@ func orderedLeverStages(levers map[string]string) []string {
 
 // renderToast draws the raised decision as a self-contained card: banded
 // header (tag, title, reversibility verdict), question + why, bordered
-// selectable option rows with the ★ recommendation, and a chip keybar.
-// sel is the option the j/k cursor is on.
+// selectable choice rows and a note row, with the ★ recommendation, and a
+// chip keybar. sel is the choice or note row the j/k cursor is on.
 func renderToast(d projection.DecisionView, id Identity, sel, streak, width int) string {
 	inner := max(20, width-8)
 	t := activeTheme
@@ -237,10 +237,8 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 			lines = append(lines, strings.Split(renderOption(option, consequence,
 				i == sel, i == d.Recommended, inner), "\n")...)
 		}
-		if d.AllowFreeform {
-			lines = append(lines, strings.Split(renderOption(
-				"Other...", "type a different response", sel == len(d.Options), false, inner), "\n")...)
-		}
+		lines = append(lines, strings.Split(renderOption(
+			"Add note...", "send feedback instead of selecting an option", sel == len(d.Options), false, inner), "\n")...)
 	}
 	if streak >= 3 {
 		lines = append(lines, "", dim.Render(fmt.Sprintf("you've accepted %d recommendations in a row without opening evidence", streak)))

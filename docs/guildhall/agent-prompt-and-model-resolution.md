@@ -60,3 +60,11 @@ UUID and resumes that exact thread with coaching or the human response. It
 never uses `--last`. Tokens accumulate across the initial and resumed turns,
 while proposal and dependency markers continue through the shared
 `agentprotocol` parser.
+
+Choice decisions support both an option response and typed feedback through
+the existing freeform response path. The TUI always presents `Add note...` for
+choices, and submitting that text through `answer_decision` resolves the
+decision and resumes the agent with `Human decision: <text>`. The
+`allow_freeform` marker and storage field remain for compatibility with older
+artifacts, but are legacy metadata rather than a runtime capability gate;
+missing or false values do not prevent a valid note.
