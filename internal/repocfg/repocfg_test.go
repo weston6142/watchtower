@@ -2,8 +2,10 @@ package repocfg
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -166,6 +168,42 @@ func TestFindRepoWalksUp(t *testing.T) {
 func TestFindRepoNotFound(t *testing.T) {
 	if _, err := FindRepo(t.TempDir()); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestFindRepoFromLinkedWorktreeReturnsMainCheckout(t *testing.T) {
+	repo := t.TempDir()
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(repo, "init", "-q", "-b", "develop")
+	git(repo, "config", "user.email", "test@example.com")
+	git(repo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("watchtower\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(repo, "add", "README.md")
+	git(repo, "commit", "-qm", "initial")
+	if err := os.Mkdir(filepath.Join(repo, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(t.TempDir(), "GH-41")
+	git(repo, "worktree", "add", "-q", "-b", "issue/GH-41", worktree)
+
+	got, err := FindRepo(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(repo)
+	got, _ = filepath.EvalSymlinks(got)
+	if got != want {
+		t.Fatalf("FindRepo(linked worktree) = %q, want %q", got, want)
 	}
 }
 

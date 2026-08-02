@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -177,17 +178,34 @@ func fillGaps(cfg *Config) {
 
 // FindRepo walks up from startDir to the first directory containing .watchtower/.
 func FindRepo(startDir string) (string, error) {
-	dir, err := filepath.Abs(startDir)
+	start, err := filepath.Abs(startDir)
 	if err != nil {
 		return "", err
 	}
+	if repo, ok := findWatchtowerParent(start); ok {
+		return repo, nil
+	}
+	cmd := exec.Command(
+		"git", "-C", start, "rev-parse", "--path-format=absolute", "--git-common-dir",
+	)
+	if out, gitErr := cmd.Output(); gitErr == nil {
+		candidate := filepath.Dir(strings.TrimSpace(string(out)))
+		if info, statErr := os.Stat(filepath.Join(candidate, ".watchtower")); statErr == nil && info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no .watchtower found above %s (run 'watchtower init' in your repo)", startDir)
+}
+
+func findWatchtowerParent(start string) (string, bool) {
+	dir := start
 	for {
 		if fi, err := os.Stat(filepath.Join(dir, ".watchtower")); err == nil && fi.IsDir() {
-			return dir, nil
+			return dir, true
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("no .watchtower found above %s (run 'watchtower init' in your repo)", startDir)
+			return "", false
 		}
 		dir = parent
 	}
