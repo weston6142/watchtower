@@ -861,8 +861,8 @@ func TestTimelineRefreshesOnEvents(t *testing.T) {
 	m := NewModel(nil, []string{"brainstorm", "plan"})
 	m = m.applyEvents([]core.Event{
 		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "t", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
 	})
-	m.Focus.Issue = "GH-1"
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
 	nm := next.(Model)
 	ev := mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "plan"})
