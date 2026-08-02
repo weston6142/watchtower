@@ -190,6 +190,37 @@ func TestDecisionRoundTripsTypedFreeformResponse(t *testing.T) {
 	}
 }
 
+func TestChoiceDecisionRoundTripsTypedFreeformResponse(t *testing.T) {
+	s, err := Open("file:choice-typed-decisions?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	id, err := s.InsertDecision(DecisionRow{
+		IssueID: "GH-1", Stage: "spec", Kind: levers.DecisionChoice,
+		Question: "Approve?", Options: []string{"approve", "hold"}, Recommended: 0,
+		AllowFreeform: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := levers.FreeformResponse("Clarify the rollout before approval.")
+	if err := s.AnswerDecision(id, response, "answered"); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	got := rows[0]
+	if got.Kind != levers.DecisionChoice || got.AllowFreeform || got.Status != "answered" ||
+		got.Response.Kind != levers.DecisionFreeform || got.Response.Text != response.Text {
+		t.Fatalf("decision = %#v", got)
+	}
+}
+
 func TestProposalLifecycle(t *testing.T) {
 	s, _ := Open("file:t4?mode=memory&cache=shared")
 	defer s.Close()

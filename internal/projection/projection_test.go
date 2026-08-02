@@ -53,6 +53,26 @@ func TestDecisionProjectionPreservesFreeformFields(t *testing.T) {
 	}
 }
 
+func TestDecisionProjectionPreservesChoiceCompatibilityField(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+		"decision_id": float64(3), "stage": "spec", "kind": "choice",
+		"question": "Legacy false?", "options": []any{"yes", "no"},
+		"recommended": float64(0), "allow_freeform": false,
+	}))
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+		"decision_id": float64(4), "stage": "spec",
+		"question": "Legacy omitted?", "options": []any{"yes", "no"},
+		"recommended": float64(0),
+	}))
+	for id, question := range map[int64]string{3: "Legacy false?", 4: "Legacy omitted?"} {
+		got, ok := s.Decisions[id]
+		if !ok || got.Kind != "choice" || got.Question != question || len(got.Options) != 2 || got.AllowFreeform {
+			t.Fatalf("decision %d = %#v", id, got)
+		}
+	}
+}
+
 func TestIssueCompletedSetsDone(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "x"}))

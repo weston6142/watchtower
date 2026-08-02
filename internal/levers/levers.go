@@ -30,12 +30,14 @@ type Decision struct {
 	Options             []string
 	Recommended         int
 	RecommendedResponse string
-	AllowFreeform       bool
-	Importance          float64
-	Paths               []string
-	Why                 string
-	Consequences        []string
-	Reversible          string
+	// AllowFreeform is retained wire/storage compatibility metadata. It is not
+	// a current capability switch for decision responses.
+	AllowFreeform bool
+	Importance    float64
+	Paths         []string
+	Why           string
+	Consequences  []string
+	Reversible    string
 }
 
 type Response struct {
@@ -61,7 +63,7 @@ func (d Decision) RecommendedAnswer() Response {
 
 func (d Decision) Accepts(response Response) bool {
 	if response.Kind == DecisionFreeform {
-		return response.Text != "" && (d.Kind == DecisionFreeform || d.AllowFreeform)
+		return response.Text != "" && (d.Kind == "" || d.Kind == DecisionChoice || d.Kind == DecisionFreeform)
 	}
 	if response.Kind != DecisionChoice || response.Option == nil {
 		return false

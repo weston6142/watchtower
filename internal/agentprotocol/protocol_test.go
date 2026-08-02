@@ -42,11 +42,23 @@ func TestExtractDecisionV2Fields(t *testing.T) {
 	}
 }
 
-func TestExtractChoiceDecisionAllowsFreeform(t *testing.T) {
-	text := `{"watchtower_decision":{"kind":"choice","question":"Fix it?","options":["Apply fix","Hold"],"recommended":0,"allow_freeform":true,"importance":0.8,"why":"The fix is scoped.","consequences":["Tests rerun.","Branch is preserved."],"reversible":"yes"}}`
-	d, ok := ExtractDecision(text)
-	if !ok || d.Kind != levers.DecisionChoice || !d.AllowFreeform {
-		t.Fatalf("decision = %#v, %v", d, ok)
+func TestExtractChoiceDecisionPreservesLegacyFreeformFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		field string
+		allow bool
+	}{
+		{name: "omitted"},
+		{name: "false", field: `,"allow_freeform":false`},
+		{name: "true", field: `,"allow_freeform":true`, allow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := `{"watchtower_decision":{"kind":"choice","question":"Fix it?","options":["Apply fix","Hold"],"recommended":0` + tc.field + `,"importance":0.8,"why":"The fix is scoped.","consequences":["Tests rerun.","Branch is preserved."],"reversible":"yes"}}`
+			d, ok := ExtractDecision(text)
+			if !ok || d.Kind != levers.DecisionChoice || len(d.Options) != 2 || d.Options[0] != "Apply fix" || d.AllowFreeform != tc.allow {
+				t.Fatalf("decision = %#v, %v", d, ok)
+			}
+		})
 	}
 }
 
