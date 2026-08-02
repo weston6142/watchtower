@@ -62,7 +62,7 @@ func TestDecisionProjectionPreservesChoiceCompatibilityField(t *testing.T) {
 	}))
 	s.Apply(ev(t, core.EvDecisionRequired, "GH-1", map[string]any{
 		"decision_id": float64(4), "stage": "spec",
-		"question": "Legacy omitted?", "options": []any{"yes", "no"},
+		"kind": "choice", "question": "Legacy omitted?", "options": []any{"yes", "no"},
 		"recommended": float64(0),
 	}))
 	for id, question := range map[int64]string{3: "Legacy false?", 4: "Legacy omitted?"} {

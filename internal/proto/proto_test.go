@@ -302,8 +302,7 @@ func TestAnswerDecisionAcceptsChoiceNoteText(t *testing.T) {
 			Options: []string{"approve", "hold"}, Recommended: 0,
 			AllowFreeform: false, Importance: 1.0,
 		}}},
-		OnResponse: func(_ string, _ string, response levers.Response) { responses <- response },
-	}}
+	}, OnResponse: func(_ string, _ string, response levers.Response) { responses <- response }}
 	e := engine.New(engine.Config{
 		Store: s, Runner: fr, Pool: slots.NewPool(1),
 		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),

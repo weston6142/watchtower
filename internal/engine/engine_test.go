@@ -146,8 +146,8 @@ func TestInvalidResponseLeavesDecisionPending(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	if err := e.Answer(pending.ID, levers.FreeformResponse("not allowed")); err == nil {
-		t.Fatal("invalid freeform response was accepted for a choice decision")
+	if err := e.Answer(pending.ID, levers.FreeformResponse("")); err == nil {
+		t.Fatal("empty freeform response was accepted for a choice decision")
 	}
 	if decisions := e.PendingDecisions(); len(decisions) != 1 || decisions[0].ID != pending.ID {
 		t.Fatalf("invalid answer consumed pending decision: %#v", decisions)
