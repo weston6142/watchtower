@@ -824,9 +824,12 @@ func (s *recordingSequencer) Aborted(string)                             {}
 
 func TestMarshalReleasedAfterSuccessfulCompletionWithoutTrain(t *testing.T) {
 	f := flow.Flow{Name: "default", Stages: []flow.Stage{
-		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Gate: flow.GateApproveArtifact, Artifacts: []string{"touchset.json"}},
-		{Name: "merge", Agents: []flow.AgentRef{{Package: "reviewer"}}, Gate: flow.GateAuto, MergeBarrier: true},
+		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "worktree", Gate: flow.GateApproveArtifact, Artifacts: []string{"touchset.json"}},
+		{Name: "merge", Agents: []flow.AgentRef{{Package: "reviewer"}}, Workspace: "worktree", Gate: flow.GateAuto, MergeBarrier: true,
+			Artifacts: append([]string(nil), flow.FinalizationArtifacts...)},
 	}}
+	repo := t.TempDir()
+	initGitRepo(t, repo)
 	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatal(err)
@@ -835,10 +838,13 @@ func TestMarshalReleasedAfterSuccessfulCompletionWithoutTrain(t *testing.T) {
 	seq := &recordingSequencer{}
 	e := New(Config{
 		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
-			"plan/planner":   {Artifacts: map[string]string{"touchset.json": `{"globs":["src/**"]}`}},
-			"merge/reviewer": {},
+			"plan/planner": {Artifacts: map[string]string{"touchset.json": `{"globs":["src/**"]}`}},
+			"merge/reviewer": {Artifacts: map[string]string{
+				"merge-report.md": "", "merge-decision.json": "", "verification.json": "",
+			}},
 		}},
-		Marshal: seq, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),
+		Marshal: seq, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
+		DataDir: t.TempDir(), Workspace: workspace.GitWorktree{Repo: repo},
 	})
 	id, err := e.CreateIssue("marshal", "", "default", levers.Preset(f, flow.LeverYolo), 0, nil)
 	if err != nil {
@@ -1128,12 +1134,20 @@ func verificationFlow() flow.Flow {
 	return flow.Flow{Name: "default", Stages: []flow.Stage{{
 		Name: "merge-verification", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
 		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
-		Artifacts: []string{"merge-report.md", "merge-decision.json", "verification.json"},
+		MergeBarrier: true,
+		Artifacts:    []string{"merge-report.md", "merge-decision.json", "verification.json"},
 	}}}
 }
 
 func verificationEngine(
 	t *testing.T, decision string, commands [][]string, treeOverride string,
+) (*Engine, *store.Store, string) {
+	t.Helper()
+	return verificationEngineForFlow(t, verificationFlow(), decision, commands, treeOverride)
+}
+
+func verificationEngineForFlow(
+	t *testing.T, f flow.Flow, decision string, commands [][]string, treeOverride string,
 ) (*Engine, *store.Store, string) {
 	t.Helper()
 	repo := t.TempDir()
@@ -1158,24 +1172,80 @@ func verificationEngine(
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := verificationFlow()
+	integrationStage, _, ok := f.IntegrationStage()
+	if !ok {
+		t.Fatal("verification test flow has no merge barrier")
+	}
+	scripts := map[string]runner.Script{}
+	for _, stage := range f.Stages {
+		for _, agent := range stage.Agents {
+			scripts[stage.Name+"/"+agent.Package] = runner.Script{}
+		}
+	}
+	finalKey := integrationStage.Name + "/" + integrationStage.Agents[0].Package
+	scripts[finalKey] = runner.Script{Artifacts: map[string]string{
+		"merge-report.md": "verified\n", "merge-decision.json": string(decisionBody),
+		"verification.json": string(receipt),
+	}}
+	for _, stage := range f.Stages {
+		if stage.DeclaresArtifact("touchset.json") {
+			key := stage.Name + "/" + stage.Agents[0].Package
+			script := scripts[key]
+			script.Artifacts = map[string]string{"touchset.json": `{"globs":["feature.txt"]}`}
+			scripts[key] = script
+		}
+	}
 	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
 	e := New(Config{
-		Store: s, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
+		Store: s, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{f.Name: f},
 		DataDir: t.TempDir(), Workspace: workspace.GitWorktree{Repo: repo},
-		Train: &marshal.Train{Repo: repo, TestCmd: []string{"true"}},
-		Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
-			"merge-verification/merge-verifier": {Artifacts: map[string]string{
-				"merge-report.md": "verified\n", "merge-decision.json": string(decisionBody),
-				"verification.json": string(receipt),
-			}},
-		}},
+		Train:  &marshal.Train{Repo: repo, TestCmd: []string{"true"}},
+		Runner: &runner.FakeRunner{Scripts: scripts},
 	})
 	return e, s, repo
+}
+
+func renamedVerificationFlow() flow.Flow {
+	return flow.Flow{Name: "custom", Stages: []flow.Stage{
+		{
+			Name: "scope-files", Agents: []flow.AgentRef{{Package: "planner"}},
+			Workspace: "worktree", Gate: flow.GateAuto,
+			Artifacts: []string{"touchset.json"},
+		},
+		{
+			Name: "integrate-safely", Agents: []flow.AgentRef{{Package: "verifier"}},
+			Workspace: "worktree", Gate: flow.GateAuto, MergeBarrier: true,
+			Artifacts: append([]string(nil), flow.FinalizationArtifacts...),
+		},
+	}}
+}
+
+func TestRenamedStagesSequenceTouchsetVerifyAndMergeByCapability(t *testing.T) {
+	f := renamedVerificationFlow()
+	e, s, repo := verificationEngineForFlow(t, f, "merge", [][]string{{"true"}}, "")
+	id, err := e.CreateIssue("custom flow", "", f.Name, levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 2 ||
+		runs[0].Stage != "scope-files" || runs[1].Stage != "integrate-safely" {
+		t.Fatalf("stage runs = %+v err %v", runs, err)
+	}
+	if branch := gitOutput(t, repo, "branch", "--list", "issue/"+id); strings.TrimSpace(branch) != "" {
+		t.Fatalf("merged issue branch remains: %q", branch)
+	}
+	if !hasEvent(t, s, id, core.EvVerificationReady) ||
+		!hasEvent(t, s, id, core.EvIssueMerged) {
+		t.Fatal("custom flow did not verify and merge")
+	}
 }
 
 func TestMalformedFinalReceiptFailsBeforeStageCompletion(t *testing.T) {
@@ -1773,7 +1843,8 @@ func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, strin
 			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll},
 		{Name: "merge-verification", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
 			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
-			Artifacts: []string{"merge-report.md", "merge-decision.json", "verification.json"}},
+			MergeBarrier: true,
+			Artifacts:    []string{"merge-report.md", "merge-decision.json", "verification.json"}},
 	}}
 	s, err := store.Open("file:" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
 	if err != nil {

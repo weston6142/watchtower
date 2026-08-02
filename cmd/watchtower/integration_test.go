@@ -604,6 +604,64 @@ func TestDependencyWorkflowUsesEightSessionsAndLandedBase(t *testing.T) {
 	}
 }
 
+func TestFakeRunnerChangesFirstMutableStageRegardlessOfName(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	bin := buildBinary(t)
+	base, err := os.MkdirTemp("/tmp", "wt-fake-name-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-qm", "base"},
+	} {
+		run(t, "git", repo, args...)
+	}
+	run(t, bin, repo, "init", "--data", base)
+	t.Cleanup(func() { stopDaemons(base) })
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "config.yaml"), []byte(
+		"runner: fake\npull: false\npush: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flowBody := `name: synthetic
+stages:
+  - name: shape-change
+    agents: [{package: executor}]
+    workspace: worktree
+    gate: auto
+  - name: ship-safely
+    agents: [{package: merge-verifier}]
+    workspace: worktree
+    gate: auto
+    merge_barrier: true
+    artifacts: [merge-report.md, merge-decision.json, verification.json]
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "synthetic.yaml"), []byte(flowBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--flow", "synthetic", "--title", "custom fake flow")))
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		issues := run(t, bin, repo, "issues", "--data", base)
+		if strings.Contains(issues, id+"  done") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("custom fake flow did not finish:\n%s", issues)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	body, err := os.ReadFile(filepath.Join(repo, "watchtower-fake", id+".txt"))
+	if err != nil || strings.TrimSpace(string(body)) != id {
+		t.Fatalf("landed fake change = %q err %v", body, err)
+	}
+}
+
 func TestNewRefusesMissingAttachment(t *testing.T) {
 	bin, base, repo := newRepo(t)
 

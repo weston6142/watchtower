@@ -83,6 +83,13 @@ func (e *Engine) checkpointVerificationReady(is *issueState) error {
 	})
 }
 
+func (e *Engine) integrationStageName(is *issueState) string {
+	if stage, _, ok := e.cfg.Flows[is.flowName].IntegrationStage(); ok {
+		return stage.Name
+	}
+	return ""
+}
+
 func (e *Engine) recordFinalizationFailure(is *issueState, cause error) error {
 	integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
 	if err != nil {
@@ -96,7 +103,7 @@ func (e *Engine) recordFinalizationFailure(is *issueState, cause error) error {
 		return fmt.Errorf("%v (persist finalization failure: %w)", cause, err)
 	}
 	e.emit(core.EvFinalizationFailed, is.id, map[string]string{
-		"stage": "merge-verification", "error": cause.Error(),
+		"stage": e.integrationStageName(is), "error": cause.Error(),
 	})
 	return cause
 }

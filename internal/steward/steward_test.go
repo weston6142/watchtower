@@ -95,6 +95,24 @@ func TestStewardProjectsFinalizationLifecycle(t *testing.T) {
 	}
 }
 
+func TestMergeBarrierMetadataPersistsVerifyingForRenamedStage(t *testing.T) {
+	s := newTestStore(t)
+	st := &Steward{Store: s}
+	st.Observe(ev(t, core.EvIssueCreated, "GH-1", map[string]any{
+		"title": "x", "flow": "custom",
+	}))
+	st.Observe(ev(t, core.EvStageStarted, "GH-1", map[string]any{
+		"stage": "ship-it", "merge_barrier": true,
+	}))
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].State != "verifying" {
+		t.Fatalf("issues = %+v", rows)
+	}
+}
+
 func TestStewardPreservesCleanupWarningUntilCompleted(t *testing.T) {
 	s := newTestStore(t)
 	st := &Steward{Store: s}

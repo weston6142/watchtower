@@ -84,6 +84,7 @@ func (s *State) Apply(ev core.Event) {
 	_ = json.Unmarshal(ev.Payload, &p)
 	str := func(k string) string { v, _ := p[k].(string); return v }
 	num := func(k string) float64 { v, _ := p[k].(float64); return v }
+	boolean := func(k string) bool { v, _ := p[k].(bool); return v }
 
 	iv := s.Issues[ev.IssueID]
 	switch ev.Type {
@@ -122,7 +123,7 @@ func (s *State) Apply(ev core.Event) {
 	case core.EvStageStarted:
 		if iv != nil {
 			iv.CurrentStage = str("stage")
-			if iv.CurrentStage == "merge-verification" {
+			if boolean("merge_barrier") || iv.CurrentStage == "merge-verification" {
 				iv.State = "verifying"
 			} else {
 				iv.State = "running"

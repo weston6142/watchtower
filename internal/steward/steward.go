@@ -19,6 +19,10 @@ func (st *Steward) Observe(ev core.Event) {
 		v, _ := p[k].(string)
 		return v
 	}
+	boolean := func(k string) bool {
+		v, _ := p[k].(bool)
+		return v
+	}
 	leverMap := func() map[string]string {
 		out := map[string]string{}
 		if raw, ok := p["levers"].(map[string]any); ok {
@@ -64,7 +68,7 @@ func (st *Steward) Observe(ev core.Event) {
 	case core.EvIssueDependenciesSatisfied:
 		setState("running")
 	case core.EvStageStarted:
-		if str("stage") == "merge-verification" {
+		if boolean("merge_barrier") || str("stage") == "merge-verification" {
 			setState("verifying")
 		} else {
 			setState("running:" + str("stage"))

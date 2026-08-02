@@ -38,6 +38,17 @@ func TestReplayBuildsIssueView(t *testing.T) {
 	}
 }
 
+func TestStageStartedMergeBarrierShowsVerifyingForAnyStageName(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "x", "flow": "custom"}))
+	s.Apply(ev(t, core.EvStageStarted, "GH-1", map[string]any{
+		"stage": "ship-it", "merge_barrier": true,
+	}))
+	if got := s.Issues["GH-1"].State; got != "verifying" {
+		t.Fatalf("state = %q", got)
+	}
+}
+
 func TestDecisionProjectionPreservesFreeformFields(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvDecisionRequired, "GH-1", map[string]any{

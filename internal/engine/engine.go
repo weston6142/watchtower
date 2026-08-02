@@ -1165,15 +1165,19 @@ func canonicalWorktreePath(path string) (string, error) {
 }
 
 func finalStageIndex(f flow.Flow) (int, error) {
-	if len(f.Stages) == 0 || f.Stages[len(f.Stages)-1].Name != "merge-verification" {
-		return 0, fmt.Errorf("flow %q does not end with merge-verification", f.Name)
+	_, index, ok := f.IntegrationStage()
+	if !ok {
+		return 0, fmt.Errorf("flow %q has no merge barrier", f.Name)
 	}
-	for i := range f.Stages[:len(f.Stages)-1] {
-		if f.Stages[i].Name == "merge-verification" {
-			return 0, fmt.Errorf("flow %q repeats merge-verification", f.Name)
-		}
+	return index, nil
+}
+
+func verificationOwner(f flow.Flow) string {
+	stage, _, ok := f.IntegrationStage()
+	if !ok {
+		return "none"
 	}
-	return len(f.Stages) - 1, nil
+	return stage.Name
 }
 
 // LaunchIssue promotes a backlog draft into a running lane: the row flips to
@@ -1635,14 +1639,15 @@ func (e *Engine) runStageOnce(
 		}
 	}
 	finalizationContract := ""
-	if st.Name == "merge-verification" {
+	if st.MergeBarrier {
 		finalizationContract = marshal.FinalizationContractMarkdown()
 	}
+	f := e.cfg.Flows[is.flowName]
 	if err := contextpack.WriteStageBrief(workdir, contextpack.Brief{
 		IssueID: is.id, Stage: st.Name, StartCommit: startCommit,
 		BaseCommit: is.baseRef, Branch: branch, RequiredInputs: requiredInputs,
 		ExpectedOutputs: expectedOutputs, ProhibitedActions: prohibited,
-		VerificationOwner: "merge-verification", FinalizationContract: finalizationContract,
+		VerificationOwner: verificationOwner(f), FinalizationContract: finalizationContract,
 		Recovery: recovery,
 	}); err != nil {
 		return err
@@ -1671,7 +1676,8 @@ func (e *Engine) runStageOnce(
 			failure, checkpointArtifacts)
 	}()
 	e.emit(core.EvStageStarted, is.id, map[string]any{
-		"stage": st.Name, "attempt": attempt, "of": of})
+		"stage": st.Name, "attempt": attempt, "of": of,
+		"merge_barrier": st.MergeBarrier})
 
 	type agentDone struct {
 		pkg string
@@ -1765,7 +1771,7 @@ func (e *Engine) runStageOnce(
 		}
 		return errDependenciesDiscovered
 	}
-	if st.Name == "merge-verification" {
+	if st.MergeBarrier {
 		prepared, err := e.prepareFinalization(is)
 		if err != nil {
 			return err
@@ -1871,10 +1877,10 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 			return err
 		}
 	}
-	// A completed "plan" stage may leave a touchset.json declaring which files
-	// the implementation will touch; register it so the marshal can sequence
-	// overlapping merges. Absence of the file just means no sequencing.
-	if e.cfg.Marshal != nil && st.Name == "plan" {
+	// Any stage may declare a touchset describing files the issue will change;
+	// register it so the marshal can sequence overlapping integrations.
+	_, _, integrating := e.cfg.Flows[is.flowName].IntegrationStage()
+	if integrating && e.cfg.Marshal != nil && st.DeclaresArtifact("touchset.json") {
 		if ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json")); err == nil {
 			e.mu.Lock()
 			snapshot := ts
@@ -1884,7 +1890,7 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 		}
 	}
 	verificationReady := false
-	if st.Name == "merge-verification" {
+	if st.MergeBarrier {
 		integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
 		if err != nil {
 			e.emit(core.EvStageFailed, is.id, map[string]any{
@@ -2005,7 +2011,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			return err
 		}
 	}
-	if len(f.Stages) > 0 && f.Stages[len(f.Stages)-1].Name == "merge-verification" {
+	if _, _, integrating := f.IntegrationStage(); integrating {
 		decision, receipt, err := e.finalVerificationDecision(is)
 		if err != nil {
 			return err

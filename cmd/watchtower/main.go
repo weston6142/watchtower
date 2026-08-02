@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -679,27 +680,22 @@ func runDaemon(args []string) {
 		fake := fakeForFlows(flows)
 		if _, gitErr := exec.Command("git", "-C", repo, "rev-parse", "--git-dir").Output(); gitErr == nil {
 			ws = workspace.GitWorktree{Repo: repo}
+			stagesByName := map[string]flow.Stage{}
+			for _, configuredFlow := range flows {
+				for _, stage := range configuredFlow.Stages {
+					stagesByName[stage.Name] = stage
+				}
+			}
+			changed := sync.Map{}
 			fake.OnStart = func(issueID, stage, _, workdir string) error {
-				if stage != "execute" {
+				stageConfig, ok := stagesByName[stage]
+				if !ok || stageConfig.MergeBarrier || stageConfig.Workspace == "none" {
 					return nil
 				}
-				dir := filepath.Join(workdir, "watchtower-fake")
-				if err := os.MkdirAll(dir, 0o755); err != nil {
-					return err
+				if _, loaded := changed.LoadOrStore(issueID, true); loaded {
+					return nil
 				}
-				path := filepath.Join(dir, issueID+".txt")
-				if err := os.WriteFile(path, []byte(issueID+"\n"), 0o644); err != nil {
-					return err
-				}
-				if output, err := exec.Command("git", "-C", workdir, "add", path).CombinedOutput(); err != nil {
-					return fmt.Errorf("fake stage add: %v: %s", err, output)
-				}
-				if output, err := exec.Command(
-					"git", "-C", workdir, "commit", "-qm", "fake execute "+issueID,
-				).CombinedOutput(); err != nil {
-					return fmt.Errorf("fake stage commit: %v: %s", err, output)
-				}
-				return nil
+				return commitFakeChange(issueID, workdir)
 			}
 		}
 		run = fake
@@ -798,6 +794,26 @@ func runDaemon(args []string) {
 		LoadedAt: time.Now().Format("15:04"),
 	})
 	fatal(srv.Serve(l))
+}
+
+func commitFakeChange(issueID, workdir string) error {
+	dir := filepath.Join(workdir, "watchtower-fake")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, issueID+".txt")
+	if err := os.WriteFile(path, []byte(issueID+"\n"), 0o644); err != nil {
+		return err
+	}
+	if output, err := exec.Command("git", "-C", workdir, "add", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("fake stage add: %v: %s", err, output)
+	}
+	if output, err := exec.Command(
+		"git", "-C", workdir, "commit", "-qm", "fake change "+issueID,
+	).CombinedOutput(); err != nil {
+		return fmt.Errorf("fake stage commit: %v: %s", err, output)
+	}
+	return nil
 }
 
 func statusSentence(o *proto.Overview) string {
