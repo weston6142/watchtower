@@ -382,6 +382,29 @@ func (f *fakeWS) Acquire(issueID string) (string, func() error, error) {
 
 func (f *fakeWS) Name() string { return "fake" }
 
+type existingBranchWS struct {
+	repo string
+	root string
+}
+
+func (w *existingBranchWS) Acquire(issueID string) (string, func() error, error) {
+	path := filepath.Join(w.root, issueID)
+	out, err := exec.Command("git", "-C", w.repo, "worktree", "add", path, "issue/"+issueID).CombinedOutput()
+	if err != nil {
+		return "", nil, fmt.Errorf("worktree add: %v: %s", err, out)
+	}
+	release := func() error {
+		out, err := exec.Command("git", "-C", w.repo, "worktree", "remove", "--force", path).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("worktree remove: %v: %s", err, out)
+		}
+		return nil
+	}
+	return path, release, nil
+}
+
+func (w *existingBranchWS) Name() string { return "existing branch" }
+
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	runGit := func(args ...string) {
@@ -1268,17 +1291,45 @@ func TestRetryStageReopensDoneUnmergedIssueAfterRestart(t *testing.T) {
 	if _, reopened := restarted.issues[id]; reopened {
 		t.Fatal("rehydration reopened a held issue without an explicit retry")
 	}
-	// This engine test uses the plain GitWorktree provider, which only creates
-	// new issue branches. Branch-preserving reacquisition is covered by the
-	// Treehouse workspace regression test.
-	if out, err := exec.Command("git", "-C", repo, "branch", "-D", "issue/"+id).CombinedOutput(); err != nil {
-		t.Fatalf("remove test issue branch: %v %s", err, out)
-	}
 
-	base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	issueWorktree := filepath.Join(t.TempDir(), "issue")
+	if out, err := exec.Command("git", "-C", repo, "worktree", "add", issueWorktree, "issue/"+id).CombinedOutput(); err != nil {
+		t.Fatalf("restore issue worktree: %v %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(issueWorktree, "feature"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "feature"}, {"commit", "-qm", "feature"}} {
+		if out, err := exec.Command("git", append([]string{"-C", issueWorktree}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	branch := strings.TrimSpace(gitOutput(t, issueWorktree, "rev-parse", "HEAD"))
+	tree := strings.TrimSpace(gitOutput(t, issueWorktree, "rev-parse", "HEAD^{tree}"))
+	if out, err := exec.Command("git", "-C", repo, "worktree", "remove", issueWorktree).CombinedOutput(); err != nil {
+		t.Fatalf("remove issue worktree: %v %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "base-change"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "base-change"}, {"commit", "-qm", "advance base"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	base := strings.TrimSpace(gitOutput(t, repo, "merge-base", "HEAD", branch))
+	restarted.cfg.Workspace = &existingBranchWS{repo: repo, root: t.TempDir()}
+
 	script := fake.Scripts["merge-verification/merge-verifier"]
 	script.Artifacts["merge-decision.json"] = fmt.Sprintf(
-		`{"decision":"merge","branch_commit":%q,"base_commit":%q}`, base, base)
+		`{"decision":"merge","branch_commit":%q,"base_commit":%q}`, branch, base)
+	verification, err := json.Marshal(marshal.Verification{
+		BaseSHA: base, BranchSHA: branch, TreeSHA: tree, Passed: true, Commands: [][]string{{"true"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script.Artifacts["verification.json"] = string(verification)
 	fake.Scripts["merge-verification/merge-verifier"] = script
 
 	if err := restarted.RetryStage(context.Background(), id); err != nil {

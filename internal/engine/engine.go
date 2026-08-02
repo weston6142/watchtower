@@ -1973,6 +1973,15 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			if out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output(); err == nil {
 				baseRef = strings.TrimSpace(string(out))
 			}
+			if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
+				if baseHead, headErr := gitRevision(e.cfg.Train.Repo, "HEAD"); headErr == nil {
+					if mergeBase, mergeErr := gitCommandOutput(
+						path, "merge-base", "HEAD", baseHead,
+					); mergeErr == nil {
+						baseRef = mergeBase
+					}
+				}
+			}
 			e.mu.Lock()
 			is.wsPath, is.wsRelease = path, release
 			is.branch, is.baseRef = branch, baseRef
