@@ -15,9 +15,7 @@ func resolveFocus(f Focus, st *projection.State, stages []string, retired map[st
 	}
 	cards := floorCards(st, stages, f.Floor, retired)
 	if len(cards) == 0 {
-		f.Card = 0
-		f.Issue = ""
-		return f
+		return normalizeFocus(Focus{Issue: f.Issue}, st, stages, retired)
 	}
 	if f.Card < 0 {
 		f.Card = 0
@@ -29,6 +27,24 @@ func resolveFocus(f Focus, st *projection.State, stages []string, retired map[st
 	return f
 }
 
+func normalizeFocus(f Focus, st *projection.State, stages []string, retired map[string]bool) Focus {
+	if f.Issue != "" {
+		if focused := focusIssue(st, stages, f.Issue, retired); focused.Issue != "" {
+			return focused
+		}
+	}
+	return firstEligibleFocus(st, stages, retired)
+}
+
+func firstEligibleFocus(st *projection.State, stages []string, retired map[string]bool) Focus {
+	for _, id := range visibleOrder(st, retired) {
+		if focused := focusIssue(st, stages, id, retired); focused.Issue != "" {
+			return focused
+		}
+	}
+	return Focus{}
+}
+
 func focusIssue(st *projection.State, stages []string, issueID string, retired map[string]bool) Focus {
 	for floor := 1; floor <= len(stages); floor++ {
 		for card, id := range floorCards(st, stages, floor, retired) {
@@ -37,12 +53,12 @@ func focusIssue(st *projection.State, stages []string, issueID string, retired m
 			}
 		}
 	}
-	return Focus{Issue: issueID}
+	return Focus{}
 }
 
 // moveFocus moves one flip at a time through the rendered floors and cards.
 func moveFocus(f Focus, st *projection.State, stages []string, key string, retired map[string]bool) Focus {
-	f = resolveFocus(f, st, stages, retired)
+	f = normalizeFocus(f, st, stages, retired)
 	switch key {
 	case "j":
 		f.Floor++
