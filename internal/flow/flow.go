@@ -3,6 +3,7 @@ package flow
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -46,6 +47,37 @@ type Stage struct {
 type Flow struct {
 	Name   string  `yaml:"name"`
 	Stages []Stage `yaml:"stages"`
+}
+
+var FinalizationArtifacts = []string{
+	"merge-report.md",
+	"merge-decision.json",
+	"verification.json",
+}
+
+func (s Stage) DeclaresArtifact(name string) bool {
+	for _, artifact := range s.Artifacts {
+		if artifact == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (f Flow) IntegrationStage() (Stage, int, bool) {
+	for index, stage := range f.Stages {
+		if stage.MergeBarrier {
+			return stage, index, true
+		}
+	}
+	return Stage{}, 0, false
+}
+
+func (f Flow) ValidateIntegration(testArgv []string) error {
+	if _, _, ok := f.IntegrationStage(); ok && len(testArgv) == 0 {
+		return fmt.Errorf("flow %q requires test_cmd because it has a merge barrier", f.Name)
+	}
+	return nil
 }
 
 func Load(path string) (Flow, error) {
@@ -92,6 +124,34 @@ func loadBytes(b []byte) (Flow, error) {
 		case GateApproveArtifact, GateDecisionQueue, GateAuto:
 		default:
 			return Flow{}, fmt.Errorf("stage %q bad gate %q", st.Name, st.Gate)
+		}
+	}
+	barrierIndex := -1
+	for index, stage := range f.Stages {
+		if !stage.MergeBarrier {
+			continue
+		}
+		if barrierIndex >= 0 {
+			return Flow{}, fmt.Errorf("flow %q has more than one merge barrier", f.Name)
+		}
+		barrierIndex = index
+	}
+	if barrierIndex >= 0 {
+		stage := f.Stages[barrierIndex]
+		if barrierIndex != len(f.Stages)-1 {
+			return Flow{}, fmt.Errorf(
+				"flow %q merge barrier %q must be the final stage", f.Name, stage.Name)
+		}
+		var missing []string
+		for _, artifact := range FinalizationArtifacts {
+			if !stage.DeclaresArtifact(artifact) {
+				missing = append(missing, artifact)
+			}
+		}
+		if len(missing) > 0 {
+			return Flow{}, fmt.Errorf(
+				"flow %q merge barrier %q missing artifacts: %s",
+				f.Name, stage.Name, strings.Join(missing, ", "))
 		}
 	}
 	return f, nil

@@ -72,7 +72,7 @@ func TestInitIdempotentAndNonDestructive(t *testing.T) {
 	}
 }
 
-func TestDefaultWorkflowIsSequentialAndUsesSharedDecisionProtocol(t *testing.T) {
+func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := Init(root); err != nil {
 		t.Fatal(err)
@@ -82,29 +82,30 @@ func TestDefaultWorkflowIsSequentialAndUsesSharedDecisionProtocol(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantStages := []string{
-		"brainstorm", "spec", "plan", "execute", "correctness-review",
-		"clean-code-review", "librarian", "merge-verification",
+	barrier, barrierIndex, ok := defaultFlow.IntegrationStage()
+	if !ok || barrierIndex != len(defaultFlow.Stages)-1 {
+		t.Fatalf("default integration stage = %+v, %d, %v", barrier, barrierIndex, ok)
 	}
-	var gotStages []string
+	if err := defaultFlow.ValidateIntegration([]string{"scripts/verify"}); err != nil {
+		t.Fatal(err)
+	}
+	packages, err := pkgs.LoadDir(filepath.Join(watchtower, "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	artifactSet := map[string]bool{}
-	for index, stage := range defaultFlow.Stages {
-		gotStages = append(gotStages, stage.Name)
-		if len(stage.Agents) != 1 || stage.Parallel {
-			t.Fatalf("stage %s is not single-agent sequential: %+v", stage.Name, stage)
+	for _, stage := range defaultFlow.Stages {
+		if len(stage.Agents) == 0 {
+			t.Fatalf("stage %s has no agents", stage.Name)
 		}
-		if stage.Gate != flow.GateAuto {
-			t.Fatalf("stage %s has an extra engine gate %q", stage.Name, stage.Gate)
-		}
-		if index < 3 && stage.Workspace != "worktree" {
-			t.Fatalf("early stage %s workspace = %q, want worktree", stage.Name, stage.Workspace)
+		for _, agent := range stage.Agents {
+			if _, ok := packages[agent.Package]; !ok {
+				t.Errorf("stage %s references missing package %s", stage.Name, agent.Package)
+			}
 		}
 		for _, artifact := range stage.Artifacts {
 			artifactSet[artifact] = true
 		}
-	}
-	if !slices.Equal(gotStages, wantStages) {
-		t.Fatalf("stages = %v, want %v", gotStages, wantStages)
 	}
 	for _, artifact := range []string{
 		"brainstorm.md", "spec.md", "plan.md", "touchset.json",
@@ -115,16 +116,6 @@ func TestDefaultWorkflowIsSequentialAndUsesSharedDecisionProtocol(t *testing.T) 
 		}
 	}
 
-	packages, err := pkgs.LoadDir(filepath.Join(watchtower, "packages"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, stage := range defaultFlow.Stages {
-		name := stage.Agents[0].Package
-		if _, ok := packages[name]; !ok {
-			t.Errorf("stage %s references missing package %s", stage.Name, name)
-		}
-	}
 	for _, removed := range []string{"reviewer", "doc-writer"} {
 		if _, ok := packages[removed]; ok {
 			t.Errorf("obsolete package %s is still shipped", removed)

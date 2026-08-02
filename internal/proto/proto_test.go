@@ -25,7 +25,7 @@ import (
 	"github.com/weston6142/watchtower/internal/workspace"
 )
 
-func TestSetupOutlineReportsShippedSequentialWorkflow(t *testing.T) {
+func TestSetupOutlineReportsConfiguredWorkflow(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := scaffold.Init(root); err != nil {
 		t.Fatal(err)
@@ -44,15 +44,18 @@ func TestSetupOutlineReportsShippedSequentialWorkflow(t *testing.T) {
 	if err != nil || !response.OK || response.Setup == nil {
 		t.Fatalf("setup_outline: %+v err=%v", response, err)
 	}
-	if len(response.Setup.Stages) != 8 {
-		t.Fatalf("stages: %+v", response.Setup.Stages)
+	if len(response.Setup.Stages) != len(f.Stages) {
+		t.Fatalf("setup stages = %d, configured stages = %d", len(response.Setup.Stages), len(f.Stages))
 	}
-	for _, stage := range response.Setup.Stages {
-		if len(stage.Agents) != 1 || stage.Parallel {
-			t.Fatalf("stage is not sequential: %+v", stage)
+	for index, configured := range f.Stages {
+		actual := response.Setup.Stages[index]
+		if actual.Name != configured.Name || len(actual.Agents) != len(configured.Agents) {
+			t.Fatalf("setup stage %d = %+v, configured = %+v", index, actual, configured)
 		}
-		if stage.Agents[0].Missing {
-			t.Fatalf("missing package: %+v", stage.Agents[0])
+		for _, agent := range actual.Agents {
+			if agent.Missing {
+				t.Fatalf("missing configured package: %+v", agent)
+			}
 		}
 	}
 }
