@@ -66,14 +66,28 @@ func (t Treehouse) Acquire(issueID string) (string, func() error, error) {
 	}
 	path := strings.TrimSpace(string(out))
 	// Treehouse leases detached-HEAD worktrees; the merge train needs a real
-	// branch, so pin the lease to issue/<id> (-B resets a leftover branch from
-	// a prior lease of the same issue). Pre-warmed lanes can lag the default
-	// branch, so start from its current tip rather than the leased commit.
-	co := []string{"-C", path, "checkout", "-q", "-B", "issue/" + issueID}
-	if def, err := exec.Command("git", "-C", t.Repo, "symbolic-ref", "--short", "HEAD").Output(); err == nil {
-		co = append(co, strings.TrimSpace(string(def)))
+	// branch. Preserve an existing issue branch because it is durable task
+	// state; only new branches start from the current default tip rather than a
+	// potentially stale pre-warmed lease.
+	branch := "issue/" + issueID
+	branchRef := "refs/heads/" + branch
+	exists := exec.Command("git", "-C", t.Repo, "show-ref", "--verify", "--quiet", branchRef)
+	checkout := []string{"-C", path, "checkout", "-q"}
+	if err := exists.Run(); err == nil {
+		checkout = append(checkout, branch)
+	} else if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		checkout = append(checkout, "-B", branch)
+		if def, err := exec.Command("git", "-C", t.Repo, "symbolic-ref", "--short", "HEAD").Output(); err == nil {
+			checkout = append(checkout, strings.TrimSpace(string(def)))
+		}
+	} else {
+		detectErr := fmt.Errorf("detect issue branch: %w", err)
+		if returnErr := t.ReleasePath(path); returnErr != nil {
+			return "", nil, fmt.Errorf("%v (return failed lease: %w)", detectErr, returnErr)
+		}
+		return "", nil, detectErr
 	}
-	if out, err := exec.Command("git", co...).CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", checkout...).CombinedOutput(); err != nil {
 		checkoutErr := fmt.Errorf("checkout issue branch: %v: %s", err, out)
 		if returnErr := t.ReleasePath(path); returnErr != nil {
 			return "", nil, fmt.Errorf("%v (return failed lease: %w)", checkoutErr, returnErr)

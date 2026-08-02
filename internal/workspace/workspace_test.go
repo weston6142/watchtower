@@ -81,6 +81,60 @@ func TestTreehouseAcquireChecksOutBranch(t *testing.T) {
 	}
 }
 
+func TestTreehouseAcquirePreservesExistingIssueBranch(t *testing.T) {
+	repo := initRepo(t)
+	issueWorktree := filepath.Join(t.TempDir(), "issue")
+	if out, err := exec.Command("git", "-C", repo, "worktree", "add", "-q", "-b", "issue/GH-7", issueWorktree).CombinedOutput(); err != nil {
+		t.Fatalf("create issue worktree: %v %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(issueWorktree, "task.txt"), []byte("completed task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "task.txt"},
+		{"commit", "-q", "-m", "complete task"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", issueWorktree}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	want, err := exec.Command("git", "-C", issueWorktree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "worktree", "remove", issueWorktree).CombinedOutput(); err != nil {
+		t.Fatalf("remove issue worktree: %v %s", err, out)
+	}
+
+	leased := filepath.Join(t.TempDir(), "leased")
+	base, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "worktree", "add", "--detach", leased, strings.TrimSpace(string(base))).CombinedOutput(); err != nil {
+		t.Fatalf("worktree add: %v %s", err, out)
+	}
+
+	binDir := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = get ]; then echo " + leased + "; fi\n"
+	if err := os.WriteFile(filepath.Join(binDir, "treehouse"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	path, _, err := (Treehouse{Repo: repo}).Acquire("GH-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != strings.TrimSpace(string(want)) {
+		t.Fatalf("reacquired issue branch at %s, want preserved tip %s", got, want)
+	}
+}
+
 // A pre-warmed lane can be stale: the pool synced it before the repo's
 // default branch moved. The issue branch must start from the current tip.
 func TestTreehouseAcquireStartsFromDefaultTip(t *testing.T) {
