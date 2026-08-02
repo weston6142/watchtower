@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/store"
@@ -515,7 +516,7 @@ stages:
 	}
 }
 
-func TestDependencyWorkflowUsesEightSessionsAndLandedBase(t *testing.T) {
+func TestDependencyWorkflowUsesIsolatedSessionsAndLandedBase(t *testing.T) {
 	t.Setenv("TMPDIR", "/tmp")
 	bin := buildBinary(t)
 	base, err := os.MkdirTemp("/tmp", "wt-e2e-")
@@ -541,6 +542,14 @@ func TestDependencyWorkflowUsesEightSessionsAndLandedBase(t *testing.T) {
 		0o644,
 	); err != nil {
 		t.Fatal(err)
+	}
+	configuredFlow, err := flow.Load(filepath.Join(repo, ".watchtower", "flows", "default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedRuns := 0
+	for _, stage := range configuredFlow.Stages {
+		expectedRuns += len(stage.Agents)
 	}
 	t.Cleanup(func() { stopDaemons(base) })
 	parent := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
@@ -575,14 +584,14 @@ func TestDependencyWorkflowUsesEightSessionsAndLandedBase(t *testing.T) {
 	defer st.Close()
 	for _, issueID := range []string{parent, child} {
 		runs, err := st.StageRuns(issueID)
-		if err != nil || len(runs) != 8 {
+		if err != nil || len(runs) != expectedRuns {
 			t.Fatalf("%s stage runs = %+v err %v", issueID, runs, err)
 		}
 		sessions := map[string]bool{}
 		for _, stageRun := range runs {
 			sessions[stageRun.SessionID] = true
 		}
-		if len(sessions) != 8 {
+		if len(sessions) != expectedRuns {
 			t.Fatalf("%s sessions not stage-isolated: %+v", issueID, runs)
 		}
 		if output, err := exec.Command(

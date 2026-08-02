@@ -119,6 +119,21 @@ Finalization has a durable boundary that is independent of an agent transcript:
 - Transcript completion is never lifecycle authority. Only validated receipts,
   durable integration state, and completion/merge events can finish a lane.
 
+Flow integration is capability-based, not tied to a stage name or stage count:
+
+- A flow may have no `merge_barrier`. Watchtower then never merges or pushes on
+  that flow's behalf. A clean workspace is released; committed or uncommitted
+  work is preserved and reported with its branch and worktree.
+- A flow that integrates has exactly one `merge_barrier: true`, and it must be
+  the final stage. That stage must declare `merge-report.md`,
+  `merge-decision.json`, and `verification.json`.
+- Integrating flows require a non-empty repository `test_cmd`. The verifier's
+  receipt must record that exact command, and Watchtower rechecks the receipt
+  against the current base, branch, and tree before merging.
+- Stage names, the number of stages, and the agents assigned to them remain
+  customizable. Runtime behavior and E2E expectations derive from the flow's
+  declared capabilities instead of the bundled default flow.
+
 Two state vocabularies exist and do not match — reading the wrong one is a
 live source of bugs:
 
