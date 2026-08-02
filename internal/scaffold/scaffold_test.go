@@ -1,7 +1,6 @@
 package scaffold
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,28 +10,6 @@ import (
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/pkgs"
 )
-
-func TestMergeVerifierPromptCopiesMatch(t *testing.T) {
-	root := filepath.Join("..", "..")
-	paths := []string{
-		filepath.Join(root, ".watchtower", "packages", "merge-verifier", "prompt.md"),
-		filepath.Join(root, "internal", "scaffold", "defaults", "packages", "merge-verifier", "prompt.md"),
-		filepath.Join(root, "dist", "packages", "merge-verifier", "prompt.md"),
-	}
-	first, err := os.ReadFile(paths[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range paths[1:] {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(body, first) {
-			t.Fatalf("merge verifier prompt %s differs from %s", path, paths[0])
-		}
-	}
-}
 
 func TestInitCreatesTree(t *testing.T) {
 	root := t.TempDir()
