@@ -64,6 +64,15 @@ func protoDecisionIdentities(f flow.Flow) map[string]decision.AgentIdentity {
 	return identities
 }
 
+func assertDecisionContext(t *testing.T, pending engine.PendingDecision, question string) {
+	t.Helper()
+	if pending.D.Question != question || pending.Context == nil ||
+		pending.Context.TaskSummary == "" || pending.Context.AgentName == "" ||
+		pending.Context.AgentColor == "" || pending.Context.AgentSymbol == "" {
+		t.Fatalf("pending decision context = %+v", pending)
+	}
+}
+
 func TestSetupOutlineReportsConfiguredWorkflow(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := scaffold.Init(root); err != nil {
@@ -303,6 +312,7 @@ func TestAnswerDecisionAcceptsFreeformText(t *testing.T) {
 	for decisionID == 0 {
 		pending, _ := c.Do(Command{Op: "list_decisions"})
 		if len(pending.Decisions) == 1 {
+			assertDecisionContext(t, pending.Decisions[0], "Review spec.md")
 			decisionID = pending.Decisions[0].ID
 			break
 		}
@@ -381,6 +391,7 @@ func TestAnswerDecisionAcceptsChoiceNoteText(t *testing.T) {
 	for decisionID == 0 {
 		pending, _ := c.Do(Command{Op: "list_decisions"})
 		if len(pending.Decisions) == 1 {
+			assertDecisionContext(t, pending.Decisions[0], "Proceed?")
 			decisionID = pending.Decisions[0].ID
 			break
 		}

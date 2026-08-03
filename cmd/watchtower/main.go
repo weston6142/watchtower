@@ -899,6 +899,10 @@ func formatTokens(tokens int) string {
 
 func formatDecision(d engine.PendingDecision) string {
 	var out strings.Builder
+	if d.Context != nil {
+		fmt.Fprintf(&out, "task: %s\n", d.Context.TaskSummary)
+		fmt.Fprintf(&out, "agent: %s · %s · %s\n", d.Context.AgentName, d.Context.AgentColor, d.Context.AgentSymbol)
+	}
 	fmt.Fprintf(&out, "[%d] %s/%s: %s\n", d.ID, d.IssueID, d.Stage, d.D.Question)
 	if d.D.Kind == levers.DecisionFreeform {
 		fmt.Fprintf(&out, "    recommended: %s\n", d.D.RecommendedResponse)

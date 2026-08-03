@@ -19,6 +19,51 @@ import (
 	"github.com/weston6142/watchtower/internal/store"
 )
 
+func TestDecisionsJSONIncludesContext(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	flowBody := `name: default
+stages:
+  - name: review
+    agents: [{package: correctness-reviewer}]
+    gate: approve_artifact
+    artifacts: [review.md]
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--title", "context task", "--body", "preserve the complete summary")))
+	deadline := time.Now().Add(5 * time.Second)
+	var decisions []engine.PendingDecision
+	for time.Now().Before(deadline) {
+		out := run(t, bin, repo, "decisions", "--data", base, "--json")
+		if err := json.Unmarshal([]byte(out), &decisions); err != nil {
+			t.Fatalf("decisions --json = %q: %v", out, err)
+		}
+		if len(decisions) == 1 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("pending decisions for %s = %+v", id, decisions)
+	}
+	got := decisions[0]
+	if got.D.Question == "" || strings.Contains(got.D.Question, "context task") || got.Context == nil {
+		t.Fatalf("decision JSON changed question or omitted context: %+v", got)
+	}
+	if got.Context.TaskSummary != "context task: preserve the complete summary." ||
+		got.Context.AgentName == "" || got.Context.AgentColor == "" || got.Context.AgentSymbol == "" {
+		t.Fatalf("decision JSON context = %+v", got.Context)
+	}
+	text := run(t, bin, repo, "decisions", "--data", base)
+	if !strings.Contains(text, "task: context task: preserve the complete summary.") ||
+		!strings.Contains(text, "agent:") || !strings.Contains(text, got.D.Question) {
+		t.Fatalf("decision text = %s", text)
+	}
+	run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(got.ID, 10), "0")
+}
+
 func TestBacklogClaimReleaseJSON(t *testing.T) {
 	bin, base, repo := newRepo(t)
 	run(t, "git", repo, "init", "-q", "-b", "develop")
@@ -484,7 +529,7 @@ func TestResetYesStillRefusesPendingDecision(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: review
-    agents: [{package: reviewer}]
+    agents: [{package: correctness-reviewer}]
     gate: approve_artifact
     artifacts: [review.md]
 `
