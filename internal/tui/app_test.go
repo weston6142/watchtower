@@ -653,6 +653,106 @@ func TestDecisionEditorKeepsOAsText(t *testing.T) {
 	}
 }
 
+func TestReadyEvidenceStillOpensDiffArtifact(t *testing.T) {
+	dir := t.TempDir()
+	evidencePath := filepath.Join(dir, "evidence.json")
+	diffPath := filepath.Join(dir, "diff.patch")
+	if err := os.WriteFile(evidencePath, []byte(`{
+		"files": [{"path": "internal/tui/app.go", "added": 2, "removed": 1}],
+		"added": 2,
+		"removed": 1,
+		"biggest": "internal/tui/app.go",
+		"area_weight": {"internal/tui": 3}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(diffPath, []byte("diff artifact contents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := toastModel(t)
+	m.Width, m.Height = 100, 40
+	m.client = &proto.Client{}
+	m = pressKey(t, m, "o")
+	next, _ := m.Update(detailMsg{detail: &proto.IssueDetail{
+		Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter"},
+		Artifacts: []string{evidencePath, diffPath},
+	}})
+	m = next.(Model)
+	m = pressKey(t, m, "enter")
+
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "diff artifact contents") {
+		t.Fatalf("ready evidence did not open diff artifact:\n%s", plain)
+	}
+}
+
+func TestPresentedDecisionOOpensAvailableArtifactWithoutEvidenceBundle(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "review.md")
+	if err := os.WriteFile(artifactPath, []byte("available artifact contents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := toastModel(t)
+	m.Width, m.Height = 100, 40
+	m.client = &proto.Client{}
+	m = pressKey(t, m, "o")
+	next, _ := m.Update(detailMsg{detail: &proto.IssueDetail{
+		Artifacts: []string{artifactPath},
+	}})
+	m = next.(Model)
+	m = pressKey(t, m, "enter")
+
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "back to tower") {
+		t.Fatalf("evidence action did not open the available artifact list:\n%s", plain)
+	}
+
+	m = pressKey(t, m, "enter")
+	plain = ansi.Strip(m.View())
+	if !strings.Contains(plain, "available artifact contents") {
+		t.Fatalf("available artifact did not open:\n%s", plain)
+	}
+}
+
+func TestFocusedLaneArtifactRouteStillOpensSameArtifact(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "review.md")
+	if err := os.WriteFile(artifactPath, []byte("shared artifact contents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(nil, []string{"brainstorm", "spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "running lane", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "decision lane", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvDecisionRequired, "GH-2", map[string]any{
+			"decision_id": float64(9), "stage": "spec", "question": "Approve?",
+			"options": []any{"approve"}, "recommended": float64(0)}),
+	})
+	m.Width, m.Height = 100, 40
+	m.client = &proto.Client{}
+	m = pressKey(t, m, "esc")
+	m = pressKey(t, m, "tab")
+	if m.Focus.Issue != "GH-2" {
+		t.Fatalf("tab focused %q, want GH-2", m.Focus.Issue)
+	}
+	m = pressKey(t, m, "enter")
+	next, _ := m.Update(detailMsg{detail: &proto.IssueDetail{Artifacts: []string{artifactPath}}})
+	m = next.(Model)
+
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "back to tower") {
+		t.Fatalf("focused-lane route did not show the artifact list:\n%s", plain)
+	}
+	m = pressKey(t, m, "enter")
+	plain = ansi.Strip(m.View())
+	if !strings.Contains(plain, "shared artifact contents") {
+		t.Fatalf("focused-lane route did not open the artifact:\n%s", plain)
+	}
+}
+
 func TestChoiceToastAddNoteOpensEmptyEditor(t *testing.T) {
 	m := toastModel(t)
 	m = pressKey(t, m, "j")
