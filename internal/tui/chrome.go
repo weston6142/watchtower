@@ -65,11 +65,38 @@ func renderChromeHeader(width int, badges []badge, right string) string {
 func renderKeybar(width int, bindings [][2]string, right string) string {
 	t := activeTheme
 	label := lipgloss.NewStyle().Foreground(t.Dim)
-	parts := make([]string, 0, len(bindings))
+	items := make([]string, 0, len(bindings))
 	for _, b := range bindings {
-		parts = append(parts, keyChip(b[0])+label.Render(" "+b[1]))
+		items = append(items, keyChip(b[0])+label.Render(" "+b[1]))
 	}
-	return chromeBar(width, strings.Join(parts, "  "), right)
+
+	available := max(1, width-2*padH)
+	rows := make([]string, 0, len(items)+1)
+	current := ""
+	for _, item := range items {
+		candidate := item
+		if current != "" {
+			candidate = current + "  " + item
+		}
+		if current != "" && lipgloss.Width(candidate) > available {
+			rows = append(rows, current)
+			current = item
+			continue
+		}
+		current = candidate
+	}
+	if current != "" {
+		rows = append(rows, current)
+	}
+	if right != "" {
+		last := len(rows) - 1
+		if last >= 0 && lipgloss.Width(rows[last])+1+lipgloss.Width(right) <= available {
+			rows[last] += " " + right
+		} else {
+			rows = append(rows, right)
+		}
+	}
+	return chromeRows(width, rows)
 }
 
 // errText styles a transient error for the keybar's right slot.
@@ -90,13 +117,31 @@ func errText(s string) string {
 
 // chromeBar lays left and right on one Bg1 row spanning width.
 func chromeBar(width int, left, right string) string {
-	t := activeTheme
-	pad := width - lipgloss.Width(left) - lipgloss.Width(right) - 2*padH
-	if pad < 1 {
-		pad = 1
+	width = max(1, width)
+	available := max(1, width-2*padH)
+	left = truncate(left, available)
+	right = truncate(right, max(1, available-lipgloss.Width(left)-1))
+	gap := max(1, available-lipgloss.Width(left)-lipgloss.Width(right))
+	return chromeRows(width, []string{left + strings.Repeat(" ", gap) + right})
+}
+
+func chromeRows(width int, rows []string) string {
+	width = max(1, width)
+	available := max(1, width-2*padH)
+	leftPad := min(padH, width/2)
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		row = truncate(row, available)
+		rowWidth := lipgloss.Width(row)
+		if rowWidth > width-leftPad {
+			row = truncate(row, max(1, width-leftPad))
+			rowWidth = lipgloss.Width(row)
+		}
+		out = append(out, lipgloss.NewStyle().Background(activeTheme.Bg1).Render(
+			strings.Repeat(" ", leftPad)+row+strings.Repeat(" ", max(0, width-leftPad-rowWidth)),
+		))
 	}
-	row := strings.Repeat(" ", padH) + left + strings.Repeat(" ", pad) + right + strings.Repeat(" ", padH)
-	return lipgloss.NewStyle().Background(t.Bg1).MaxWidth(max(1, width)).Render(row)
+	return strings.Join(out, "\n")
 }
 
 func keyChip(key string) string {

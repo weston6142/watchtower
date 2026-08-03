@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 func TestRenderChromeHeaderContainsBadgesAndRight(t *testing.T) {
@@ -41,6 +42,27 @@ func TestKeybarStaysOneRowWithMultiLineError(t *testing.T) {
 	}
 	if plain := ansi.Strip(got); !strings.Contains(plain, "git worktree add failed: fatal: destination path exists") {
 		t.Fatalf("collapsed error lost its text: %q", plain)
+	}
+}
+
+func TestKeybarNarrowWidthKeepsEveryBinding(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	got := ansi.Strip(renderKeybar(60, [][2]string{
+		{"j/k", "floors"}, {"tab", "next"}, {"p", "pause/resume"}, {"x", "kill"},
+		{"R", "retry"}, {"T", "stream"}, {"L", "levers"}, {"?", "help"}, {"q", "quit"},
+	}, ""))
+	for _, want := range gh11FooterTerms {
+		if !strings.Contains(got, want) {
+			t.Fatalf("narrow keybar lost %q:\n%s", want, got)
+		}
+	}
+	for i, row := range strings.Split(got, "\n") {
+		if width := lipgloss.Width(row); width > 60 {
+			t.Fatalf("narrow keybar row %d is %d cells wide:\n%s", i, width, got)
+		}
+	}
+	if rows := lipgloss.Height(got); rows < 2 {
+		t.Fatalf("narrow keybar stayed a clipped single row: %d rows\n%s", rows, got)
 	}
 }
 
