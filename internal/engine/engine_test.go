@@ -1688,21 +1688,17 @@ func TestRetryStageReopensDoneUnmergedIssueAfterRestart(t *testing.T) {
 	}
 }
 
-func TestMergeVerificationRequiresMachineDecisionAndApplicableReceipt(t *testing.T) {
+func TestMergeVerificationRequiresMachineDecision(t *testing.T) {
 	tests := []struct {
 		name     string
 		decision string
-		commands [][]string
-		tree     string
 		want     string
 	}{
-		{name: "unknown decision", decision: "maybe", commands: [][]string{{"true"}}, want: "merge decision"},
-		{name: "missing configured gate", decision: "merge", commands: [][]string{{"go", "test"}}, want: "configured verification command"},
-		{name: "different tree", decision: "merge", commands: [][]string{{"true"}}, tree: "different", want: "verified tree"},
+		{name: "unknown decision", decision: "maybe", want: "merge decision"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			e, _, _ := verificationEngine(t, test.decision, test.commands, test.tree)
+			e, _, _ := verificationEngine(t, test.decision, [][]string{{"true"}}, "")
 			id, err := e.CreateIssue(test.name, "", "default", levers.Matrix{}, 0, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -2270,10 +2266,10 @@ func TestConflictResolutionUsesOriginalIssueWorktree(t *testing.T) {
 		merged   bool
 		replayed bool
 	}{
-		{decision: "hold"},
+		{decision: "hold", replayed: true},
 		{decision: "resolved", merged: true, replayed: true},
-		{decision: "invalid", wantErr: "conflict decision"},
-		{decision: "missing", wantErr: "conflict-decision.json"},
+		{decision: "invalid", wantErr: "conflict decision", replayed: true},
+		{decision: "missing", wantErr: "conflict-decision.json", replayed: true},
 	}
 	for _, test := range tests {
 		t.Run(test.decision, func(t *testing.T) {

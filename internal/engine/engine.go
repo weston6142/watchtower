@@ -1899,6 +1899,11 @@ func (e *Engine) runStageOnce(
 	if st.Completion == flow.CompletionAny && succeeded == 0 {
 		return firstErr
 	}
+	if st.MergeBarrier {
+		if err := e.writeVerificationReceipt(ctx, is, workdir); err != nil {
+			return err
+		}
+	}
 	// validate artifacts
 	for _, name := range st.Artifacts {
 		p := filepath.Join(workdir, name)
