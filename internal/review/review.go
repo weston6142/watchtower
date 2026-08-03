@@ -25,10 +25,9 @@ type Target struct {
 type Outcome string
 
 const (
-	OutcomeAccepted         Outcome = "accepted"
-	OutcomeRevise           Outcome = "revise"
-	OutcomeRevisionRequired Outcome = OutcomeRevise
-	OutcomeStale            Outcome = "stale"
+	OutcomeAccepted Outcome = "accepted"
+	OutcomeRevise   Outcome = "revise"
+	OutcomeStale    Outcome = "stale"
 )
 
 var ErrStaleTarget = errors.New("artifact review target is stale")
