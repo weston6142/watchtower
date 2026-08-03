@@ -27,6 +27,29 @@ func TestDecisionsDoorSelectable(t *testing.T) {
 	}
 }
 
+func TestDecisionsDoorDecisionContextNoTruncation(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	d := projection.DecisionView{ID: 2, IssueID: "GH-2", Stage: "spec", Question: "Proceed?", Context: longDecisionContext()}
+	out := ansi.Strip(renderDecisionsDoor([]projection.DecisionView{d}, map[string]Identity{"GH-2": {Tag: "02"}}, 0, 48))
+	for _, want := range []string{d.Context.TaskSummary, d.Context.AgentName, d.Context.AgentColor, d.Context.AgentSymbol, d.Question} {
+		if !containsWrapped(out, want) {
+			t.Fatalf("door missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "…") {
+		t.Fatalf("door truncated decision context:\n%s", out)
+	}
+	for lineNo, line := range strings.Split(out, "\n") {
+		if lipgloss.Width(line) > 48 {
+			t.Fatalf("door line %d is %d cells wide:\n%s", lineNo, lipgloss.Width(line), out)
+		}
+	}
+	legacy := ansi.Strip(renderDecisionsDoor([]projection.DecisionView{{ID: 3, IssueID: "GH-3", Stage: "spec", Question: "Legacy?"}}, map[string]Identity{"GH-3": {Tag: "03"}}, 0, 48))
+	if strings.Contains(legacy, "task ·") || strings.Contains(legacy, "agent ·") || !strings.Contains(legacy, "Legacy?") {
+		t.Fatalf("legacy door rendering changed:\n%s", legacy)
+	}
+}
+
 func TestTimelineHumanizes(t *testing.T) {
 	lines := humanizeEvents([]core.Event{
 		mkev(t, core.EvIssueMerged, "GH-1", map[string]any{"branch": "issue/GH-1"}),

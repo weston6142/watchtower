@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
@@ -53,6 +54,18 @@ func wrapIndent(text string, width int, first string) []string {
 		}
 	}
 	return out
+}
+
+func decisionContextLines(context *decision.DecisionContext, width int) []string {
+	if context == nil {
+		return nil
+	}
+	width = max(1, width)
+	agent := strings.Join([]string{context.AgentName, context.AgentColor, context.AgentSymbol}, " · ")
+	var lines []string
+	lines = append(lines, wrapIndent(context.TaskSummary, width, "task · ")...)
+	lines = append(lines, wrapIndent(agent, width, "agent · ")...)
+	return lines
 }
 
 // renderRail draws the focused issue's plain-language FOCUS panel above the
@@ -225,6 +238,10 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 	t := activeTheme
 	dim := lipgloss.NewStyle().Foreground(t.Dim)
 	lines := []string{}
+	if context := decisionContextLines(d.Context, inner); len(context) > 0 {
+		lines = append(lines, context...)
+		lines = append(lines, "")
+	}
 	lines = append(lines, wrapIndent(d.Question, inner, "")...)
 	if d.Why != "" {
 		for _, line := range wrapIndent(d.Why, inner, "why · ") {
@@ -273,16 +290,15 @@ func renderDecisionEditor(d projection.DecisionView, editor decisionEditor, widt
 	if value == "" {
 		value = "…"
 	}
-	content := strings.Join([]string{
-		strings.Join(wrapIndent(d.Question, inner, ""), "\n"),
-		"",
-		lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
-			BorderForeground(activeTheme.Accent).Padding(0, 1).Width(inner - 4).
-			Render(value + "█"),
-		"",
-		keyChip("enter") + themeDim.Render(" submit  ") +
-			keyChip("esc") + themeDim.Render(" choices"),
-	}, "\n")
+	lines := decisionContextLines(d.Context, inner)
+	if len(lines) > 0 {
+		lines = append(lines, "")
+	}
+	lines = append(lines, wrapIndent(d.Question, inner, "")...)
+	lines = append(lines, "", lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(activeTheme.Accent).Padding(0, 1).Width(inner-4).
+		Render(value+"█"), "", keyChip("enter")+themeDim.Render(" submit  ")+keyChip("esc")+themeDim.Render(" choices"))
+	content := strings.Join(lines, "\n")
 	return renderBox(fmt.Sprintf("RESPONSE %d · %s", d.ID, d.Stage), "", " editing ", content)
 }
 

@@ -25,9 +25,28 @@ func renderDecisionsDoor(ds []projection.DecisionView, ids map[string]Identity, 
 		num := lipgloss.NewStyle().Foreground(t.Warn).Render(fmt.Sprintf("[%d]", d.ID))
 		// Identity color stays on the tag only; the row body reads in Text.
 		tag := lipglossIdentity(ids[d.IssueID], ids[d.IssueID].Tag)
-		body := lipgloss.NewStyle().Foreground(t.Text).Render(d.Stage + " · " + d.Question)
-		row := num + " " + tag + " " + body
-		lines = append(lines, cursorRow(i == sel, truncate(row, max(1, width-4)), width))
+		prefix := num + " " + tag + " "
+		contentWidth := max(1, width-2-lipgloss.Width(prefix))
+		rowLines := decisionContextLines(d.Context, contentWidth)
+		if len(rowLines) > 0 {
+			rowLines = append(rowLines, "")
+		}
+		rowLines = append(rowLines, wrapIndent(d.Stage+" · "+d.Question, contentWidth, "")...)
+		indent := strings.Repeat(" ", 2+lipgloss.Width(prefix))
+		bodyStyle := lipgloss.NewStyle().Foreground(t.Text)
+		for lineNo, rowLine := range rowLines {
+			content := bodyStyle.Render(rowLine)
+			if lineNo == 0 {
+				content = prefix + content
+				lines = append(lines, cursorRow(i == sel, content, width))
+				continue
+			}
+			content = indent + content
+			if i == sel {
+				content = lipgloss.NewStyle().Background(t.Bg2).Render(content)
+			}
+			lines = append(lines, content)
+		}
 	}
 	return boundedLines(lines, width)
 }
