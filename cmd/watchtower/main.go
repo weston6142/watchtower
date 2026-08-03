@@ -114,17 +114,19 @@ func main() {
 		reducedMotion := fs.Bool("reduced-motion", false, "disable spinner and failure motion")
 		retireAfter := fs.Duration("retire-after", 5*time.Minute, "auto-retire shipped lanes after this duration")
 		fs.Parse(args)
+		repoRoot := resolveRepo(*repo)
 		c := mustDial(*data, *repo)
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "get_flow", Flow: "default"})
 		model := tui.NewModel(c, r.FlowStages)
 		reporter := herdr.NewFromEnv()
 		model.SetHerdrReporter(reporter)
-		model.Repo = *repo
+		model.SetPaneSpawner(reporter)
+		model.Repo = repoRoot
 		model.SetStageAliases(tui.ParseStageAliases(*stageAliases))
 		model.SetReducedMotion(*reducedMotion)
 		model.SetRetireAfter(*retireAfter)
-		if cfg, err := repocfg.Load(resolveRepo(*repo)); err == nil {
+		if cfg, err := repocfg.Load(repoRoot); err == nil {
 			tui.SetTheme(cfg.Theme) // empty or unknown falls back to tokyo-night
 		}
 		_, runErr := tea.NewProgram(model, tea.WithAltScreen()).Run()
