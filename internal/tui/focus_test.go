@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/core"
@@ -80,6 +81,44 @@ func TestNormalizeFocusAllowsNoFocusOnlyWithoutEligibleLanes(t *testing.T) {
 	}
 	if got := normalizeFocus(Focus{}, nil, []string{"spec"}, nil); got.Issue != "" {
 		t.Fatalf("nil-state focus = %+v, want empty", got)
+	}
+}
+
+func TestClaimedLaneCanReceiveNumericFocusOnItsRenderedFloor(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm", "spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "running", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvIssueDrafted, "GH-2", map[string]any{"title": "claimed", "flow": "default"}),
+		mkev(t, core.EvIssueClaimed, "GH-2", nil),
+	})
+
+	focused := moveFocus(Focus{Issue: "GH-1"}, m.State, m.stages, "2", nil)
+	if focused.Issue != "GH-2" || focused.Floor != 1 {
+		t.Fatalf("numeric focus = %+v, want claimed GH-2 on floor 1", focused)
+	}
+	cards := floorCards(m.State, m.stages, 1, nil)
+	if !slices.Contains(cards, "GH-2") {
+		t.Fatalf("claimed lane missing from rendered floor: %v", cards)
+	}
+}
+
+func TestPausedLaneFocusMatchesFirstUnfinishedRenderedFloor(t *testing.T) {
+	m := NewModel(nil, []string{"brainstorm", "spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "paused", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "brainstorm"}),
+		mkev(t, core.EvStageCompleted, "GH-1", map[string]any{"stage": "brainstorm"}),
+		mkev(t, core.EvIssuePaused, "GH-1", nil),
+	})
+
+	focused := normalizeFocus(Focus{}, m.State, m.stages, nil)
+	if focused.Issue != "GH-1" || focused.Floor != 2 {
+		t.Fatalf("paused focus = %+v, want GH-1 on first unfinished floor 2", focused)
+	}
+	cards := floorCards(m.State, m.stages, 2, nil)
+	if !slices.Contains(cards, "GH-1") {
+		t.Fatalf("paused lane missing from rendered unfinished floor: %v", cards)
 	}
 }
 
