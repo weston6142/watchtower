@@ -131,8 +131,9 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		}
 
 		reply := make(chan levers.Response, 1)
+		failure := make(chan error, 1)
 		select {
-		case asks <- runner.Ask{Decision: d, Reply: reply}:
+		case asks <- runner.Ask{Decision: d, Reply: reply, Error: failure}:
 		case <-ctx.Done():
 			res.Err = ctx.Err()
 			return res
@@ -140,6 +141,9 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		var response levers.Response
 		select {
 		case response = <-reply:
+		case err := <-failure:
+			res.Err = err
+			return res
 		case <-ctx.Done():
 			res.Err = ctx.Err()
 			return res

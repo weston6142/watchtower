@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
@@ -44,13 +45,33 @@ func newEngineCfg(t *testing.T, r runner.Runner, adjust func(*Config)) (*Engine,
 	t.Cleanup(func() { s.Close() })
 	cfg := Config{
 		Store: s, Runner: r, Pool: slots.NewPool(2),
-		Flows:   map[string]flow.Flow{"default": testFlow()},
-		DataDir: t.TempDir(),
+		Flows: map[string]flow.Flow{"default": testFlow()}, DataDir: t.TempDir(),
+		DecisionIdentities: testDecisionIdentities(),
 	}
 	if adjust != nil {
 		adjust(&cfg)
 	}
 	return New(cfg), s
+}
+
+func testDecisionIdentities() map[string]decision.AgentIdentity {
+	return map[string]decision.AgentIdentity{
+		"brainstorm":           {Name: "Brainstorm", Color: "cyan", Symbol: "✦"},
+		"spec-writer":          {Name: "Spec Writer", Color: "violet", Symbol: "✎"},
+		"planner":              {Name: "Planner", Color: "blue", Symbol: "⌘"},
+		"executor":             {Name: "Executor", Color: "green", Symbol: "⚙"},
+		"clean-code-reviewer":  {Name: "Clean Code Reviewer", Color: "teal", Symbol: "◆"},
+		"correctness-reviewer": {Name: "Correctness Reviewer", Color: "yellow", Symbol: "✓"},
+		"conflict-resolver":    {Name: "Conflict Resolver", Color: "red", Symbol: "⚔"},
+		"librarian":            {Name: "Librarian", Color: "slate", Symbol: "▤"},
+		"merge-verifier":       {Name: "Merge Verifier", Color: "orange", Symbol: "⛨"},
+		"agent":                {Name: "Test Agent", Color: "gray", Symbol: "A"},
+		"explorer":             {Name: "Explorer", Color: "gray", Symbol: "E"},
+		"researcher":           {Name: "Researcher", Color: "gray", Symbol: "S"},
+		"reviewer":             {Name: "Reviewer", Color: "gray", Symbol: "R"},
+		"doc-writer":           {Name: "Doc Writer", Color: "gray", Symbol: "D"},
+		"verifier":             {Name: "Verifier", Color: "gray", Symbol: "V"},
+	}
 }
 
 func newEngine(t *testing.T, r runner.Runner) (*Engine, *store.Store) {
@@ -67,6 +88,138 @@ func scripts() map[string]runner.Script {
 		"review/clean-code-reviewer": {Artifacts: map[string]string{"review.md": ""}},
 		"review/reviewer":            {},
 		"review/doc-writer":          {Artifacts: map[string]string{"docs": ""}},
+	}
+}
+
+func TestDecisionContextIsFrozenAndTrustedAcrossAgentDecisions(t *testing.T) {
+	f := flow.Flow{Name: "context", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent-a"}, {Package: "agent-b"}},
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent-a": {Asks: []levers.Decision{
+			{Kind: levers.DecisionChoice, Question: "Choose?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 0.1},
+			{Kind: levers.DecisionFreeform, Question: "Explain?", RecommendedResponse: "Because.", Importance: 1.0},
+		}},
+		"ask/agent-b": {Asks: []levers.Decision{
+			{Kind: levers.DecisionChoice, Question: "Again?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 0.1},
+		}},
+	}}
+	e, _ := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"context": f}
+		cfg.DecisionIdentities = map[string]decision.AgentIdentity{
+			"agent-a": {Name: "First Agent", Color: "violet", Symbol: "α"},
+			"agent-b": {Name: "Second Agent", Color: "orange", Symbol: "β"},
+		}
+	})
+	var autoContexts []decision.DecisionContext
+	e.cfg.Observers = append(e.cfg.Observers, func(event core.Event) {
+		if event.Type != core.EvDecisionAutoResolved {
+			return
+		}
+		var payload struct {
+			Context decision.DecisionContext `json:"context"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Errorf("decode auto decision: %v", err)
+			return
+		}
+		autoContexts = append(autoContexts, payload.Context)
+	})
+	id, err := e.CreateIssue("  Make   decisions self-identifying! Extra title.", "Keep the full identity visible. Extra body.", "context", levers.Matrix{"ask": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	var pending PendingDecision
+	deadline := time.After(5 * time.Second)
+	for {
+		if decisions := e.PendingDecisions(); len(decisions) == 1 {
+			pending = decisions[0]
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("trusted context decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if pending.Context == nil {
+		t.Fatal("pending decision has no context")
+	}
+	if pending.Context.TaskSummary != "Make decisions self-identifying: Keep the full identity visible." ||
+		pending.Context.AgentName != "First Agent" || pending.Context.AgentColor != "violet" || pending.Context.AgentSymbol != "α" {
+		t.Fatalf("pending context = %#v", pending.Context)
+	}
+	if err := e.Answer(pending.ID, levers.FreeformResponse("Because.")); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(autoContexts) != 2 {
+		t.Fatalf("auto decision contexts = %d, want 2", len(autoContexts))
+	}
+	wantSummary := "Make decisions self-identifying: Keep the full identity visible."
+	for _, ctx := range autoContexts {
+		if ctx.TaskSummary != wantSummary {
+			t.Fatalf("auto summary = %q, want %q", ctx.TaskSummary, wantSummary)
+		}
+	}
+	if autoContexts[0].AgentName != "First Agent" || autoContexts[0].AgentColor != "violet" || autoContexts[0].AgentSymbol != "α" ||
+		autoContexts[1].AgentName != "Second Agent" || autoContexts[1].AgentColor != "orange" || autoContexts[1].AgentSymbol != "β" {
+		t.Fatalf("auto identities = %#v, %#v", autoContexts[0], autoContexts[1])
+	}
+}
+
+func TestDecisionContextFailureStopsBeforePresentation(t *testing.T) {
+	f := flow.Flow{Name: "context", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent-a"}},
+	}}}
+	for _, tc := range []struct {
+		name       string
+		identities map[string]decision.AgentIdentity
+		title      string
+		want       string
+	}{
+		{name: "missing identity", identities: map[string]decision.AgentIdentity{}, title: "A task", want: "agent-a"},
+		{name: "malformed identity", identities: map[string]decision.AgentIdentity{
+			"agent-a": {Name: "Agent", Color: "#00ff00", Symbol: "A"},
+		}, title: "A task", want: "agent_color"},
+		{name: "over budget context", identities: map[string]decision.AgentIdentity{
+			"agent-a": {Name: "Agent", Color: "green", Symbol: "A"},
+		}, title: strings.Repeat("x", decision.MaxMessageBytes+1), want: "message budget"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"ask/agent-a": {Asks: []levers.Decision{{Question: "Proceed?", Options: []string{"yes"}, Recommended: 0, Importance: 0.1}}},
+			}}
+			e, s := newEngineCfg(t, r, func(cfg *Config) {
+				cfg.Flows = map[string]flow.Flow{"context": f}
+				cfg.DecisionIdentities = tc.identities
+			})
+			id, err := e.CreateIssue(tc.title, "", "context", levers.Matrix{"ask": flow.LeverYolo}, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.StartIssue(context.Background(), id); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("StartIssue error = %v, want %q", err, tc.want)
+			}
+			if got := e.PendingDecisions(); len(got) != 0 {
+				t.Fatalf("pending decisions = %#v", got)
+			}
+			events, err := s.EventsSince(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range events {
+				if event.Type == core.EvDecisionRequired {
+					t.Fatal("invalid context was presented")
+				}
+			}
+		})
 	}
 }
 
@@ -845,7 +998,7 @@ func TestMarshalReleasedAfterSuccessfulCompletionWithoutTrain(t *testing.T) {
 			}},
 		}},
 		Marshal: seq, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
-		DataDir: t.TempDir(), Workspace: workspace.GitWorktree{Repo: repo},
+		DataDir: t.TempDir(), Workspace: workspace.GitWorktree{Repo: repo}, DecisionIdentities: testDecisionIdentities(),
 	})
 	id, err := e.CreateIssue("marshal", "", "default", levers.Preset(f, flow.LeverYolo), 0, nil)
 	if err != nil {
@@ -1204,8 +1357,9 @@ func verificationEngineForFlow(
 	e := New(Config{
 		Store: s, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{f.Name: f},
 		DataDir: t.TempDir(), Workspace: workspace.GitWorktree{Repo: repo},
-		Train:  &marshal.Train{Repo: repo, TestCmd: []string{"true"}},
-		Runner: &runner.FakeRunner{Scripts: scripts},
+		Train:              &marshal.Train{Repo: repo, TestCmd: []string{"true"}},
+		Runner:             &runner.FakeRunner{Scripts: scripts},
+		DecisionIdentities: testDecisionIdentities(),
 	})
 	return e, s, repo
 }
@@ -1999,7 +2153,8 @@ func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, strin
 	e := New(Config{
 		Store: s, Runner: run, Pool: slots.NewPool(1),
 		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(), Workspace: ws,
-		Train: &marshal.Train{Repo: repo, TestCmd: run.gate},
+		Train:              &marshal.Train{Repo: repo, TestCmd: run.gate},
+		DecisionIdentities: testDecisionIdentities(),
 	})
 	return e, s, repo, run, ws, originalBase
 }
@@ -2082,7 +2237,7 @@ func newEngineOnFile(t *testing.T, s *store.Store, r runner.Runner, dataDir stri
 	return New(Config{
 		Store: s, Runner: r, Pool: slots.NewPool(2),
 		Flows:   map[string]flow.Flow{"default": testFlow()},
-		DataDir: dataDir,
+		DataDir: dataDir, DecisionIdentities: testDecisionIdentities(),
 	})
 }
 
@@ -2244,7 +2399,7 @@ func TestRetryAfterRestartReusesRecordedIssueWorktree(t *testing.T) {
 		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
 			"execute/executor": {},
 		}}, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
-		DataDir: t.TempDir(), Workspace: ws,
+		DataDir: t.TempDir(), Workspace: ws, DecisionIdentities: testDecisionIdentities(),
 	})
 	if err := e.Rehydrate(); err != nil {
 		t.Fatal(err)
@@ -2432,7 +2587,7 @@ func TestMergedIssueBranchIsDeleted(t *testing.T) {
 			"execute/executor": {},
 		}},
 		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
-		DataDir:   t.TempDir(),
+		DataDir: t.TempDir(), DecisionIdentities: testDecisionIdentities(),
 		Workspace: workspace.GitWorktree{Repo: repo},
 		Train:     &marshal.Train{Repo: repo},
 	})
@@ -2491,7 +2646,7 @@ func TestMergedCleanupFailureIsDurableAndRetryDoesNotReland(t *testing.T) {
 			}},
 		}},
 		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
-		DataDir: t.TempDir(), Workspace: ws, Train: &marshal.Train{Repo: repo},
+		DataDir: t.TempDir(), Workspace: ws, Train: &marshal.Train{Repo: repo}, DecisionIdentities: testDecisionIdentities(),
 	})
 	id, err := e.CreateIssue("cleanup", "", "default", levers.Matrix{}, 0, nil)
 	if err != nil {
@@ -2588,7 +2743,7 @@ func TestIssueStartFastForwardsBaseFromOrigin(t *testing.T) {
 			"execute/executor": {},
 		}},
 		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
-		DataDir:   t.TempDir(),
+		DataDir: t.TempDir(), DecisionIdentities: testDecisionIdentities(),
 		Workspace: workspace.GitWorktree{Repo: repo},
 		Train:     &marshal.Train{Repo: repo, Pull: true},
 	})
@@ -2887,7 +3042,8 @@ func TestRehydrateIgnoresAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 	e2 := New(Config{Store: s, Runner: e.cfg.Runner, Pool: slots.NewPool(2),
-		Flows: map[string]flow.Flow{"default": testFlow()}, DataDir: e.cfg.DataDir})
+		Flows: map[string]flow.Flow{"default": testFlow()}, DataDir: e.cfg.DataDir,
+		DecisionIdentities: testDecisionIdentities()})
 	if err := e2.Rehydrate(); err != nil {
 		t.Fatal(err)
 	}

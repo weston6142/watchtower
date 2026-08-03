@@ -18,6 +18,7 @@ import (
 	"github.com/weston6142/watchtower/internal/attach"
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -36,19 +37,20 @@ var errDependenciesDiscovered = errors.New("new dependencies discovered")
 var errConflictHeld = errors.New("merge conflict held")
 
 type Config struct {
-	Store       *store.Store
-	Runner      runner.Runner
-	Marshal     Sequencer
-	Train       *marshal.Train
-	Librarian   *librarian.Librarian
-	Observers   []func(core.Event)
-	Pool        *slots.Pool
-	Flows       map[string]flow.Flow
-	Rules       levers.Rules
-	DataDir     string
-	Workspace   workspace.Provider
-	TokenBudget int
-	OnLine      func(issueID, stage, line string)
+	Store              *store.Store
+	Runner             runner.Runner
+	Marshal            Sequencer
+	Train              *marshal.Train
+	Librarian          *librarian.Librarian
+	Observers          []func(core.Event)
+	Pool               *slots.Pool
+	Flows              map[string]flow.Flow
+	Rules              levers.Rules
+	DecisionIdentities map[string]decision.AgentIdentity
+	DataDir            string
+	Workspace          workspace.Provider
+	TokenBudget        int
+	OnLine             func(issueID, stage, line string)
 }
 
 type Sequencer interface {
@@ -64,6 +66,7 @@ type PendingDecision struct {
 	IssueID string
 	Stage   string
 	D       levers.Decision
+	Context *decision.DecisionContext `json:"context,omitempty"`
 }
 
 type pending struct {
@@ -75,6 +78,7 @@ type issueState struct {
 	id                  string
 	title               string
 	body                string
+	taskSummary         string
 	flowName            string
 	matrix              levers.Matrix
 	priority            int
@@ -1260,36 +1264,81 @@ func (e *Engine) Answer(decisionID int64, response levers.Response) error {
 }
 
 // escalate blocks until the human answers; returns the typed response.
-func (e *Engine) escalate(issueID, stage string, d levers.Decision) levers.Response {
-	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
-		IssueID: issueID, Stage: stage, Question: d.Question,
-		Options: d.Options, Recommended: d.Recommended,
-		Kind: d.Kind, RecommendedResponse: d.RecommendedResponse,
-		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
-		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
-		BlockingCost: e.blockingCost(issueID),
-	})
+func (e *Engine) escalate(is *issueState, stage, agentPkg string, d levers.Decision) (levers.Response, error) {
+	decisionContext, err := e.buildDecisionContext(is, agentPkg)
 	if err != nil {
-		panic(fmt.Sprintf("insert decision: %v", err))
+		return levers.Response{}, err
 	}
-	p := &pending{
-		PendingDecision: PendingDecision{ID: rowID, IssueID: issueID, Stage: stage, D: d},
-		reply:           make(chan levers.Response, 1),
+	return e.escalateWithContext(is, stage, d, decisionContext)
+}
+
+func (e *Engine) buildDecisionContext(is *issueState, agentPkg string) (decision.DecisionContext, error) {
+	e.mu.Lock()
+	taskSummary := is.taskSummary
+	e.mu.Unlock()
+	if taskSummary == "" {
+		return decision.DecisionContext{}, fmt.Errorf("decision context: task summary is unavailable")
+	}
+	identity, ok := e.cfg.DecisionIdentities[agentPkg]
+	if !ok {
+		return decision.DecisionContext{}, fmt.Errorf("decision context: agent package %q identity is missing", agentPkg)
+	}
+	context := decision.DecisionContext{
+		TaskSummary: taskSummary,
+		AgentName:   identity.Name,
+		AgentColor:  identity.Color,
+		AgentSymbol: identity.Symbol,
+	}
+	if err := decision.ValidateDecisionContext(context); err != nil {
+		return decision.DecisionContext{}, fmt.Errorf("decision context: %w", err)
+	}
+	return context, nil
+}
+
+func (e *Engine) freezeTaskSummary(is *issueState) error {
+	e.mu.Lock()
+	if is.taskSummary != "" {
+		e.mu.Unlock()
+		return nil
+	}
+	title, body := is.title, is.body
+	e.mu.Unlock()
+	summary, err := decision.BuildTaskSummary(title, body)
+	if err != nil {
+		return fmt.Errorf("decision context: build task summary: %w", err)
 	}
 	e.mu.Lock()
-	e.pend[rowID] = p
-	e.mu.Unlock()
-	e.emit(core.EvDecisionRequired, issueID, map[string]any{
-		"decision_id": p.ID, "stage": stage, "question": d.Question,
-		"options": d.Options, "recommended": d.Recommended, "why": d.Why,
-		"kind": d.Kind, "recommended_response": d.RecommendedResponse,
-		"allow_freeform": d.AllowFreeform, "importance": d.Importance,
-		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths})
-	choice, ok := <-p.reply
-	if !ok {
-		return levers.Response{}
+	if is.taskSummary == "" {
+		is.taskSummary = summary
 	}
-	return choice
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *Engine) decisionAgentPackage(flowName, stage string) (string, error) {
+	f, ok := e.cfg.Flows[flowName]
+	if !ok {
+		return "", fmt.Errorf("flow %q is not configured", flowName)
+	}
+	for _, configuredStage := range f.Stages {
+		if configuredStage.Name == stage {
+			if len(configuredStage.Agents) == 0 {
+				return "", fmt.Errorf("stage %q has no decision agent", stage)
+			}
+			return configuredStage.Agents[0].Package, nil
+		}
+	}
+	return "", fmt.Errorf("stage %q is not configured", stage)
+}
+
+func reportAskError(a runner.Ask, err error) {
+	if a.Error != nil {
+		a.Error <- err
+		return
+	}
+	if a.Reply != nil {
+		a.Reply <- levers.Response{}
+	}
 }
 
 func legacyAnswer(response levers.Response) int {
@@ -1465,10 +1514,20 @@ func (e *Engine) resolveProposalBatch(
 	return issues[0].ID, nil
 }
 
-func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
+func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask) {
+	decisionContext, err := e.buildDecisionContext(is, agentPkg)
+	if err != nil {
+		reportAskError(a, err)
+		return
+	}
 	lever := is.matrix[stage]
 	if levers.Route(a.Decision, lever, e.cfg.Rules) {
-		a.Reply <- e.escalate(is.id, stage, a.Decision)
+		response, err := e.escalateWithContext(is, stage, a.Decision, decisionContext)
+		if err != nil {
+			reportAskError(a, err)
+			return
+		}
+		a.Reply <- response
 		return
 	}
 	if _, err := e.cfg.Store.InsertDecision(store.DecisionRow{
@@ -1481,12 +1540,46 @@ func (e *Engine) handleAsk(is *issueState, stage string, a runner.Ask) {
 		Status: "auto", Response: a.Decision.RecommendedAnswer(),
 		BlockingCost: e.blockingCost(is.id),
 	}); err != nil {
-		panic(fmt.Sprintf("insert auto decision: %v", err))
+		reportAskError(a, fmt.Errorf("insert auto decision: %w", err))
+		return
 	}
 	e.emit(core.EvDecisionAutoResolved, is.id, map[string]any{
 		"stage": stage, "question": a.Decision.Question,
-		"response": a.Decision.RecommendedAnswer()})
+		"response": a.Decision.RecommendedAnswer(), "context": decisionContext})
 	a.Reply <- a.Decision.RecommendedAnswer()
+}
+
+func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Decision, decisionContext decision.DecisionContext) (levers.Response, error) {
+	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
+		IssueID: is.id, Stage: stage, Question: d.Question,
+		Options: d.Options, Recommended: d.Recommended,
+		Kind: d.Kind, RecommendedResponse: d.RecommendedResponse,
+		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
+		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
+		BlockingCost: e.blockingCost(is.id),
+	})
+	if err != nil {
+		return levers.Response{}, fmt.Errorf("insert decision: %w", err)
+	}
+	p := &pending{
+		PendingDecision: PendingDecision{ID: rowID, IssueID: is.id, Stage: stage, D: d, Context: &decisionContext},
+		reply:           make(chan levers.Response, 1),
+	}
+	e.mu.Lock()
+	e.pend[rowID] = p
+	e.mu.Unlock()
+	e.emit(core.EvDecisionRequired, is.id, map[string]any{
+		"decision_id": p.ID, "stage": stage, "question": d.Question,
+		"options": d.Options, "recommended": d.Recommended, "why": d.Why,
+		"kind": d.Kind, "recommended_response": d.RecommendedResponse,
+		"allow_freeform": d.AllowFreeform, "importance": d.Importance,
+		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths,
+		"context": decisionContext})
+	choice, ok := <-p.reply
+	if !ok {
+		return levers.Response{}, nil
+	}
+	return choice, nil
 }
 
 func (e *Engine) stageContext(issueID string) ([]string, string, error) {
@@ -1693,7 +1786,7 @@ func (e *Engine) runStageOnce(
 		for {
 			select {
 			case ask := <-asks:
-				e.handleAsk(is, st.Name, ask)
+				e.handleAsk(is, st.Name, a.Package, ask)
 			case res := <-resc:
 				if insErr == nil {
 					status := "succeeded"
@@ -1866,7 +1959,15 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 			Recommended: 0,
 			Importance:  1.0,
 		}
-		if legacyAnswer(e.escalate(is.id, st.Name, d)) != 0 {
+		agentPkg, err := e.decisionAgentPackage(is.flowName, st.Name)
+		if err != nil {
+			return err
+		}
+		response, err := e.escalate(is, st.Name, agentPkg, d)
+		if err != nil {
+			return err
+		}
+		if legacyAnswer(response) != 0 {
 			if e.wasKilled(is) {
 				e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
 				return context.Canceled
@@ -1908,6 +2009,9 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 }
 
 func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) error {
+	if err := e.freezeTaskSummary(is); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	if is.running {
 		e.mu.Unlock()
@@ -2563,7 +2667,15 @@ func (e *Engine) checkBudget(is *issueState, stage string) error {
 		Recommended: 1,
 		Importance:  1.0,
 	}
-	if legacyAnswer(e.escalate(is.id, stage, d)) == 0 {
+	agentPkg, agentErr := e.decisionAgentPackage(is.flowName, stage)
+	if agentErr != nil {
+		return agentErr
+	}
+	response, err := e.escalate(is, stage, agentPkg, d)
+	if err != nil {
+		return err
+	}
+	if legacyAnswer(response) == 0 {
 		is.budgetWaived = true
 		return nil
 	}

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,21 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
 )
+
+func TestFakeRunnerPropagatesAskFailure(t *testing.T) {
+	r := &FakeRunner{Scripts: map[string]Script{
+		"ask/agent": {Asks: []levers.Decision{{Question: "Proceed?", Options: []string{"yes"}, Recommended: 0}}},
+	}}
+	asks := make(chan Ask)
+	done := r.Run(context.Background(), "GH-1", "ask", "agent", t.TempDir(), asks)
+	a := <-asks
+	want := errors.New("invalid decision context: agent_color")
+	a.Error <- want
+	result := <-done
+	if result.Err == nil || !strings.Contains(result.Err.Error(), want.Error()) {
+		t.Fatalf("result error = %v, want %v", result.Err, want)
+	}
+}
 
 func TestFakeFinalReceiptsPassProductionLoaders(t *testing.T) {
 	dir := t.TempDir()

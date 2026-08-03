@@ -20,6 +20,7 @@ import (
 	"github.com/weston6142/watchtower/internal/claude"
 	"github.com/weston6142/watchtower/internal/codex"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/herdr"
@@ -686,7 +687,14 @@ func runDaemon(args []string) {
 	if os.Getenv("WATCHTOWER_FAKE") == "1" {
 		*runnerKind = "fake"
 	}
-	packages := map[string]pkgs.Package{}
+	packages, err := pkgs.LoadDir(*pkgDir)
+	if err != nil {
+		fatal(err)
+	}
+	decisionIdentities := make(map[string]decision.AgentIdentity, len(packages))
+	for name, pkg := range packages {
+		decisionIdentities[name] = pkg.Identity
+	}
 	var run runner.Runner
 	var ws workspace.Provider
 	switch *runnerKind {
@@ -714,17 +722,9 @@ func runDaemon(args []string) {
 		}
 		run = fake
 	case "claude":
-		packages, err = pkgs.LoadDir(*pkgDir)
-		if err != nil {
-			fatal(err)
-		}
 		run = &claude.CodeRunner{Bin: *claudeBin, Packages: packages}
 		ws = workspace.Detect(repo)
 	case "codex":
-		packages, err = pkgs.LoadDir(*pkgDir)
-		if err != nil {
-			fatal(err)
-		}
 		run = &codex.CodeRunner{
 			Bin: *codexBin, Packages: packages,
 			DefaultModel: *codexModel, DefaultEffort: *codexEffort,
@@ -753,7 +753,8 @@ func runDaemon(args []string) {
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
-		Marshal: seq, Train: train,
+		DecisionIdentities: decisionIdentities,
+		Marshal:            seq, Train: train,
 		Librarian: lib,
 		OnLine:    transcriptBuffer.Add,
 		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
@@ -787,7 +788,11 @@ func runDaemon(args []string) {
 	fmt.Println("watchtower daemon listening on", sock)
 	srv := proto.NewServer(eng, st)
 	srv.SetFlows(flows)
-	srv.SetPackages(packages)
+	setupPackages := packages
+	if *runnerKind == "fake" {
+		setupPackages = map[string]pkgs.Package{}
+	}
+	srv.SetPackages(setupPackages)
 	srv.SetTranscript(transcriptBuffer)
 	srv.SetPricePerMTok(*pricePerMTok)
 	srv.SetBudget(*budget)

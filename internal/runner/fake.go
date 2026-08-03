@@ -51,8 +51,9 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		}
 		for _, d := range sc.Asks {
 			reply := make(chan levers.Response, 1)
+			failure := make(chan error, 1)
 			select {
-			case asks <- Ask{Decision: d, Reply: reply}:
+			case asks <- Ask{Decision: d, Reply: reply, Error: failure}:
 			case <-ctx.Done():
 				done <- Result{Err: ctx.Err()}
 				return
@@ -66,6 +67,9 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				if f.OnResponse != nil {
 					f.OnResponse(issueID, stage, response)
 				}
+			case err := <-failure:
+				done <- Result{SessionID: sc.SessionID, Err: err}
+				return
 			case <-ctx.Done():
 				done <- Result{Err: ctx.Err()}
 				return

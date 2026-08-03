@@ -9,6 +9,7 @@ import (
 type Ask struct {
 	Decision levers.Decision
 	Reply    chan levers.Response
+	Error    chan error
 }
 
 // Proposal is a suggested new issue discovered by an agent mid-flow.
