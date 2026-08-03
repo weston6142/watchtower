@@ -669,9 +669,12 @@ func runDaemon(args []string) {
 	if err := os.MkdirAll(data, 0o755); err != nil {
 		fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(data, pidFileName), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
-		fatal(err)
+	sock := filepath.Join(data, sockFileName)
+	if client, dialErr := proto.Dial(sock); dialErr == nil {
+		client.Close()
+		fatal(fmt.Errorf("daemon already running for %s", repo))
 	}
+	clearStaleSocket(data, sock)
 	st, err := store.Open(filepath.Join(data, "watchtower.db"))
 	if err != nil {
 		fatal(err)
@@ -788,10 +791,16 @@ func runDaemon(args []string) {
 		r.OnProposal = fileProposal
 		r.OnProposalBatch = eng.FileProposalBatch
 	}
-	sock := filepath.Join(data, sockFileName)
-	os.Remove(sock)
+	if client, dialErr := proto.Dial(sock); dialErr == nil {
+		client.Close()
+		fatal(fmt.Errorf("daemon already running for %s", repo))
+	}
 	l, err := net.Listen("unix", sock)
 	if err != nil {
+		fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, pidFileName), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		l.Close()
 		fatal(err)
 	}
 	fmt.Println("watchtower daemon listening on", sock)

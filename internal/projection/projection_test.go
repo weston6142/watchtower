@@ -336,6 +336,9 @@ func TestResumeClearsKilled(t *testing.T) {
 	if iv.Paused || iv.State != "running" {
 		t.Fatalf("resume state: paused=%v state=%q", iv.Paused, iv.State)
 	}
+	if len(s.Parked) != 0 {
+		t.Fatalf("resumed lane remained parked: %v", s.Parked)
+	}
 }
 
 // The paused marker has to land on the stage the lane will resume into, not
