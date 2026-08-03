@@ -3,12 +3,13 @@ package proto
 import (
 	"github.com/weston6142/watchtower/internal/archmap"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
 // maxMessageBytes bounds a single newline-delimited JSON message on the wire.
-const maxMessageBytes = 1 << 20
+const maxMessageBytes = decision.MaxMessageBytes
 
 type Command struct {
 	Op       string `json:"op"`

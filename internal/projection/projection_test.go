@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 )
 
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -61,6 +62,31 @@ func TestDecisionProjectionPreservesFreeformFields(t *testing.T) {
 	if got.Kind != "freeform" || got.RecommendedResponse != "Approve spec.md as written." ||
 		!got.AllowFreeform {
 		t.Fatalf("decision = %#v", got)
+	}
+}
+
+func TestProjectionDecisionContext(t *testing.T) {
+	s := NewState()
+	want := decision.DecisionContext{
+		TaskSummary: "Ship decision context.", AgentName: "Executor",
+		AgentColor: "green", AgentSymbol: "⚙",
+	}
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-31", map[string]any{
+		"decision_id": float64(7), "stage": "execute", "question": "Proceed?", "context": want,
+	}))
+	got := s.Decisions[7].Context
+	if got == nil || *got != want {
+		t.Fatalf("projected context = %#v", got)
+	}
+}
+
+func TestProjectionLegacyDecisionContext(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-31", map[string]any{
+		"decision_id": float64(8), "stage": "execute", "question": "Legacy?",
+	}))
+	if got := s.Decisions[8].Context; got != nil {
+		t.Fatalf("legacy projected context = %#v", got)
 	}
 }
 

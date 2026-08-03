@@ -1619,6 +1619,7 @@ func (e *Engine) decisionLedger(issueID string) (string, error) {
 			Stage: row.Stage, Question: row.Question, Kind: row.Kind,
 			Options: row.Options, Response: row.Response, Why: row.Why,
 			Consequences: row.Consequences, Status: row.Status, At: row.CreatedAt,
+			Context: row.Context,
 		})
 	}
 	return contextpack.DecisionLedger(decisions), nil

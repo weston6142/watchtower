@@ -1,14 +1,24 @@
 package store
 
 import (
+	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/levers"
 )
+
+func testDecisionContext() *decision.DecisionContext {
+	return &decision.DecisionContext{
+		TaskSummary: "Ship decision context.", AgentName: "Executor",
+		AgentColor: "green", AgentSymbol: "⚙",
+	}
+}
 
 func TestStageCheckpointLifecyclePreservesSuccessfulHistory(t *testing.T) {
 	s, err := Open("file:checkpoints?mode=memory&cache=shared")
@@ -254,6 +264,120 @@ func TestChoiceDecisionRoundTripsTypedFreeformResponse(t *testing.T) {
 	if got.Kind != levers.DecisionChoice || got.AllowFreeform || got.Status != "answered" ||
 		got.Response.Kind != levers.DecisionFreeform || got.Response.Text != response.Text {
 		t.Fatalf("decision = %#v", got)
+	}
+}
+
+func TestDecisionContextRoundTrip(t *testing.T) {
+	s, err := Open("file:decision-context-roundtrip?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	for _, kind := range []levers.DecisionKind{levers.DecisionChoice, levers.DecisionFreeform} {
+		id, err := s.InsertDecision(DecisionRow{
+			IssueID: "GH-31", Stage: "execute", Kind: kind, Question: "Proceed?",
+			Options: []string{"yes", "no"}, Recommended: 0, Context: testDecisionContext(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		status := "answered"
+		if kind == levers.DecisionFreeform {
+			status = "auto"
+		}
+		if err := s.AnswerDecision(id, levers.FreeformResponse("Proceed."), status); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	for _, row := range rows {
+		if row.Kind == levers.DecisionChoice && row.Status != "answered" {
+			t.Fatalf("choice status = %q", row.Status)
+		}
+		if row.Kind == levers.DecisionFreeform && row.Status != "auto" {
+			t.Fatalf("freeform status = %q", row.Status)
+		}
+		if row.Context == nil || *row.Context != *testDecisionContext() {
+			t.Fatalf("decision context = %#v", row.Context)
+		}
+	}
+}
+
+func TestLegacyDecisionWithoutContext(t *testing.T) {
+	s, err := Open("file:legacy-decision-context?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := s.InsertDecision(DecisionRow{IssueID: "GH-31", Question: "Legacy?"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	if rows[0].Context != nil {
+		t.Fatalf("legacy decision unexpectedly has context: %#v", rows[0].Context)
+	}
+}
+
+func TestMalformedDecisionContext(t *testing.T) {
+	cases := []struct {
+		name     string
+		evidence string
+		want     string
+	}{
+		{name: "null", evidence: `{"context":null}`, want: "context"},
+		{name: "partial", evidence: `{"context":{"task_summary":"Only task"}}`, want: "agent_name"},
+		{name: "wrong type", evidence: `{"context":"bad"}`, want: "context"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := Open("file:malformed-decision-context-" + strings.ReplaceAll(tc.name, " ", "-") + "?mode=memory&cache=shared")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			id, err := s.InsertDecision(DecisionRow{IssueID: "GH-31", Question: "Malformed?"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.db.Exec("UPDATE decisions SET evidence=? WHERE id=?", tc.evidence, id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.AllDecisionRows(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("AllDecisionRows error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecisionEvidenceKeepsContextNested(t *testing.T) {
+	s, err := Open("file:decision-context-evidence?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	id, err := s.InsertDecision(DecisionRow{IssueID: "GH-31", Question: "Nested?", Context: testDecisionContext()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence string
+	if err := s.db.QueryRow("SELECT evidence FROM decisions WHERE id=?", id).Scan(&evidence); err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(evidence), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["context"]; !ok {
+		t.Fatalf("evidence has no nested context: %s", evidence)
 	}
 }
 
