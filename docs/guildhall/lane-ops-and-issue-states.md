@@ -106,7 +106,9 @@ Finalization has a durable boundary that is independent of an agent transcript:
 
 - `merge-report.md` contains rich human evidence. `merge-decision.json` and
   `verification.json` are strict machine receipts; unknown fields and missing
-  merge identity are rejected.
+  merge identity are rejected. When `test_cmd` is configured,
+  `verification.json` is authored by the daemon; only repositories without a
+  `test_cmd` retain the agent-authored receipt path.
 - The engine validates both receipts against the current branch, base, tree,
   and configured verification command, then persists `verification_ready`
   before emitting final-stage completion.
@@ -127,9 +129,9 @@ Flow integration is capability-based, not tied to a stage name or stage count:
 - A flow that integrates has exactly one `merge_barrier: true`, and it must be
   the final stage. That stage must declare `merge-report.md`,
   `merge-decision.json`, and `verification.json`.
-- Integrating flows require a non-empty repository `test_cmd`. The verifier's
-  receipt must record that exact command, and Watchtower rechecks the receipt
-  against the current base, branch, and tree before merging.
+- Integrating flows require a non-empty repository `test_cmd`. The daemon
+  records that exact command and Watchtower rechecks the receipt against the
+  current base, branch, and tree before merging.
 - Stage names, the number of stages, and the agents assigned to them remain
   customizable. Runtime behavior and E2E expectations derive from the flow's
   declared capabilities instead of the bundled default flow.

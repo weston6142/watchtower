@@ -13,9 +13,11 @@ The inspector describes loaded configuration, not lane completion. In
 particular, a completed merge-verifier transcript does not make an issue done.
 Final-stage completion requires strict `merge-decision.json` and
 `verification.json` validation plus the durable `verification_ready`
-checkpoint described in lane-ops-and-issue-states. Restart the daemon after
-any provider, config, prompt, or flow edit so the verifier receives the current
-contract.
+checkpoint described in lane-ops-and-issue-states. When `test_cmd` is
+configured, the daemon authors `verification.json` after the merge-barrier
+stage; repositories without a `test_cmd` retain the agent-authored receipt
+path. Restart the daemon after any provider, config, prompt, or flow edit so
+the verifier receives the current contract.
 
 **A repo-level field is blank unless `main.go` hands it over.**
 `srv.SetRepoSetup(...)` in `runDaemon` is the only writer of `proto.RepoSetup`,

@@ -41,8 +41,11 @@ Final verification has three artifacts with deliberately separate ownership:
 
 - `merge-report.md` is human-readable evidence and may contain explanations,
   rationale, and command output.
-- `merge-decision.json` and `verification.json` are engine-owned machine
-  contracts. Their fields are exact; prose or extra keys belong in the report.
+- `merge-decision.json` remains agent-authored, while `verification.json` is
+  daemon-authored when `test_cmd` is configured; repositories without a
+  `test_cmd` retain the agent-authored receipt path. Both are strict machine
+  contracts: their fields are exact, and prose or extra keys belong in the
+  report.
 - The engine injects the canonical contract into `STAGE.md`, validates the
   archived receipts, and persists `verification_ready` before it declares the
   stage complete. Transcript completion is never lifecycle authority.
