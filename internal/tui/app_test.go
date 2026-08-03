@@ -2,6 +2,9 @@ package tui
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func mkev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -471,10 +475,41 @@ func toastModel(t *testing.T) Model {
 	m := NewModel(nil, []string{"brainstorm", "spec"})
 	return m.applyEvents([]core.Event{
 		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "payment adapter", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
 		mkev(t, core.EvDecisionRequired, "GH-1", map[string]any{
 			"decision_id": float64(7), "stage": "spec", "question": "Approve?",
 			"options": []any{"approve", "reject", "defer"}, "recommended": float64(1)}),
 	})
+}
+
+func writeFixtureFile(t *testing.T, name, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeEvidenceBundle(t *testing.T, added, removed int) string {
+	t.Helper()
+	contents := fmt.Sprintf(`{
+		"files": [{"path": "internal/tui/app.go", "added": %d, "removed": %d}],
+		"added": %d,
+		"removed": %d,
+		"biggest": "internal/tui/app.go",
+		"area_weight": {"internal/tui": %d}
+	}`, added, removed, added, removed, added+removed)
+	return writeFixtureFile(t, "evidence.json", contents)
+}
+
+func showEvidenceFromDecision(t *testing.T, m Model, detail *proto.IssueDetail) Model {
+	t.Helper()
+	m.Width, m.Height = 100, 40
+	m.client = &proto.Client{}
+	m = pressKey(t, m, "o")
+	next, _ := m.Update(detailMsg{detail: detail})
+	return next.(Model)
 }
 
 func TestToastSelectionStartsOnRecommended(t *testing.T) {
@@ -533,6 +568,188 @@ func TestFreeformToastEnterOpensRecommendedResponseEditor(t *testing.T) {
 	m = pressKey(t, m, "backspace")
 	if strings.HasSuffix(m.decisionEditor.Value, ".") {
 		t.Fatalf("backspace did not edit response: %#v", m.decisionEditor)
+	}
+}
+
+func TestPresentedDecisionOShowsEvidenceAction(t *testing.T) {
+	readyEvidence := writeEvidenceBundle(t, 3, 1)
+
+	freeform := NewModel(nil, []string{"spec"})
+	freeform = freeform.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "payment adapter", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+			"decision_id": float64(8), "stage": "spec", "kind": "freeform",
+			"question": "Review spec.md", "recommended_response": "Approve spec.md as written."}),
+	})
+
+	for _, tc := range []struct {
+		name       string
+		model      Model
+		detail     *proto.IssueDetail
+		want       []string
+		wantAbsent string
+	}{
+		{
+			name:   "choice not ready",
+			model:  toastModel(t),
+			detail: &proto.IssueDetail{Artifacts: []string{"review.md"}},
+			want: []string{
+				"EVIDENCE · GH-1",
+				"no evidence bundle yet",
+				"review.md",
+				"enter artifact",
+			},
+			wantAbsent: "DECISION 7",
+		},
+		{
+			name:   "freeform not ready",
+			model:  freeform,
+			detail: &proto.IssueDetail{Artifacts: []string{"review.md"}},
+			want: []string{
+				"EVIDENCE · GH-1",
+				"no evidence bundle yet",
+				"review.md",
+				"enter artifact",
+			},
+			wantAbsent: "DECISION 8",
+		},
+		{
+			name:  "ready",
+			model: toastModel(t),
+			detail: &proto.IssueDetail{
+				Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter"},
+				Artifacts: []string{readyEvidence, "review.md"},
+			},
+			want: []string{
+				"1 files",
+				"+3",
+				"−1",
+				"tests: see available review artifacts",
+				"enter artifact",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := showEvidenceFromDecision(t, tc.model, tc.detail)
+
+			plain := ansi.Strip(m.View())
+			for _, want := range tc.want {
+				if !strings.Contains(plain, want) {
+					t.Fatalf("view missing %q:\n%s", want, plain)
+				}
+			}
+			if tc.wantAbsent != "" && strings.Contains(plain, tc.wantAbsent) {
+				t.Fatalf("decision card remained active:\n%s", plain)
+			}
+		})
+	}
+}
+
+func TestDecisionEditorKeepsOAsText(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "spec", "flow": "default"}),
+		mkev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+			"decision_id": float64(7), "stage": "spec", "kind": "freeform",
+			"question": "Review spec.md", "recommended_response": "Approve spec.md as written."}),
+	})
+	m = pressKey(t, m, "enter")
+	m = pressKey(t, m, "o")
+
+	if m.decisionEditor == nil || !strings.HasSuffix(m.decisionEditor.Value, "o") {
+		t.Fatalf("editor after o = %#v, want text ending in o", m.decisionEditor)
+	}
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "RESPONSE 7") || strings.Contains(plain, "EVIDENCE · GH-1") {
+		t.Fatalf("o changed the editor surface:\n%s", plain)
+	}
+}
+
+func TestReadyEvidenceStillOpensDiffArtifact(t *testing.T) {
+	evidencePath := writeEvidenceBundle(t, 2, 1)
+	diffPath := writeFixtureFile(t, "diff.patch", "diff artifact contents\n")
+
+	m := showEvidenceFromDecision(t, toastModel(t), &proto.IssueDetail{
+		Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter"},
+		Artifacts: []string{evidencePath, diffPath},
+	})
+	m = pressKey(t, m, "enter")
+
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "diff artifact contents") {
+		t.Fatalf("ready evidence did not open diff artifact:\n%s", plain)
+	}
+}
+
+func TestReadyEvidenceEscReturnsToEvidenceAfterOpeningDiff(t *testing.T) {
+	evidencePath := writeEvidenceBundle(t, 2, 1)
+	diffPath := writeFixtureFile(t, "diff.patch", "diff artifact contents\n")
+
+	m := showEvidenceFromDecision(t, toastModel(t), &proto.IssueDetail{
+		Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter"},
+		Artifacts: []string{evidencePath, diffPath},
+	})
+	m = pressKey(t, m, "enter")
+	m = pressKey(t, m, "esc")
+	m = pressKey(t, m, "esc")
+
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "1 files") || !strings.Contains(plain, "enter artifact") {
+		t.Fatalf("esc did not return to ready evidence view:\n%s", plain)
+	}
+}
+
+func TestPresentedDecisionOOpensAvailableArtifactWithoutEvidenceBundle(t *testing.T) {
+	artifactPath := writeFixtureFile(t, "review.md", "available artifact contents\n")
+
+	m := showEvidenceFromDecision(t, toastModel(t), &proto.IssueDetail{Artifacts: []string{artifactPath}})
+	m = pressKey(t, m, "enter")
+
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "back to tower") {
+		t.Fatalf("evidence action did not open the available artifact list:\n%s", plain)
+	}
+
+	m = pressKey(t, m, "enter")
+	plain = ansi.Strip(m.View())
+	if !strings.Contains(plain, "available artifact contents") {
+		t.Fatalf("available artifact did not open:\n%s", plain)
+	}
+}
+
+func TestFocusedLaneArtifactRouteStillOpensSameArtifact(t *testing.T) {
+	artifactPath := writeFixtureFile(t, "review.md", "shared artifact contents\n")
+
+	m := NewModel(nil, []string{"brainstorm", "spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "running lane", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{"title": "decision lane", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvDecisionRequired, "GH-2", map[string]any{
+			"decision_id": float64(9), "stage": "spec", "question": "Approve?",
+			"options": []any{"approve"}, "recommended": float64(0)}),
+	})
+	m.Width, m.Height = 100, 40
+	m.client = &proto.Client{}
+	m = pressKey(t, m, "esc")
+	m = pressKey(t, m, "tab")
+	if m.Focus.Issue != "GH-2" {
+		t.Fatalf("tab focused %q, want GH-2", m.Focus.Issue)
+	}
+	m = pressKey(t, m, "enter")
+	next, _ := m.Update(detailMsg{detail: &proto.IssueDetail{Artifacts: []string{artifactPath}}})
+	m = next.(Model)
+
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "back to tower") {
+		t.Fatalf("focused-lane route did not show the artifact list:\n%s", plain)
+	}
+	m = pressKey(t, m, "enter")
+	plain = ansi.Strip(m.View())
+	if !strings.Contains(plain, "shared artifact contents") {
+		t.Fatalf("focused-lane route did not open the artifact:\n%s", plain)
 	}
 }
 

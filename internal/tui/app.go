@@ -338,7 +338,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.openArtifacts && msg.detail != nil {
-			m.pager = pagerState{Mode: "artifacts", Files: append([]string(nil), msg.detail.Artifacts...)}
+			m.openArtifactList(msg.detail.Artifacts)
 			m.openArtifacts = false
 		}
 		return m, nil
@@ -730,7 +730,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.evidenceDecision = nil
 				m.EvidenceTitle = ""
 			case "enter":
-				return m, m.openDiffPager()
+				return m, m.openEvidenceArtifact()
 			}
 			return m, nil
 		}
@@ -1215,7 +1215,11 @@ func readEvidenceBundle(path string) (evidence.Bundle, error) {
 	return bundle, nil
 }
 
-func (m *Model) openDiffPager() tea.Cmd {
+func (m *Model) openArtifactList(artifacts []string) {
+	m.pager = pagerState{Mode: "artifacts", Files: append([]string(nil), artifacts...)}
+}
+
+func (m *Model) openEvidenceArtifact() tea.Cmd {
 	if m.Detail == nil {
 		return nil
 	}
@@ -1228,12 +1232,14 @@ func (m *Model) openDiffPager() tea.Cmd {
 			m.Err = err.Error()
 			return nil
 		}
-		m.Evidence = nil
-		m.evidenceDecision = nil
 		m.pager = loaded
 		return nil
 	}
-	m.Err = "no diff artifact available"
+	if len(m.Detail.Artifacts) > 0 {
+		m.openArtifactList(m.Detail.Artifacts)
+		return nil
+	}
+	m.Err = "no evidence artifact available"
 	return nil
 }
 
