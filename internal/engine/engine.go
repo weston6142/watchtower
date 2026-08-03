@@ -596,17 +596,22 @@ func (e *Engine) wasKilled(is *issueState) bool {
 // emit appends an event best-effort: marshal or store failures are dropped
 // rather than aborting the stage, since events are observability, not state.
 func (e *Engine) emit(t core.EventType, issueID string, payload any) {
+	_, _ = e.appendEvent(t, issueID, payload)
+}
+
+func (e *Engine) appendEvent(t core.EventType, issueID string, payload any) (core.Event, error) {
 	ev, err := core.NewEvent(t, issueID, payload)
 	if err != nil {
-		return
+		return core.Event{}, err
 	}
 	ev, err = e.cfg.Store.Append(ev)
 	if err != nil {
-		return
+		return core.Event{}, err
 	}
 	for _, observer := range e.cfg.Observers {
 		observer(ev)
 	}
+	return ev, nil
 }
 
 // issueDir is where an issue's attachments and "none"-stage artifacts live.
@@ -1295,6 +1300,41 @@ func (e *Engine) buildDecisionContext(is *issueState, agentPkg string) (decision
 	return context, nil
 }
 
+func validateDecisionEnvelope(issueID, stage string, d levers.Decision, context decision.DecisionContext) error {
+	pending := PendingDecision{
+		ID: maxDecisionID, IssueID: issueID, Stage: stage, D: d, Context: &context,
+	}
+	if err := validateDecisionWireValue("pending decision", pending); err != nil {
+		return err
+	}
+	requiredEvent := decisionRequiredPayload(maxDecisionID, stage, d, context)
+	return validateDecisionWireValue("decision event", requiredEvent)
+}
+
+const maxDecisionID int64 = 9223372036854775807
+
+func validateDecisionWireValue(name string, value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("decision context: marshal %s: %w", name, err)
+	}
+	if len(encoded) > decision.MaxMessageBytes {
+		return fmt.Errorf("decision context: %s exceeds %d-byte message budget", name, decision.MaxMessageBytes)
+	}
+	return nil
+}
+
+func decisionRequiredPayload(id int64, stage string, d levers.Decision, context decision.DecisionContext) map[string]any {
+	return map[string]any{
+		"decision_id": id, "stage": stage, "question": d.Question,
+		"options": d.Options, "recommended": d.Recommended, "why": d.Why,
+		"kind": d.Kind, "recommended_response": d.RecommendedResponse,
+		"allow_freeform": d.AllowFreeform, "importance": d.Importance,
+		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths,
+		"context": context,
+	}
+}
+
 func (e *Engine) freezeTaskSummary(is *issueState) error {
 	e.mu.Lock()
 	if is.taskSummary != "" {
@@ -1530,7 +1570,11 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		a.Reply <- response
 		return
 	}
-	if _, err := e.cfg.Store.InsertDecision(store.DecisionRow{
+	if err := validateDecisionEnvelope(is.id, stage, a.Decision, decisionContext); err != nil {
+		reportAskError(a, err)
+		return
+	}
+	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: is.id, Stage: stage, Question: a.Decision.Question,
 		Options: a.Decision.Options, Recommended: a.Decision.Recommended,
 		Kind: a.Decision.Kind, RecommendedResponse: a.Decision.RecommendedResponse,
@@ -1540,17 +1584,30 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		Context: &decisionContext,
 		Status:  "auto", Response: a.Decision.RecommendedAnswer(),
 		BlockingCost: e.blockingCost(is.id),
-	}); err != nil {
+	})
+	if err != nil {
 		reportAskError(a, fmt.Errorf("insert auto decision: %w", err))
 		return
 	}
-	e.emit(core.EvDecisionAutoResolved, is.id, map[string]any{
+	if _, err := e.appendEvent(core.EvDecisionAutoResolved, is.id, map[string]any{
 		"stage": stage, "question": a.Decision.Question,
-		"response": a.Decision.RecommendedAnswer(), "context": decisionContext})
+		"response": a.Decision.RecommendedAnswer(), "context": decisionContext}); err != nil {
+		cleanupErr := e.cfg.Store.DeleteDecision(rowID)
+		if cleanupErr != nil {
+			err = fmt.Errorf("append auto decision event: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
+		} else {
+			err = fmt.Errorf("append auto decision event: %w", err)
+		}
+		reportAskError(a, err)
+		return
+	}
 	a.Reply <- a.Decision.RecommendedAnswer()
 }
 
 func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Decision, decisionContext decision.DecisionContext) (levers.Response, error) {
+	if err := validateDecisionEnvelope(is.id, stage, d, decisionContext); err != nil {
+		return levers.Response{}, err
+	}
 	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: is.id, Stage: stage, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended,
@@ -1563,6 +1620,13 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("insert decision: %w", err)
 	}
+	if _, err := e.appendEvent(core.EvDecisionRequired, is.id, decisionRequiredPayload(rowID, stage, d, decisionContext)); err != nil {
+		cleanupErr := e.cfg.Store.DeleteDecision(rowID)
+		if cleanupErr != nil {
+			return levers.Response{}, fmt.Errorf("append decision event: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
+		}
+		return levers.Response{}, fmt.Errorf("append decision event: %w", err)
+	}
 	p := &pending{
 		PendingDecision: PendingDecision{ID: rowID, IssueID: is.id, Stage: stage, D: d, Context: &decisionContext},
 		reply:           make(chan levers.Response, 1),
@@ -1570,13 +1634,6 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 	e.mu.Lock()
 	e.pend[rowID] = p
 	e.mu.Unlock()
-	e.emit(core.EvDecisionRequired, is.id, map[string]any{
-		"decision_id": p.ID, "stage": stage, "question": d.Question,
-		"options": d.Options, "recommended": d.Recommended, "why": d.Why,
-		"kind": d.Kind, "recommended_response": d.RecommendedResponse,
-		"allow_freeform": d.AllowFreeform, "importance": d.Importance,
-		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths,
-		"context": decisionContext})
 	choice, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil

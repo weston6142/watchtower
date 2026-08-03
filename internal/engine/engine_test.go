@@ -2498,6 +2498,66 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	}
 }
 
+func TestDecisionWireEnvelopeFailsBeforePresentation(t *testing.T) {
+	f := flow.Flow{Name: "context", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent"}},
+	}}}
+	decisionValue := levers.Decision{
+		Question: strings.Repeat("q", 1000), Options: []string{"yes"}, Recommended: 0, Importance: 1.0,
+	}
+	title := strings.Repeat("x", decision.MaxMessageBytes-300)
+	summary, err := decision.BuildTaskSummary(title, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &decision.DecisionContext{
+		TaskSummary: summary, AgentName: "Test Agent", AgentColor: "gray", AgentSymbol: "A",
+	}
+	if err := decision.ValidateDecisionContext(*ctx); err != nil {
+		t.Fatalf("context should fit on its own: %v", err)
+	}
+	candidate, err := json.Marshal(PendingDecision{D: decisionValue, Context: ctx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidate) <= decision.MaxMessageBytes {
+		t.Fatalf("test candidate is only %d bytes; expected it to exceed %d", len(candidate), decision.MaxMessageBytes)
+	}
+
+	e, s := newEngineCfg(t, &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{decisionValue}},
+	}}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"context": f}
+	})
+	id, err := e.CreateIssue(title, "", "context", levers.Matrix{"ask": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "message budget") {
+			t.Fatalf("StartIssue error = %v, want complete-envelope budget error", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("StartIssue blocked instead of rejecting the oversized decision envelope")
+	}
+	if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+		t.Fatalf("pending rows = %#v, err = %v", rows, err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == core.EvDecisionRequired {
+			t.Fatal("oversized decision envelope emitted a required decision")
+		}
+	}
+}
+
 func TestRetryAfterRestartReusesRecordedIssueWorktree(t *testing.T) {
 	repo := t.TempDir()
 	initGitRepo(t, repo)

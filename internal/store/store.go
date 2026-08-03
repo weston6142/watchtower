@@ -680,6 +680,13 @@ func (s *Store) AnswerDecision(id int64, response levers.Response, status string
 	return err
 }
 
+func (s *Store) DeleteDecision(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM decisions WHERE id=?`, id)
+	return err
+}
+
 func (s *Store) CloseDecision(id int64, status string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
