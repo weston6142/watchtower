@@ -1273,7 +1273,7 @@ func (m *Model) updatePagerKey(key string) tea.Cmd {
 			m.pager = loaded
 		}
 	case m.pager.Mode == "pager":
-		m.pager = m.pager.scroll(key, max(1, m.Height-2))
+		m.pager = m.pager.scroll(key, max(1, m.pagerBodyHeight()-2))
 	}
 	return nil
 }
@@ -1739,6 +1739,29 @@ func (m Model) writeHeaderRows(b *strings.Builder, width int) {
 	b.WriteByte('\n')
 }
 
+func pagerModeBindings(mode string) [][2]string {
+	switch mode {
+	case "artifacts":
+		return [][2]string{{"j/k", "select"}, {"enter", "open"}, {"esc", "back"}, {"q", "quit"}}
+	case "pager":
+		return [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "top/bottom"}, {"esc", "back"}, {"q", "quit"}}
+	default:
+		return nil
+	}
+}
+
+func (m Model) pagerBodyHeight() int {
+	footerRows := lipgloss.Height(renderKeybar(m.layoutWidth(), pagerModeBindings(m.pager.Mode), errText(m.Err)))
+	height := m.Height
+	if height > 0 {
+		height = max(0, height-towerHeaderRows-footerRows)
+	}
+	if shelf := renderShelf(m.shelfItems(), m.Ids, m.layoutWidth()); shelf != "" && height > 0 {
+		height = max(0, height-lipgloss.Height(shelf)-1)
+	}
+	return height
+}
+
 func (m Model) View() string {
 	layoutWidth := m.layoutWidth()
 	towerWidth, railWidth, stacked := mainColumnWidths(layoutWidth)
@@ -1764,8 +1787,22 @@ func (m Model) View() string {
 		}
 		right = errText(m.Err)
 	}
+	if m.currentMode() == "" {
+		if pagerBindings := pagerModeBindings(m.pager.Mode); pagerBindings != nil {
+			bindings = pagerBindings
+		}
+	}
 	footer := renderKeybar(layoutWidth, bindings, right)
 	footerRows := lipgloss.Height(footer)
+	mainRows := 0
+	if m.Height > 0 {
+		mainRows = max(0, m.Height-towerHeaderRows-footerRows)
+	}
+	shelf := renderShelf(m.shelfItems(), m.Ids, layoutWidth)
+	bodyRows := mainRows
+	if shelf != "" && bodyRows > 0 {
+		bodyRows = max(0, bodyRows-lipgloss.Height(shelf)-1)
+	}
 	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth, m.warExpanded, m.retired)
 	if m.rows {
 		tower = renderRowsConfigured(m.State, m.stages, m.Ids, m.Focus, m.reducedMotion, m.ticks, towerWidth, m.retired)
@@ -1816,9 +1853,9 @@ func (m Model) View() string {
 		// prompt would never render.
 		overlayBox = renderSetup(*m.setup, layoutWidth, m.Height)
 	} else if m.pager.Mode == "artifacts" {
-		tower = renderArtifactList(m.pager, m.Ids[m.Focus.Issue], towerWidth, m.Height)
+		tower = renderArtifactList(m.pager, m.Ids[m.Focus.Issue], towerWidth, bodyRows)
 	} else if m.pager.Mode == "pager" {
-		tower = renderPager(m.pager, towerWidth, m.Height)
+		tower = renderPager(m.pager, towerWidth, bodyRows)
 	} else if m.Evidence != nil {
 		lastError := ""
 		var artifacts []string
@@ -1858,12 +1895,8 @@ func (m Model) View() string {
 			body = lipgloss.JoinHorizontal(lipgloss.Top, tower, rightRail)
 		}
 	}
-	mainRows := 0
-	if m.Height > 0 {
-		mainRows = max(0, m.Height-towerHeaderRows-footerRows)
-	}
 	mainContent := body
-	if shelf := renderShelf(m.shelfItems(), m.Ids, layoutWidth); shelf != "" {
+	if shelf != "" {
 		separator := "\n"
 		if mainRows > 0 && lipgloss.Height(body)+2+lipgloss.Height(shelf) <= mainRows {
 			separator = "\n\n"
