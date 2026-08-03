@@ -71,9 +71,10 @@ CREATE TABLE IF NOT EXISTS issue_integration(
 `
 
 type Store struct {
-	db  *sql.DB
-	mu  sync.Mutex
-	seq int64
+	db                               *sql.DB
+	mu                               sync.Mutex
+	seq                              int64
+	failNextArtifactReviewResolution bool
 }
 
 type StageRun struct {
@@ -697,6 +698,14 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	return insertDecision(s.db, d)
 }
 
+// FailNextArtifactReviewResolutionForTest injects one transactional failure
+// for the engine's fail-closed retry coverage.
+func (s *Store) FailNextArtifactReviewResolutionForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextArtifactReviewResolution = true
+}
+
 // RequestArtifactReview atomically records the archived target on its
 // checkpoint and creates the pending decision that reviews that target.
 func (s *Store) RequestArtifactReview(target review.Target, d DecisionRow) (int64, error) {
@@ -767,6 +776,10 @@ func (s *Store) ResolveArtifactReview(id int64, target review.Target, response l
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failNextArtifactReviewResolution {
+		s.failNextArtifactReviewResolution = false
+		return "", fmt.Errorf("injected artifact review resolution failure")
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return "", err

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -2598,11 +2599,290 @@ func TestConflictResolutionUsesOriginalIssueWorktree(t *testing.T) {
 // can be constructed on the same durable state, simulating a daemon restart.
 func newEngineOnFile(t *testing.T, s *store.Store, r runner.Runner, dataDir string) *Engine {
 	t.Helper()
+	return newEngineOnFileWithFlow(t, s, r, dataDir, testFlow())
+}
+
+func newEngineOnFileWithFlow(t *testing.T, s *store.Store, r runner.Runner, dataDir string, f flow.Flow) *Engine {
+	t.Helper()
 	return New(Config{
 		Store: s, Runner: r, Pool: slots.NewPool(2),
-		Flows:   map[string]flow.Flow{"default": testFlow()},
+		Flows:   map[string]flow.Flow{f.Name: f},
 		DataDir: dataDir, DecisionIdentities: testDecisionIdentities(),
 	})
+}
+
+func artifactReviewRunner() *runner.FakeRunner {
+	return &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"spec/spec-writer":              {Artifacts: map[string]string{"spec.md": "spec v1\n"}},
+		"plan/planner":                  {Artifacts: map[string]string{"plan.md": "plan v1\n", "touchset.json": "{}"}},
+		"implementation/implementation": {},
+	}}
+}
+
+func TestArtifactReviewRevisionRequiresNewTarget(t *testing.T) {
+	f := artifactGateFlow()
+	r := artifactReviewRunner()
+	e, s := newEngineCfg(t, r, func(cfg *Config) { cfg.Flows = map[string]flow.Flow{f.Name: f} })
+	id, err := e.CreateIssue("revise artifact", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	spec := waitForPendingStage(t, e, "spec")
+	if err := e.Answer(spec.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	plan := waitForPendingStage(t, e, "plan")
+	oldVersion := plan.Review.ArtifactVersion
+	if err := e.Answer(plan.ID, levers.ChoiceResponse(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "revision") {
+		t.Fatalf("revision result = %v", err)
+	}
+	checkpoints, err := s.StageCheckpoints(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoints[len(checkpoints)-1].Status != "revision_required" {
+		t.Fatalf("plan checkpoint after revise = %+v", checkpoints[len(checkpoints)-1])
+	}
+	rows, err := s.ArtifactReviewRows(id)
+	if err != nil || len(rows) != 2 || rows[1].Status != "answered" {
+		t.Fatalf("review history = %+v, err = %v", rows, err)
+	}
+	for _, event := range mustEvents(t, s, id) {
+		if event.Type == core.EvStageStarted && eventStage(t, event) == "implementation" {
+			t.Fatal("implementation started after revision")
+		}
+	}
+
+	r.Scripts["plan/planner"] = runner.Script{Artifacts: map[string]string{
+		"plan.md": "plan v2\n", "touchset.json": "{\"globs\":[\"internal/**\"]}",
+	}}
+	retryDone := make(chan error, 1)
+	go func() { retryDone <- e.RetryStage(context.Background(), id) }()
+	newPlan := waitForPendingStage(t, e, "plan")
+	if newPlan.Review.ArtifactVersion == oldVersion || newPlan.Review.CheckpointID == plan.Review.CheckpointID {
+		t.Fatalf("retry reused review target: old=%+v new=%+v", plan.Review, newPlan.Review)
+	}
+	if err := e.Answer(newPlan.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-retryDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArtifactReviewRejectsStaleAnswer(t *testing.T) {
+	f := artifactGateFlow()
+	e, s := newEngineCfg(t, artifactReviewRunner(), func(cfg *Config) { cfg.Flows = map[string]flow.Flow{f.Name: f} })
+	id, err := e.CreateIssue("stale artifact", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e.StartIssue(context.Background(), id) }()
+	spec := waitForPendingStage(t, e, "spec")
+	if err := e.Answer(spec.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	plan := waitForPendingStage(t, e, "plan")
+	changed := append([]contextpack.Artifact(nil), plan.Review.Artifacts...)
+	changed[0].SHA256 = strings.Repeat("f", 64)
+	if err := s.FinishStageCheckpoint(plan.Review.CheckpointID, "awaiting_review", "", "", "", changed); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Answer(plan.ID, levers.ChoiceResponse(0)); err == nil {
+		t.Fatal("stale artifact answer was accepted")
+	}
+	if len(e.PendingDecisions()) != 1 {
+		t.Fatal("stale answer removed the pending decision")
+	}
+	for _, event := range mustEvents(t, s, id) {
+		if event.Type == core.EvStageCompleted && (eventStage(t, event) == "plan" || eventStage(t, event) == "implementation") ||
+			(event.Type == core.EvStageStarted && eventStage(t, event) == "implementation") {
+			t.Fatalf("stale answer advanced workflow: %s", event.Type)
+		}
+	}
+}
+
+func TestArtifactReviewPersistenceFailureIsSafeToRetry(t *testing.T) {
+	f := artifactGateFlow()
+	e, s := newEngineCfg(t, artifactReviewRunner(), func(cfg *Config) { cfg.Flows = map[string]flow.Flow{f.Name: f} })
+	id, err := e.CreateIssue("retry answer", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	spec := waitForPendingStage(t, e, "spec")
+	if err := e.Answer(spec.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	plan := waitForPendingStage(t, e, "plan")
+	beforeEvents, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastBeforeAnswer := beforeEvents[len(beforeEvents)-1].Seq
+	s.FailNextArtifactReviewResolutionForTest()
+	if err := e.Answer(plan.ID, levers.ChoiceResponse(0)); err == nil {
+		t.Fatal("injected persistence failure was not returned")
+	}
+	if len(e.PendingDecisions()) != 1 {
+		t.Fatal("persistence failure removed the pending decision")
+	}
+	events, err := s.EventsSince(lastBeforeAnswer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == core.EvDecisionAnswered || event.Type == core.EvStageCompleted ||
+			(event.Type == core.EvStageStarted && eventStage(t, event) == "implementation") {
+			t.Fatalf("persistence failure advanced workflow with %s", event.Type)
+		}
+	}
+	if err := e.Answer(plan.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArtifactReviewSurvivesRestart(t *testing.T) {
+	f := artifactGateFlow()
+	s, err := store.Open(filepath.Join(t.TempDir(), "reviews.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	dataDir := t.TempDir()
+	r := artifactReviewRunner()
+	e1 := newEngineOnFileWithFlow(t, s, r, dataDir, f)
+	id, err := e1.CreateIssue("restart review", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e1, "spec")
+	want := *pending.Review
+	e2 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e2.PendingDecisions(); len(got) != 1 || got[0].Review == nil || !got[0].Review.Matches(want) {
+		t.Fatalf("rehydrated review = %+v, want %+v", got, want)
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Status == "orphaned" {
+			t.Fatal("artifact review was orphaned on restart")
+		}
+	}
+	beforeRuns, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	plan := waitForPendingStage(t, e2, "plan")
+	afterRuns, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specRuns := 0
+	for _, run := range afterRuns {
+		if run.Stage == "spec" {
+			specRuns++
+		}
+	}
+	if specRuns != 1 {
+		t.Fatalf("spec reran after restart: before=%+v after=%+v", beforeRuns, afterRuns)
+	}
+	if err := e2.Answer(plan.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcceptedArtifactReviewCompletesExactlyOnceAfterRestart(t *testing.T) {
+	f := artifactGateFlow()
+	s, err := store.Open(filepath.Join(t.TempDir(), "accepted-review.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	dataDir := t.TempDir()
+	e1 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	id, err := e1.CreateIssue("accepted restart", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e1, "spec")
+	if _, err := s.ResolveArtifactReview(pending.ID, *pending.Review, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	e2 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		events, err := s.EventsSince(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		answered, completed, downstream := 0, 0, 0
+		for _, event := range events {
+			if event.IssueID != id {
+				continue
+			}
+			switch event.Type {
+			case core.EvDecisionAnswered:
+				answered++
+			case core.EvStageCompleted:
+				if eventStage(t, event) == "spec" {
+					completed++
+				}
+			case core.EvStageStarted:
+				if eventStage(t, event) == "plan" {
+					downstream++
+				}
+			}
+		}
+		if answered == 1 && completed == 1 && downstream == 1 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("accepted review counts = answered %d, completed %d, downstream %d", answered, completed, downstream)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func mustEvents(t *testing.T, s *store.Store, issueID string) []core.Event {
+	t.Helper()
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered := make([]core.Event, 0, len(events))
+	for _, event := range events {
+		if event.IssueID == issueID {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
 }
 
 func TestRehydrateAfterDaemonRestart(t *testing.T) {
@@ -2612,10 +2892,19 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 	dataDir := t.TempDir()
+	legacyFlow := flow.Flow{Name: "legacy", Stages: []flow.Stage{{
+		Name: "ask", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none",
+		Completion: flow.CompletionAll, Gate: flow.GateAuto,
+	}}}
+	legacyRunner := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{{
+			Question: "Legacy approval?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+		}}},
+	}}
 
-	// Engine 1: run until the spec approve_artifact gate parks a decision.
-	e1 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
-	id, err := e1.CreateIssue("restart me", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
+	// Engine 1: run until a legacy non-artifact decision parks.
+	e1 := newEngineOnFileWithFlow(t, s, legacyRunner, dataDir, legacyFlow)
+	id, err := e1.CreateIssue("restart me", "", legacyFlow.Name, levers.Preset(legacyFlow, flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2636,7 +2925,7 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	wantQuestion := beforeRestart.D.Question
 
 	// "Restart": a fresh engine on the same store knows nothing in memory.
-	e2 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
+	e2 := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{Scripts: legacyRunner.Scripts}, dataDir, legacyFlow)
 	if err := e2.Rehydrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -2645,7 +2934,7 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	}
 
 	// nextID advanced past existing issues: no GH-1 collision.
-	id2, err := e2.CreateIssue("after restart", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
+	id2, err := e2.CreateIssue("after restart", "", legacyFlow.Name, levers.Preset(legacyFlow, flow.LeverYolo), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
