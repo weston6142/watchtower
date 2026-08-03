@@ -1,3 +1,17 @@
+The base tower surface is a viewport-sized three-zone layout: a compact
+context/header region, a flexible main region, and a full-width shortcut bar
+attached to the bottom. With a positive terminal height, the main region owns
+the remaining rows and may use deterministic breathing space; the footer must
+not float immediately after content-sized main output. The tower and rail use
+side-by-side placement when the available width supports it and stack in a
+stable order when it does not. Every rendered row stays within the measured
+width, and wrapped shortcut items remain presentation-only; `Model.Update`
+continues to own keyboard handling and effects. A zero or otherwise
+not-yet-measured height uses the existing content-size fallback and must not
+enter negative or division-by-zero geometry; compacting the main region is
+preferred to adding scrolling or changing application state. Resizing is a
+pure re-render from the current model and dimensions.
+
 Overlays in `internal/tui` generally hug their content, because they are
 prompts. The raised decision card and response editor are width-only
 exceptions: they are composited over the unchanged base and receive the full
@@ -43,12 +57,15 @@ applies to overlays only.
   row, and subtracts a hand-derived `streamChromeRows`; the width fallback lives
   once in `Model.layoutWidth()` so a key arm and `View` cannot size to different
   numbers.
-- **Anything routed into the keybar is a reserved single row and must have its
-  newlines collapsed.** `chromeBar` caps width through `MaxWidth` but cannot cap
-  height, and `m.Err` carries `err.Error()` straight from the daemon, where an
-  error wrapping a command's `CombinedOutput` is routinely multi-line. `errText`
+- **Anything routed into a single-row chrome slot must have its newlines
+  collapsed.** `chromeBar` caps width through `MaxWidth` but cannot cap height,
+  and `m.Err` carries `err.Error()` straight from the daemon, where an error
+  wrapping a command's `CombinedOutput` is routinely multi-line. `errText`
   collapses them for the same reason `renderNoticeRow` does. A chrome row that
-  quietly becomes two costs the header off the top of the screen.
+  quietly becomes two costs the header off the top of the screen. The
+  viewport-attached tower `renderKeybar` is the exception: shortcut items may
+  wrap into multiple full-width rows, and that measured height is reserved in
+  the tower's main-region budget.
 
 Consequence for tests: **a golden only catches a height regression if its
 fixture is deeper than the terminal.** `TestSnapshots` renders at fixed sizes
