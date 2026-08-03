@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -367,6 +368,11 @@ func stopDaemons(base string) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	for _, pid := range pids {
+		if syscall.Kill(pid, 0) == nil {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
 }
 
 func initRepo(t *testing.T, bin, base string) string {
@@ -433,6 +439,38 @@ func TestStopShutsDownCurrentRepositoryDaemon(t *testing.T) {
 	if err == nil || !strings.Contains(string(outBytes), "unexpected argument") {
 		t.Fatalf("daemon accepted stray positional argument: err=%v output=%q", err, outBytes)
 	}
+}
+
+func TestDaemonRefusesToReplaceActiveRepositoryDaemon(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	_ = run(t, bin, repo, "status", "--data", base)
+	dataDir := repocfg.RepoDataDir(base, repo)
+	originalBody, err := os.ReadFile(filepath.Join(dataDir, "daemon.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPID, err := strconv.Atoi(strings.TrimSpace(string(originalBody)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(originalPID, syscall.SIGKILL) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "daemon", "--data", base, "--repo", repo)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("second daemon took over the active socket instead of refusing:\n%s", out)
+	}
+	if err == nil || !strings.Contains(string(out), "daemon already running") {
+		t.Fatalf("second daemon result: err=%v output=%q", err, out)
+	}
+
+	client, err := proto.Dial(filepath.Join(dataDir, "watchtower.sock"))
+	if err != nil {
+		t.Fatalf("original daemon stopped accepting connections: %v", err)
+	}
+	client.Close()
 }
 
 // lastLine returns the final non-empty line of s ("new" prints the spawn
