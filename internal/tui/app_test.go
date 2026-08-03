@@ -2,6 +2,8 @@ package tui
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func mkev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -471,6 +474,7 @@ func toastModel(t *testing.T) Model {
 	m := NewModel(nil, []string{"brainstorm", "spec"})
 	return m.applyEvents([]core.Event{
 		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "payment adapter", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
 		mkev(t, core.EvDecisionRequired, "GH-1", map[string]any{
 			"decision_id": float64(7), "stage": "spec", "question": "Approve?",
 			"options": []any{"approve", "reject", "defer"}, "recommended": float64(1)}),
@@ -533,6 +537,119 @@ func TestFreeformToastEnterOpensRecommendedResponseEditor(t *testing.T) {
 	m = pressKey(t, m, "backspace")
 	if strings.HasSuffix(m.decisionEditor.Value, ".") {
 		t.Fatalf("backspace did not edit response: %#v", m.decisionEditor)
+	}
+}
+
+func TestPresentedDecisionOShowsEvidenceAction(t *testing.T) {
+	readyEvidence := filepath.Join(t.TempDir(), "evidence.json")
+	if err := os.WriteFile(readyEvidence, []byte(`{
+		"files": [{"path": "internal/tui/app.go", "added": 3, "removed": 1}],
+		"added": 3,
+		"removed": 1,
+		"biggest": "internal/tui/app.go",
+		"area_weight": {"internal/tui": 4}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	freeform := NewModel(nil, []string{"spec"})
+	freeform = freeform.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "payment adapter", "flow": "default"}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+			"decision_id": float64(8), "stage": "spec", "kind": "freeform",
+			"question": "Review spec.md", "recommended_response": "Approve spec.md as written."}),
+	})
+
+	for _, tc := range []struct {
+		name       string
+		model      Model
+		detail     *proto.IssueDetail
+		want       []string
+		wantAbsent string
+	}{
+		{
+			name:   "choice not ready",
+			model:  toastModel(t),
+			detail: &proto.IssueDetail{Artifacts: []string{"review.md"}},
+			want: []string{
+				"EVIDENCE · GH-1",
+				"no evidence bundle yet",
+				"review.md",
+				"enter artifact",
+			},
+			wantAbsent: "DECISION 7",
+		},
+		{
+			name:   "freeform not ready",
+			model:  freeform,
+			detail: &proto.IssueDetail{Artifacts: []string{"review.md"}},
+			want: []string{
+				"EVIDENCE · GH-1",
+				"no evidence bundle yet",
+				"review.md",
+				"enter artifact",
+			},
+			wantAbsent: "DECISION 8",
+		},
+		{
+			name: "ready",
+			model: func() Model {
+				m := toastModel(t)
+				m.client = &proto.Client{}
+				return m
+			}(),
+			detail: &proto.IssueDetail{
+				Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter"},
+				Artifacts: []string{readyEvidence, "review.md"},
+			},
+			want: []string{
+				"1 files",
+				"+3",
+				"−1",
+				"tests: see available review artifacts",
+				"enter artifact",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := tc.model
+			m.Width, m.Height = 100, 40
+			m.client = &proto.Client{}
+			m = pressKey(t, m, "o")
+			next, _ := m.Update(detailMsg{detail: tc.detail})
+			m = next.(Model)
+
+			plain := ansi.Strip(m.View())
+			for _, want := range tc.want {
+				if !strings.Contains(plain, want) {
+					t.Fatalf("view missing %q:\n%s", want, plain)
+				}
+			}
+			if tc.wantAbsent != "" && strings.Contains(plain, tc.wantAbsent) {
+				t.Fatalf("decision card remained active:\n%s", plain)
+			}
+		})
+	}
+}
+
+func TestDecisionEditorKeepsOAsText(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "spec", "flow": "default"}),
+		mkev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+			"decision_id": float64(7), "stage": "spec", "kind": "freeform",
+			"question": "Review spec.md", "recommended_response": "Approve spec.md as written."}),
+	})
+	m = pressKey(t, m, "enter")
+	m = pressKey(t, m, "o")
+
+	if m.decisionEditor == nil || !strings.HasSuffix(m.decisionEditor.Value, "o") {
+		t.Fatalf("editor after o = %#v, want text ending in o", m.decisionEditor)
+	}
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "RESPONSE 7") || strings.Contains(plain, "EVIDENCE · GH-1") {
+		t.Fatalf("o changed the editor surface:\n%s", plain)
 	}
 }
 

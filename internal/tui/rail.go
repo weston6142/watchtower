@@ -388,7 +388,7 @@ func renderEvidenceDetails(b evidence.Bundle, title, lastError string, artifacts
 	} else {
 		lines = append(lines, "tests: no test result artifact available")
 	}
-	lines = append(lines, "enter diff · esc back")
+	lines = append(lines, "enter artifact · esc back")
 	return wrapLines(lines, width)
 }
 
@@ -408,6 +408,6 @@ func renderEvidenceFallback(d projection.DecisionView, det *proto.IssueDetail, w
 	} else {
 		lines = append(lines, "available artifacts: none")
 	}
-	lines = append(lines, "esc back")
+	lines = append(lines, "enter artifact · esc back")
 	return wrapLines(lines, width)
 }
