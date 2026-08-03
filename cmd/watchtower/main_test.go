@@ -4,9 +4,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/review"
 )
 
 func TestFormatDecisionShowsFreeformRecommendation(t *testing.T) {
@@ -56,5 +58,26 @@ func TestFormatDecisionLegacyOmitsContextHeader(t *testing.T) {
 	}
 	if !strings.Contains(got, "[32] GH-31/execute: Legacy?") {
 		t.Fatalf("legacy decision lost existing rendering:\n%s", got)
+	}
+}
+
+func TestFormatDecisionShowsArtifactReviewIdentity(t *testing.T) {
+	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	got := formatDecision(engine.PendingDecision{
+		ID: 34, IssueID: "GH-26", Stage: "plan",
+		D: levers.Decision{Question: "Approve plan artifacts?", Options: []string{"approve", "revise"}},
+		Review: &review.Target{
+			IssueID: "GH-26", Stage: "plan", CheckpointID: 17,
+			Artifacts:       []contextpack.Artifact{{Name: "plan.md", SHA256: digest}},
+			ArtifactVersion: "17|plan.md=" + digest, NextStage: "execute",
+		},
+	})
+	for _, want := range []string{
+		"artifact review", "checkpoint: 17", "artifact_version: 17|plan.md=" + digest,
+		"next: execute", "plan.md: " + digest,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatDecision() missing %q:\n%s", want, got)
+		}
 	}
 }

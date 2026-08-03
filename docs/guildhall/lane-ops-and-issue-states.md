@@ -136,6 +136,16 @@ Flow integration is capability-based, not tied to a stage name or stage count:
   customizable. Runtime behavior and E2E expectations derive from the flow's
   declared capabilities instead of the bundled default flow.
 
+The bundled default flow requires explicit artifact review for both the `spec`
+and `plan` stages. After each producer archives its declared artifacts,
+Watchtower pauses for an explicit `approve` or `revise` answer before handing
+off to the next stage. `watchtower init` does not overwrite an existing
+`.watchtower/flows/default.yaml`; to migrate an existing repository, edit only
+the `gate` fields for `spec` and `plan` to `approve_artifact`, validate and
+restart the flow, then retry the producing stage. A stage already running is
+not changed retroactively, and the migration deletes no prior artifacts,
+decisions, or checkpoints.
+
 Two state vocabularies exist and do not match — reading the wrong one is a
 live source of bugs:
 

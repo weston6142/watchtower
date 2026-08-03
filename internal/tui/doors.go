@@ -31,6 +31,10 @@ func renderDecisionsDoor(ds []projection.DecisionView, ids map[string]Identity, 
 		if len(rowLines) > 0 {
 			rowLines = append(rowLines, "")
 		}
+		if review := decisionReviewLines(d.Review, contentWidth); len(review) > 0 {
+			rowLines = append(rowLines, review...)
+			rowLines = append(rowLines, "")
+		}
 		rowLines = append(rowLines, wrapIndent(d.Stage+" · "+d.Question, contentWidth, "")...)
 		indent := strings.Repeat(" ", 2+lipgloss.Width(prefix))
 		bodyStyle := lipgloss.NewStyle().Foreground(t.Text)

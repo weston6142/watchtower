@@ -129,6 +129,16 @@ func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 			t.Errorf("missing artifact %s", artifact)
 		}
 	}
+	byName := map[string]flow.Stage{}
+	for _, stage := range defaultFlow.Stages {
+		byName[stage.Name] = stage
+	}
+	if got := byName["spec"]; got.Gate != flow.GateApproveArtifact || len(got.Artifacts) != 1 || got.Artifacts[0] != "spec.md" {
+		t.Fatalf("generated spec stage = %+v, want approve_artifact with spec.md", got)
+	}
+	if got := byName["plan"]; got.Gate != flow.GateApproveArtifact || len(got.Artifacts) != 2 || got.Artifacts[0] != "plan.md" || got.Artifacts[1] != "touchset.json" {
+		t.Fatalf("generated plan stage = %+v, want approve_artifact with plan.md and touchset.json", got)
+	}
 
 	for _, removed := range []string{"reviewer", "doc-writer"} {
 		if _, ok := packages[removed]; ok {

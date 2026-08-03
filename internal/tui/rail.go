@@ -12,6 +12,7 @@ import (
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -64,6 +65,23 @@ func decisionContextLines(context *decision.DecisionContext, width int) []string
 	var lines []string
 	lines = append(lines, wrapIndent(context.TaskSummary, width, "task · ")...)
 	lines = append(lines, wrapIndent(context.AgentLabel(), width, "agent · ")...)
+	return lines
+}
+
+func decisionReviewLines(target *review.Target, width int) []string {
+	if target == nil {
+		return nil
+	}
+	width = max(1, width)
+	lines := []string{"artifact review"}
+	lines = append(lines, wrapIndent(fmt.Sprintf("checkpoint: %d", target.CheckpointID), width, "")...)
+	lines = append(lines, wrapIndent("artifact_version: "+target.ArtifactVersion, width, "")...)
+	if target.NextStage != "" {
+		lines = append(lines, wrapIndent("next: "+target.NextStage, width, "")...)
+	}
+	for _, artifact := range target.Artifacts {
+		lines = append(lines, wrapIndent(artifact.Name+": "+artifact.SHA256, width, "")...)
+	}
 	return lines
 }
 
@@ -265,6 +283,10 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 		lines = append(lines, context...)
 		lines = append(lines, "")
 	}
+	if review := decisionReviewLines(d.Review, inner); len(review) > 0 {
+		lines = append(lines, review...)
+		lines = append(lines, "")
+	}
 	lines = append(lines, wrapIndent(d.Question, inner, "")...)
 	if d.Why != "" {
 		for _, line := range wrapIndent(d.Why, inner, "why · ") {
@@ -315,6 +337,10 @@ func renderDecisionEditor(d projection.DecisionView, editor decisionEditor, widt
 	}
 	lines := decisionContextLines(d.Context, inner)
 	if len(lines) > 0 {
+		lines = append(lines, "")
+	}
+	if review := decisionReviewLines(d.Review, inner); len(review) > 0 {
+		lines = append(lines, review...)
 		lines = append(lines, "")
 	}
 	lines = append(lines, wrapIndent(d.Question, inner, "")...)

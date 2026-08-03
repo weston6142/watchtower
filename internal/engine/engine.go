@@ -26,6 +26,7 @@ import (
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/store"
@@ -67,6 +68,7 @@ type PendingDecision struct {
 	Stage   string
 	D       levers.Decision
 	Context *decision.DecisionContext `json:"context,omitempty"`
+	Review  *review.Target            `json:"review,omitempty"`
 }
 
 type pending struct {
@@ -121,21 +123,104 @@ type FinishClaimRequest struct {
 }
 
 type Engine struct {
-	cfg    Config
-	mu     sync.Mutex
-	nextID int
-	issues map[string]*issueState
-	pend   map[int64]*pending
+	cfg                 Config
+	mu                  sync.Mutex
+	nextID              int
+	issues              map[string]*issueState
+	pend                map[int64]*pending
+	reviewContinuations map[int64]bool
 }
 
 func New(cfg Config) *Engine {
-	e := &Engine{cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{}}
+	e := &Engine{
+		cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{},
+		reviewContinuations: map[int64]bool{},
+	}
 	if cfg.OnLine != nil {
 		if sink, ok := cfg.Runner.(runner.LineSink); ok {
 			sink.SetOnLine(cfg.OnLine)
 		}
 	}
 	return e
+}
+
+func (e *Engine) rehydrateArtifactReview(
+	row store.DecisionRow, issueRows map[string]store.IssueRow,
+) (active, handoff bool, err error) {
+	if row.Review == nil {
+		return false, false, nil
+	}
+	issue, ok := issueRows[row.IssueID]
+	if !ok {
+		return false, false, fmt.Errorf("issue %s is missing", row.IssueID)
+	}
+	checkpoints, err := e.cfg.Store.StageCheckpoints(row.IssueID)
+	if err != nil {
+		return false, false, err
+	}
+	var checkpoint *store.StageCheckpoint
+	for i := range checkpoints {
+		if checkpoints[i].ID == row.Review.CheckpointID {
+			checkpoint = &checkpoints[i]
+			break
+		}
+	}
+	if checkpoint == nil {
+		return false, false, fmt.Errorf("checkpoint %d is missing", row.Review.CheckpointID)
+	}
+	statusActive := (row.Status == "pending" && checkpoint.Status == "awaiting_review") ||
+		(row.Status == "answered" && (checkpoint.Status == "handoff_authorized" || checkpoint.Status == "revision_required"))
+	if !statusActive {
+		return false, false, nil
+	}
+	current, err := (review.Target{
+		IssueID: row.IssueID, Stage: row.Stage, CheckpointID: checkpoint.ID,
+		Artifacts: checkpoint.Artifacts, NextStage: row.Review.NextStage,
+	}).Canonical()
+	if err != nil || !row.Review.Matches(current) {
+		if err != nil {
+			return false, false, fmt.Errorf("checkpoint %d target: %w", checkpoint.ID, err)
+		}
+		return false, false, review.ErrStaleTarget
+	}
+	f, ok := e.cfg.Flows[issue.Flow]
+	if !ok {
+		return false, false, fmt.Errorf("flow %q is not configured", issue.Flow)
+	}
+	stageIdx := -1
+	for i, configured := range f.Stages {
+		if configured.Name == row.Stage {
+			stageIdx = i
+			break
+		}
+	}
+	if stageIdx < 0 {
+		return false, false, fmt.Errorf("stage %q is not configured in flow %q", row.Stage, issue.Flow)
+	}
+	is := &issueState{
+		id: row.IssueID, title: issue.Title, body: issue.Body, flowName: issue.Flow,
+		matrix: matrixFromStrings(issue.Levers), priority: issue.Priority,
+		dependsOn: append([]string(nil), issue.DependsOn...), stageIdx: stageIdx, terminal: true,
+	}
+	e.restoreInterruptedWorkspace(is)
+	e.mu.Lock()
+	e.issues[row.IssueID] = is
+	if row.Status == "pending" {
+		d := levers.Decision{
+			Kind: row.Kind, Question: row.Question, Options: row.Options,
+			Recommended: row.Recommended, RecommendedResponse: row.RecommendedResponse,
+			AllowFreeform: row.AllowFreeform, Importance: row.Importance, Paths: row.Paths,
+			Why: row.Why, Consequences: row.Consequences, Reversible: row.Reversible,
+		}
+		e.pend[row.ID] = &pending{
+			PendingDecision: PendingDecision{
+				ID: row.ID, IssueID: row.IssueID, Stage: row.Stage, D: d,
+				Context: row.Context, Review: row.Review,
+			},
+		}
+	}
+	e.mu.Unlock()
+	return true, row.Status == "answered" && checkpoint.Status == "handoff_authorized", nil
 }
 
 // Rehydrate rebuilds in-memory state from the store after a daemon restart.
@@ -168,14 +253,51 @@ func (e *Engine) Rehydrate() error {
 	}
 	e.mu.Unlock()
 
-	// Close pending decisions with no living stage goroutine before marking
-	// their issues failed: the answered event returns projection state to
-	// "running" so the failure marker below lands last.
+	issueRows := make(map[string]store.IssueRow, len(rows))
+	for _, row := range rows {
+		issueRows[row.ID] = row
+	}
+	activeReviewIssues := map[string]bool{}
+	reviewCheckpointIDs := map[string]int64{}
+	var authorizedReviews []store.DecisionRow
+	reviewRows, err := e.cfg.Store.ArtifactReviewRows("")
+	if err != nil {
+		return err
+	}
+	for _, row := range reviewRows {
+		if row.Review == nil {
+			continue
+		}
+		if previous := reviewCheckpointIDs[row.IssueID]; previous >= row.Review.CheckpointID {
+			continue
+		}
+		active, handoff, restoreErr := e.rehydrateArtifactReview(row, issueRows)
+		if restoreErr != nil {
+			activeReviewIssues[row.IssueID] = true
+			e.emit(core.EvStageFailed, row.IssueID, map[string]any{
+				"stage": row.Stage, "error": fmt.Sprintf("artifact review recovery blocked: %v", restoreErr), "final": true})
+			continue
+		}
+		if !active {
+			continue
+		}
+		reviewCheckpointIDs[row.IssueID] = row.Review.CheckpointID
+		activeReviewIssues[row.IssueID] = true
+		if handoff {
+			authorizedReviews = append(authorizedReviews, row)
+		}
+	}
+
+	// Close pending legacy decisions with no living stage goroutine. Artifact
+	// reviews are durable and remain answerable through the restored pending map.
 	prows, err := e.cfg.Store.PendingDecisionRows()
 	if err != nil {
 		return err
 	}
 	for _, row := range prows {
+		if row.Review != nil {
+			continue
+		}
 		e.mu.Lock()
 		_, alive := e.pend[row.ID]
 		e.mu.Unlock()
@@ -188,6 +310,9 @@ func (e *Engine) Rehydrate() error {
 	}
 
 	for _, row := range rows {
+		if activeReviewIssues[row.ID] {
+			continue
+		}
 		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" || row.State == "abandoned" {
 			continue
 		}
@@ -311,6 +436,9 @@ func (e *Engine) Rehydrate() error {
 		e.emit(core.EvStageFailed, row.ID, map[string]any{
 			"stage": stage, "attempt": attempt, "of": of,
 			"error": "daemon restarted — press R to retry", "final": true})
+	}
+	for _, row := range authorizedReviews {
+		e.scheduleArtifactContinuation(row.ID, row.IssueID, row.Stage, *row.Review, row.Response, true)
 	}
 	return nil
 }
@@ -537,7 +665,9 @@ func (e *Engine) dropPendingDecisions(issueID string) []int64 {
 			continue
 		}
 		delete(e.pend, id)
-		close(p.reply)
+		if p.reply != nil {
+			close(p.reply)
+		}
 		killed = append(killed, id)
 	}
 	return killed
@@ -1260,6 +1390,24 @@ func (e *Engine) Answer(decisionID int64, response levers.Response) error {
 		e.mu.Unlock()
 		return fmt.Errorf("invalid response for decision %d", decisionID)
 	}
+	if p.Review != nil {
+		target := *p.Review
+		e.mu.Unlock()
+		if _, err := e.cfg.Store.ResolveArtifactReview(decisionID, target, response); err != nil {
+			return fmt.Errorf("resolve artifact review %d: %w", decisionID, err)
+		}
+		e.mu.Lock()
+		delete(e.pend, decisionID)
+		e.mu.Unlock()
+		e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
+			"decision_id": p.ID, "response": response, "review": target})
+		if p.reply != nil {
+			p.reply <- response
+		} else {
+			e.scheduleArtifactContinuation(p.ID, p.IssueID, p.Stage, target, response, false)
+		}
+		return nil
+	}
 	delete(e.pend, decisionID)
 	e.mu.Unlock()
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
@@ -1333,6 +1481,171 @@ func decisionRequiredPayload(id int64, stage string, d levers.Decision, context 
 		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths,
 		"context": context,
 	}
+}
+
+func decisionRequiredPayloadWithReview(
+	id int64, stage string, d levers.Decision, context decision.DecisionContext, target review.Target,
+) map[string]any {
+	payload := decisionRequiredPayload(id, stage, d, context)
+	payload["review"] = target
+	return payload
+}
+
+func (e *Engine) artifactReviewTarget(is *issueState, stage string, checkpointID int64, artifacts []contextpack.Artifact) (review.Target, error) {
+	f, ok := e.cfg.Flows[is.flowName]
+	if !ok {
+		return review.Target{}, fmt.Errorf("flow %q is not configured", is.flowName)
+	}
+	nextStage := ""
+	for i, configured := range f.Stages {
+		if configured.Name == stage && i+1 < len(f.Stages) {
+			nextStage = f.Stages[i+1].Name
+			break
+		}
+	}
+	target, err := (review.Target{
+		IssueID: is.id, Stage: stage, CheckpointID: checkpointID,
+		Artifacts: artifacts, NextStage: nextStage,
+	}).Canonical()
+	if err != nil {
+		return review.Target{}, fmt.Errorf("build artifact review target: %w", err)
+	}
+	return target, nil
+}
+
+func (e *Engine) requestArtifactReview(
+	is *issueState, st flow.Stage, checkpointID int64, artifacts []contextpack.Artifact,
+) (levers.Response, error) {
+	target, err := e.artifactReviewTarget(is, st.Name, checkpointID, artifacts)
+	if err != nil {
+		return levers.Response{}, err
+	}
+	agentPkg, err := e.decisionAgentPackage(is.flowName, st.Name)
+	if err != nil {
+		return levers.Response{}, err
+	}
+	decisionContext, err := e.buildDecisionContext(is, agentPkg)
+	if err != nil {
+		return levers.Response{}, err
+	}
+	d := levers.Decision{
+		Question: fmt.Sprintf("Approve %s artifacts?", st.Name),
+		Options:  []string{"approve", "revise"}, Recommended: 0, Importance: 1.0,
+	}
+	if err := validateDecisionEnvelope(is.id, st.Name, d, decisionContext); err != nil {
+		return levers.Response{}, err
+	}
+	if err := validateDecisionWireValue("artifact review target", target); err != nil {
+		return levers.Response{}, err
+	}
+	rowID, err := e.cfg.Store.RequestArtifactReview(target, store.DecisionRow{
+		IssueID: is.id, Stage: st.Name, Question: d.Question,
+		Options: d.Options, Recommended: d.Recommended, Kind: d.Kind,
+		Importance: d.Importance, Context: &decisionContext,
+		BlockingCost: e.blockingCost(is.id),
+	})
+	if err != nil {
+		return levers.Response{}, fmt.Errorf("request artifact review: %w", err)
+	}
+	if _, err := e.appendEvent(core.EvDecisionRequired, is.id,
+		decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target)); err != nil {
+		_ = e.cfg.Store.DeleteDecision(rowID)
+		return levers.Response{}, fmt.Errorf("append artifact review event: %w", err)
+	}
+	p := &pending{
+		PendingDecision: PendingDecision{
+			ID: rowID, IssueID: is.id, Stage: st.Name, D: d,
+			Context: &decisionContext, Review: &target,
+		},
+		reply: make(chan levers.Response, 1),
+	}
+	e.mu.Lock()
+	e.pend[rowID] = p
+	e.mu.Unlock()
+	response, ok := <-p.reply
+	if !ok {
+		return levers.Response{}, nil
+	}
+	return response, nil
+}
+
+func (e *Engine) scheduleArtifactContinuation(
+	decisionID int64, issueID, stage string, target review.Target, response levers.Response, emitAnswered bool,
+) {
+	e.mu.Lock()
+	if e.reviewContinuations[decisionID] {
+		e.mu.Unlock()
+		return
+	}
+	e.reviewContinuations[decisionID] = true
+	e.mu.Unlock()
+	go e.continueArtifactReview(decisionID, issueID, stage, target, response, emitAnswered)
+}
+
+func (e *Engine) continueArtifactReview(
+	decisionID int64, issueID, stage string, target review.Target, response levers.Response, emitAnswered bool,
+) {
+	e.mu.Lock()
+	is, ok := e.issues[issueID]
+	e.mu.Unlock()
+	if !ok {
+		e.emit(core.EvStageFailed, issueID, map[string]any{
+			"stage": stage, "error": "artifact review issue state is unavailable", "final": true})
+		return
+	}
+	f, ok := e.cfg.Flows[is.flowName]
+	if !ok {
+		e.emit(core.EvStageFailed, issueID, map[string]any{
+			"stage": stage, "error": fmt.Sprintf("flow %q is not configured", is.flowName), "final": true})
+		return
+	}
+	var approvedStage flow.Stage
+	nextIdx := -1
+	for i, configured := range f.Stages {
+		if configured.Name == stage {
+			approvedStage = configured
+			nextIdx = i + 1
+			break
+		}
+	}
+	if nextIdx < 0 {
+		e.emit(core.EvStageFailed, issueID, map[string]any{
+			"stage": stage, "error": "artifact review stage is not in the configured flow", "final": true})
+		return
+	}
+	if err := e.cfg.Store.CompleteArtifactReview(target.CheckpointID, target); err != nil {
+		e.emit(core.EvStageFailed, issueID, map[string]any{
+			"stage": stage, "error": fmt.Sprintf("artifact review handoff: %v", err), "final": true})
+		return
+	}
+	e.registerApprovedTouchset(is, approvedStage)
+	if emitAnswered {
+		e.emit(core.EvDecisionAnswered, issueID, map[string]any{
+			"decision_id": decisionID, "response": response, "review": target})
+	}
+	e.emit(core.EvStageCompleted, issueID, map[string]string{"stage": stage})
+
+	e.mu.Lock()
+	is.terminal = false
+	is.stageIdx = 0
+	e.mu.Unlock()
+	go func() { _ = e.runAndRecord(context.Background(), is, nextIdx) }()
+}
+
+func (e *Engine) registerApprovedTouchset(is *issueState, st flow.Stage) {
+	_, _, integrating := e.cfg.Flows[is.flowName].IntegrationStage()
+	if !integrating || e.cfg.Marshal == nil || !st.DeclaresArtifact("touchset.json") {
+		return
+	}
+	ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json"))
+	if err != nil {
+		return
+	}
+	e.mu.Lock()
+	snapshot := ts
+	is.activeTouchset = &snapshot
+	e.mu.Unlock()
+	e.cfg.Marshal.PlanApproved(is.id, ts)
 }
 
 func (e *Engine) freezeTaskSummary(is *issueState) error {
@@ -1815,6 +2128,15 @@ func (e *Engine) runStageOnce(
 	var sessionIDs []string
 	defer func() {
 		endCommit, _, _ := repositoryState(workdir, contextPaths)
+		if runErr != nil {
+			if checkpoints, checkpointErr := e.cfg.Store.StageCheckpoints(is.id); checkpointErr == nil {
+				for _, checkpoint := range checkpoints {
+					if checkpoint.ID == checkpointID && checkpoint.Status == "revision_required" {
+						return
+					}
+				}
+			}
+		}
 		status, failure := "succeeded", ""
 		switch {
 		case errors.Is(runErr, errDependenciesDiscovered):
@@ -1920,6 +2242,19 @@ func (e *Engine) runStageOnce(
 			"stage": st.Name, "artifact": artifact.Name,
 			"path": filepath.Join(e.issueDir(is.id), "artifacts", artifact.Name)})
 	}
+	if st.Gate == flow.GateApproveArtifact {
+		response, err := e.requestArtifactReview(is, st, checkpointID, checkpointArtifacts)
+		if err != nil {
+			return err
+		}
+		if legacyAnswer(response) != 0 {
+			if e.wasKilled(is) {
+				e.emit(core.EvStageKilled, is.id, map[string]string{"stage": st.Name})
+				return context.Canceled
+			}
+			return fmt.Errorf("stage %s artifacts require revision", st.Name)
+		}
+	}
 	if normalized := deps.Normalize(discovered); len(normalized) > 0 {
 		e.mu.Lock()
 		all := append(append([]string(nil), is.dependsOn...), normalized...)
@@ -2017,44 +2352,9 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 		}
 	}
 
-	if st.Gate == flow.GateApproveArtifact {
-		d := levers.Decision{
-			Question:    fmt.Sprintf("Approve %s artifacts?", st.Name),
-			Options:     []string{"approve", "reject"},
-			Recommended: 0,
-			Importance:  1.0,
-		}
-		agentPkg, err := e.decisionAgentPackage(is.flowName, st.Name)
-		if err != nil {
-			return err
-		}
-		response, err := e.escalate(is, st.Name, agentPkg, d)
-		if err != nil {
-			return err
-		}
-		if legacyAnswer(response) != 0 {
-			if e.wasKilled(is) {
-				e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
-				return context.Canceled
-			}
-			err := fmt.Errorf("stage %s artifacts rejected", st.Name)
-			e.emit(core.EvStageFailed, is.id, map[string]any{
-				"stage": st.Name, "error": err.Error(), "attempt": of, "of": of, "final": true})
-			return err
-		}
-	}
 	// Any stage may declare a touchset describing files the issue will change;
 	// register it so the marshal can sequence overlapping integrations.
-	_, _, integrating := e.cfg.Flows[is.flowName].IntegrationStage()
-	if integrating && e.cfg.Marshal != nil && st.DeclaresArtifact("touchset.json") {
-		if ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json")); err == nil {
-			e.mu.Lock()
-			snapshot := ts
-			is.activeTouchset = &snapshot
-			e.mu.Unlock()
-			e.cfg.Marshal.PlanApproved(is.id, ts)
-		}
-	}
+	e.registerApprovedTouchset(is, st)
 	verificationReady := false
 	if st.MergeBarrier {
 		integration, ok, err := e.cfg.Store.IssueIntegration(is.id)

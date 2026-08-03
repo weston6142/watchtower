@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
@@ -19,6 +20,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/slots"
@@ -62,6 +64,31 @@ func TestLegacyPendingDecisionJSONOmitsContext(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), `"context"`) || !strings.Contains(string(encoded), "Legacy?") {
 		t.Fatalf("legacy pending JSON = %s", encoded)
+	}
+}
+
+func TestPendingDecisionJSONReviewTarget(t *testing.T) {
+	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	want := review.Target{
+		IssueID: "GH-26", Stage: "spec", CheckpointID: 9,
+		Artifacts:       []contextpack.Artifact{{Name: "spec.md", SHA256: digest}},
+		ArtifactVersion: "9|spec.md=" + digest, NextStage: "plan",
+	}
+	encoded, err := json.Marshal(engine.PendingDecision{ID: 33, IssueID: "GH-26", Stage: "spec", Review: &want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Review *review.Target `json:"review"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Review == nil || decoded.Review.IssueID != want.IssueID ||
+		decoded.Review.CheckpointID != want.CheckpointID || decoded.Review.ArtifactVersion != want.ArtifactVersion ||
+		len(decoded.Review.Artifacts) != 1 || decoded.Review.Artifacts[0] != want.Artifacts[0] ||
+		decoded.Review.NextStage != want.NextStage {
+		t.Fatalf("pending JSON review = %#v, JSON = %s", decoded.Review, encoded)
 	}
 }
 

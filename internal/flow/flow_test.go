@@ -161,3 +161,35 @@ func TestShippedDefaultFlowSatisfiesIntegrationContract(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestShippedDefaultFlowRequiresArtifactApprovalForSpecAndPlan(t *testing.T) {
+	f, err := Load("../scaffold/defaults/flows/default.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]Stage, len(f.Stages))
+	for _, stage := range f.Stages {
+		byName[stage.Name] = stage
+	}
+
+	if got := byName["spec"]; got.Gate != GateApproveArtifact || len(got.Artifacts) != 1 || got.Artifacts[0] != "spec.md" {
+		t.Fatalf("spec stage = %+v, want approve_artifact with spec.md", got)
+	}
+	if got := byName["plan"]; got.Gate != GateApproveArtifact || len(got.Artifacts) != 2 || got.Artifacts[0] != "plan.md" || got.Artifacts[1] != "touchset.json" {
+		t.Fatalf("plan stage = %+v, want approve_artifact with plan.md and touchset.json", got)
+	}
+
+	wantGates := map[string]Gate{
+		"brainstorm":         GateAuto,
+		"execute":            GateAuto,
+		"correctness-review": GateAuto,
+		"clean-code-review":  GateAuto,
+		"librarian":          GateAuto,
+		"merge-verification": GateAuto,
+	}
+	for name, want := range wantGates {
+		if got := byName[name].Gate; got != want {
+			t.Errorf("%s gate = %q, want %q", name, got, want)
+		}
+	}
+}

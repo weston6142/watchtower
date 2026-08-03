@@ -16,6 +16,7 @@ import (
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/review"
 )
 
 const schema = `
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS stage_checkpoints(
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, question TEXT, options TEXT,
   recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
-  answered_by TEXT, blocking_cost INTEGER, created_at TEXT);
+  answered_by TEXT, blocking_cost INTEGER, created_at TEXT, answered_at TEXT);
 CREATE TABLE IF NOT EXISTS proposals(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, title TEXT, body TEXT,
   status TEXT, depends_on TEXT NOT NULL DEFAULT '[]',
@@ -70,9 +71,10 @@ CREATE TABLE IF NOT EXISTS issue_integration(
 `
 
 type Store struct {
-	db  *sql.DB
-	mu  sync.Mutex
-	seq int64
+	db                               *sql.DB
+	mu                               sync.Mutex
+	seq                              int64
+	failNextArtifactReviewResolution bool
 }
 
 type StageRun struct {
@@ -115,10 +117,12 @@ type DecisionRow struct {
 	Consequences        []string
 	Reversible          string
 	Context             *decision.DecisionContext
+	Review              *review.Target
 	Status              string
 	Response            levers.Response
 	BlockingCost        int
 	CreatedAt           time.Time
+	AnsweredAt          time.Time
 }
 
 type ProposalRow struct {
@@ -213,6 +217,10 @@ func Open(path string) (*Store, error) {
 	}
 	if err := ensureColumn(db, "issue_integration", "branch",
 		`ALTER TABLE issue_integration ADD COLUMN branch TEXT NOT NULL DEFAULT ''`); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(db, "decisions", "answered_at",
+		`ALTER TABLE decisions ADD COLUMN answered_at TEXT`); err != nil {
 		return nil, err
 	}
 	var max sql.NullInt64
@@ -615,11 +623,14 @@ type decisionEvidence struct {
 	Consequences        []string                  `json:"consequences"`
 	Reversible          string                    `json:"reversible"`
 	Context             *decision.DecisionContext `json:"context,omitempty"`
+	Review              *review.Target            `json:"review,omitempty"`
 }
 
-func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+type sqlExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 	opts, err := json.Marshal(d.Options)
 	if err != nil {
 		return 0, err
@@ -635,11 +646,19 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 			return 0, fmt.Errorf("validate decision context: %w", err)
 		}
 	}
+	var target *review.Target
+	if d.Review != nil {
+		canonical, err := d.Review.Canonical()
+		if err != nil {
+			return 0, fmt.Errorf("validate artifact review target: %w", err)
+		}
+		target = &canonical
+	}
 	evidence, err := json.Marshal(decisionEvidence{
 		Kind: kind, RecommendedResponse: d.RecommendedResponse,
 		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
-		Context: d.Context,
+		Context: d.Context, Review: target,
 	})
 	if err != nil {
 		return 0, err
@@ -658,15 +677,257 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	if d.Status == "" {
 		d.Status = "pending"
 	}
-	res, err := s.db.Exec(
-		`INSERT INTO decisions(issue_id,question,options,recommended,lever,status,answer,answered_by,blocking_cost,created_at,evidence)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+	answeredAt := ""
+	if !d.AnsweredAt.IsZero() {
+		answeredAt = d.AnsweredAt.UTC().Format(time.RFC3339Nano)
+	}
+	res, err := exec.Exec(
+		`INSERT INTO decisions(issue_id,question,options,recommended,lever,status,answer,answered_by,blocking_cost,created_at,evidence,answered_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		d.IssueID, d.Question, string(opts), d.Recommended, d.Stage, d.Status,
-		answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), string(evidence))
+		answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), string(evidence), answeredAt)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return insertDecision(s.db, d)
+}
+
+// FailNextArtifactReviewResolutionForTest injects one transactional failure
+// for the engine's fail-closed retry coverage.
+func (s *Store) FailNextArtifactReviewResolutionForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextArtifactReviewResolution = true
+}
+
+// RequestArtifactReview atomically records the archived target on its
+// checkpoint and creates the pending decision that reviews that target.
+func (s *Store) RequestArtifactReview(target review.Target, d DecisionRow) (int64, error) {
+	canonical, err := target.Canonical()
+	if err != nil {
+		return 0, err
+	}
+	if d.IssueID != "" && d.IssueID != canonical.IssueID {
+		return 0, fmt.Errorf("decision issue %q does not match review issue %q", d.IssueID, canonical.IssueID)
+	}
+	if d.Stage != "" && d.Stage != canonical.Stage {
+		return 0, fmt.Errorf("decision stage %q does not match review stage %q", d.Stage, canonical.Stage)
+	}
+	d.IssueID = canonical.IssueID
+	d.Stage = canonical.Stage
+	d.Status = "pending"
+	d.Review = &canonical
+	encodedArtifacts, err := json.Marshal(canonical.Artifacts)
+	if err != nil {
+		return 0, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var issueID, stage, status string
+	if err := tx.QueryRow(
+		`SELECT issue_id,stage,status FROM stage_checkpoints WHERE id=?`, canonical.CheckpointID,
+	).Scan(&issueID, &stage, &status); err != nil {
+		return 0, err
+	}
+	if issueID != canonical.IssueID || stage != canonical.Stage {
+		return 0, fmt.Errorf("checkpoint %d does not match review target", canonical.CheckpointID)
+	}
+	if status == "succeeded" || status == "handoff_authorized" {
+		return 0, fmt.Errorf("checkpoint %d is not reviewable in status %q", canonical.CheckpointID, status)
+	}
+	if _, err := tx.Exec(
+		`UPDATE stage_checkpoints SET artifacts=?,status=?,failure='' WHERE id=?`,
+		string(encodedArtifacts), "awaiting_review", canonical.CheckpointID); err != nil {
+		return 0, err
+	}
+	id, err := insertDecision(tx, d)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// ResolveArtifactReview durably records an explicit accept/revise response
+// only when the checkpoint still contains the exact pending target.
+func (s *Store) ResolveArtifactReview(id int64, target review.Target, response levers.Response) (review.Outcome, error) {
+	canonical, err := target.Canonical()
+	if err != nil {
+		return review.OutcomeStale, err
+	}
+	if response.Kind != levers.DecisionChoice || response.Option == nil ||
+		(*response.Option != 0 && *response.Option != 1) {
+		return "", fmt.Errorf("artifact review response must be approve or revise")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failNextArtifactReviewResolution {
+		s.failNextArtifactReviewResolution = false
+		return "", fmt.Errorf("injected artifact review resolution failure")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var issueID, stage, evidence, status string
+	if err := tx.QueryRow(
+		`SELECT issue_id,lever,evidence,status FROM decisions WHERE id=?`, id,
+	).Scan(&issueID, &stage, &evidence, &status); err != nil {
+		return "", err
+	}
+	if status != "pending" {
+		return review.OutcomeStale, review.ErrStaleTarget
+	}
+	var stored decisionEvidence
+	if err := json.Unmarshal([]byte(evidence), &stored); err != nil {
+		return "", fmt.Errorf("decode artifact review evidence: %w", err)
+	}
+	if stored.Review == nil {
+		return "", fmt.Errorf("decision %d is not an artifact review", id)
+	}
+	storedTarget, err := stored.Review.Canonical()
+	if err != nil {
+		return "", fmt.Errorf("decode artifact review target: %w", err)
+	}
+	if !storedTarget.Matches(canonical) {
+		return review.OutcomeStale, review.ErrStaleTarget
+	}
+
+	var checkpointIssue, checkpointStage, artifactsJSON, checkpointStatus string
+	if err := tx.QueryRow(
+		`SELECT issue_id,stage,artifacts,status FROM stage_checkpoints WHERE id=?`,
+		storedTarget.CheckpointID,
+	).Scan(&checkpointIssue, &checkpointStage, &artifactsJSON, &checkpointStatus); err != nil {
+		return "", err
+	}
+	var artifacts []contextpack.Artifact
+	if err := json.Unmarshal([]byte(artifactsJSON), &artifacts); err != nil {
+		return "", fmt.Errorf("decode checkpoint artifacts: %w", err)
+	}
+	current, err := (review.Target{
+		IssueID:      checkpointIssue,
+		Stage:        checkpointStage,
+		CheckpointID: storedTarget.CheckpointID,
+		Artifacts:    artifacts,
+		NextStage:    storedTarget.NextStage,
+	}).Canonical()
+	if err != nil || checkpointStatus != "awaiting_review" || !storedTarget.Matches(current) ||
+		issueID != current.IssueID || stage != current.Stage {
+		return review.OutcomeStale, review.ErrStaleTarget
+	}
+
+	outcome := review.OutcomeAccepted
+	checkpointOutcome := "handoff_authorized"
+	if *response.Option == 1 {
+		outcome = review.OutcomeRevise
+		checkpointOutcome = "revision_required"
+	}
+	answer, err := json.Marshal(response)
+	if err != nil {
+		return "", err
+	}
+	answeredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.Exec(
+		`UPDATE decisions SET status='answered',answer=?,answered_at=? WHERE id=? AND status='pending'`,
+		string(answer), answeredAt, id)
+	if err != nil {
+		return "", err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil || updated != 1 {
+		if err != nil {
+			return "", err
+		}
+		return review.OutcomeStale, review.ErrStaleTarget
+	}
+	result, err = tx.Exec(
+		`UPDATE stage_checkpoints SET status=? WHERE id=? AND status='awaiting_review'`,
+		checkpointOutcome, storedTarget.CheckpointID)
+	if err != nil {
+		return "", err
+	}
+	updated, err = result.RowsAffected()
+	if err != nil || updated != 1 {
+		if err != nil {
+			return "", err
+		}
+		return review.OutcomeStale, review.ErrStaleTarget
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return outcome, nil
+}
+
+// CompleteArtifactReview moves only an exactly matched authorized checkpoint
+// to succeeded. The transition is safe to retry after a restart.
+func (s *Store) CompleteArtifactReview(checkpointID int64, target review.Target) error {
+	canonical, err := target.Canonical()
+	if err != nil {
+		return err
+	}
+	if canonical.CheckpointID != checkpointID {
+		return review.ErrStaleTarget
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var issueID, stage, artifactsJSON, status string
+	if err := s.db.QueryRow(
+		`SELECT issue_id,stage,artifacts,status FROM stage_checkpoints WHERE id=?`, checkpointID,
+	).Scan(&issueID, &stage, &artifactsJSON, &status); err != nil {
+		return err
+	}
+	var artifacts []contextpack.Artifact
+	if err := json.Unmarshal([]byte(artifactsJSON), &artifacts); err != nil {
+		return err
+	}
+	current, err := (review.Target{
+		IssueID: issueID, Stage: stage, CheckpointID: checkpointID,
+		Artifacts: artifacts, NextStage: canonical.NextStage,
+	}).Canonical()
+	if err != nil || !canonical.Matches(current) {
+		return review.ErrStaleTarget
+	}
+	if status == "succeeded" {
+		return nil
+	}
+	if status != "handoff_authorized" {
+		return fmt.Errorf("checkpoint %d is not authorized for completion", checkpointID)
+	}
+	_, err = s.db.Exec(
+		`UPDATE stage_checkpoints SET status='succeeded' WHERE id=? AND status='handoff_authorized'`, checkpointID)
+	return err
+}
+
+// ArtifactReviewRows returns the durable history of artifact-gate decisions.
+func (s *Store) ArtifactReviewRows(issueID string) ([]DecisionRow, error) {
+	rows, err := s.AllDecisionRows()
+	if err != nil {
+		return nil, err
+	}
+	filtered := rows[:0]
+	for _, row := range rows {
+		if row.Review != nil && (issueID == "" || row.IssueID == issueID) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered, nil
 }
 
 func (s *Store) AnswerDecision(id int64, response levers.Response, status string) error {
@@ -698,7 +959,7 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(
-		`SELECT id,issue_id,lever,question,options,recommended,evidence,status,answer,blocking_cost,created_at
+		`SELECT id,issue_id,lever,question,options,recommended,evidence,status,answer,blocking_cost,created_at,answered_at
 		 FROM decisions ` + where + ` ORDER BY blocking_cost DESC, created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -707,11 +968,11 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 	var out []DecisionRow
 	for rows.Next() {
 		var d DecisionRow
-		var opts, evidence, answer, created string
+		var opts, evidence, answer, created, answeredAt string
 		// The legacy Plan 1 schema calls the stage column "lever"; keep using
 		// it as the persisted stage name without a migration.
 		if err := rows.Scan(&d.ID, &d.IssueID, &d.Stage, &d.Question, &opts,
-			&d.Recommended, &evidence, &d.Status, &answer, &d.BlockingCost, &created); err != nil {
+			&d.Recommended, &evidence, &d.Status, &answer, &d.BlockingCost, &created, &answeredAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(opts), &d.Options); err != nil {
@@ -732,6 +993,13 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 			d.Importance, d.Paths = stored.Importance, stored.Paths
 			d.Why, d.Consequences, d.Reversible =
 				stored.Why, stored.Consequences, stored.Reversible
+			if stored.Review != nil {
+				canonical, err := stored.Review.Canonical()
+				if err != nil {
+					return nil, fmt.Errorf("decode artifact review target: %w", err)
+				}
+				d.Review = &canonical
+			}
 			if contextRaw, ok := raw["context"]; ok {
 				if string(contextRaw) == "null" {
 					return nil, fmt.Errorf("decode decision context: context must be an object")
@@ -761,6 +1029,12 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 		d.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 		if err != nil {
 			return nil, err
+		}
+		if answeredAt != "" {
+			d.AnsweredAt, err = time.Parse(time.RFC3339Nano, answeredAt)
+			if err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, d)
 	}
