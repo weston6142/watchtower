@@ -150,3 +150,52 @@ func TestGH11ViewIsSafeBeforePositiveWindowSize(t *testing.T) {
 		t.Fatalf("zero-size view lost readable chrome:\n%s", plain)
 	}
 }
+
+func TestArtifactAndPagerViewsFitTerminalWithModeKeybars(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode pagerState
+		keys []string
+	}{
+		{
+			name: "artifacts",
+			mode: pagerState{Mode: "artifacts", Title: "GH-1", Files: []string{
+				"/tmp/run/artifacts/brainstorm.md", "/tmp/run/artifacts/spec.md",
+				"/tmp/run/artifacts/plan.md", "/tmp/run/evidence/plan/evidence.json",
+				"/tmp/run/evidence/execute/evidence.json", "/tmp/run/evidence/review/evidence.json",
+			}},
+			keys: []string{"j/k", "select", "enter", "open", "esc", "back"},
+		},
+		{
+			name: "pager",
+			mode: pagerState{Mode: "pager", Title: "plan.md", Lines: mklines(80)},
+			keys: []string{"j/k", "scroll", "d/u", "page", "g/G", "top/bottom", "esc", "back"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := FixtureModel("floor", 100, 24)
+			m.pager = tc.mode
+			plain := ansi.Strip(m.View())
+			lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+			if len(lines) > m.Height {
+				t.Fatalf("%s rendered %d rows into %d-row terminal:\n%s", tc.name, len(lines), m.Height, plain)
+			}
+			footer := strings.Join(lines[max(0, len(lines)-4):], "\n")
+			for _, want := range tc.keys {
+				if !strings.Contains(footer, want) {
+					t.Fatalf("%s footer missing %q:\n%s", tc.name, want, footer)
+				}
+			}
+		})
+	}
+}
+
+func TestPagerPageKeysUseVisibleBodyHeight(t *testing.T) {
+	m := FixtureModel("floor", 100, 24)
+	m.pager = pagerState{Mode: "pager", Title: "plan.md", Lines: mklines(80)}
+	m.updatePagerKey("d")
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "6/80") || !strings.Contains(plain, "line-6") {
+		t.Fatalf("half-page scroll did not use the 13-line visible viewport:\n%s", plain)
+	}
+}

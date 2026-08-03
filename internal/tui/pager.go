@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -49,15 +50,26 @@ func renderArtifactList(p pagerState, id Identity, width, height int) string {
 		body = append(body, themeDim.Render("no artifacts"))
 	} else {
 		for i, file := range p.Files {
-			body = append(body, cursorRow(i == p.Sel, truncate(file, max(1, inner-2)), inner))
+			body = append(body, cursorRow(i == p.Sel, truncate(artifactLabel(file), max(1, inner-2)), inner))
 		}
 	}
-	if height > 4 && len(body) > height-4 {
-		body = body[:height-4]
+	visibleRows := max(0, height-6)
+	if len(body) > visibleRows {
+		body = body[:visibleRows]
 	}
 	foot := keyChip("enter") + dim.Render(" open  ") + keyChip("esc") + dim.Render(" back to tower")
 	sub := strings.TrimSpace(id.Tag + " " + p.Title)
 	return renderBox("artifacts", sub, " esc back ", strings.Join(append(body, "", foot), "\n"))
+}
+
+func artifactLabel(path string) string {
+	normalized := filepath.ToSlash(path)
+	for _, marker := range []string{"/artifacts/", "/evidence/"} {
+		if index := strings.Index(normalized, marker); index >= 0 {
+			return normalized[index+1:]
+		}
+	}
+	return filepath.Base(path)
 }
 
 // renderPager is a reading mode: diff semantics in Ok/Err/Structure, body in

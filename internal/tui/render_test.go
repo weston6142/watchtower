@@ -48,7 +48,7 @@ func TestPausedLaneMarksOnlyItsCurrentStage(t *testing.T) {
 	stages := []string{"brainstorm", "spec", "execute"}
 	var got []string
 	for i, stage := range stages {
-		got = append(got, ansi.Strip(cellContentForStage(iv, nil, stage, i, 0, false, true)))
+		got = append(got, ansi.Strip(cellContentForStage(iv, nil, stages, stage, i, 0, false, true)))
 	}
 	if strings.Contains(got[0], "paused") {
 		t.Fatalf("completed stage shows paused: %q", got[0])
@@ -75,8 +75,9 @@ func TestFinalizationStageUsesExplicitStatusLabels(t *testing.T) {
 		{"failed:finalize", "finalize"},
 	} {
 		iv := &projection.IssueView{CurrentStage: "merge-verification", State: test.state}
+		stages := []string{"merge-verification"}
 		got := ansi.Strip(cellContentForStage(
-			iv, nil, "merge-verification", 0, 0, false, true,
+			iv, nil, stages, "merge-verification", 0, 0, false, true,
 		))
 		if !strings.Contains(got, test.want) {
 			t.Fatalf("state %q rendered %q, want %q", test.state, got, test.want)
@@ -91,7 +92,7 @@ func TestClaimedLaneMarksFirstIncompleteStageAsExternalSession(t *testing.T) {
 	stages := []string{"brainstorm", "spec", "execute"}
 	var got []string
 	for i, stage := range stages {
-		got = append(got, ansi.Strip(cellContentForStage(iv, nil, stage, i, 0, false, true)))
+		got = append(got, ansi.Strip(cellContentForStage(iv, nil, stages, stage, i, 0, false, true)))
 	}
 	if !strings.Contains(got[0], glyphDone) {
 		t.Fatalf("completed stage lost its tick: %q", got[0])
@@ -115,7 +116,7 @@ func TestPausedLaneWithStaleCurrentStageFallsBack(t *testing.T) {
 	stages := []string{"brainstorm", "spec", "execute"}
 	var got []string
 	for i, stage := range stages {
-		got = append(got, ansi.Strip(cellContentForStage(iv, nil, stage, i, 0, false, true)))
+		got = append(got, ansi.Strip(cellContentForStage(iv, nil, stages, stage, i, 0, false, true)))
 	}
 	if !strings.Contains(got[0], glyphDone) {
 		t.Fatalf("completed stage lost its tick: %q", got[0])

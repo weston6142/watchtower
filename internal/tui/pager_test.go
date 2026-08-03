@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestPagerScrollClamps(t *testing.T) {
@@ -45,6 +47,23 @@ func TestArtifactListWearsBoxChrome(t *testing.T) {
 	}
 	if !strings.Contains(out, "esc back") {
 		t.Fatal("missing esc hint")
+	}
+}
+
+func TestArtifactListShowsDistinctReadableLabels(t *testing.T) {
+	prefix := "/Users/operator/.watchtower/worktrees/GH-26/very/long/storage/prefix/"
+	p := pagerState{Mode: "artifacts", Files: []string{
+		prefix + "artifacts/brainstorm.md",
+		prefix + "evidence/plan/evidence.json",
+	}}
+	out := ansi.Strip(renderArtifactList(p, Identity{Tag: "GH"}, 64, 20))
+	for _, want := range []string{"artifacts/brainstorm.md", "evidence/plan/evidence.json"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("artifact list missing readable label %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "/Users/operator") != 0 {
+		t.Fatalf("artifact list exposed unreadable storage prefix:\n%s", out)
 	}
 }
 

@@ -220,9 +220,66 @@ func TestRenderRailShowsQueueOrder(t *testing.T) {
 			"decision_id": float64(2), "stage": "spec", "question": "second?",
 			"options": []any{"a"}, "recommended": float64(0)}),
 	})
-	out := renderRail(m.State, m.Ids, nil, 40)
+	out := renderRail(m.State, m.Ids, m.Focus.Issue, nil, 40)
 	if strings.Index(out, "first?") > strings.Index(out, "second?") {
 		t.Fatalf("queue order wrong:\n%s", out)
+	}
+}
+
+func TestRenderRailUsesProjectionBeforeDetailArrives(t *testing.T) {
+	st := projection.NewState()
+	st.Issues["GH-1"] = &projection.IssueView{
+		ID: "GH-1", Title: "live lane", Flow: "default", State: "running", Tokens: 9607,
+	}
+	out := renderRail(st, map[string]Identity{"GH-1": {Tag: "LL"}}, "GH-1", nil, 80)
+	for _, want := range []string{"GH-1", "live lane", "default", "building", "10k tokens"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("projection rail missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderRailProjectionOverridesStaleDetail(t *testing.T) {
+	st := projection.NewState()
+	st.Issues["GH-1"] = &projection.IssueView{
+		ID: "GH-1", Title: "live lane", Flow: "default", State: "running", Tokens: 9607,
+	}
+	stale := &proto.IssueDetail{
+		Issue: store.IssueRow{ID: "GH-1", Title: "old lane", Flow: "default", State: "waiting_decision"},
+		Tokens: 2415000,
+	}
+	out := renderRail(st, map[string]Identity{"GH-1": {Tag: "LL"}}, "GH-1", stale, 80)
+	for _, unwanted := range []string{"needs you", "2415k", "old lane"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("projection rail retained stale %q:\n%s", unwanted, out)
+		}
+	}
+	for _, want := range []string{"live lane", "building", "10k tokens"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("projection rail missing live %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderRailIgnoresDetailFromPreviousFocus(t *testing.T) {
+	st := projection.NewState()
+	st.Issues["GH-2"] = &projection.IssueView{
+		ID: "GH-2", Title: "new focus", Flow: "default", State: "running", Tokens: 1200,
+	}
+	previous := &proto.IssueDetail{
+		Issue: store.IssueRow{ID: "GH-1", Title: "previous focus", Flow: "default", State: "failed"},
+		Model: "stale-model", Tokens: 99000, LastError: "old failure",
+	}
+	out := renderRail(st, map[string]Identity{"GH-2": {Tag: "NF"}}, "GH-2", previous, 80)
+	for _, want := range []string{"GH-2", "new focus", "building", "1k tokens"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("new focus rail missing %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"GH-1", "previous focus", "stale-model", "old failure", "99k"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("new focus rail retained %q:\n%s", unwanted, out)
+		}
 	}
 }
 
@@ -239,7 +296,7 @@ func TestRenderRailFocusV2(t *testing.T) {
 		Levers:    map[string]string{"brainstorm": "yolo", "spec": "strict", "execute": "regular"},
 		Runs:      []store.StageRun{{Worktree: "/tmp/GH-1", SessionID: "sess-7"}},
 	}
-	out := renderRail(nil, map[string]Identity{"GH-1": {Tag: "PA", Color: "#61afef"}}, det, 100)
+	out := renderRail(nil, map[string]Identity{"GH-1": {Tag: "PA", Color: "#61afef"}}, "", det, 100)
 	for _, want := range []string{
 		"payment adapter", "failed", "error: tests failed · attempt 3 of 4",
 		"budget", "74%", "$2.10", "levers", "B:auto", "S:you", "E:regular",
@@ -258,7 +315,7 @@ func TestDetailRailShowsPreservedNonIntegratedWork(t *testing.T) {
 		Branch:           "issue/GH-1",
 		Worktree:         "/tmp/GH-1",
 	}
-	plain := ansi.Strip(renderRail(nil, map[string]Identity{}, detail, 80))
+	plain := ansi.Strip(renderRail(nil, map[string]Identity{}, "", detail, 80))
 	for _, want := range []string{"preserved", "issue/GH-1", "/tmp/GH-1"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("detail rail missing %q:\n%s", want, plain)
@@ -269,12 +326,12 @@ func TestDetailRailShowsPreservedNonIntegratedWork(t *testing.T) {
 func TestRailShowsModelAndEffort(t *testing.T) {
 	det := &proto.IssueDetail{Issue: store.IssueRow{ID: "GH-1", Title: "t", Flow: "default", State: "running"},
 		Model: "sonnet", Effort: "medium"}
-	out := renderRail(nil, map[string]Identity{}, det, 60)
+	out := renderRail(nil, map[string]Identity{}, "", det, 60)
 	if !strings.Contains(out, "model sonnet · effort medium") {
 		t.Fatalf("rail missing model line:\n%s", out)
 	}
 	det.Model, det.Effort = "", ""
-	out = renderRail(nil, map[string]Identity{}, det, 60)
+	out = renderRail(nil, map[string]Identity{}, "", det, 60)
 	if !strings.Contains(out, "model cli default") {
 		t.Fatalf("rail missing cli-default line:\n%s", out)
 	}
@@ -287,7 +344,7 @@ func TestRailShowsCleanupOperations(t *testing.T) {
 		},
 		Cleanup: []string{"delete_branch:issue/GH-1"},
 	}
-	out := renderRail(nil, map[string]Identity{}, det, 80)
+	out := renderRail(nil, map[string]Identity{}, "", det, 80)
 	for _, want := range []string{
 		"shipped · cleanup needed", "cleanup needed: delete_branch:issue/GH-1",
 	} {
@@ -301,14 +358,14 @@ func TestRailShowsClaimedExternalSession(t *testing.T) {
 	det := &proto.IssueDetail{Issue: store.IssueRow{
 		ID: "GH-9", Title: "explore", Flow: "default", State: "claimed",
 	}}
-	out := renderRail(nil, map[string]Identity{}, det, 80)
+	out := renderRail(nil, map[string]Identity{}, "", det, 80)
 	if !strings.Contains(out, "claimed · external session") || strings.Contains(out, "building") {
 		t.Fatalf("claimed rail = %q", out)
 	}
 }
 
 func TestRailIsBoxed(t *testing.T) {
-	out := renderRail(nil, map[string]Identity{}, nil, 40)
+	out := renderRail(nil, map[string]Identity{}, "", nil, 40)
 	if !strings.Contains(out, "─") || !strings.Contains(out, "│") {
 		t.Fatalf("rail has no border:\n%s", out)
 	}

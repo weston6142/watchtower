@@ -126,19 +126,38 @@ func floorCards(st *projection.State, stages []string, floor int, retired map[st
 	if st == nil || floor <= 0 || floor > len(stages) {
 		return nil
 	}
-	stage := stages[floor-1]
 	var out []string
 	for _, id := range visibleOrder(st, retired) {
 		iv := st.Issues[id]
-		current := iv.CurrentStage
-		if iv.State == "done" || iv.Merged {
-			current = stages[len(stages)-1]
-		}
-		if current == stage {
+		if displayedFloor(iv, stages) == floor {
 			out = append(out, id)
 		}
 	}
 	return out
+}
+
+// displayedFloor returns the one-based floor where a lane's card is painted.
+// Projection state can briefly point at a completed stage between workers, so
+// both navigation and rendering fall forward to the first unfinished stage.
+func displayedFloor(iv *projection.IssueView, stages []string) int {
+	if iv == nil || len(stages) == 0 {
+		return 0
+	}
+	if iv.State == "done" || iv.Merged {
+		return len(stages)
+	}
+	for index, stage := range stages {
+		if iv.CurrentStage == stage && !completedStage(iv, stage) {
+			return index + 1
+		}
+	}
+	if iv.State == "claimed" || iv.State == "paused" || iv.Paused || iv.Killed || completedStage(iv, iv.CurrentStage) {
+		next := len(iv.Completed) + 1
+		if next <= len(stages) {
+			return next
+		}
+	}
+	return 0
 }
 
 func truncate(s string, width int) string {
@@ -202,18 +221,7 @@ func completedStage(iv *projection.IssueView, stage string) bool {
 	return false
 }
 
-// pausedAtStage reports whether this cell is where a parked lane stopped.
-// CurrentStage is authoritative when it names a stage that has not finished;
-// rehydrated lanes and pre-payload pause events leave it pointing at a
-// completed stage, so fall back to the first unfinished one.
-func pausedAtStage(iv *projection.IssueView, stage string, stageIdx int) bool {
-	if iv.CurrentStage != "" && !completedStage(iv, iv.CurrentStage) {
-		return iv.CurrentStage == stage
-	}
-	return stageIdx == len(iv.Completed)
-}
-
-func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stage string, stageIdx, tick int, focused, reducedMotion bool) string {
+func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stages []string, stage string, stageIdx, tick int, focused, reducedMotion bool) string {
 	if iv == nil {
 		return ""
 	}
@@ -227,10 +235,10 @@ func cellContentForStage(iv *projection.IssueView, ids map[string]Identity, stag
 		}
 		return themeDim.Render("after " + blocker)
 	}
-	if (iv.Paused || iv.Killed || iv.State == "paused") && pausedAtStage(iv, stage, stageIdx) {
+	if (iv.Paused || iv.Killed || iv.State == "paused") && displayedFloor(iv, stages) == stageIdx+1 {
 		return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render(glyphParked + " paused")
 	}
-	if iv.State == "claimed" && stageIdx == len(iv.Completed) {
+	if iv.State == "claimed" && displayedFloor(iv, stages) == stageIdx+1 {
 		return lipgloss.NewStyle().Foreground(activeTheme.Dim).Render(glyphParked + " claimed")
 	}
 	if iv.CurrentStage == stage {
@@ -378,7 +386,7 @@ func renderTowerConfigured(st *projection.State, stages []string, ids map[string
 		label := stageLabel(aliases, stage) + " "
 		var cells []string
 		for _, id := range issueIDs {
-			cells = append(cells, padCell(cellContentForStage(st.Issues[id], ids, stage, stageIdx, tick, focus.Issue == id, reducedMotion), laneWidth))
+			cells = append(cells, padCell(cellContentForStage(st.Issues[id], ids, stages, stage, stageIdx, tick, focus.Issue == id, reducedMotion), laneWidth))
 		}
 		lines = append(lines, withEdgeGutters(label+strings.Join(cells, ""), compactLeft, compactRight))
 	}
@@ -409,7 +417,7 @@ func renderRowsConfigured(st *projection.State, stages []string, ids map[string]
 		prefix := identity.Tag + " " + iv.Title + " · "
 		var cells []string
 		for i, stage := range stages {
-			cell := cellContentForStage(iv, ids, stage, i, tick, focus.Issue == issueID, reducedMotion)
+			cell := cellContentForStage(iv, ids, stages, stage, i, tick, focus.Issue == issueID, reducedMotion)
 			cells = append(cells, stage+":"+cell)
 		}
 		line := prefix + strings.Join(cells, "  ")

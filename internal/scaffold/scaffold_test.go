@@ -94,6 +94,19 @@ func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	planner := packages["planner"].Prompt
+	for _, required := range []string{
+		"Approve plan.md as written.",
+		"ask again",
+		"Finish only when the implementation plan is approved.",
+	} {
+		if !strings.Contains(planner, required) {
+			t.Errorf("planner prompt missing %q", required)
+		}
+	}
+	if strings.Contains(planner, "There is no plan approval loop") {
+		t.Error("planner prompt disables plan approval")
+	}
 	artifactSet := map[string]bool{}
 	for _, stage := range defaultFlow.Stages {
 		if len(stage.Agents) == 0 {
