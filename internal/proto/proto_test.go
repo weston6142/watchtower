@@ -655,6 +655,38 @@ func TestClaimedNotCountedInOverview(t *testing.T) {
 	}
 }
 
+func TestOverviewDoesNotCountParkedIssueAsBuilding(t *testing.T) {
+	for _, eventType := range []core.EventType{core.EvIssuePaused, core.EvStageKilled} {
+		t.Run(string(eventType), func(t *testing.T) {
+			s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { s.Close() })
+			if err := s.UpsertIssue(store.IssueRow{
+				ID: "GH-26", Title: "review plan", State: "running", Flow: "default",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			event, err := core.NewEvent(eventType, "GH-26", map[string]string{"stage": "plan"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Append(event); err != nil {
+				t.Fatal(err)
+			}
+
+			overview, err := NewServer(nil, s).overview()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if overview.Building != 0 || overview.Failing != 0 || overview.Queued != 0 {
+				t.Fatalf("parked issue counted in overview: %+v", overview)
+			}
+		})
+	}
+}
+
 func TestOverviewIgnoresTrailingFailureForAbandonedIssue(t *testing.T) {
 	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
 	if err != nil {

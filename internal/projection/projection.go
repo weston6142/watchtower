@@ -269,6 +269,7 @@ func (s *State) Apply(ev core.Event) {
 			iv.Killed = false
 			iv.State = "running"
 		}
+		removeString(&s.Parked, ev.IssueID)
 	case core.EvIssueAbandoned:
 		// An abandoned lane leaves every surface: grid, shelves, and queue.
 		delete(s.Issues, ev.IssueID)

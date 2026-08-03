@@ -437,7 +437,8 @@ func (sv *Server) overview() (Overview, error) {
 			case core.EvMergeStarted:
 				out.Building++
 				continue
-			case core.EvDecisionRequired, core.EvIssueCompleted, core.EvIssueMerged, core.EvIssueAbandoned:
+			case core.EvDecisionRequired, core.EvIssuePaused, core.EvStageKilled,
+				core.EvIssueCompleted, core.EvIssueMerged, core.EvIssueAbandoned:
 				continue
 			}
 		}
