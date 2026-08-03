@@ -27,7 +27,12 @@ type investigateState struct {
 	Field  int `json:"-"`
 }
 
-const investigateFieldCount = 3
+const (
+	investigateFieldAgent = iota
+	investigateFieldModel
+	investigateFieldEffort
+	investigateFieldCount
+)
 
 func (s investigateState) agent() string {
 	return investigateAgents[clampIdx(s.Agent, len(investigateAgents))]
@@ -55,12 +60,12 @@ func cycleIdx(i, delta, n int) int {
 
 func (s investigateState) cycle(delta int) investigateState {
 	switch s.Field {
-	case 0:
+	case investigateFieldAgent:
 		s.Agent = cycleIdx(s.Agent, delta, len(investigateAgents))
 		s.Model = 0
-	case 1:
+	case investigateFieldModel:
 		s.Model = cycleIdx(s.Model, delta, len(investigateModels[s.agent()]))
-	case 2:
+	case investigateFieldEffort:
 		s.Effort = cycleIdx(s.Effort, delta, len(investigateEfforts))
 	}
 	return s
@@ -107,9 +112,9 @@ func saveInvestigatePrefs(repo string, s investigateState) {
 func renderInvestigate(s investigateState, width int) string {
 	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
 	lines := []string{
-		modalChoiceField(s.Field == 0, "agent", s.agent()),
-		modalChoiceField(s.Field == 1, "model", s.model()),
-		modalChoiceField(s.Field == 2, "effort", s.effort()),
+		modalChoiceField(s.Field == investigateFieldAgent, "agent", s.agent()),
+		modalChoiceField(s.Field == investigateFieldModel, "model", s.model()),
+		modalChoiceField(s.Field == investigateFieldEffort, "effort", s.effort()),
 		"",
 		keyChip("tab") + dim.Render(" next field  ") + keyChip("h/l") + dim.Render(" adjust  ") + keyChip("enter") + dim.Render(" open session"),
 	}

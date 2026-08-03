@@ -16,30 +16,17 @@ type fakeSpawnServer struct {
 	reqs []map[string]any
 }
 
-func startFakeSpawnServer(t *testing.T) (*fakeSpawnServer, string) {
+func startFakeSpawnServer(t *testing.T, errResp bool) (*fakeSpawnServer, string) {
 	t.Helper()
 	path := sockPath(t)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeSpawnServer{ln: ln}
+	f := &fakeSpawnServer{ln: ln, errResp: errResp}
 	go f.serve()
 	t.Cleanup(func() { ln.Close() })
 	return f, path
-}
-
-func startFakeErrorServer(t *testing.T) string {
-	t.Helper()
-	path := sockPath(t)
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := &fakeSpawnServer{ln: ln, errResp: true}
-	go f.serve()
-	t.Cleanup(func() { ln.Close() })
-	return path
 }
 
 func (f *fakeSpawnServer) serve() {
@@ -83,7 +70,7 @@ func (f *fakeSpawnServer) requests() []map[string]any {
 }
 
 func TestSpawnPane(t *testing.T) {
-	f, sock := startFakeSpawnServer(t)
+	f, sock := startFakeSpawnServer(t, false)
 	r := New(sock, "w1:p1")
 	if err := r.SpawnPane("/repo", "exec claude"); err != nil {
 		t.Fatalf("SpawnPane: %v", err)
@@ -115,7 +102,7 @@ func TestSpawnPaneDisabled(t *testing.T) {
 }
 
 func TestSpawnPaneErrorResponse(t *testing.T) {
-	sock := startFakeErrorServer(t)
+	_, sock := startFakeSpawnServer(t, true)
 	if err := New(sock, "w1:p1").SpawnPane("/repo", "x"); err == nil {
 		t.Fatal("error response must surface")
 	}
