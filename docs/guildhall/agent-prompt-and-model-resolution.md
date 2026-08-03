@@ -61,6 +61,17 @@ never uses `--last`. Tokens accumulate across the initial and resumed turns,
 while proposal and dependency markers continue through the shared
 `agentprotocol` parser.
 
+New choice and freeform decisions carry an engine-owned context envelope with
+one frozen task summary plus the emitting agent's full name, explicit color
+name, and symbol. The envelope is attached after marker parsing and survives
+pending state, events, persistence, projection, daemon JSON, CLI output, TUI
+surfaces, auto-resolution, and replay. Decision renderers show it in a
+dedicated wrapping header without truncation; the literal color name and
+symbol remain visible when color styling is unavailable. Missing, malformed,
+partial, or over-limit context fails closed for new decisions. Historical
+decisions without the envelope remain readable through the headerless legacy
+path, without inferred identity.
+
 Choice decisions support both an option response and typed feedback through
 the existing freeform response path. The TUI always presents `Add note...` for
 choices, and submitting that text through `answer_decision` resolves the
