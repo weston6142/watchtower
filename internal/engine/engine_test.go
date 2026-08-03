@@ -91,6 +91,270 @@ func scripts() map[string]runner.Script {
 	}
 }
 
+func artifactGateFlow() flow.Flow {
+	return flow.Flow{Name: "artifact-gates", Stages: []flow.Stage{
+		{Name: "spec", Agents: []flow.AgentRef{{Package: "spec-writer"}}, Workspace: "none", Completion: flow.CompletionAll,
+			Gate: flow.GateApproveArtifact, Artifacts: []string{"spec.md"}},
+		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "none", Completion: flow.CompletionAll,
+			Gate: flow.GateApproveArtifact, Artifacts: []string{"plan.md", "touchset.json"}},
+		{Name: "implementation", Agents: []flow.AgentRef{{Package: "implementation"}}, Workspace: "none", Completion: flow.CompletionAll,
+			Gate: flow.GateAuto},
+	}}
+}
+
+func waitForPendingStage(t *testing.T, e *Engine, stage string) PendingDecision {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		for _, pending := range e.PendingDecisions() {
+			if pending.Stage == stage {
+				return pending
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("pending %s review never appeared", stage)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func eventStage(t *testing.T, event core.Event) string {
+	t.Helper()
+	var payload struct {
+		Stage string `json:"stage"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatalf("decode %s: %v", event.Type, err)
+	}
+	return payload.Stage
+}
+
+func TestArtifactGateBlocksBothHandoffsUntilAccepted(t *testing.T) {
+	f := artifactGateFlow()
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"spec/spec-writer":              {Artifacts: map[string]string{"spec.md": "approved spec\n"}},
+		"plan/planner":                  {Artifacts: map[string]string{"plan.md": "approved plan\n", "touchset.json": `{"globs":["internal/**"]}`}},
+		"implementation/implementation": {},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"artifact-gates": f}
+	})
+	id, err := e.CreateIssue("artifact gates", "test both handoffs", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+
+	spec := waitForPendingStage(t, e, "spec")
+	if spec.Review == nil || spec.Review.Stage != "spec" || spec.Review.NextStage != "plan" ||
+		len(spec.Review.Artifacts) != 1 || spec.Review.Artifacts[0].Name != "spec.md" || spec.Review.ArtifactVersion == "" {
+		t.Fatalf("spec review = %#v", spec.Review)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == core.EvStageCompleted && eventStage(t, event) == "spec" {
+			t.Fatal("spec completed before explicit acceptance")
+		}
+		if event.Type == core.EvStageStarted && eventStage(t, event) == "plan" {
+			t.Fatal("plan started before spec acceptance")
+		}
+	}
+	if err := e.Answer(spec.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := waitForPendingStage(t, e, "plan")
+	if plan.Review == nil || plan.Review.Stage != "plan" || plan.Review.NextStage != "implementation" ||
+		plan.Review.CheckpointID == spec.Review.CheckpointID || len(plan.Review.Artifacts) != 2 {
+		t.Fatalf("plan review = %#v", plan.Review)
+	}
+	artifactNames := map[string]bool{}
+	for _, artifact := range plan.Review.Artifacts {
+		artifactNames[artifact.Name] = artifact.SHA256 != ""
+	}
+	if !artifactNames["plan.md"] || !artifactNames["touchset.json"] {
+		t.Fatalf("plan review artifacts = %+v", plan.Review.Artifacts)
+	}
+	events, err = s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planRequired := int64(0)
+	touchsetProduced := int64(0)
+	for _, event := range events {
+		if event.Type == core.EvArtifactProduced {
+			var payload struct {
+				Stage    string `json:"stage"`
+				Artifact string `json:"artifact"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Stage == "plan" && payload.Artifact == "touchset.json" {
+				touchsetProduced = event.Seq
+			}
+		}
+		if event.Type == core.EvDecisionRequired && eventStage(t, event) == "plan" {
+			planRequired = event.Seq
+		}
+	}
+	if touchsetProduced == 0 || planRequired == 0 || touchsetProduced >= planRequired {
+		t.Fatalf("plan artifact/review order = produced %d, required %d", touchsetProduced, planRequired)
+	}
+	if err := e.Answer(plan.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	events, err = s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var specAnswered, specCompleted, planStarted, planAnswered, planCompleted, implementationStarted int64
+	for _, event := range events {
+		switch event.Type {
+		case core.EvDecisionAnswered:
+			if event.IssueID != id {
+				continue
+			}
+			var payload struct {
+				Response levers.Response `json:"response"`
+			}
+			_ = json.Unmarshal(event.Payload, &payload)
+			if payload.Response.Option != nil {
+				if specAnswered == 0 {
+					specAnswered = event.Seq
+				} else {
+					planAnswered = event.Seq
+				}
+			}
+		case core.EvStageStarted:
+			switch eventStage(t, event) {
+			case "plan":
+				planStarted = event.Seq
+			case "implementation":
+				implementationStarted = event.Seq
+			}
+		case core.EvStageCompleted:
+			switch eventStage(t, event) {
+			case "spec":
+				specCompleted = event.Seq
+			case "plan":
+				planCompleted = event.Seq
+			}
+		}
+	}
+	if specAnswered == 0 || specCompleted == 0 || planStarted == 0 || planAnswered == 0 || planCompleted == 0 || implementationStarted == 0 ||
+		!(specAnswered < specCompleted && specCompleted < planStarted && planAnswered < planCompleted && planCompleted < implementationStarted) {
+		t.Fatalf("lifecycle order = spec answered %d, spec completed %d, plan started %d, plan answered %d, plan completed %d, implementation started %d", specAnswered, specCompleted, planStarted, planAnswered, planCompleted, implementationStarted)
+	}
+}
+
+func TestArtifactGateIgnoresYoloAndRecommendedAnswer(t *testing.T) {
+	f := artifactGateFlow()
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"spec/spec-writer":              {Artifacts: map[string]string{"spec.md": "spec\n"}},
+		"plan/planner":                  {Artifacts: map[string]string{"plan.md": "plan\n", "touchset.json": "{}"}},
+		"implementation/implementation": {},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) { cfg.Flows = map[string]flow.Flow{"artifact-gates": f} })
+	id, err := e.CreateIssue("explicit review", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e, "spec")
+	if pending.D.Recommended != 0 || pending.Review == nil {
+		t.Fatalf("pending artifact review = %#v", pending)
+	}
+	time.Sleep(100 * time.Millisecond)
+	rows, err := s.PendingDecisionRows()
+	if err != nil || len(rows) != 1 || rows[0].ID != pending.ID {
+		t.Fatalf("yolo resolved artifact review: rows=%+v err=%v", rows, err)
+	}
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	plan := waitForPendingStage(t, e, "plan")
+	if err := e.Answer(plan.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAutoStageStillCompletesWithoutReview(t *testing.T) {
+	f := flow.Flow{Name: "auto", Stages: []flow.Stage{{
+		Name: "implementation", Agents: []flow.AgentRef{{Package: "implementation"}}, Workspace: "none",
+		Completion: flow.CompletionAll, Gate: flow.GateAuto,
+	}}}
+	e, s := newEngineCfg(t, &runner.FakeRunner{Scripts: map[string]runner.Script{"implementation/implementation": {}}}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"auto": f}
+	})
+	id, err := e.CreateIssue("auto stage", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.PendingDecisions()) != 0 {
+		t.Fatal("auto stage created an approval decision")
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := false
+	for _, event := range events {
+		if event.Type == core.EvStageCompleted && eventStage(t, event) == "implementation" {
+			completed = true
+		}
+	}
+	if !completed {
+		t.Fatal("auto stage did not complete")
+	}
+}
+
+func TestArtifactGateRejectsMissingArtifactBeforeReview(t *testing.T) {
+	f := flow.Flow{Name: "missing", Stages: []flow.Stage{{
+		Name: "spec", Agents: []flow.AgentRef{{Package: "spec-writer"}}, Workspace: "none",
+		Completion: flow.CompletionAll, Gate: flow.GateApproveArtifact, Artifacts: []string{"spec.md"},
+	}}}
+	e, s := newEngineCfg(t, &runner.FakeRunner{Scripts: map[string]runner.Script{"spec/spec-writer": {}}}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"missing": f}
+	})
+	id, err := e.CreateIssue("missing artifact", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.StartIssue(context.Background(), id)
+	if err == nil || !strings.Contains(err.Error(), "missing artifact spec.md") {
+		t.Fatalf("StartIssue error = %v", err)
+	}
+	if len(e.PendingDecisions()) != 0 {
+		t.Fatal("missing artifact created a pending review")
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == core.EvDecisionRequired || event.Type == core.EvStageCompleted {
+			t.Fatalf("missing artifact emitted %s", event.Type)
+		}
+	}
+}
+
 func TestDecisionContextIsFrozenAndTrustedAcrossAgentDecisions(t *testing.T) {
 	f := flow.Flow{Name: "context", Stages: []flow.Stage{{
 		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
