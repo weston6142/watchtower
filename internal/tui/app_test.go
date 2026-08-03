@@ -687,6 +687,42 @@ func TestReadyEvidenceStillOpensDiffArtifact(t *testing.T) {
 	}
 }
 
+func TestReadyEvidenceEscReturnsToEvidenceAfterOpeningDiff(t *testing.T) {
+	dir := t.TempDir()
+	evidencePath := filepath.Join(dir, "evidence.json")
+	diffPath := filepath.Join(dir, "diff.patch")
+	if err := os.WriteFile(evidencePath, []byte(`{
+		"files": [{"path": "internal/tui/app.go", "added": 2, "removed": 1}],
+		"added": 2,
+		"removed": 1,
+		"biggest": "internal/tui/app.go",
+		"area_weight": {"internal/tui": 3}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(diffPath, []byte("diff artifact contents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := toastModel(t)
+	m.Width, m.Height = 100, 40
+	m.client = &proto.Client{}
+	m = pressKey(t, m, "o")
+	next, _ := m.Update(detailMsg{detail: &proto.IssueDetail{
+		Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter"},
+		Artifacts: []string{evidencePath, diffPath},
+	}})
+	m = next.(Model)
+	m = pressKey(t, m, "enter")
+	m = pressKey(t, m, "esc")
+	m = pressKey(t, m, "esc")
+
+	plain := ansi.Strip(m.View())
+	if !strings.Contains(plain, "1 files") || !strings.Contains(plain, "enter artifact") {
+		t.Fatalf("esc did not return to ready evidence view:\n%s", plain)
+	}
+}
+
 func TestPresentedDecisionOOpensAvailableArtifactWithoutEvidenceBundle(t *testing.T) {
 	artifactPath := filepath.Join(t.TempDir(), "review.md")
 	if err := os.WriteFile(artifactPath, []byte("available artifact contents\n"), 0o644); err != nil {

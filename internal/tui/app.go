@@ -1232,8 +1232,6 @@ func (m *Model) openEvidenceArtifact() tea.Cmd {
 			m.Err = err.Error()
 			return nil
 		}
-		m.Evidence = nil
-		m.evidenceDecision = nil
 		m.pager = loaded
 		return nil
 	}
