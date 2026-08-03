@@ -1842,7 +1842,7 @@ func (m Model) View() string {
 		if stacked {
 			railRenderWidth = layoutWidth
 		}
-		rightRail := renderRail(m.State, m.Ids, m.Detail, railRenderWidth)
+		rightRail := renderRail(m.State, m.Ids, m.Focus.Issue, m.Detail, railRenderWidth)
 		if m.archMode == "pane" {
 			rightRail = renderArchWithState(m.Arch, m.State, m.Ids, railRenderWidth, m.Height, m.archSel, m.archFilter)
 		}

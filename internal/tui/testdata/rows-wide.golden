@@ -15,13 +15,15 @@
 
 
 
-
-
 ROWS · z tower                                                                                                                                                 [38;2;59;65;97m┌──────────────────────────────────────┐[0m
 [38;2;187;154;247mCA create a repo for GH-1 · [0mbrainstorm:[38;2;224;175;104m◔ need-you[0m  spec:[38;2;59;65;97m○[0m  plan:[38;2;59;65;97m○[0m  execute:[38;2;59;65;97m○[0m  correctness-review:[38;2;59;65;97m○[0m  clean-code-review:[38;2;59;65;97m○[0m  librarian:[38;2;59;65;97m○[0m  merge-verification:[38;2;59;65;97m○[0m     [38;2;59;65;97m│[0m [1;38;2;227;236;255;48;2;31;35;52m FOCUS [0m                              [38;2;59;65;97m│[0m
-[38;2;121;162;247mGH issue importer — GitHub → watchtower · [0mbrainstorm:[38;2;158;206;105m●[0m  spec:[38;2;158;206;105m●[0m  plan:[38;2;158;206;105m●[0m  execute:[38;2;121;162;247m◐ working[0m[38;2;86;95;137m 96k[0m  correctness-review:[38;2;59;65;97m○[0m  clean-code-review:[38;2;59;65;97m○[0m  librarian:[38;2;59;65;97m○[0m  merge-v…[38;2;59;65;97m[0m[38;2;59;65;97m│[0m                                      [38;2;59;65;97m│[0m
-[38;2;125;207;255mFX flaky e2e fix — «unicode» plus a deliberately very long title to test truncation · [0mbrainstorm:[38;2;158;206;105m●[0m  spec:[38;2;158;206;105m●[0m  plan:[38;2;158;206;105m●[0m  execute:[38;2;247;118;142m✕ failed[0m  correctness-review:[38;2;59;65;97m○[0m  cl…[38;2;59;65;97m[0m[38;2;59;65;97m[0m[38;2;59;65;97m[0m[38;2;59;65;97m│[0m DECISION QUEUE                       [38;2;59;65;97m│[0m
-[38;2;125;207;255mFX dark-mode audit · [0mbrainstorm:[38;2;158;206;105m●[0m  spec:[38;2;86;95;137m⏸ paused[0m  plan:[38;2;59;65;97m○[0m  execute:[38;2;59;65;97m○[0m  correctness-review:[38;2;59;65;97m○[0m  clean-code-review:[38;2;59;65;97m○[0m  librarian:[38;2;59;65;97m○[0m  merge-verification:[38;2;59;65;97m○[0m              [38;2;59;65;97m│[0m ▶ [1] CA brainstorm — Should creati… [38;2;59;65;97m│[0m
+[38;2;121;162;247mGH issue importer — GitHub → watchtower · [0mbrainstorm:[38;2;158;206;105m●[0m  spec:[38;2;158;206;105m●[0m  plan:[38;2;158;206;105m●[0m  execute:[38;2;121;162;247m◐ working[0m[38;2;86;95;137m 96k[0m  correctness-review:[38;2;59;65;97m○[0m  clean-code-review:[38;2;59;65;97m○[0m  librarian:[38;2;59;65;97m○[0m  merge-v…[38;2;59;65;97m[0m[38;2;59;65;97m│[0m CA ca-repo · create a repo for GH-1  [38;2;59;65;97m│[0m
+[38;2;125;207;255mFX flaky e2e fix — «unicode» plus a deliberately very long title to test truncation · [0mbrainstorm:[38;2;158;206;105m●[0m  spec:[38;2;158;206;105m●[0m  plan:[38;2;158;206;105m●[0m  execute:[38;2;247;118;142m✕ failed[0m  correctness-review:[38;2;59;65;97m○[0m  cl…[38;2;59;65;97m[0m[38;2;59;65;97m[0m[38;2;59;65;97m[0m[38;2;59;65;97m│[0m default · needs you                  [38;2;59;65;97m│[0m
+[38;2;125;207;255mFX dark-mode audit · [0mbrainstorm:[38;2;158;206;105m●[0m  spec:[38;2;86;95;137m⏸ paused[0m  plan:[38;2;59;65;97m○[0m  execute:[38;2;59;65;97m○[0m  correctness-review:[38;2;59;65;97m○[0m  clean-code-review:[38;2;59;65;97m○[0m  librarian:[38;2;59;65;97m○[0m  merge-verification:[38;2;59;65;97m○[0m              [38;2;59;65;97m│[0m model cli default · effort default   [38;2;59;65;97m│[0m
+                                                                                                                                                               [38;2;59;65;97m│[0m spent 12k tokens                     [38;2;59;65;97m│[0m
+                                                                                                                                                               [38;2;59;65;97m│[0m                                      [38;2;59;65;97m│[0m
+                                                                                                                                                               [38;2;59;65;97m│[0m DECISION QUEUE                       [38;2;59;65;97m│[0m
+                                                                                                                                                               [38;2;59;65;97m│[0m ▶ [1] CA brainstorm — Should creati… [38;2;59;65;97m│[0m
                                                                                                                                                                [38;2;59;65;97m└──────────────────────────────────────┘[0m
 
 [38;2;86;95;137mSHIPPED today[0m
@@ -29,8 +31,6 @@ ROWS · z tower                                                                 
 
 [38;2;86;95;137mPARKED[0m
 [38;2;86;95;137m⏸[0m [38;2;125;207;255m▓ FX[0m [38;2;192;202;245mdark-mode audit[0m
-
-
 
 
 

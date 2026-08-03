@@ -13,12 +13,12 @@
 [2m‹1[0m[38;2;187;154;247m│[0m   [38;2;187;154;247m▾[0m [38;2;227;236;255mcorrectness…[0m[38;2;121;162;247m1 agent · auto · worktree · heavy[0m                                     [38;2;86;95;137mstrict[0m [38;2;187;154;247m│[0m[2m│[0m
 [2m‹1[0m[38;2;187;154;247m│[0m     [38;2;86;95;137msequential · completion all · retries 0 · artifacts — · lever strict[0m                     [38;2;187;154;247m│[0m[2m│[0m
 [2m‹1[0m[38;2;187;154;247m│[0m     [38;2;227;236;255mcorrectness-reviewer  [0m[38;2;121;162;247mgpt-5.6-luna · xhigh[0m                                               [38;2;187;154;247m│[0m[2m│[0m
-[2m‹1[0m[38;2;187;154;247m│[0m         [38;2;86;95;137mtools codex config[0m                                                                   [38;2;187;154;247m│[0m[2m┘[0m
-[2m‹1[0m[38;2;187;154;247m│[0m         [38;2;224;175;104mdeclared tools Bash, Read, Edit, Glob, Grep — not applied[0m                            [38;2;187;154;247m│[0m[2m [0m
-[2m‹1[0m[38;2;187;154;247m│[0m         [38;2;86;95;137mprompt 24 lines · enter opens[0m                                                        [38;2;187;154;247m│[0m[2m [0m
-[2m‹1[0m[38;2;187;154;247m│[0m         [38;2;86;95;137m┃ Verify the implementation against the approved spec.[0m                               [38;2;187;154;247m│[0m[2m [0m
-[2m‹1[0m[38;2;187;154;247m│[0m   [38;2;187;154;247m▾[0m [38;2;227;236;255mclean-code-…[0m[38;2;121;162;247m1 agent · auto · worktree[0m                                            [38;2;86;95;137mregular[0m [38;2;187;154;247m│[0m[2m [0m
-[2m‹1[0m[38;2;187;154;247m│[0m     [38;2;86;95;137msequential · completion all · retries 0 · artifacts — · lever regular[0m                    [38;2;187;154;247m│[0m[2m [0m
+[2m‹1[0m[38;2;187;154;247m│[0m         [38;2;86;95;137mtools codex config[0m                                                                   [38;2;187;154;247m│[0m[2m│[0m
+[2m‹1[0m[38;2;187;154;247m│[0m         [38;2;224;175;104mdeclared tools Bash, Read, Edit, Glob, Grep — not applied[0m                            [38;2;187;154;247m│[0m[2m│[0m
+[2m‹1[0m[38;2;187;154;247m│[0m         [38;2;86;95;137mprompt 24 lines · enter opens[0m                                                        [38;2;187;154;247m│[0m[2m│[0m
+[2m‹1[0m[38;2;187;154;247m│[0m         [38;2;86;95;137m┃ Verify the implementation against the approved spec.[0m                               [38;2;187;154;247m│[0m[2m│[0m
+[2m‹1[0m[38;2;187;154;247m│[0m   [38;2;187;154;247m▾[0m [38;2;227;236;255mclean-code-…[0m[38;2;121;162;247m1 agent · auto · worktree[0m                                            [38;2;86;95;137mregular[0m [38;2;187;154;247m│[0m[2m│[0m
+[2m‹1[0m[38;2;187;154;247m│[0m     [38;2;86;95;137msequential · completion all · retries 0 · artifacts — · lever regular[0m                    [38;2;187;154;247m│[0m[2m┘[0m
 [2m‹1[0m[38;2;187;154;247m│[0m     [38;2;227;236;255mclean-code-reviewer   [0m[38;2;121;162;247mgpt-5.6-luna · xhigh[0m                                               [38;2;187;154;247m│[0m[2m [0m
 [2m‹1[0m[38;2;187;154;247m│[0m         [38;2;86;95;137mtools codex config[0m                                                                   [38;2;187;154;247m│[0m[2m [0m
 [2m‹1[0m[38;2;187;154;247m│[0m         [38;2;224;175;104mdeclared tools Bash, Read, Edit, Glob, Grep — not applied[0m                            [38;2;187;154;247m│[0m[2m [0m

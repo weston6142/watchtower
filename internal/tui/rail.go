@@ -70,16 +70,38 @@ func decisionContextLines(context *decision.DecisionContext, width int) []string
 // renderRail draws the focused issue's plain-language FOCUS panel above the
 // pending decision queue. Paths and session IDs intentionally stay here: they
 // are diagnostic details, not grid copy.
-func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueDetail, width int) string {
+func renderRail(st *projection.State, ids map[string]Identity, focusID string, det *proto.IssueDetail, width int) string {
 	inner := max(16, width-4) // border + padding
 	var lines []string
-	if det != nil {
-		identity := ids[det.Issue.ID]
+	var issueID, title, flow, state, lastError string
+	var tokens, attempt, attemptOf int
+	var cleanup []string
+	var metadata *proto.IssueDetail
+	if st != nil && focusID != "" {
+		if iv := st.Issues[focusID]; iv != nil {
+			issueID, title, flow, state = iv.ID, iv.Title, iv.Flow, iv.State
+			tokens, lastError = iv.Tokens, iv.LastError
+			attempt, attemptOf, cleanup = iv.Attempt, iv.AttemptOf, iv.Cleanup
+			if det != nil && det.Issue.ID == focusID {
+				metadata = det
+			}
+		}
+	} else if det != nil {
+		issueID, title, flow, state = det.Issue.ID, det.Issue.Title, det.Issue.Flow, det.Issue.State
+		tokens, lastError = det.Tokens, det.LastError
+		attempt, attemptOf, cleanup = det.Attempt, det.AttemptOf, det.Cleanup
+		metadata = det
+	}
+	if issueID != "" {
+		identity := ids[issueID]
 		lines = append(lines,
-			fmt.Sprintf("%s %s · %s", identity.Tag, det.Issue.ID, det.Issue.Title),
-			fmt.Sprintf("%s · %s", det.Issue.Flow, focusStatus(det.Issue.State)),
+			fmt.Sprintf("%s %s · %s", identity.Tag, issueID, title),
+			fmt.Sprintf("%s · %s", flow, focusStatus(state)),
 		)
-		model, effort := det.Model, det.Effort
+		model, effort := "", ""
+		if metadata != nil {
+			model, effort = metadata.Model, metadata.Effort
+		}
 		if model == "" {
 			model = "cli default"
 		}
@@ -87,40 +109,42 @@ func renderRail(st *projection.State, ids map[string]Identity, det *proto.IssueD
 			effort = "default"
 		}
 		lines = append(lines, "model "+model+" · effort "+effort)
-		if strings.HasPrefix(det.Issue.State, "failed") {
-			lines = append(lines, fmt.Sprintf("error: %s · attempt %d of %d", det.LastError, det.Attempt, det.AttemptOf))
+		if strings.HasPrefix(state, "failed") {
+			lines = append(lines, fmt.Sprintf("error: %s · attempt %d of %d", lastError, attempt, attemptOf))
 		}
-		if det.Issue.State == "cleanup_needed" {
-			lines = append(lines, "cleanup needed: "+strings.Join(det.Cleanup, ", "))
+		if state == "cleanup_needed" {
+			lines = append(lines, "cleanup needed: "+strings.Join(cleanup, ", "))
 		}
-		if det.IntegrationState == store.IntegrationPreserved {
+		if metadata != nil && metadata.IntegrationState == store.IntegrationPreserved {
 			lines = append(lines,
-				"preserved: "+det.Branch,
-				"worktree: "+det.Worktree,
+				"preserved: "+metadata.Branch,
+				"worktree: "+metadata.Worktree,
 			)
 		}
-		if det.Budget > 0 {
-			percent := det.Tokens * 100 / det.Budget
+		if metadata != nil && metadata.Budget > 0 {
+			percent := tokens * 100 / metadata.Budget
 			percent = max(0, min(100, percent))
 			const budgetBarWidth = 4
 			filled := (percent*budgetBarWidth + 50) / 100 // +50 rounds to nearest cell
 			bar := strings.Repeat("▰", filled) + strings.Repeat("▱", budgetBarWidth-filled)
 			cost := ""
-			if det.Dollars > 0 {
-				cost = fmt.Sprintf(" ($%.2f)", det.Dollars)
+			if metadata.Dollars > 0 {
+				cost = fmt.Sprintf(" ($%.2f)", metadata.Dollars)
 			}
 			lines = append(lines, fmt.Sprintf("budget %s %d%%%s", bar, percent, cost))
 		} else {
-			lines = append(lines, "spent "+compactTokens(det.Tokens)+" tokens")
+			lines = append(lines, "spent "+compactTokens(tokens)+" tokens")
 		}
-		if leverLine := renderLeverLine(det.Levers); leverLine != "" {
-			lines = append(lines, leverLine)
-		}
-		for i := len(det.Runs) - 1; i >= 0; i-- {
-			run := det.Runs[i]
-			if run.Worktree != "" || run.SessionID != "" {
-				lines = append(lines, themeDim.Render(fmt.Sprintf("%s · session %s", run.Worktree, run.SessionID)))
-				break
+		if metadata != nil {
+			if leverLine := renderLeverLine(metadata.Levers); leverLine != "" {
+				lines = append(lines, leverLine)
+			}
+			for i := len(metadata.Runs) - 1; i >= 0; i-- {
+				run := metadata.Runs[i]
+				if run.Worktree != "" || run.SessionID != "" {
+					lines = append(lines, themeDim.Render(fmt.Sprintf("%s · session %s", run.Worktree, run.SessionID)))
+					break
+				}
 			}
 		}
 	}
