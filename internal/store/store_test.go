@@ -11,6 +11,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/review"
 )
 
 func testDecisionContext() *decision.DecisionContext {
@@ -58,6 +59,112 @@ func TestStageCheckpointLifecyclePreservesSuccessfulHistory(t *testing.T) {
 	}
 	if rows[1].Status != "failed" || rows[1].Failure != "spec failed" {
 		t.Fatalf("failed checkpoint: %+v", rows[1])
+	}
+}
+
+func TestArtifactReviewPersistsExactTargetAndRejectsChangedDigest(t *testing.T) {
+	database := t.TempDir() + "/store.db"
+	s, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointID, err := s.InsertStageCheckpoint(StageCheckpoint{
+		IssueID: "GH-26", Stage: "plan", Status: "running",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("a", 64)
+	target := review.Target{
+		IssueID: "GH-26", Stage: "plan", CheckpointID: checkpointID,
+		Artifacts: []contextpack.Artifact{{Name: "plan.md", SHA256: digest}},
+		NextStage: "execute",
+	}
+	decisionID, err := s.RequestArtifactReview(target, DecisionRow{
+		IssueID: "GH-26", Stage: "plan", Question: "Review plan.md",
+		Options: []string{"approve", "revise"}, Recommended: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	checkpoints, err := s.StageCheckpoints("GH-26")
+	if err != nil || len(checkpoints) != 1 {
+		t.Fatalf("checkpoints = %+v, err = %v", checkpoints, err)
+	}
+	if checkpoints[0].Status != "awaiting_review" || len(checkpoints[0].Artifacts) != 1 || checkpoints[0].Artifacts[0].SHA256 != digest {
+		t.Fatalf("checkpoint = %+v", checkpoints[0])
+	}
+	rows, err := s.ArtifactReviewRows("GH-26")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("review rows = %+v, err = %v", rows, err)
+	}
+	got := rows[0]
+	if got.ID != decisionID || got.Status != "pending" || got.Review == nil || got.Review.CheckpointID != checkpointID ||
+		got.Review.NextStage != "execute" || got.Review.Artifacts[0] != target.Artifacts[0] ||
+		got.Review.ArtifactVersion == "" {
+		t.Fatalf("decision review = %+v", got)
+	}
+
+	changed := *got.Review
+	changed.Artifacts = []contextpack.Artifact{{Name: "plan.md", SHA256: strings.Repeat("b", 64)}}
+	if _, err := s.ResolveArtifactReview(decisionID, changed, levers.ChoiceResponse(0)); err == nil {
+		t.Fatal("ResolveArtifactReview accepted a changed artifact digest")
+	}
+	pending, err := s.PendingDecisionRows()
+	if err != nil || len(pending) != 1 || pending[0].ID != decisionID {
+		t.Fatalf("pending after stale answer = %+v, err = %v", pending, err)
+	}
+}
+
+func TestArtifactReviewResolutionUpdatesCheckpointAndDecisionHistory(t *testing.T) {
+	s, err := Open("file:artifact-review-resolution?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	checkpointID, err := s.InsertStageCheckpoint(StageCheckpoint{IssueID: "GH-26", Stage: "spec", Status: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := review.Target{
+		IssueID: "GH-26", Stage: "spec", CheckpointID: checkpointID,
+		Artifacts: []contextpack.Artifact{{Name: "spec.md", SHA256: strings.Repeat("c", 64)}},
+		NextStage: "plan",
+	}
+	id, err := s.RequestArtifactReview(target, DecisionRow{
+		IssueID: "GH-26", Stage: "spec", Question: "Approve spec.md?",
+		Options: []string{"approve", "revise"}, Recommended: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := s.ResolveArtifactReview(id, target, levers.ChoiceResponse(0))
+	if err != nil || outcome != review.OutcomeAccepted {
+		t.Fatalf("outcome = %q, err = %v", outcome, err)
+	}
+	checkpoints, err := s.StageCheckpoints("GH-26")
+	if err != nil || checkpoints[0].Status != "handoff_authorized" {
+		t.Fatalf("checkpoint after acceptance = %+v, err = %v", checkpoints, err)
+	}
+	rows, err := s.ArtifactReviewRows("GH-26")
+	if err != nil || len(rows) != 1 || rows[0].Status != "answered" || rows[0].AnsweredAt.IsZero() {
+		t.Fatalf("answered review = %+v, err = %v", rows, err)
+	}
+	if err := s.CompleteArtifactReview(checkpointID, target); err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err = s.StageCheckpoints("GH-26")
+	if err != nil || checkpoints[0].Status != "succeeded" {
+		t.Fatalf("completed checkpoint = %+v, err = %v", checkpoints, err)
 	}
 }
 
