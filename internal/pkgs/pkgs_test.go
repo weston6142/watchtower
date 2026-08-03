@@ -22,6 +22,9 @@ func TestLoadDir(t *testing.T) {
 	if p.Prompt == "" || p.Name != "executor" {
 		t.Fatalf("bad package: %+v", p)
 	}
+	if p.Identity.Name != "Executor" || p.Identity.Color != "green" || p.Identity.Symbol != "⚙" {
+		t.Fatalf("identity: %+v", p.Identity)
+	}
 	if !strings.HasPrefix(p.Prompt, "# Shared include: decision-protocol\n") ||
 		!strings.Contains(p.Prompt, "# Package prompt: executor\n") {
 		t.Fatalf("composed prompt: %q", p.Prompt)
@@ -59,7 +62,7 @@ func TestLoadDirRejectsUnsafeIncludes(t *testing.T) {
 			}
 			writeTestFile(t, filepath.Join(root, "packages", "agent", "prompt.md"), "agent")
 			writeTestFile(t, filepath.Join(root, "packages", "agent", "package.yaml"),
-				"includes:\n  - "+tc.include+"\n")
+				"identity:\n  name: Test Agent\n  color: gray\n  symbol: ▣\nincludes:\n  - "+tc.include+"\n")
 			if _, err := LoadDir(filepath.Join(root, "packages")); err == nil {
 				t.Fatal("unsafe include was accepted")
 			}

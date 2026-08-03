@@ -1,3 +1,7 @@
+identity:
+  name: Brainstorm
+  color: cyan
+  symbol: ✦
 includes: ["decision-protocol"]
 allowed_tools: ["Bash", "Read", "Glob", "Grep", "Write"]
 model: ""

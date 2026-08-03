@@ -1,3 +1,7 @@
+identity:
+  name: Librarian
+  color: slate
+  symbol: ▤
 includes: ["decision-protocol"]
 allowed_tools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
 model: ""

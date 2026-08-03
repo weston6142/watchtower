@@ -1,3 +1,7 @@
+identity:
+  name: Correctness Reviewer
+  color: yellow
+  symbol: ✓
 includes: ["decision-protocol"]
 allowed_tools: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"]
 model: ""

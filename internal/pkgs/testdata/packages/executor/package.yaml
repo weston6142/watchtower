@@ -1,3 +1,7 @@
+identity:
+  name: Executor
+  color: green
+  symbol: ⚙
 includes:
   - decision-protocol
 allowed_tools: ["Bash", "Read", "Write", "Edit"]
