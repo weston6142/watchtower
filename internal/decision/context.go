@@ -27,6 +27,12 @@ type DecisionContext struct {
 	AgentSymbol string `json:"agent_symbol"`
 }
 
+// AgentLabel returns the stable human-readable identity used by decision
+// surfaces that render the context envelope.
+func (c DecisionContext) AgentLabel() string {
+	return strings.Join([]string{c.AgentName, c.AgentColor, c.AgentSymbol}, " · ")
+}
+
 var hexColor = regexp.MustCompile(`^(?:#|0x)[0-9a-fA-F]+$`)
 
 // BuildTaskSummary freezes the first sentence from each nonblank issue field.

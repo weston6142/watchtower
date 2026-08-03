@@ -166,7 +166,7 @@ func DecisionLedger(decisions []Decision) string {
 		body.WriteString("- Time: " + decision.At.UTC().Format(time.RFC3339) + "\n")
 		if decision.Context != nil {
 			body.WriteString("- Task: " + decision.Context.TaskSummary + "\n")
-			body.WriteString("- Agent: " + decision.Context.AgentName + " · " + decision.Context.AgentColor + " · " + decision.Context.AgentSymbol + "\n")
+			body.WriteString("- Agent: " + decision.Context.AgentLabel() + "\n")
 		}
 		body.WriteString("- Accepted response: " + answer + "\n")
 		if decision.Why != "" {

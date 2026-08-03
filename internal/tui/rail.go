@@ -61,10 +61,9 @@ func decisionContextLines(context *decision.DecisionContext, width int) []string
 		return nil
 	}
 	width = max(1, width)
-	agent := strings.Join([]string{context.AgentName, context.AgentColor, context.AgentSymbol}, " · ")
 	var lines []string
 	lines = append(lines, wrapIndent(context.TaskSummary, width, "task · ")...)
-	lines = append(lines, wrapIndent(agent, width, "agent · ")...)
+	lines = append(lines, wrapIndent(context.AgentLabel(), width, "agent · ")...)
 	return lines
 }
 
