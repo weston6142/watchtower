@@ -7,11 +7,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -158,6 +160,35 @@ func TestRenderDecisionEditorContextAndLegacy(t *testing.T) {
 	legacy := ansi.Strip(renderDecisionEditor(projection.DecisionView{ID: 5, Stage: "spec", Question: "Legacy?"}, decisionEditor{DecisionID: 5}, 48))
 	if strings.Contains(legacy, "task ·") || strings.Contains(legacy, "agent ·") || !strings.Contains(legacy, "Legacy?") {
 		t.Fatalf("legacy editor rendering changed:\n%s", legacy)
+	}
+}
+
+func TestRenderArtifactReviewIdentityWrapsInToastAndEditor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	d := projection.DecisionView{ID: 26, Stage: "plan", Question: "Approve plan artifacts?", Review: &review.Target{
+		IssueID: "GH-26", Stage: "plan", CheckpointID: 17,
+		Artifacts:       []contextpack.Artifact{{Name: "plan.md", SHA256: digest}},
+		ArtifactVersion: "17|plan.md=" + digest, NextStage: "execute",
+	}}
+	for _, out := range []string{
+		ansi.Strip(renderToast(d, Identity{Tag: "GH"}, 0, 0, 48)),
+		ansi.Strip(renderDecisionEditor(d, decisionEditor{DecisionID: d.ID, Value: "approve"}, 48)),
+	} {
+		for _, want := range []string{"artifact review", "checkpoint: 17", "artifact_version:", "next: execute", "plan.md"} {
+			if !containsWrapped(out, want) {
+				t.Fatalf("review output missing %q:\n%s", want, out)
+			}
+		}
+		for start := 0; start < len(digest); start += 16 {
+			end := min(start+16, len(digest))
+			if !strings.Contains(out, digest[start:end]) {
+				t.Fatalf("review output missing digest fragment %q:\n%s", digest[start:end], out)
+			}
+		}
+		if strings.Contains(out, "…") {
+			t.Fatalf("review output truncated:\n%s", out)
+		}
 	}
 }
 

@@ -66,6 +66,73 @@ stages:
 	run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(got.ID, 10), "0")
 }
 
+func TestDefaultFlowRequiresSpecAndPlanArtifactReviews(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--title", "default artifact review")))
+	deadline := time.Now().Add(10 * time.Second)
+	var pending []engine.PendingDecision
+	for time.Now().Before(deadline) {
+		out := run(t, bin, repo, "decisions", "--data", base, "--json")
+		if err := json.Unmarshal([]byte(out), &pending); err != nil {
+			t.Fatalf("decisions --json = %q: %v", out, err)
+		}
+		if len(pending) == 1 && pending[0].Stage == "spec" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(pending) != 1 || pending[0].Stage != "spec" || pending[0].Review == nil || len(pending[0].Review.Artifacts) != 1 {
+		t.Fatalf("spec review = %+v", pending)
+	}
+	specID := pending[0].ID
+	run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(specID, 10), "0")
+
+	for time.Now().Before(deadline) {
+		out := run(t, bin, repo, "decisions", "--data", base, "--json")
+		if err := json.Unmarshal([]byte(out), &pending); err != nil {
+			t.Fatalf("plan decisions --json = %q: %v", out, err)
+		}
+		if len(pending) == 1 && pending[0].Stage == "plan" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(pending) != 1 || pending[0].Stage != "plan" || pending[0].Review == nil || len(pending[0].Review.Artifacts) != 2 {
+		t.Fatalf("plan review = %+v", pending)
+	}
+	if pending[0].Review.NextStage != "execute" {
+		t.Fatalf("plan review next stage = %q", pending[0].Review.NextStage)
+	}
+	storePath := filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.db")
+	st, err := store.Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.EventsSince(0)
+	st.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.IssueID == id && event.Type == core.EvStageStarted && eventStageName(t, event) == "execute" {
+			t.Fatal("execute started before plan review was answered")
+		}
+	}
+	run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(pending[0].ID, 10), "0")
+}
+
+func eventStageName(t *testing.T, event core.Event) string {
+	t.Helper()
+	var payload struct {
+		Stage string `json:"stage"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.Stage
+}
+
 func TestDecisionContextSurvivesDaemonRestart(t *testing.T) {
 	bin, base, repo := newRepo(t)
 	flowBody := `name: default
@@ -722,6 +789,16 @@ func TestDependencyWorkflowUsesIsolatedSessionsAndLandedBase(t *testing.T) {
 	run(t, bin, repo, "launch", "--data", base, parent)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
+		var pending []engine.PendingDecision
+		if err := json.Unmarshal([]byte(run(t, bin, repo, "decisions", "--data", base, "--json")), &pending); err != nil {
+			t.Fatalf("decisions --json: %v", err)
+		}
+		for _, decision := range pending {
+			if decision.Review == nil {
+				t.Fatalf("unexpected non-artifact decision: %+v", decision)
+			}
+			run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(decision.ID, 10), "0")
+		}
 		issues := run(t, bin, repo, "issues", "--data", base)
 		if strings.Contains(issues, parent+"  done") && strings.Contains(issues, child+"  done") {
 			break

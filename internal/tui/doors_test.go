@@ -8,8 +8,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/review"
 )
 
 func TestDecisionsDoorSelectable(t *testing.T) {
@@ -47,6 +49,36 @@ func TestDecisionsDoorDecisionContextNoTruncation(t *testing.T) {
 	legacy := ansi.Strip(renderDecisionsDoor([]projection.DecisionView{{ID: 3, IssueID: "GH-3", Stage: "spec", Question: "Legacy?"}}, map[string]Identity{"GH-3": {Tag: "03"}}, 0, 48))
 	if strings.Contains(legacy, "task ·") || strings.Contains(legacy, "agent ·") || !strings.Contains(legacy, "Legacy?") {
 		t.Fatalf("legacy door rendering changed:\n%s", legacy)
+	}
+}
+
+func TestDecisionsDoorShowsArtifactReviewIdentity(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	digest := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	d := projection.DecisionView{ID: 26, IssueID: "GH-26", Stage: "plan", Question: "Approve?", Review: &review.Target{
+		IssueID: "GH-26", Stage: "plan", CheckpointID: 17,
+		Artifacts:       []contextpack.Artifact{{Name: "touchset.json", SHA256: digest}},
+		ArtifactVersion: "17|touchset.json=" + digest, NextStage: "execute",
+	}}
+	out := ansi.Strip(renderDecisionsDoor([]projection.DecisionView{d}, map[string]Identity{"GH-26": {Tag: "26"}}, 0, 48))
+	for _, want := range []string{"artifact review", "checkpoint: 17", "artifact_version:", "next: execute", "touchset.json"} {
+		if !containsWrapped(out, want) {
+			t.Fatalf("door missing %q:\n%s", want, out)
+		}
+	}
+	for start := 0; start < len(digest); start += 16 {
+		end := min(start+16, len(digest))
+		if !strings.Contains(out, digest[start:end]) {
+			t.Fatalf("door missing digest fragment %q:\n%s", digest[start:end], out)
+		}
+	}
+	if strings.Contains(out, "…") {
+		t.Fatalf("door truncated review identity:\n%s", out)
+	}
+	for lineNo, line := range strings.Split(out, "\n") {
+		if lipgloss.Width(line) > 48 {
+			t.Fatalf("door line %d is %d cells wide:\n%s", lineNo, lipgloss.Width(line), out)
+		}
 	}
 }
 

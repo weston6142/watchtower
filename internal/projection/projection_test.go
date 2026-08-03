@@ -3,8 +3,10 @@ package projection
 import (
 	"testing"
 
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
+	"github.com/weston6142/watchtower/internal/review"
 )
 
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -87,6 +89,42 @@ func TestProjectionLegacyDecisionContext(t *testing.T) {
 	}))
 	if got := s.Decisions[8].Context; got != nil {
 		t.Fatalf("legacy projected context = %#v", got)
+	}
+}
+
+func TestProjectionDecisionReviewTarget(t *testing.T) {
+	s := NewState()
+	want := review.Target{
+		IssueID: "GH-26", Stage: "plan", CheckpointID: 17,
+		Artifacts: []contextpack.Artifact{
+			{Name: "plan.md", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			{Name: "touchset.json", SHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		}, ArtifactVersion: "17|plan.md=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|touchset.json=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		NextStage: "execute",
+	}
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-26", map[string]any{
+		"decision_id": float64(26), "stage": "plan", "question": "Approve plan artifacts?", "review": want,
+	}))
+	got := s.Decisions[26].Review
+	if got == nil || got.IssueID != want.IssueID || got.Stage != want.Stage ||
+		got.CheckpointID != want.CheckpointID || got.ArtifactVersion != want.ArtifactVersion ||
+		got.NextStage != want.NextStage || len(got.Artifacts) != len(want.Artifacts) {
+		t.Fatalf("projected review = %#v", got)
+	}
+	for i, artifact := range want.Artifacts {
+		if got.Artifacts[i] != artifact {
+			t.Fatalf("projected artifact %d = %#v, want %#v", i, got.Artifacts[i], artifact)
+		}
+	}
+}
+
+func TestProjectionLegacyDecisionReviewIsNil(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-26", map[string]any{
+		"decision_id": float64(27), "stage": "spec", "question": "Legacy?",
+	}))
+	if got := s.Decisions[27].Review; got != nil {
+		t.Fatalf("legacy projected review = %#v", got)
 	}
 }
 

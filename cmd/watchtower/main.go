@@ -904,6 +904,17 @@ func formatDecision(d engine.PendingDecision) string {
 		fmt.Fprintf(&out, "agent: %s\n", d.Context.AgentLabel())
 	}
 	fmt.Fprintf(&out, "[%d] %s/%s: %s\n", d.ID, d.IssueID, d.Stage, d.D.Question)
+	if target := d.Review; target != nil {
+		fmt.Fprintln(&out, "artifact review")
+		fmt.Fprintf(&out, "    checkpoint: %d\n", target.CheckpointID)
+		fmt.Fprintf(&out, "    artifact_version: %s\n", target.ArtifactVersion)
+		if target.NextStage != "" {
+			fmt.Fprintf(&out, "    next: %s\n", target.NextStage)
+		}
+		for _, artifact := range target.Artifacts {
+			fmt.Fprintf(&out, "    %s: %s\n", artifact.Name, artifact.SHA256)
+		}
+	}
 	if d.D.Kind == levers.DecisionFreeform {
 		fmt.Fprintf(&out, "    recommended: %s\n", d.D.RecommendedResponse)
 		return out.String()

@@ -6,6 +6,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
+	"github.com/weston6142/watchtower/internal/review"
 )
 
 type IssueView struct {
@@ -53,6 +54,7 @@ type DecisionView struct {
 	Reversible          string
 	Paths               []string
 	Context             *decision.DecisionContext
+	Review              *review.Target
 }
 
 type Notice struct {
@@ -171,13 +173,24 @@ func (s *State) Apply(ev core.Event) {
 				}
 			}
 		}
+		var reviewTarget *review.Target
+		if raw, ok := p["review"]; ok {
+			encoded, err := json.Marshal(raw)
+			if err == nil && string(encoded) != "null" {
+				var decoded review.Target
+				if json.Unmarshal(encoded, &decoded) == nil {
+					reviewTarget = &decoded
+				}
+			}
+		}
 		id := int64(num("decision_id"))
 		s.Decisions[id] = DecisionView{ID: id, IssueID: ev.IssueID, Stage: str("stage"),
 			Kind: str("kind"), Question: str("question"), Options: opts,
 			Recommended: int(num("recommended")), RecommendedResponse: str("recommended_response"),
 			AllowFreeform: p["allow_freeform"] == true,
 			Why:           str("why"), Consequences: stringsFromPayload(p["consequences"]),
-			Reversible: str("reversible"), Paths: stringsFromPayload(p["paths"]), Context: context}
+			Reversible: str("reversible"), Paths: stringsFromPayload(p["paths"]), Context: context,
+			Review: reviewTarget}
 		if iv != nil {
 			iv.State = "waiting_decision"
 		}
