@@ -3,8 +3,8 @@ package engine
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/core"
@@ -15,21 +15,8 @@ import (
 func initReceiptRepo(t *testing.T) (dir, headSHA string) {
 	t.Helper()
 	dir = t.TempDir()
-	run := func(args ...string) string {
-		t.Helper()
-		out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-		return string(out)
-	}
-	run("init", "-q")
-	run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base")
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dir, string(out[:40])
+	initGitRepo(t, dir)
+	return dir, strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
 }
 
 func TestWriteVerificationReceipt(t *testing.T) {
