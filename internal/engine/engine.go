@@ -1537,7 +1537,8 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		AllowFreeform: a.Decision.AllowFreeform, Importance: a.Decision.Importance,
 		Paths: a.Decision.Paths,
 		Why:   a.Decision.Why, Consequences: a.Decision.Consequences, Reversible: a.Decision.Reversible,
-		Status: "auto", Response: a.Decision.RecommendedAnswer(),
+		Context: &decisionContext,
+		Status:  "auto", Response: a.Decision.RecommendedAnswer(),
 		BlockingCost: e.blockingCost(is.id),
 	}); err != nil {
 		reportAskError(a, fmt.Errorf("insert auto decision: %w", err))
@@ -1556,6 +1557,7 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 		Kind: d.Kind, RecommendedResponse: d.RecommendedResponse,
 		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
+		Context:      &decisionContext,
 		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {

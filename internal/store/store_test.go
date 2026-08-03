@@ -315,14 +315,19 @@ func TestLegacyDecisionWithoutContext(t *testing.T) {
 	}
 	defer s.Close()
 
-	if _, err := s.InsertDecision(DecisionRow{IssueID: "GH-31", Question: "Legacy?"}); err != nil {
+	id, err := s.InsertDecision(DecisionRow{IssueID: "GH-31", Question: "Legacy?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE decisions SET evidence=? WHERE id=?`,
+		`{"kind":"choice","why":"stored before context envelopes","consequences":[],"reversible":""}`, id); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := s.AllDecisionRows()
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("rows = %#v, err = %v", rows, err)
 	}
-	if rows[0].Context != nil {
+	if rows[0].Context != nil || rows[0].Why != "stored before context envelopes" {
 		t.Fatalf("legacy decision unexpectedly has context: %#v", rows[0].Context)
 	}
 }

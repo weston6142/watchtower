@@ -52,6 +52,19 @@ func TestPendingDecisionJSONContext(t *testing.T) {
 	}
 }
 
+func TestLegacyPendingDecisionJSONOmitsContext(t *testing.T) {
+	encoded, err := json.Marshal(engine.PendingDecision{
+		ID: 32, IssueID: "GH-31", Stage: "spec",
+		D: levers.Decision{Question: "Legacy?", Kind: levers.DecisionFreeform},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"context"`) || !strings.Contains(string(encoded), "Legacy?") {
+		t.Fatalf("legacy pending JSON = %s", encoded)
+	}
+}
+
 func protoDecisionIdentities(f flow.Flow) map[string]decision.AgentIdentity {
 	identities := map[string]decision.AgentIdentity{}
 	for _, stage := range f.Stages {

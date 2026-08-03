@@ -223,6 +223,110 @@ func TestDecisionContextFailureStopsBeforePresentation(t *testing.T) {
 	}
 }
 
+func TestContextSurvivesAutoAndPendingRows(t *testing.T) {
+	f := flow.Flow{Name: "context", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent"}},
+	}}}
+	title := "A long but safe task " + strings.Repeat("detail ", 500)
+	fr := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{
+			{Question: "Auto?", Options: []string{"yes"}, Recommended: 0, Importance: 0.1},
+			{Question: "Human?", Options: []string{"yes"}, Recommended: 0, Importance: 1.0},
+		}},
+	}}
+	e, s := newEngineCfg(t, fr, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"context": f}
+	})
+	id, err := e.CreateIssue(title, "", "context", levers.Matrix{"ask": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSummary, err := decision.BuildTaskSummary(title, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	var pending PendingDecision
+	deadline := time.After(5 * time.Second)
+	for {
+		if decisions := e.PendingDecisions(); len(decisions) == 1 {
+			pending = decisions[0]
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("human decision never appeared")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if pending.Context == nil || pending.Context.TaskSummary != wantSummary {
+		t.Fatalf("pending context = %#v", pending.Context)
+	}
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("decision rows = %#v, err = %v", rows, err)
+	}
+	for _, row := range rows {
+		if row.Context == nil || row.Context.TaskSummary != wantSummary ||
+			row.Context.AgentName != "Test Agent" || row.Context.AgentColor != "gray" || row.Context.AgentSymbol != "A" {
+			t.Fatalf("stored context for %s = %#v", row.Question, row.Context)
+		}
+	}
+}
+
+func TestOverLimitContextFailsBeforePresentation(t *testing.T) {
+	f := flow.Flow{Name: "context", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent"}},
+	}}}
+	e, s := newEngineCfg(t, &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{{Question: "Proceed?", Options: []string{"yes"}, Recommended: 0, Importance: 0.1}}},
+	}}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"context": f}
+	})
+	id, err := e.CreateIssue(strings.Repeat("x", decision.MaxMessageBytes+1), "", "context", levers.Matrix{"ask": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil || !strings.Contains(err.Error(), "message budget") {
+		t.Fatalf("StartIssue error = %v", err)
+	}
+	if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+		t.Fatalf("pending rows = %#v, err = %v", rows, err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == core.EvDecisionRequired {
+			t.Fatal("over-limit context emitted a required decision")
+		}
+	}
+	failed := false
+	for _, event := range events {
+		if event.Type != core.EvStageFailed {
+			continue
+		}
+		var payload map[string]any
+		_ = json.Unmarshal(event.Payload, &payload)
+		if strings.Contains(payload["error"].(string), "message budget") {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Fatalf("no actionable stage failure in events: %+v", events)
+	}
+}
+
 // YOLO everywhere: brainstorm ask auto-resolves, spec approve_artifact gate
 // still escalates (importance 1.0 floor), so exactly one human decision.
 func TestYoloRunEscalatesOnlyGate(t *testing.T) {
@@ -2264,6 +2368,12 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+	beforeRestart := e1.PendingDecisions()[0]
+	if beforeRestart.Context == nil {
+		t.Fatal("pre-restart decision has no context")
+	}
+	wantContext := *beforeRestart.Context
+	wantQuestion := beforeRestart.D.Question
 
 	// "Restart": a fresh engine on the same store knows nothing in memory.
 	e2 := newEngineOnFile(t, s, &runner.FakeRunner{Scripts: scripts()}, dataDir)
@@ -2300,6 +2410,16 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	if orphaned != 1 {
 		t.Fatalf("expected 1 orphaned decision for %s, got %d (%+v)", id, orphaned, rows)
 	}
+	var historical *store.DecisionRow
+	for i := range rows {
+		if rows[i].IssueID == id && rows[i].Question == wantQuestion {
+			historical = &rows[i]
+			break
+		}
+	}
+	if historical == nil || historical.Context == nil || *historical.Context != wantContext {
+		t.Fatalf("historical decision context = %#v, want %#v", historical, wantContext)
+	}
 
 	// Events: decision answered (orphaned) then a final stage failure marker.
 	evs, err := s.EventsSince(0)
@@ -2313,6 +2433,13 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 		}
 		var p map[string]any
 		_ = json.Unmarshal(ev.Payload, &p)
+		if ev.Type == core.EvDecisionRequired {
+			encoded, _ := json.Marshal(p["context"])
+			var got decision.DecisionContext
+			if err := json.Unmarshal(encoded, &got); err != nil || got != wantContext {
+				t.Fatalf("replayed required context = %s, want %#v", encoded, wantContext)
+			}
+		}
 		switch ev.Type {
 		case core.EvDecisionAnswered:
 			if orphanedFlag, _ := p["orphaned"].(bool); orphanedFlag {
@@ -2330,10 +2457,14 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 
 	// The issue is retryable: no "unknown issue", and with the re-raised gate
 	// answered the flow completes.
+	contextAfterRetry := make(chan decision.DecisionContext, 1)
 	go func() {
 		deadline := time.After(5 * time.Second)
 		for {
 			if ds := e2.PendingDecisions(); len(ds) == 1 {
+				if ds[0].Context != nil {
+					contextAfterRetry <- *ds[0].Context
+				}
 				_ = e2.Answer(ds[0].ID, levers.ChoiceResponse(0))
 				return
 			}
@@ -2356,6 +2487,14 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	}
 	if !completed {
 		t.Fatal("issue did not complete after rehydrated retry")
+	}
+	select {
+	case got := <-contextAfterRetry:
+		if got != wantContext {
+			t.Fatalf("retried decision context = %#v, want %#v", got, wantContext)
+		}
+	default:
+		t.Fatal("retried decision did not expose context")
 	}
 }
 

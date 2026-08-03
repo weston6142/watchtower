@@ -90,6 +90,18 @@ func TestProjectionLegacyDecisionContext(t *testing.T) {
 	}
 }
 
+func TestReplayLegacyDecisionEventHasNoFabricatedContext(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-31", map[string]any{"title": "legacy issue"}))
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-31", map[string]any{
+		"decision_id": float64(9), "stage": "spec", "question": "Legacy?",
+	}))
+	got := s.Decisions[9]
+	if got.Context != nil || got.Question != "Legacy?" || got.IssueID != "GH-31" {
+		t.Fatalf("replayed legacy decision = %#v", got)
+	}
+}
+
 func TestDecisionProjectionPreservesChoiceCompatibilityField(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvDecisionRequired, "GH-1", map[string]any{
