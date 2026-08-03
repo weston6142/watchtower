@@ -81,6 +81,7 @@ type Model struct {
 	dayStart        time.Time
 	shelfSel        int
 	modal           *modalState
+	investigate     *investigateState
 	backlog         *backlogState
 	confirm         *confirmState
 	decisionEditor  *decisionEditor
@@ -91,6 +92,7 @@ type Model struct {
 	aliases         map[string]string
 	reducedMotion   bool
 	herdrReporter   overviewReporter
+	spawner         paneSpawner
 	ticks           int
 }
 
@@ -223,6 +225,14 @@ type overviewReporter interface {
 }
 
 func (m *Model) SetHerdrReporter(r overviewReporter) { m.herdrReporter = r }
+
+// paneSpawner opens an interactive agent pane; satisfied by *herdr.Reporter.
+// An interface so tests can substitute a spy.
+type paneSpawner interface {
+	SpawnPane(cwd, command string) error
+}
+
+func (m *Model) SetPaneSpawner(s paneSpawner) { m.spawner = s }
 
 func (m *Model) SetRetireAfter(after time.Duration) {
 	if after > 0 {
@@ -533,6 +543,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.investigate != nil {
+			s := *m.investigate
+			switch key {
+			case "esc":
+				m.investigate = nil
+			case "tab":
+				s.Field = (s.Field + 1) % investigateFieldCount
+				m.investigate = &s
+			case "h":
+				s = s.cycle(-1)
+				m.investigate = &s
+			case "l":
+				s = s.cycle(1)
+				m.investigate = &s
+			case "enter":
+				cmd := buildInvestigateCommand(s.agent(), s.model(), s.effort())
+				if s.agent() == "claude" {
+					if err := ensureWrapUpSkill(m.Repo); err != nil {
+						m.Err = "investigate: install wrap-up skill: " + err.Error()
+						return m, nil
+					}
+				}
+				saveInvestigatePrefs(m.Repo, s)
+				manual := "cd " + m.Repo + " && " + strings.TrimPrefix(cmd, "exec ")
+				if m.spawner == nil {
+					m.Err = "investigate: not running under herdr — run manually: " + manual
+					return m, nil
+				}
+				if err := m.spawner.SpawnPane(m.Repo, cmd); err != nil {
+					m.Err = "investigate: " + err.Error() + " — run manually: " + manual
+					return m, nil
+				}
+				m.investigate = nil
+			}
+			return m, nil
+		}
 		// Arrow keys act as vim motions everywhere below; the modal
 		// above takes raw text input, so it must not see the aliases.
 		switch key {
@@ -784,6 +830,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "n" {
 			m.Err = ""
 			m.modal = &modalState{FlowName: "default", Preset: "regular"}
+			return m, nil
+		}
+		if key == "i" {
+			m.Err = ""
+			s := loadInvestigatePrefs(m.Repo)
+			m.investigate = &s
 			return m, nil
 		}
 		if key == "b" {
@@ -1796,6 +1848,8 @@ func (m Model) View() string {
 	var overlayBox string
 	if m.modal != nil {
 		overlayBox = renderModal(*m.modal, layoutWidth)
+	} else if m.investigate != nil {
+		overlayBox = renderInvestigate(*m.investigate, layoutWidth)
 	} else if m.confirm != nil {
 		overlayBox = renderConfirm(m.confirm.Prompt, layoutWidth)
 	} else if m.backlog != nil {

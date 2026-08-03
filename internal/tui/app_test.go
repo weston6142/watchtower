@@ -2,6 +2,9 @@ package tui
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +37,83 @@ type spyReporter struct {
 
 func (s *spyReporter) Report(needYou, failing, building int) {
 	s.calls = append(s.calls, [3]int{needYou, failing, building})
+}
+
+type spySpawner struct {
+	cwd, cmd string
+	err      error
+}
+
+func (s *spySpawner) SpawnPane(cwd, cmd string) error {
+	s.cwd, s.cmd = cwd, cmd
+	return s.err
+}
+
+func TestInvestigateKeyOpensPicker(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m2 := pressKey(t, m, "i")
+	if m2.investigate == nil {
+		t.Fatal("i must open the investigate picker")
+	}
+}
+
+func TestInvestigateEnterSpawns(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spy := &spySpawner{}
+	m := NewModel(nil, []string{"spec"})
+	m.Repo = repo
+	m.SetPaneSpawner(spy)
+	m = pressKey(t, m, "i")
+	m = pressKey(t, m, "enter")
+	if spy.cwd != repo {
+		t.Fatalf("spawn cwd = %q, want %q", spy.cwd, repo)
+	}
+	if !strings.HasPrefix(spy.cmd, "exec claude --model fable-5 --effort low") {
+		t.Fatalf("cmd = %q", spy.cmd)
+	}
+	if m.investigate != nil {
+		t.Fatal("picker must close on success")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".claude", "skills", "watchtower-wrap-up", "SKILL.md")); err != nil {
+		t.Fatal("wrap-up skill must be installed before a claude spawn")
+	}
+}
+
+func TestInvestigateSpawnFailureShowsManualCommand(t *testing.T) {
+	repo := t.TempDir()
+	m := NewModel(nil, []string{"spec"})
+	m.Repo = repo
+	m.SetPaneSpawner(&spySpawner{err: fmt.Errorf("not running under herdr")})
+	m = pressKey(t, m, "i")
+	m = pressKey(t, m, "enter")
+	if m.investigate == nil {
+		t.Fatal("picker must stay open on failure")
+	}
+	if !strings.Contains(m.Err, "claude --model") || !strings.Contains(m.Err, repo) {
+		t.Fatalf("Err must carry the manual command, got %q", m.Err)
+	}
+}
+
+func TestInvestigateFieldCycling(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = pressKey(t, m, "i")
+	m = pressKey(t, m, "l")
+	if m.investigate.agent() != "codex" {
+		t.Fatalf("agent = %s", m.investigate.agent())
+	}
+	m = pressKey(t, m, "tab")
+	m = pressKey(t, m, "tab")
+	m = pressKey(t, m, "l")
+	if m.investigate.effort() != "medium" {
+		t.Fatalf("effort = %s", m.investigate.effort())
+	}
+	m = pressKey(t, m, "esc")
+	if m.investigate != nil {
+		t.Fatal("esc must close")
+	}
 }
 
 func TestOverviewUpdateFeedsHerdrReporter(t *testing.T) {
