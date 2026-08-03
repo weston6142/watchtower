@@ -34,7 +34,13 @@ configuration, and documentation paths. Exclude `ISSUE.md`, `STAGE.md`,
 `decisions.md`, and workflow artifacts. Touchsets schedule overlapping work;
 they never imply logical task dependencies.
 
-Before finishing, self-review specification coverage, placeholders, type and
+After writing, self-review specification coverage, placeholders, type and
 interface consistency, ordering, behavior-focused tests, command accuracy,
 commit boundaries, and touchset completeness. Correct every issue you find.
-There is no plan approval loop; finish after the self-review passes.
+Then emit a freeform decision at importance `0.8` with the recommended response
+exactly: `Approve plan.md as written.`
+
+If the response supplies feedback, update `plan.md` and `touchset.json`, repeat
+the complete self-review, and ask again. If feedback asks for alternatives,
+present two or three meaningful options through the shared choice structure
+before revising. Finish only when the implementation plan is approved.
