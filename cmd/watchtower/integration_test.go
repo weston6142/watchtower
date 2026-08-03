@@ -412,6 +412,29 @@ func TestTwoReposAutoSpawnWithoutCollision(t *testing.T) {
 	}
 }
 
+func TestStopShutsDownCurrentRepositoryDaemon(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	_ = run(t, bin, repo, "status", "--data", base)
+
+	out := run(t, bin, repo, "stop", "--data", base)
+	if !strings.Contains(out, "stopped daemon for "+repo) {
+		t.Fatalf("stop output = %q", out)
+	}
+	sock := filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.sock")
+	if client, err := proto.Dial(sock); err == nil {
+		client.Close()
+		t.Fatal("daemon still accepts connections after stop")
+	}
+	if repos := run(t, bin, repo, "repos", "--data", base); !strings.Contains(repos, "stopped") {
+		t.Fatalf("repos did not report stopped daemon:\n%s", repos)
+	}
+	cmd := exec.Command(bin, "daemon", "--data", base, "--repo", repo, "help")
+	outBytes, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(outBytes), "unexpected argument") {
+		t.Fatalf("daemon accepted stray positional argument: err=%v output=%q", err, outBytes)
+	}
+}
+
 // lastLine returns the final non-empty line of s ("new" prints the spawn
 // notice to stderr but CombinedOutput merges streams, so take the last line).
 func lastLine(s string) string {

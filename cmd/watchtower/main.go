@@ -51,7 +51,7 @@ func main() {
 		fatal(err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|init|reset|repos|tower|new|backlog|claim|release|finish|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|stop|init|reset|repos|tower|new|backlog|claim|release|finish|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -102,6 +102,10 @@ func main() {
 		}
 	case "daemon":
 		runDaemon(args)
+	case "stop":
+		if err := runStop(args); err != nil {
+			fatal(err)
+		}
 	case "tower":
 		fs := flag.NewFlagSet("tower", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
@@ -606,6 +610,9 @@ func runDaemon(args []string) {
 	codexEffort := fs.String("codex-effort", "", "codex reasoning effort (default from config)")
 	testCmd := fs.String("test-cmd", "", "merge-train test command (default from config)")
 	fs.Parse(args)
+	if fs.NArg() != 0 {
+		fatal(fmt.Errorf("daemon: unexpected argument %q", fs.Arg(0)))
+	}
 
 	repo := resolveRepo(*repoFlag)
 	cfg, err := repocfg.Load(repo)
@@ -813,6 +820,40 @@ func runDaemon(args []string) {
 		LoadedAt: time.Now().Format("15:04"),
 	})
 	fatal(srv.Serve(l))
+}
+
+func runStop(args []string) error {
+	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
+	base := fs.String("data", defaultData(), "base data dir")
+	repoFlag := fs.String("repo", "", "target repo (default: walk up from CWD)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("stop: unexpected argument %q", fs.Arg(0))
+	}
+	repo := resolveRepo(*repoFlag)
+	dataDir := repocfg.RepoDataDir(*base, repo)
+	sock := filepath.Join(dataDir, sockFileName)
+	client, err := proto.Dial(sock)
+	if err != nil {
+		clearStaleSocket(dataDir, sock)
+		fmt.Println("daemon already stopped for", repo)
+		return nil
+	}
+	response, err := client.Do(proto.Command{Op: "shutdown"})
+	client.Close()
+	if err != nil {
+		return err
+	}
+	if !response.OK {
+		return fmt.Errorf("shutdown: %s", response.Error)
+	}
+	if err := waitForDaemonStop(*base, repo); err != nil {
+		return err
+	}
+	fmt.Println("stopped daemon for", repo)
+	return nil
 }
 
 func commitFakeChange(issueID, workdir string) error {
