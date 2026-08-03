@@ -1333,13 +1333,18 @@ func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
 }
 
 type recordingSequencer struct {
-	planned int
-	merged  int
+	planned  int
+	merged   int
+	plannedC chan touchset.Set
 }
 
 func (s *recordingSequencer) BlockedBehind(string) int { return 0 }
-func (s *recordingSequencer) PlanApproved(string, touchset.Set) {
+func (s *recordingSequencer) PlanApproved(issueID string, ts touchset.Set) {
+	_ = issueID
 	s.planned++
+	if s.plannedC != nil {
+		s.plannedC <- ts
+	}
 }
 func (s *recordingSequencer) ReadyToMerge(context.Context, string) error { return nil }
 func (s *recordingSequencer) Merged(string)                              { s.merged++ }
@@ -2860,6 +2865,10 @@ func TestAcceptedArtifactReviewCompletesExactlyOnceAfterRestart(t *testing.T) {
 			}
 		}
 		if answered == 1 && completed == 1 && downstream == 1 {
+			plan := waitForPendingStage(t, e2, "plan")
+			if err := e2.Answer(plan.ID, levers.ChoiceResponse(0)); err != nil {
+				t.Fatal(err)
+			}
 			return
 		}
 		select {
@@ -2867,6 +2876,63 @@ func TestAcceptedArtifactReviewCompletesExactlyOnceAfterRestart(t *testing.T) {
 			t.Fatalf("accepted review counts = answered %d, completed %d, downstream %d", answered, completed, downstream)
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+func TestAcceptedArtifactReviewRestartRestoresPlanTouchset(t *testing.T) {
+	f := flow.Flow{Name: "restart-marshal", Stages: []flow.Stage{
+		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "worktree",
+			Gate: flow.GateApproveArtifact, Artifacts: []string{"touchset.json"}},
+		{Name: "merge", Agents: []flow.AgentRef{{Package: "reviewer"}}, Workspace: "worktree",
+			Gate: flow.GateAuto, MergeBarrier: true, Artifacts: append([]string(nil), flow.FinalizationArtifacts...)},
+	}}
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	s, err := store.Open(filepath.Join(t.TempDir(), "restart-marshal.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	dataDir := t.TempDir()
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"plan/planner": {Artifacts: map[string]string{"touchset.json": `{"globs":["src/**"]}`}},
+		"merge/reviewer": {Artifacts: map[string]string{
+			"merge-report.md": "", "merge-decision.json": "", "verification.json": "",
+		}},
+	}}
+	seq1 := &recordingSequencer{}
+	e1 := New(Config{
+		Store: s, Runner: r, Marshal: seq1, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{f.Name: f}, DataDir: dataDir,
+		Workspace: workspace.GitWorktree{Repo: repo}, DecisionIdentities: testDecisionIdentities(),
+	})
+	id, err := e1.CreateIssue("restart marshal", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e1, "plan")
+	if _, err := s.ResolveArtifactReview(pending.ID, *pending.Review, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	planned := make(chan touchset.Set, 1)
+	seq2 := &recordingSequencer{plannedC: planned}
+	e2 := New(Config{
+		Store: s, Runner: r, Marshal: seq2, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{f.Name: f}, DataDir: dataDir,
+		Workspace: workspace.GitWorktree{Repo: repo}, DecisionIdentities: testDecisionIdentities(),
+	})
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-planned:
+		if len(got.Globs) != 1 || got.Globs[0] != "src/**" {
+			t.Fatalf("restored plan touchset = %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("accepted plan restart did not register its touchset")
 	}
 }
 

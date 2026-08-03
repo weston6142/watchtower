@@ -1585,23 +1585,8 @@ func (e *Engine) scheduleArtifactContinuation(
 func (e *Engine) continueArtifactReview(
 	decisionID int64, issueID, stage string, target review.Target, response levers.Response, emitAnswered bool,
 ) {
-	if err := e.cfg.Store.CompleteArtifactReview(target.CheckpointID, target); err != nil {
-		e.emit(core.EvStageFailed, issueID, map[string]any{
-			"stage": stage, "error": fmt.Sprintf("artifact review handoff: %v", err), "final": true})
-		return
-	}
-	if emitAnswered {
-		e.emit(core.EvDecisionAnswered, issueID, map[string]any{
-			"decision_id": decisionID, "response": response, "review": target})
-	}
-	e.emit(core.EvStageCompleted, issueID, map[string]string{"stage": stage})
-
 	e.mu.Lock()
 	is, ok := e.issues[issueID]
-	if ok {
-		is.terminal = false
-		is.stageIdx = 0
-	}
 	e.mu.Unlock()
 	if !ok {
 		e.emit(core.EvStageFailed, issueID, map[string]any{
@@ -1614,9 +1599,11 @@ func (e *Engine) continueArtifactReview(
 			"stage": stage, "error": fmt.Sprintf("flow %q is not configured", is.flowName), "final": true})
 		return
 	}
+	var approvedStage flow.Stage
 	nextIdx := -1
 	for i, configured := range f.Stages {
 		if configured.Name == stage {
+			approvedStage = configured
 			nextIdx = i + 1
 			break
 		}
@@ -1626,7 +1613,39 @@ func (e *Engine) continueArtifactReview(
 			"stage": stage, "error": "artifact review stage is not in the configured flow", "final": true})
 		return
 	}
+	if err := e.cfg.Store.CompleteArtifactReview(target.CheckpointID, target); err != nil {
+		e.emit(core.EvStageFailed, issueID, map[string]any{
+			"stage": stage, "error": fmt.Sprintf("artifact review handoff: %v", err), "final": true})
+		return
+	}
+	e.registerApprovedTouchset(is, approvedStage)
+	if emitAnswered {
+		e.emit(core.EvDecisionAnswered, issueID, map[string]any{
+			"decision_id": decisionID, "response": response, "review": target})
+	}
+	e.emit(core.EvStageCompleted, issueID, map[string]string{"stage": stage})
+
+	e.mu.Lock()
+	is.terminal = false
+	is.stageIdx = 0
+	e.mu.Unlock()
 	go func() { _ = e.runAndRecord(context.Background(), is, nextIdx) }()
+}
+
+func (e *Engine) registerApprovedTouchset(is *issueState, st flow.Stage) {
+	_, _, integrating := e.cfg.Flows[is.flowName].IntegrationStage()
+	if !integrating || e.cfg.Marshal == nil || !st.DeclaresArtifact("touchset.json") {
+		return
+	}
+	ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json"))
+	if err != nil {
+		return
+	}
+	e.mu.Lock()
+	snapshot := ts
+	is.activeTouchset = &snapshot
+	e.mu.Unlock()
+	e.cfg.Marshal.PlanApproved(is.id, ts)
 }
 
 func (e *Engine) freezeTaskSummary(is *issueState) error {
@@ -2335,16 +2354,7 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 
 	// Any stage may declare a touchset describing files the issue will change;
 	// register it so the marshal can sequence overlapping integrations.
-	_, _, integrating := e.cfg.Flows[is.flowName].IntegrationStage()
-	if integrating && e.cfg.Marshal != nil && st.DeclaresArtifact("touchset.json") {
-		if ts, err := touchset.Load(filepath.Join(e.stageWorkdir(is, st), "touchset.json")); err == nil {
-			e.mu.Lock()
-			snapshot := ts
-			is.activeTouchset = &snapshot
-			e.mu.Unlock()
-			e.cfg.Marshal.PlanApproved(is.id, ts)
-		}
-	}
+	e.registerApprovedTouchset(is, st)
 	verificationReady := false
 	if st.MergeBarrier {
 		integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
