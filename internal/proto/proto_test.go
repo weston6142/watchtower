@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
@@ -24,6 +26,65 @@ import (
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/workspace"
 )
+
+func TestPendingDecisionJSONContext(t *testing.T) {
+	pending := engine.PendingDecision{
+		ID: 31, IssueID: "GH-31", Stage: "execute",
+		Context: &decision.DecisionContext{
+			TaskSummary: "Ship decision context.", AgentName: "Executor",
+			AgentColor: "green", AgentSymbol: "⚙",
+		},
+	}
+	encoded, err := json.Marshal(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Context *decision.DecisionContext `json:"context"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Context == nil || decoded.Context.TaskSummary != "Ship decision context." ||
+		decoded.Context.AgentName != "Executor" || decoded.Context.AgentColor != "green" ||
+		decoded.Context.AgentSymbol != "⚙" {
+		t.Fatalf("pending JSON context = %#v, JSON = %s", decoded.Context, encoded)
+	}
+}
+
+func TestLegacyPendingDecisionJSONOmitsContext(t *testing.T) {
+	encoded, err := json.Marshal(engine.PendingDecision{
+		ID: 32, IssueID: "GH-31", Stage: "spec",
+		D: levers.Decision{Question: "Legacy?", Kind: levers.DecisionFreeform},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"context"`) || !strings.Contains(string(encoded), "Legacy?") {
+		t.Fatalf("legacy pending JSON = %s", encoded)
+	}
+}
+
+func protoDecisionIdentities(f flow.Flow) map[string]decision.AgentIdentity {
+	identities := map[string]decision.AgentIdentity{}
+	for _, stage := range f.Stages {
+		for _, agent := range stage.Agents {
+			identities[agent.Package] = decision.AgentIdentity{
+				Name: agent.Package, Color: "green", Symbol: "⚙",
+			}
+		}
+	}
+	return identities
+}
+
+func assertDecisionContext(t *testing.T, pending engine.PendingDecision, question string) {
+	t.Helper()
+	if pending.D.Question != question || pending.Context == nil ||
+		pending.Context.TaskSummary == "" || pending.Context.AgentName == "" ||
+		pending.Context.AgentColor == "" || pending.Context.AgentSymbol == "" {
+		t.Fatalf("pending decision context = %+v", pending)
+	}
+}
 
 func TestSetupOutlineReportsConfiguredWorkflow(t *testing.T) {
 	root := t.TempDir()
@@ -80,9 +141,10 @@ func newTestClient(t *testing.T) *Client {
 		Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
 			"run/agent": {},
 		}},
-		Pool:    slots.NewPool(1),
-		Flows:   map[string]flow.Flow{"default": f},
-		DataDir: t.TempDir(),
+		Pool:               slots.NewPool(1),
+		Flows:              map[string]flow.Flow{"default": f},
+		DecisionIdentities: protoDecisionIdentities(f),
+		DataDir:            t.TempDir(),
 	})
 	sock := filepath.Join(t.TempDir(), "g.sock")
 	l, err := net.Listen("unix", sock)
@@ -117,7 +179,7 @@ func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 		"review/doc-writer":          {Artifacts: map[string]string{"docs": ""}},
 	}}
 	e := engine.New(engine.Config{Store: s, Runner: fr, Pool: slots.NewPool(2),
-		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir()})
+		Flows: map[string]flow.Flow{"default": f}, DecisionIdentities: protoDecisionIdentities(f), DataDir: t.TempDir()})
 	_ = levers.Rules{}
 
 	sock := filepath.Join(t.TempDir(), "g.sock")
@@ -234,7 +296,7 @@ func TestAnswerDecisionAcceptsFreeformText(t *testing.T) {
 	}}
 	e := engine.New(engine.Config{
 		Store: s, Runner: fr, Pool: slots.NewPool(1),
-		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),
+		Flows: map[string]flow.Flow{"default": f}, DecisionIdentities: protoDecisionIdentities(f), DataDir: t.TempDir(),
 	})
 	sock := sockPath(t)
 	l, err := net.Listen("unix", sock)
@@ -263,6 +325,7 @@ func TestAnswerDecisionAcceptsFreeformText(t *testing.T) {
 	for decisionID == 0 {
 		pending, _ := c.Do(Command{Op: "list_decisions"})
 		if len(pending.Decisions) == 1 {
+			assertDecisionContext(t, pending.Decisions[0], "Review spec.md")
 			decisionID = pending.Decisions[0].ID
 			break
 		}
@@ -312,7 +375,7 @@ func TestAnswerDecisionAcceptsChoiceNoteText(t *testing.T) {
 	}, OnResponse: func(_ string, _ string, response levers.Response) { responses <- response }}
 	e := engine.New(engine.Config{
 		Store: s, Runner: fr, Pool: slots.NewPool(1),
-		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),
+		Flows: map[string]flow.Flow{"default": f}, DecisionIdentities: protoDecisionIdentities(f), DataDir: t.TempDir(),
 	})
 	sock := sockPath(t)
 	l, err := net.Listen("unix", sock)
@@ -341,6 +404,7 @@ func TestAnswerDecisionAcceptsChoiceNoteText(t *testing.T) {
 	for decisionID == 0 {
 		pending, _ := c.Do(Command{Op: "list_decisions"})
 		if len(pending.Decisions) == 1 {
+			assertDecisionContext(t, pending.Decisions[0], "Proceed?")
 			decisionID = pending.Decisions[0].ID
 			break
 		}
@@ -463,7 +527,7 @@ func TestClaimProtocolReturnsStructuredReadyBlockedAndResumableTasks(t *testing.
 	fl := flow.Flow{Name: "default", Stages: []flow.Stage{{Name: "merge-verification"}}}
 	eng := engine.New(engine.Config{
 		Store: st, Runner: &runner.FakeRunner{}, Pool: slots.NewPool(1),
-		Flows: map[string]flow.Flow{"default": fl}, DataDir: t.TempDir(),
+		Flows: map[string]flow.Flow{"default": fl}, DecisionIdentities: protoDecisionIdentities(fl), DataDir: t.TempDir(),
 		Workspace: workspace.GitWorktree{Repo: repo}, Train: &marshal.Train{Repo: repo},
 		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
 	})
@@ -519,7 +583,7 @@ func TestCanResetAndShutdownFlushesResponse(t *testing.T) {
 	t.Cleanup(func() { s.Close() })
 	e := engine.New(engine.Config{
 		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{"run/agent": {}}},
-		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(),
+		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f}, DecisionIdentities: protoDecisionIdentities(f), DataDir: t.TempDir(),
 	})
 	socket := sockPath(t)
 	listener, err := net.Listen("unix", socket)
@@ -696,7 +760,8 @@ func newConfigClient(t *testing.T, f flow.Flow, packages map[string]pkgs.Package
 	e := engine.New(engine.Config{
 		Store: s, Runner: &runner.FakeRunner{Scripts: scripts},
 		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{f.Name: f},
-		DataDir: t.TempDir(),
+		DecisionIdentities: protoDecisionIdentities(f),
+		DataDir:            t.TempDir(),
 	})
 	sock := sockPath(t)
 	l, err := net.Listen("unix", sock)

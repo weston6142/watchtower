@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/levers"
 )
 
@@ -104,6 +105,38 @@ func TestDecisionLedgerIncludesOnlyResolvedDecisions(t *testing.T) {
 		if strings.Contains(ledger, unwanted) {
 			t.Fatalf("ledger contains %q:\n%s", unwanted, ledger)
 		}
+	}
+}
+
+func TestDecisionLedgerIncludesContext(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	ledger := DecisionLedger([]Decision{{
+		Stage: "execute", Question: "Proceed?", Kind: levers.DecisionChoice,
+		Options: []string{"yes"}, Response: levers.ChoiceResponse(0), Status: "answered", At: now,
+		Context: &decision.DecisionContext{
+			TaskSummary: "Ship decision context.", AgentName: "Executor",
+			AgentColor: "green", AgentSymbol: "⚙",
+		},
+		Why: "It is required.",
+	}})
+	task := "- Task: Ship decision context."
+	agent := "- Agent: Executor · green · ⚙"
+	if !strings.Contains(ledger, task) || !strings.Contains(ledger, agent) ||
+		!strings.Contains(ledger, "- Rationale: It is required.") {
+		t.Fatalf("ledger missing context:\n%s", ledger)
+	}
+	if strings.Index(ledger, task) > strings.Index(ledger, "- Accepted response:") ||
+		strings.Index(ledger, agent) > strings.Index(ledger, "- Accepted response:") {
+		t.Fatalf("context follows answer:\n%s", ledger)
+	}
+}
+
+func TestLegacyDecisionLedgerOmitsContext(t *testing.T) {
+	ledger := DecisionLedger([]Decision{{
+		Stage: "execute", Question: "Legacy?", Response: levers.FreeformResponse("yes"), Status: "answered",
+	}})
+	if strings.Contains(ledger, "- Task:") || strings.Contains(ledger, "- Agent:") {
+		t.Fatalf("legacy ledger gained context:\n%s", ledger)
 	}
 }
 

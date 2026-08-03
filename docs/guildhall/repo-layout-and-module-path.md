@@ -27,6 +27,8 @@ Layout:
   metadata.
 - `internal/steward/`, `internal/librarian/`, `internal/marshal/` — the three
   overlords (issue state, project memory, merge train), woken on events.
+- `internal/decision/` — the provider-neutral decision context contract and
+  validation shared by the engine, persistence, protocol, and renderers.
 - `internal/projection/` — event log → renderable `State`.
 - `internal/tui/` — Bubble Tea client; goldens in `internal/tui/testdata/`.
 - `internal/proto/` — Unix-socket JSONL commands/ops.

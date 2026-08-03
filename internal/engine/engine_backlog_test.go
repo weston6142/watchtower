@@ -33,12 +33,13 @@ func newEngineOver(t *testing.T, st *store.Store) *Engine {
 	t.Helper()
 	sw := &steward.Steward{Store: st}
 	return New(Config{
-		Store:     st,
-		Runner:    &runner.FakeRunner{Scripts: scripts()},
-		Pool:      slots.NewPool(2),
-		Flows:     map[string]flow.Flow{"default": testFlow()},
-		DataDir:   t.TempDir(),
-		Observers: []func(core.Event){sw.Observe},
+		Store:              st,
+		Runner:             &runner.FakeRunner{Scripts: scripts()},
+		Pool:               slots.NewPool(2),
+		Flows:              map[string]flow.Flow{"default": testFlow()},
+		DataDir:            t.TempDir(),
+		DecisionIdentities: testDecisionIdentities(),
+		Observers:          []func(core.Event){sw.Observe},
 	})
 }
 

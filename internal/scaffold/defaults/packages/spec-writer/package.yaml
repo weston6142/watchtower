@@ -1,3 +1,7 @@
+identity:
+  name: Spec Writer
+  color: violet
+  symbol: ✎
 includes: ["decision-protocol"]
 allowed_tools: ["Bash", "Read", "Glob", "Grep", "Write"]
 model: ""

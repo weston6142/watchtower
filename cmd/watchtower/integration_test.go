@@ -12,12 +12,174 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/store"
 )
+
+func TestDecisionsJSONIncludesContext(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	flowBody := `name: default
+stages:
+  - name: review
+    agents: [{package: correctness-reviewer}]
+    gate: approve_artifact
+    artifacts: [review.md]
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--title", "context task", "--body", "preserve the complete summary")))
+	deadline := time.Now().Add(5 * time.Second)
+	var decisions []engine.PendingDecision
+	for time.Now().Before(deadline) {
+		out := run(t, bin, repo, "decisions", "--data", base, "--json")
+		if err := json.Unmarshal([]byte(out), &decisions); err != nil {
+			t.Fatalf("decisions --json = %q: %v", out, err)
+		}
+		if len(decisions) == 1 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("pending decisions for %s = %+v", id, decisions)
+	}
+	got := decisions[0]
+	if got.D.Question == "" || strings.Contains(got.D.Question, "context task") || got.Context == nil {
+		t.Fatalf("decision JSON changed question or omitted context: %+v", got)
+	}
+	if got.Context.TaskSummary != "context task: preserve the complete summary." ||
+		got.Context.AgentName == "" || got.Context.AgentColor == "" || got.Context.AgentSymbol == "" {
+		t.Fatalf("decision JSON context = %+v", got.Context)
+	}
+	text := run(t, bin, repo, "decisions", "--data", base)
+	if !strings.Contains(text, "task: context task: preserve the complete summary.") ||
+		!strings.Contains(text, "agent:") || !strings.Contains(text, got.D.Question) {
+		t.Fatalf("decision text = %s", text)
+	}
+	run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(got.ID, 10), "0")
+}
+
+func TestDecisionContextSurvivesDaemonRestart(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	flowBody := `name: default
+stages:
+  - name: review
+    agents: [{package: correctness-reviewer}]
+    gate: approve_artifact
+    artifacts: [review.md]
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--title", "restart context", "--body", "retain the same envelope")))
+	var pending []engine.PendingDecision
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		out := run(t, bin, repo, "decisions", "--data", base, "--json")
+		if err := json.Unmarshal([]byte(out), &pending); err != nil {
+			t.Fatalf("decisions --json = %q: %v", out, err)
+		}
+		if len(pending) == 1 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(pending) != 1 || pending[0].Context == nil {
+		t.Fatalf("pending before restart = %+v", pending)
+	}
+	want := *pending[0].Context
+	answerID := pending[0].ID
+	client, err := proto.Dial(filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail, err := client.Do(proto.Command{Op: "tail"})
+	client.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eventContextMatches(t, tail.Events, id, want) {
+		t.Fatal("decision_required event did not carry pending context")
+	}
+	run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(answerID, 10), "0")
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		out := run(t, bin, repo, "decisions", "--data", base, "--json")
+		if err := json.Unmarshal([]byte(out), &pending); err != nil {
+			t.Fatalf("post-answer decisions --json = %q: %v", out, err)
+		}
+		if len(pending) == 0 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	stopDaemons(base)
+	_ = run(t, bin, repo, "status", "--data", base)
+	client, err = proto.Dial(filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail, err = client.Do(proto.Command{Op: "tail"})
+	client.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eventContextMatches(t, tail.Events, id, want) {
+		t.Fatal("replayed decision_required event lost context")
+	}
+	st, err := store.Open(filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rows, err := st.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.IssueID == id {
+			if row.Context == nil || *row.Context != want {
+				t.Fatalf("historical context after restart = %#v, want %#v", row.Context, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("no historical decision row for %s", id)
+}
+
+func eventContextMatches(t *testing.T, events []core.Event, issueID string, want decision.DecisionContext) bool {
+	t.Helper()
+	for _, event := range events {
+		if event.IssueID != issueID || event.Type != core.EvDecisionRequired {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Errorf("decision event payload: %v", err)
+			return false
+		}
+		encoded, err := json.Marshal(payload["context"])
+		if err != nil {
+			t.Errorf("decision event context: %v", err)
+			return false
+		}
+		var got decision.DecisionContext
+		if err := json.Unmarshal(encoded, &got); err != nil {
+			t.Errorf("decode decision event context: %v", err)
+			return false
+		}
+		return got == want
+	}
+	return false
+}
 
 func TestBacklogClaimReleaseJSON(t *testing.T) {
 	bin, base, repo := newRepo(t)
@@ -484,7 +646,7 @@ func TestResetYesStillRefusesPendingDecision(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: review
-    agents: [{package: reviewer}]
+    agents: [{package: correctness-reviewer}]
     gate: approve_artifact
     artifacts: [review.md]
 `

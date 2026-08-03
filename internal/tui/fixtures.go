@@ -9,6 +9,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/archmap"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/store"
@@ -61,6 +62,12 @@ func fixtureState() *projection.State {
 			"Simpler setup with nothing published, but work stays only on this machine until a remote is added",
 		},
 		Reversible: "Cheap to change until others clone the remote or CI points at it.",
+		Context: &decision.DecisionContext{
+			TaskSummary: "Create a local repository and decide whether to publish it for collaboration.",
+			AgentName:   "Repository Context Preservation Specialist",
+			AgentColor:  "deep forest green",
+			AgentSymbol: "🧭",
+		},
 	}
 	st.Shipped = []string{"ml-retry"}
 	st.Parked = []string{"fx-dark"}

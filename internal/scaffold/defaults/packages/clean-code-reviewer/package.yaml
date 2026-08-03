@@ -1,3 +1,7 @@
+identity:
+  name: Clean Code Reviewer
+  color: teal
+  symbol: ◆
 includes: ["decision-protocol"]
 allowed_tools: ["Bash", "Read", "Edit", "Glob", "Grep"]
 model: ""

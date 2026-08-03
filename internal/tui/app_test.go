@@ -598,6 +598,18 @@ func TestDecisionSurfacesFitViewportAndKeepChrome(t *testing.T) {
 	}
 }
 
+func TestDecisionContextAppearsOnFixtureSurfaces(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	for _, flowName := range []string{"decision", "decision-editor", "decisions-door"} {
+		plain := ansi.Strip(FixtureModel(flowName, 100, 40).View())
+		for _, want := range []string{"task ·", "agent ·", "Repository", "🧭"} {
+			if !strings.Contains(plain, want) {
+				t.Fatalf("%s surface missing %q:\n%s", flowName, want, plain)
+			}
+		}
+	}
+}
+
 func TestDecisionEditorEscReturnsToCardOverlay(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	m := FixtureModel("decision", 100, 40)

@@ -304,12 +304,19 @@ push: true
 	if err := os.WriteFile(filepath.Join(watchtower, "config.yaml"), []byte(config), 0o644); err != nil {
 		h.t.Fatal(err)
 	}
+	identities := map[string][3]string{
+		"preparer":   {"Input Preparer", "green", "◈"},
+		"changer":    {"Repository Changer", "blue", "✚"},
+		"integrator": {"Safe Integrator", "orange", "⛨"},
+	}
 	for _, name := range []string{"preparer", "changer", "integrator"} {
 		dir := filepath.Join(watchtower, "packages", name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			h.t.Fatal(err)
 		}
-		packageBody := "allowed_tools: [Bash, Read, Write]\neffort: low\n"
+		identity := identities[name]
+		packageBody := fmt.Sprintf("identity:\n  name: %s\n  color: %s\n  symbol: %s\nallowed_tools: [Bash, Read, Write]\neffort: low\n",
+			identity[0], identity[1], identity[2])
 		if err := os.WriteFile(filepath.Join(dir, "package.yaml"), []byte(packageBody), 0o644); err != nil {
 			h.t.Fatal(err)
 		}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
 )
@@ -113,6 +114,7 @@ type DecisionRow struct {
 	Why                 string
 	Consequences        []string
 	Reversible          string
+	Context             *decision.DecisionContext
 	Status              string
 	Response            levers.Response
 	BlockingCost        int
@@ -601,17 +603,18 @@ func (s *Store) ArtifactPaths(issueID string) ([]string, error) {
 	return out, rows.Err()
 }
 
-// decisionContext is the v2 rationale metadata persisted in the decisions
+// decisionEvidence is the v2 rationale metadata persisted in the decisions
 // table's evidence column.
-type decisionContext struct {
-	Kind                levers.DecisionKind `json:"kind,omitempty"`
-	RecommendedResponse string              `json:"recommended_response,omitempty"`
-	AllowFreeform       bool                `json:"allow_freeform,omitempty"`
-	Importance          float64             `json:"importance,omitempty"`
-	Paths               []string            `json:"paths,omitempty"`
-	Why                 string              `json:"why"`
-	Consequences        []string            `json:"consequences"`
-	Reversible          string              `json:"reversible"`
+type decisionEvidence struct {
+	Kind                levers.DecisionKind       `json:"kind,omitempty"`
+	RecommendedResponse string                    `json:"recommended_response,omitempty"`
+	AllowFreeform       bool                      `json:"allow_freeform,omitempty"`
+	Importance          float64                   `json:"importance,omitempty"`
+	Paths               []string                  `json:"paths,omitempty"`
+	Why                 string                    `json:"why"`
+	Consequences        []string                  `json:"consequences"`
+	Reversible          string                    `json:"reversible"`
+	Context             *decision.DecisionContext `json:"context,omitempty"`
 }
 
 func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
@@ -627,10 +630,16 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	if kind == "" {
 		kind = levers.DecisionChoice
 	}
-	evidence, err := json.Marshal(decisionContext{
+	if d.Context != nil {
+		if err := decision.ValidateDecisionContext(*d.Context); err != nil {
+			return 0, fmt.Errorf("validate decision context: %w", err)
+		}
+	}
+	evidence, err := json.Marshal(decisionEvidence{
 		Kind: kind, RecommendedResponse: d.RecommendedResponse,
 		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
+		Context: d.Context,
 	})
 	if err != nil {
 		return 0, err
@@ -671,6 +680,13 @@ func (s *Store) AnswerDecision(id int64, response levers.Response, status string
 	return err
 }
 
+func (s *Store) DeleteDecision(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM decisions WHERE id=?`, id)
+	return err
+}
+
 func (s *Store) CloseDecision(id int64, status string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -702,14 +718,32 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 			return nil, err
 		}
 		if evidence != "" {
-			var context decisionContext
-			if json.Unmarshal([]byte(evidence), &context) == nil {
-				d.Kind = context.Kind
-				d.RecommendedResponse = context.RecommendedResponse
-				d.AllowFreeform = context.AllowFreeform
-				d.Importance, d.Paths = context.Importance, context.Paths
-				d.Why, d.Consequences, d.Reversible =
-					context.Why, context.Consequences, context.Reversible
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(evidence), &raw); err != nil {
+				return nil, fmt.Errorf("decode decision evidence: %w", err)
+			}
+			var stored decisionEvidence
+			if err := json.Unmarshal([]byte(evidence), &stored); err != nil {
+				return nil, fmt.Errorf("decode decision evidence: %w", err)
+			}
+			d.Kind = stored.Kind
+			d.RecommendedResponse = stored.RecommendedResponse
+			d.AllowFreeform = stored.AllowFreeform
+			d.Importance, d.Paths = stored.Importance, stored.Paths
+			d.Why, d.Consequences, d.Reversible =
+				stored.Why, stored.Consequences, stored.Reversible
+			if contextRaw, ok := raw["context"]; ok {
+				if string(contextRaw) == "null" {
+					return nil, fmt.Errorf("decode decision context: context must be an object")
+				}
+				var context decision.DecisionContext
+				if err := json.Unmarshal(contextRaw, &context); err != nil {
+					return nil, fmt.Errorf("decode decision context: %w", err)
+				}
+				if err := decision.ValidateDecisionContext(context); err != nil {
+					return nil, fmt.Errorf("decode decision context: %w", err)
+				}
+				d.Context = &context
 			}
 		}
 		if d.Kind == "" {

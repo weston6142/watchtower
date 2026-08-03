@@ -6,19 +6,21 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/weston6142/watchtower/internal/decision"
 	"gopkg.in/yaml.v3"
 )
 
 // Package is an agent package: a system prompt plus CLI options,
 // loaded from a directory containing package.yaml and prompt.md.
 type Package struct {
-	Name         string   `yaml:"-"`
-	Prompt       string   `yaml:"-"`
-	Includes     []string `yaml:"includes"`
-	AllowedTools []string `yaml:"allowed_tools"`
-	Model        string   `yaml:"model"`
-	Effort       string   `yaml:"effort"` // low|medium|high|xhigh; empty = provider default
-	MaxTurns     int      `yaml:"max_turns"`
+	Name         string                 `yaml:"-"`
+	Prompt       string                 `yaml:"-"`
+	Identity     decision.AgentIdentity `yaml:"identity"`
+	Includes     []string               `yaml:"includes"`
+	AllowedTools []string               `yaml:"allowed_tools"`
+	Model        string                 `yaml:"model"`
+	Effort       string                 `yaml:"effort"` // low|medium|high|xhigh; empty = provider default
+	MaxTurns     int                    `yaml:"max_turns"`
 }
 
 // LoadDir loads all agent packages under root, keyed by directory name.
@@ -46,6 +48,9 @@ func LoadDir(root string) (map[string]Package, error) {
 		}
 		var p Package
 		if err := yaml.Unmarshal(cfg, &p); err != nil {
+			return nil, fmt.Errorf("package %s: %w", e.Name(), err)
+		}
+		if err := decision.ValidateAgentIdentity(p.Identity); err != nil {
 			return nil, fmt.Errorf("package %s: %w", e.Name(), err)
 		}
 		p.Name = e.Name()

@@ -8,11 +8,26 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/store"
 )
+
+func longDecisionContext() *decision.DecisionContext {
+	return &decision.DecisionContext{
+		TaskSummary: "Preserve every identifying detail while the decision wraps across a narrow terminal viewport.",
+		AgentName:   "Repository Context Preservation Specialist",
+		AgentColor:  "deep forest green",
+		AgentSymbol: "🧭",
+	}
+}
+
+func containsWrapped(output, value string) bool {
+	plain := strings.NewReplacer("│", " ", "┃", " ", "╭", " ", "╮", " ", "╰", " ", "╯", " ", "─", " ").Replace(output)
+	return strings.Contains(strings.Join(strings.Fields(plain), " "), strings.Join(strings.Fields(value), " "))
+}
 
 func TestRenderToastMarksRecommended(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
@@ -105,6 +120,44 @@ func TestRenderToastWrapsLongLines(t *testing.T) {
 		if !strings.Contains(flat, want) {
 			t.Fatalf("missing wrapped text %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestRenderDecisionContextNoTruncation(t *testing.T) {
+	d := projection.DecisionView{ID: 4, IssueID: "GH-1", Stage: "brainstorm",
+		Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0,
+		Context: longDecisionContext()}
+	for _, profile := range []termenv.Profile{termenv.Ascii, termenv.TrueColor} {
+		lipgloss.SetColorProfile(profile)
+		out := ansi.Strip(renderToast(d, Identity{Tag: "PA"}, 0, 0, 48))
+		for _, want := range []string{
+			d.Context.TaskSummary, d.Context.AgentName, d.Context.AgentColor, d.Context.AgentSymbol,
+		} {
+			if !containsWrapped(out, want) {
+				t.Fatalf("profile %v missing %q:\n%s", profile, want, out)
+			}
+		}
+		if strings.Contains(out, "…") {
+			t.Fatalf("profile %v truncated decision context:\n%s", profile, out)
+		}
+	}
+}
+
+func TestRenderDecisionEditorContextAndLegacy(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	d := projection.DecisionView{ID: 4, Stage: "brainstorm", Question: "Proceed?", Context: longDecisionContext()}
+	out := ansi.Strip(renderDecisionEditor(d, decisionEditor{DecisionID: d.ID, Value: "draft"}, 48))
+	for _, want := range []string{d.Context.TaskSummary, d.Context.AgentName, d.Context.AgentColor, d.Context.AgentSymbol} {
+		if !containsWrapped(out, want) {
+			t.Fatalf("editor missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "…") {
+		t.Fatalf("editor truncated decision context:\n%s", out)
+	}
+	legacy := ansi.Strip(renderDecisionEditor(projection.DecisionView{ID: 5, Stage: "spec", Question: "Legacy?"}, decisionEditor{DecisionID: 5}, 48))
+	if strings.Contains(legacy, "task ·") || strings.Contains(legacy, "agent ·") || !strings.Contains(legacy, "Legacy?") {
+		t.Fatalf("legacy editor rendering changed:\n%s", legacy)
 	}
 }
 

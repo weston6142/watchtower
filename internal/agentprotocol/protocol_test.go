@@ -42,6 +42,14 @@ func TestExtractDecisionV2Fields(t *testing.T) {
 	}
 }
 
+func TestExtractDecisionIgnoresAgentSuppliedContext(t *testing.T) {
+	text := `{"watchtower_decision":{"kind":"choice","question":"Proceed?","options":["yes","no"],"recommended":0,"context":{"task_summary":"untrusted","agent_name":"spoof","agent_color":"red","agent_symbol":"!"}}}`
+	d, ok := ExtractDecision(text)
+	if !ok || d.Question != "Proceed?" || d.Options[0] != "yes" {
+		t.Fatalf("decision = %#v, ok = %v", d, ok)
+	}
+}
+
 func TestExtractChoiceDecisionPreservesLegacyFreeformFlag(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

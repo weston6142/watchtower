@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/pkgs"
 )
@@ -157,6 +158,54 @@ func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 	for _, postMerge := range []string{"after merge", "just merged", "post-merge"} {
 		if strings.Contains(librarian, postMerge) {
 			t.Errorf("librarian contains post-merge instruction %q", postMerge)
+		}
+	}
+}
+
+func TestScaffoldDefaultIdentityMetadata(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	generated, err := pkgs.LoadDir(filepath.Join(root, ".watchtower", "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shipped, err := pkgs.LoadDir(filepath.Join("..", "..", "dist", "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]decision.AgentIdentity{
+		"brainstorm":           {Name: "Brainstorm", Color: "cyan", Symbol: "✦"},
+		"spec-writer":          {Name: "Spec Writer", Color: "violet", Symbol: "✎"},
+		"planner":              {Name: "Planner", Color: "blue", Symbol: "⌘"},
+		"executor":             {Name: "Executor", Color: "green", Symbol: "⚙"},
+		"clean-code-reviewer":  {Name: "Clean Code Reviewer", Color: "teal", Symbol: "◆"},
+		"correctness-reviewer": {Name: "Correctness Reviewer", Color: "yellow", Symbol: "✓"},
+		"conflict-resolver":    {Name: "Conflict Resolver", Color: "red", Symbol: "⚔"},
+		"librarian":            {Name: "Librarian", Color: "slate", Symbol: "▤"},
+		"merge-verifier":       {Name: "Merge Verifier", Color: "orange", Symbol: "⛨"},
+	}
+	for name, expected := range want {
+		generatedPkg, generatedOK := generated[name]
+		shippedPkg, shippedOK := shipped[name]
+		if !generatedOK || !shippedOK {
+			t.Fatalf("identity package %s generated=%v shipped=%v", name, generatedOK, shippedOK)
+		}
+		if generatedPkg.Identity != expected || shippedPkg.Identity != expected ||
+			generatedPkg.Identity != shippedPkg.Identity {
+			t.Fatalf("identity %s generated=%+v shipped=%+v expected=%+v", name, generatedPkg.Identity, shippedPkg.Identity, expected)
+		}
+	}
+	defaultFlow, err := flow.Load(filepath.Join(root, ".watchtower", "flows", "default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range defaultFlow.Stages {
+		for _, agent := range stage.Agents {
+			if _, ok := generated[agent.Package]; !ok {
+				t.Fatalf("flow stage %s references package without identity: %s", stage.Name, agent.Package)
+			}
 		}
 	}
 }

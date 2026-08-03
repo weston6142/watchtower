@@ -1,3 +1,7 @@
+identity:
+  name: Planner
+  color: blue
+  symbol: ⌘
 includes: ["decision-protocol"]
 allowed_tools: ["Bash", "Read", "Glob", "Grep", "Write"]
 model: ""

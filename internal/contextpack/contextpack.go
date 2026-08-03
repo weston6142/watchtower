@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/levers"
 )
 
@@ -27,6 +28,7 @@ type Decision struct {
 	Consequences []string
 	Status       string
 	At           time.Time
+	Context      *decision.DecisionContext
 }
 
 type Recovery struct {
@@ -162,6 +164,10 @@ func DecisionLedger(decisions []Decision) string {
 		body.WriteString("\n## " + decision.Question + "\n\n")
 		body.WriteString("- Stage: " + decision.Stage + "\n")
 		body.WriteString("- Time: " + decision.At.UTC().Format(time.RFC3339) + "\n")
+		if decision.Context != nil {
+			body.WriteString("- Task: " + decision.Context.TaskSummary + "\n")
+			body.WriteString("- Agent: " + decision.Context.AgentLabel() + "\n")
+		}
 		body.WriteString("- Accepted response: " + answer + "\n")
 		if decision.Why != "" {
 			body.WriteString("- Rationale: " + decision.Why + "\n")
