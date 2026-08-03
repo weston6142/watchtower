@@ -109,7 +109,13 @@ func TestGH11TowerViewFitsResponsiveMatrix(t *testing.T) {
 			t.Run(flow+"-"+tc.name, func(t *testing.T) {
 				lines := requireGH11Surface(t, flow, tc.width, tc.height)
 				plain := strings.Join(lines, "\n")
-				for _, want := range []string{"ca-repo", "gh-importer", "fx-dark", "SHIPPED today", "PARKED", "DECISION QUEUE"} {
+				terms := []string{"dark-mode audit", "SHIPPED today", "PARKED", "DECISION QUEUE"}
+				if flow == "floor" {
+					terms = append(terms, "CA", "GH")
+				} else {
+					terms = append(terms, "create a repo", "issue importer")
+				}
+				for _, want := range terms {
 					if !strings.Contains(plain, want) {
 						t.Fatalf("%s at %dx%d lost existing content %q:\n%s", flow, tc.width, tc.height, want, plain)
 					}

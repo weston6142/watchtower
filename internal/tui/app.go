@@ -1431,6 +1431,39 @@ func (m Model) layoutWidth() int {
 	return m.Width
 }
 
+const (
+	gh11HeaderRows    = 2
+	gh11StackWidth    = 80
+	gh11MinTowerWidth = 48
+)
+
+func gh11MainWidths(width int) (towerWidth, railWidth int, stacked bool) {
+	railWidth = max(24, min(40, width/3))
+	if width < gh11StackWidth || width-railWidth-1 < gh11MinTowerWidth {
+		return max(1, width), 0, true
+	}
+	return max(1, width-railWidth-1), railWidth, false
+}
+
+func gh11PadMainLines(content string, rows int) []string {
+	trimmed := strings.TrimRight(content, "\n")
+	if trimmed == "" {
+		return nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	if rows <= 0 || len(lines) >= rows {
+		return lines
+	}
+	extra := rows - len(lines)
+	top := extra / 2
+	bottom := extra - top
+	out := make([]string, 0, rows)
+	out = append(out, make([]string, top)...)
+	out = append(out, lines...)
+	out = append(out, make([]string, bottom)...)
+	return out
+}
+
 func (m *Model) popMode() {
 	if len(m.modes) == 0 {
 		return
@@ -1702,8 +1735,31 @@ func (m Model) writeHeaderRows(b *strings.Builder, width int) {
 
 func (m Model) View() string {
 	layoutWidth := m.layoutWidth()
-	railWidth := max(24, min(40, layoutWidth/3))
-	towerWidth := max(1, layoutWidth-railWidth-1)
+	towerWidth, railWidth, stacked := gh11MainWidths(layoutWidth)
+	mainBindings := [][2]string{
+		{"j/k", "floors"}, {"tab", "next"}, {"p", "pause/resume"}, {"x", "kill"},
+		{"R", "retry"}, {"T", "stream"}, {"L", "levers"}, {"?", "help"}, {"q", "quit"},
+	}
+	right := errText(m.Err)
+	if m.archMode == "full" {
+		mainBindings = [][2]string{{"j/k", "module"}, {"/", "filter"}, {"a/esc", "back"}}
+		if right == "" {
+			right = archFooterDetail(m.Arch, m.State, m.Ids, m.archSel, m.archFilter)
+		}
+	}
+	bindings := mainBindings
+	if m.currentMode() != "" {
+		bindings = [][2]string{{"j/k", "select"}, {"enter", "open"}, {"esc", "back"}, {"q", "quit"}}
+		switch m.currentMode() {
+		case "tray":
+			bindings = [][2]string{{"j/k", "select"}, {"enter", "accept → new issue"}, {"r", "reject"}, {"esc", "back"}, {"q", "quit"}}
+		case "transcript":
+			bindings = [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "oldest/newest"}, {"esc", "back"}, {"q", "quit"}}
+		}
+		right = errText(m.Err)
+	}
+	footer := renderKeybar(layoutWidth, bindings, right)
+	footerRows := lipgloss.Height(footer)
 	tower := renderTowerConfigured(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth, m.warExpanded, m.retired)
 	if m.rows {
 		tower = renderRowsConfigured(m.State, m.stages, m.Ids, m.Focus, m.reducedMotion, m.ticks, towerWidth, m.retired)
@@ -1716,7 +1772,11 @@ func (m Model) View() string {
 	case "timeline":
 		tower = renderTextDoor("TIMELINE", m.doorLines, layoutWidth)
 	case "transcript":
-		tower = renderStreamDoor(m.streamSubtitle(), m.doorLines, m.stream, layoutWidth, m.Height)
+		streamHeight := m.Height
+		if streamHeight > 0 {
+			streamHeight = max(1, streamHeight-max(0, footerRows-1))
+		}
+		tower = renderStreamDoor(m.streamSubtitle(), m.doorLines, m.stream, layoutWidth, streamHeight)
 	case "shelf":
 		tower = renderShelf(m.shelfItems(), m.Ids, layoutWidth)
 	}
@@ -1726,16 +1786,7 @@ func (m Model) View() string {
 		m.writeHeaderRows(&b, layoutWidth)
 		b.WriteString(tower)
 		b.WriteString("\n\n")
-		bindings := [][2]string{{"j/k", "select"}, {"enter", "open"}, {"esc", "back"}, {"q", "quit"}}
-		switch m.currentMode() {
-		case "tray":
-			bindings = [][2]string{{"j/k", "select"}, {"enter", "accept → new issue"}, {"r", "reject"}, {"esc", "back"}, {"q", "quit"}}
-		case "transcript":
-			// A reading surface, not a list: "select"/"open" describe neither
-			// what the keys do here nor anything the door can act on.
-			bindings = [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "oldest/newest"}, {"esc", "back"}, {"q", "quit"}}
-		}
-		b.WriteString(renderKeybar(layoutWidth, bindings, errText(m.Err)))
+		b.WriteString(footer)
 		screen := b.String()
 		if m.help {
 			return m.composite(screen, renderHelpOverlay(layoutWidth), layoutWidth)
@@ -1781,36 +1832,42 @@ func (m Model) View() string {
 	if m.archMode == "full" {
 		body = renderArchWithState(m.Arch, m.State, m.Ids, layoutWidth, m.Height, m.archSel, m.archFilter)
 	} else {
-		right := renderRail(m.State, m.Ids, m.Detail, railWidth)
+		railRenderWidth := railWidth
+		if stacked {
+			railRenderWidth = layoutWidth
+		}
+		rightRail := renderRail(m.State, m.Ids, m.Detail, railRenderWidth)
 		if m.archMode == "pane" {
-			right = renderArchWithState(m.Arch, m.State, m.Ids, railWidth, m.Height, m.archSel, m.archFilter)
+			rightRail = renderArchWithState(m.Arch, m.State, m.Ids, railRenderWidth, m.Height, m.archSel, m.archFilter)
 		}
-		// Pad the tower block to its full column so the rail starts at a
-		// fixed x regardless of the longest tower line.
-		tower = lipgloss.NewStyle().Width(towerWidth).Render(tower)
-		body = lipgloss.JoinHorizontal(lipgloss.Top, tower, right)
+		if stacked {
+			body = tower
+			if rightRail != "" {
+				body += "\n\n" + lipgloss.NewStyle().Width(layoutWidth).Render(rightRail)
+			}
+		} else {
+			// Pad the tower block to its full column so the rail starts at a
+			// fixed x regardless of the longest tower line.
+			tower = lipgloss.NewStyle().Width(towerWidth).Render(tower)
+			body = lipgloss.JoinHorizontal(lipgloss.Top, tower, rightRail)
+		}
 	}
-	var b strings.Builder
-	m.writeHeaderRows(&b, layoutWidth)
-	b.WriteString(body)
+	mainRows := 0
+	if m.Height > 0 {
+		mainRows = max(0, m.Height-gh11HeaderRows-footerRows)
+	}
+	mainContent := body
 	if shelf := renderShelf(m.shelfItems(), m.Ids, layoutWidth); shelf != "" {
-		b.WriteString("\n\n")
-		b.WriteString(shelf)
-	}
-	b.WriteString("\n\n")
-	mainBindings := [][2]string{
-		{"j/k", "floors"}, {"tab", "next"}, {"p", "pause/resume"}, {"x", "kill"},
-		{"R", "retry"}, {"T", "stream"}, {"L", "levers"}, {"?", "help"}, {"q", "quit"},
-	}
-	right := errText(m.Err)
-	if m.archMode == "full" {
-		mainBindings = [][2]string{{"j/k", "module"}, {"/", "filter"}, {"a/esc", "back"}}
-		if right == "" {
-			right = archFooterDetail(m.Arch, m.State, m.Ids, m.archSel, m.archFilter)
+		separator := "\n"
+		if mainRows > 0 && lipgloss.Height(body)+2+lipgloss.Height(shelf) <= mainRows {
+			separator = "\n\n"
 		}
+		mainContent += separator + shelf
 	}
-	b.WriteString(renderKeybar(layoutWidth, mainBindings, right))
-	screen := b.String()
+	lines := []string{renderHeader(m.Overview, layoutWidth), renderNoticeRow(m.State, m.Ids, layoutWidth)}
+	lines = append(lines, gh11PadMainLines(mainContent, mainRows)...)
+	lines = append(lines, strings.Split(footer, "\n")...)
+	screen := strings.Join(lines, "\n")
 	switch {
 	case m.help:
 		return m.composite(screen, renderHelpOverlay(layoutWidth), layoutWidth)
