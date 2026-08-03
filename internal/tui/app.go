@@ -1239,7 +1239,7 @@ func (m *Model) openEvidenceArtifact() tea.Cmd {
 		m.openArtifactList(m.Detail.Artifacts)
 		return nil
 	}
-	m.Err = "no diff artifact available"
+	m.Err = "no evidence artifact available"
 	return nil
 }
 

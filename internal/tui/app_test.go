@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -481,6 +482,36 @@ func toastModel(t *testing.T) Model {
 	})
 }
 
+func writeFixtureFile(t *testing.T, name, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeEvidenceBundle(t *testing.T, added, removed int) string {
+	t.Helper()
+	contents := fmt.Sprintf(`{
+		"files": [{"path": "internal/tui/app.go", "added": %d, "removed": %d}],
+		"added": %d,
+		"removed": %d,
+		"biggest": "internal/tui/app.go",
+		"area_weight": {"internal/tui": %d}
+	}`, added, removed, added, removed, added+removed)
+	return writeFixtureFile(t, "evidence.json", contents)
+}
+
+func showEvidenceFromDecision(t *testing.T, m Model, detail *proto.IssueDetail) Model {
+	t.Helper()
+	m.Width, m.Height = 100, 40
+	m.client = &proto.Client{}
+	m = pressKey(t, m, "o")
+	next, _ := m.Update(detailMsg{detail: detail})
+	return next.(Model)
+}
+
 func TestToastSelectionStartsOnRecommended(t *testing.T) {
 	m := toastModel(t)
 	if m.Toast == nil || m.toastSel != 1 {
@@ -541,16 +572,7 @@ func TestFreeformToastEnterOpensRecommendedResponseEditor(t *testing.T) {
 }
 
 func TestPresentedDecisionOShowsEvidenceAction(t *testing.T) {
-	readyEvidence := filepath.Join(t.TempDir(), "evidence.json")
-	if err := os.WriteFile(readyEvidence, []byte(`{
-		"files": [{"path": "internal/tui/app.go", "added": 3, "removed": 1}],
-		"added": 3,
-		"removed": 1,
-		"biggest": "internal/tui/app.go",
-		"area_weight": {"internal/tui": 4}
-	}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	readyEvidence := writeEvidenceBundle(t, 3, 1)
 
 	freeform := NewModel(nil, []string{"spec"})
 	freeform = freeform.applyEvents([]core.Event{
@@ -593,12 +615,8 @@ func TestPresentedDecisionOShowsEvidenceAction(t *testing.T) {
 			wantAbsent: "DECISION 8",
 		},
 		{
-			name: "ready",
-			model: func() Model {
-				m := toastModel(t)
-				m.client = &proto.Client{}
-				return m
-			}(),
+			name:  "ready",
+			model: toastModel(t),
 			detail: &proto.IssueDetail{
 				Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter"},
 				Artifacts: []string{readyEvidence, "review.md"},
@@ -613,12 +631,7 @@ func TestPresentedDecisionOShowsEvidenceAction(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := tc.model
-			m.Width, m.Height = 100, 40
-			m.client = &proto.Client{}
-			m = pressKey(t, m, "o")
-			next, _ := m.Update(detailMsg{detail: tc.detail})
-			m = next.(Model)
+			m := showEvidenceFromDecision(t, tc.model, tc.detail)
 
 			plain := ansi.Strip(m.View())
 			for _, want := range tc.want {
@@ -654,31 +667,13 @@ func TestDecisionEditorKeepsOAsText(t *testing.T) {
 }
 
 func TestReadyEvidenceStillOpensDiffArtifact(t *testing.T) {
-	dir := t.TempDir()
-	evidencePath := filepath.Join(dir, "evidence.json")
-	diffPath := filepath.Join(dir, "diff.patch")
-	if err := os.WriteFile(evidencePath, []byte(`{
-		"files": [{"path": "internal/tui/app.go", "added": 2, "removed": 1}],
-		"added": 2,
-		"removed": 1,
-		"biggest": "internal/tui/app.go",
-		"area_weight": {"internal/tui": 3}
-	}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(diffPath, []byte("diff artifact contents\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	evidencePath := writeEvidenceBundle(t, 2, 1)
+	diffPath := writeFixtureFile(t, "diff.patch", "diff artifact contents\n")
 
-	m := toastModel(t)
-	m.Width, m.Height = 100, 40
-	m.client = &proto.Client{}
-	m = pressKey(t, m, "o")
-	next, _ := m.Update(detailMsg{detail: &proto.IssueDetail{
+	m := showEvidenceFromDecision(t, toastModel(t), &proto.IssueDetail{
 		Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter"},
 		Artifacts: []string{evidencePath, diffPath},
-	}})
-	m = next.(Model)
+	})
 	m = pressKey(t, m, "enter")
 
 	plain := ansi.Strip(m.View())
@@ -688,31 +683,13 @@ func TestReadyEvidenceStillOpensDiffArtifact(t *testing.T) {
 }
 
 func TestReadyEvidenceEscReturnsToEvidenceAfterOpeningDiff(t *testing.T) {
-	dir := t.TempDir()
-	evidencePath := filepath.Join(dir, "evidence.json")
-	diffPath := filepath.Join(dir, "diff.patch")
-	if err := os.WriteFile(evidencePath, []byte(`{
-		"files": [{"path": "internal/tui/app.go", "added": 2, "removed": 1}],
-		"added": 2,
-		"removed": 1,
-		"biggest": "internal/tui/app.go",
-		"area_weight": {"internal/tui": 3}
-	}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(diffPath, []byte("diff artifact contents\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	evidencePath := writeEvidenceBundle(t, 2, 1)
+	diffPath := writeFixtureFile(t, "diff.patch", "diff artifact contents\n")
 
-	m := toastModel(t)
-	m.Width, m.Height = 100, 40
-	m.client = &proto.Client{}
-	m = pressKey(t, m, "o")
-	next, _ := m.Update(detailMsg{detail: &proto.IssueDetail{
+	m := showEvidenceFromDecision(t, toastModel(t), &proto.IssueDetail{
 		Issue:     store.IssueRow{ID: "GH-1", Title: "payment adapter"},
 		Artifacts: []string{evidencePath, diffPath},
-	}})
-	m = next.(Model)
+	})
 	m = pressKey(t, m, "enter")
 	m = pressKey(t, m, "esc")
 	m = pressKey(t, m, "esc")
@@ -724,19 +701,9 @@ func TestReadyEvidenceEscReturnsToEvidenceAfterOpeningDiff(t *testing.T) {
 }
 
 func TestPresentedDecisionOOpensAvailableArtifactWithoutEvidenceBundle(t *testing.T) {
-	artifactPath := filepath.Join(t.TempDir(), "review.md")
-	if err := os.WriteFile(artifactPath, []byte("available artifact contents\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	artifactPath := writeFixtureFile(t, "review.md", "available artifact contents\n")
 
-	m := toastModel(t)
-	m.Width, m.Height = 100, 40
-	m.client = &proto.Client{}
-	m = pressKey(t, m, "o")
-	next, _ := m.Update(detailMsg{detail: &proto.IssueDetail{
-		Artifacts: []string{artifactPath},
-	}})
-	m = next.(Model)
+	m := showEvidenceFromDecision(t, toastModel(t), &proto.IssueDetail{Artifacts: []string{artifactPath}})
 	m = pressKey(t, m, "enter")
 
 	plain := ansi.Strip(m.View())
@@ -752,10 +719,7 @@ func TestPresentedDecisionOOpensAvailableArtifactWithoutEvidenceBundle(t *testin
 }
 
 func TestFocusedLaneArtifactRouteStillOpensSameArtifact(t *testing.T) {
-	artifactPath := filepath.Join(t.TempDir(), "review.md")
-	if err := os.WriteFile(artifactPath, []byte("shared artifact contents\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	artifactPath := writeFixtureFile(t, "review.md", "shared artifact contents\n")
 
 	m := NewModel(nil, []string{"brainstorm", "spec"})
 	m = m.applyEvents([]core.Event{
