@@ -127,19 +127,19 @@ func TestGH11TowerViewFitsResponsiveMatrix(t *testing.T) {
 
 func TestGH11ResizePreservesStateAndShortcutEffects(t *testing.T) {
 	initial := FixtureModel("floor", 200, 50)
-	wantAfterNavigation := pressKey(t, initial, "j")
+	wantAfterResize := ansi.Strip(initial.View())
+	wantAfterNavigation := ansi.Strip(pressKey(t, initial, "j").View())
 	m := initial
 	for _, size := range [][2]int{{200, 50}, {100, 24}, {60, 40}, {200, 50}} {
 		next, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		m = next.(Model)
-		if m.Focus != initial.Focus || m.rows != initial.rows || m.State != initial.State {
-			t.Fatalf("resize %dx%d changed state: focus=%+v rows=%t state pointer changed=%t", size[0], size[1], m.Focus, m.rows, m.State != initial.State)
-		}
 		requireGH11View(t, m, size[0], size[1])
 	}
-	gotAfterNavigation := pressKey(t, m, "j")
-	if gotAfterNavigation.Focus != wantAfterNavigation.Focus {
-		t.Fatalf("navigation after resize focused %+v, want %+v", gotAfterNavigation.Focus, wantAfterNavigation.Focus)
+	if got := ansi.Strip(m.View()); got != wantAfterResize {
+		t.Fatalf("resize round-trip changed the rendered state:\n got:\n%s\nwant:\n%s", got, wantAfterResize)
+	}
+	if got := ansi.Strip(pressKey(t, m, "j").View()); got != wantAfterNavigation {
+		t.Fatalf("navigation after resize changed its rendered effect:\n got:\n%s\nwant:\n%s", got, wantAfterNavigation)
 	}
 }
 

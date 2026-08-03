@@ -1432,20 +1432,20 @@ func (m Model) layoutWidth() int {
 }
 
 const (
-	gh11HeaderRows    = 2
-	gh11StackWidth    = 80
-	gh11MinTowerWidth = 48
+	towerHeaderRows     = 2
+	minSideBySideWidth  = 80
+	minTowerColumnWidth = 48
 )
 
-func gh11MainWidths(width int) (towerWidth, railWidth int, stacked bool) {
+func mainColumnWidths(width int) (towerWidth, railWidth int, stacked bool) {
 	railWidth = max(24, min(40, width/3))
-	if width < gh11StackWidth || width-railWidth-1 < gh11MinTowerWidth {
+	if width < minSideBySideWidth || width-railWidth-1 < minTowerColumnWidth {
 		return max(1, width), 0, true
 	}
 	return max(1, width-railWidth-1), railWidth, false
 }
 
-func gh11PadMainLines(content string, rows int) []string {
+func padMainContentLines(content string, rows int) []string {
 	trimmed := strings.TrimRight(content, "\n")
 	if trimmed == "" {
 		return nil
@@ -1735,7 +1735,7 @@ func (m Model) writeHeaderRows(b *strings.Builder, width int) {
 
 func (m Model) View() string {
 	layoutWidth := m.layoutWidth()
-	towerWidth, railWidth, stacked := gh11MainWidths(layoutWidth)
+	towerWidth, railWidth, stacked := mainColumnWidths(layoutWidth)
 	mainBindings := [][2]string{
 		{"j/k", "floors"}, {"tab", "next"}, {"p", "pause/resume"}, {"x", "kill"},
 		{"R", "retry"}, {"T", "stream"}, {"L", "levers"}, {"?", "help"}, {"q", "quit"},
@@ -1854,7 +1854,7 @@ func (m Model) View() string {
 	}
 	mainRows := 0
 	if m.Height > 0 {
-		mainRows = max(0, m.Height-gh11HeaderRows-footerRows)
+		mainRows = max(0, m.Height-towerHeaderRows-footerRows)
 	}
 	mainContent := body
 	if shelf := renderShelf(m.shelfItems(), m.Ids, layoutWidth); shelf != "" {
@@ -1865,7 +1865,7 @@ func (m Model) View() string {
 		mainContent += separator + shelf
 	}
 	lines := []string{renderHeader(m.Overview, layoutWidth), renderNoticeRow(m.State, m.Ids, layoutWidth)}
-	lines = append(lines, gh11PadMainLines(mainContent, mainRows)...)
+	lines = append(lines, padMainContentLines(mainContent, mainRows)...)
 	lines = append(lines, strings.Split(footer, "\n")...)
 	screen := strings.Join(lines, "\n")
 	switch {
