@@ -153,7 +153,6 @@ type issueState struct {
 	paused              bool
 	pauseRequested      bool
 	pauseStage          int
-	pauseBoundary       string
 	terminal            bool
 	running             bool
 	draft               bool
@@ -687,7 +686,7 @@ func (e *Engine) restorePersistedRun(row store.IssueRow) (*issueState, error) {
 		matrix: matrixFromStrings(row.Levers), priority: row.Priority,
 		dependsOn: append([]string(nil), row.DependsOn...), stageIdx: run.StageIndex,
 		terminal: true, paused: run.Lifecycle == "paused", pauseStage: run.StageIndex,
-		pauseBoundary: run.Boundary, planReview: row.PlanReviewPolicy,
+		planReview: row.PlanReviewPolicy,
 	}
 	if err := e.restorePersistedWorkspace(is, run); err != nil {
 		return nil, fmt.Errorf("restore run %s: %w", row.ID, err)
@@ -841,7 +840,6 @@ func (e *Engine) Pause(issueID string) error {
 	previousRequested := is.pauseRequested
 	previousPaused := is.paused
 	previousStage := is.pauseStage
-	previousBoundary := is.pauseBoundary
 	if is.pauseGate == nil {
 		is.pauseGate = make(chan struct{})
 	}
@@ -850,7 +848,6 @@ func (e *Engine) Pause(issueID string) error {
 	if is.running {
 		is.pauseStage++
 	}
-	is.pauseBoundary = "before_stage"
 	gate := is.pauseGate
 	stageIdx := is.pauseStage
 	e.mu.Unlock()
@@ -866,7 +863,6 @@ func (e *Engine) Pause(issueID string) error {
 			is.pauseRequested = previousRequested
 			is.paused = previousPaused
 			is.pauseStage = previousStage
-			is.pauseBoundary = previousBoundary
 		}
 		e.mu.Unlock()
 		return err
@@ -901,11 +897,7 @@ func (e *Engine) Resume(issueID string) error {
 		if gate == nil || !paused {
 			return fmt.Errorf("issue %s is not paused", issueID)
 		}
-		run, err := e.resumeRunState(is, startIdx)
-		if err != nil {
-			return err
-		}
-		if err := e.cfg.Store.ResumeRun(run); err != nil {
+		if err := e.persistResumeState(is, startIdx); err != nil {
 			return err
 		}
 		e.mu.Lock()
@@ -924,11 +916,7 @@ func (e *Engine) Resume(issueID string) error {
 		if !paused {
 			return nil
 		}
-		run, err := e.resumeRunState(is, startIdx)
-		if err != nil {
-			return err
-		}
-		if err := e.cfg.Store.ResumeRun(run); err != nil {
+		if err := e.persistResumeState(is, startIdx); err != nil {
 			return err
 		}
 		e.mu.Lock()
@@ -938,11 +926,7 @@ func (e *Engine) Resume(issueID string) error {
 		e.mu.Unlock()
 		return nil
 	}
-	run, err := e.resumeRunState(is, startIdx)
-	if err != nil {
-		return err
-	}
-	if err := e.cfg.Store.ResumeRun(run); err != nil {
+	if err := e.persistResumeState(is, startIdx); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -993,6 +977,14 @@ func (e *Engine) resumeRunState(is *issueState, stageIdx int) (store.RunState, e
 		return run, nil
 	}
 	return e.runState(is, stageIdx, "active", "in_stage")
+}
+
+func (e *Engine) persistResumeState(is *issueState, stageIdx int) error {
+	run, err := e.resumeRunState(is, stageIdx)
+	if err != nil {
+		return err
+	}
+	return e.cfg.Store.ResumeRun(run)
 }
 
 func (e *Engine) persistActiveRun(is *issueState, stageIdx int) error {
@@ -3167,9 +3159,6 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plan
 			is.wsPath, is.wsRelease = path, release
 			is.branch, is.baseRef = branch, baseRef
 			e.mu.Unlock()
-			if err := e.persistActiveRun(is, i); err != nil {
-				return err
-			}
 		}
 		if err := e.persistActiveRun(is, i); err != nil {
 			return err

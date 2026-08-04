@@ -1510,6 +1510,7 @@ func (s *Store) PersistActiveRun(run RunState) error {
 		return err
 	}
 	if issueState == "paused" {
+		// A late stage write must not replace an operator-selected pause boundary.
 		return tx.Commit()
 	}
 	if err := upsertRunState(tx, run, "active"); err != nil {
