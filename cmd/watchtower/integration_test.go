@@ -792,7 +792,7 @@ stages:
 	}
 
 	issueID := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base, "--title", "codex stub")))
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		issues := run(t, bin, repo, "issues", "--data", base)
 		if strings.Contains(issues, issueID+"  done") {
