@@ -168,7 +168,31 @@ func New(cfg Config) *Engine {
 			sink.SetOnLine(cfg.OnLine)
 		}
 	}
+	if reporter, ok := cfg.Runner.(runner.AttemptReporter); ok {
+		reporter.SetAttemptSink(e)
+	}
 	return e
+}
+
+func (e *Engine) RecordAttempt(ctx context.Context, attempt runner.Attempt) error {
+	if err := e.cfg.Store.RecordAttempt(ctx, attempt); err != nil {
+		return err
+	}
+	e.emit(core.EvRunnerAttempt, attempt.IssueID, map[string]any{
+		"operation_id":      attempt.OperationID,
+		"attempt_kind":      string(attempt.Kind),
+		"state":             string(attempt.State),
+		"failure_class":     string(attempt.FailureClass),
+		"fallback_consumed": attempt.Kind == runner.AttemptFallback && attempt.State != runner.AttemptFailed,
+		"redacted_argv":     attempt.RedactedArgv,
+		"session_id":        attempt.SessionID,
+		"tokens":            attempt.Tokens,
+	})
+	return nil
+}
+
+func (e *Engine) LoadOperation(ctx context.Context, operationID string) ([]runner.Attempt, error) {
+	return e.cfg.Store.LoadOperation(ctx, operationID)
 }
 
 func (e *Engine) rehydrateArtifactReview(
@@ -432,6 +456,10 @@ func (e *Engine) Rehydrate() error {
 		if known {
 			continue
 		}
+		persistedAttempt, hasPersistedAttempt, err := e.latestRunnerAttempt(row.ID)
+		if err != nil {
+			return err
+		}
 		// Best-effort: on error or missing events the zero values fall back
 		// to the flow's first stage below.
 		stage, attempt, of, _, _ := e.cfg.Store.LastStageEvents(row.ID)
@@ -462,18 +490,57 @@ func (e *Engine) Rehydrate() error {
 			matrix: matrix, priority: row.Priority, stageIdx: stageIdx, terminal: true,
 			planReview: row.PlanReviewPolicy,
 		}
+		restartError := "daemon restarted — press R to retry"
+		if hasPersistedAttempt {
+			stage = persistedAttempt.Stage
+			if persistedAttempt.State == runner.AttemptRunning || persistedAttempt.State == runner.AttemptReserved {
+				interrupted := persistedAttempt
+				interrupted.State = runner.AttemptTerminal
+				interrupted.FailureClass = runner.FailureCancellation
+				if err := e.RecordAttempt(context.Background(), interrupted); err != nil {
+					return err
+				}
+				restartError = fmt.Sprintf("daemon restarted during %s %s attempt — press R to retry", persistedAttempt.Stage, persistedAttempt.Kind)
+			} else if persistedAttempt.State == runner.AttemptTerminal {
+				restartError = fmt.Sprintf("daemon restarted after %s %s attempt reached terminal failure — press R to retry", persistedAttempt.Stage, persistedAttempt.Kind)
+			}
+		}
 		e.restoreInterruptedWorkspace(is)
 		e.mu.Lock()
 		e.issues[row.ID] = is
 		e.mu.Unlock()
 		e.emit(core.EvStageFailed, row.ID, map[string]any{
 			"stage": stage, "attempt": attempt, "of": of,
-			"error": "daemon restarted — press R to retry", "final": true})
+			"error": restartError, "final": true})
 	}
 	for _, row := range authorizedReviews {
 		e.scheduleArtifactContinuation(row.ID, row.IssueID, row.Stage, *row.Review, row.Response, true)
 	}
 	return nil
+}
+
+func (e *Engine) latestRunnerAttempt(issueID string) (runner.Attempt, bool, error) {
+	runs, err := e.cfg.Store.StageRuns(issueID)
+	if err != nil {
+		return runner.Attempt{}, false, err
+	}
+	for index := len(runs) - 1; index >= 0; index-- {
+		attempts, err := e.cfg.Store.LoadOperation(context.Background(), strconv.FormatInt(runs[index].ID, 10))
+		if err != nil {
+			return runner.Attempt{}, false, err
+		}
+		if len(attempts) == 0 {
+			continue
+		}
+		latest := attempts[0]
+		for _, attempt := range attempts[1:] {
+			if attempt.Kind == runner.AttemptFallback {
+				latest = attempt
+			}
+		}
+		return latest, true, nil
+	}
+	return runner.Attempt{}, false, nil
 }
 
 func matrixFromStrings(values map[string]string) levers.Matrix {
@@ -2320,19 +2387,24 @@ func (e *Engine) runStageOnce(
 		runID, insErr := e.cfg.Store.InsertStageRun(store.StageRun{
 			IssueID: is.id, Stage: st.Name, Agent: a.Package,
 			Worktree: workdir, Status: "running"})
+		if insErr != nil {
+			dones <- agentDone{pkg: a.Package, res: runner.Result{Err: fmt.Errorf("insert stage run: %w", insErr)}}
+			return
+		}
+		agentCtx := runner.WithOperationID(ctx, strconv.FormatInt(runID, 10))
 		asks := make(chan runner.Ask)
-		resc := e.cfg.Runner.Run(ctx, is.id, st.Name, a.Package, workdir, asks)
+		resc := e.cfg.Runner.Run(agentCtx, is.id, st.Name, a.Package, workdir, asks)
 		for {
 			select {
 			case ask := <-asks:
 				e.handleAsk(is, st.Name, a.Package, ask)
 			case res := <-resc:
-				if insErr == nil {
-					status := "succeeded"
-					if res.Err != nil {
-						status = "failed"
-					}
-					e.cfg.Store.FinishStageRun(runID, status, res.SessionID, res.Tokens)
+				status := "succeeded"
+				if res.Err != nil {
+					status = "failed"
+				}
+				if err := e.cfg.Store.FinishStageRun(runID, status, res.SessionID, res.Tokens); err != nil && res.Err == nil {
+					res.Err = fmt.Errorf("finish stage run: %w", err)
 				}
 				dones <- agentDone{a.Package, res}
 				return
@@ -2362,7 +2434,7 @@ func (e *Engine) runStageOnce(
 		}
 		if d.res.Err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("agent %s: %w", d.pkg, d.res.Err)
+				firstErr = &runnerStageError{Agent: d.pkg, Result: d.res}
 			}
 			continue
 		}
@@ -2455,6 +2527,38 @@ func (e *Engine) stageWorkdir(is *issueState, st flow.Stage) string {
 	return workdir
 }
 
+type runnerStageError struct {
+	Agent  string
+	Result runner.Result
+}
+
+func (e *runnerStageError) Error() string {
+	if e.Result.Err == nil {
+		return fmt.Sprintf("agent %s failed", e.Agent)
+	}
+	return fmt.Sprintf("agent %s: %v", e.Agent, e.Result.Err)
+}
+
+func (e *runnerStageError) Unwrap() error { return e.Result.Err }
+
+func runnerFailurePayload(err error) map[string]any {
+	var failure *runnerStageError
+	if !errors.As(err, &failure) {
+		return nil
+	}
+	result := failure.Result
+	return map[string]any{
+		"agent":             failure.Agent,
+		"failure_class":     string(result.FailureClass),
+		"attempt_kind":      string(result.Attempt.Kind),
+		"attempt_state":     string(result.Attempt.State),
+		"fallback_consumed": result.FallbackConsumed,
+		"next_action":       result.NextAction,
+		"attempt_count":     len(result.Attempts),
+		"redacted_argv":     result.Attempt.RedactedArgv,
+	}
+}
+
 func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) error {
 	stageCtx, cancel := context.WithCancel(ctx)
 	e.mu.Lock()
@@ -2499,9 +2603,13 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 			e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
 			return context.Canceled
 		}
-		e.emit(core.EvStageFailed, is.id, map[string]any{
+		payload := map[string]any{
 			"stage": st.Name, "error": err.Error(),
-			"attempt": attempt + 1, "of": of, "final": attempt == st.Retries})
+			"attempt": attempt + 1, "of": of, "final": attempt == st.Retries}
+		for key, value := range runnerFailurePayload(err) {
+			payload[key] = value
+		}
+		e.emit(core.EvStageFailed, is.id, payload)
 	}
 	if err != nil {
 		return err

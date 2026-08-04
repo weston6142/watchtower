@@ -20,6 +20,7 @@ import (
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/store"
 	_ "modernc.org/sqlite"
 )
@@ -836,6 +837,192 @@ stages:
 	}
 	if runs[0].SessionID != "thr-daemon" || runs[0].Tokens != 15 || runs[0].Status != "succeeded" {
 		t.Fatalf("stage run = %+v", runs[0])
+	}
+}
+
+func TestCodexRestartPreservesFallbackAttemptState(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	bin := buildBinary(t)
+	base := t.TempDir()
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "t@t"},
+		{"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-qm", "base"},
+	} {
+		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	run(t, bin, repo, "init", "--data", base)
+	t.Cleanup(func() { stopDaemons(base) })
+
+	stubDir := t.TempDir()
+	stub := filepath.Join(stubDir, "codex-stub")
+	countFile := filepath.Join(stubDir, "count")
+	kindLog := filepath.Join(stubDir, "kinds.log")
+	lastLog := filepath.Join(stubDir, "last.log")
+	modeFile := filepath.Join(stubDir, "mode")
+	if err := os.WriteFile(modeFile, []byte("block\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stub, []byte(fmt.Sprintf(`#!/bin/sh
+set -eu
+count_file=%q
+kind_log=%q
+last_log=%q
+mode=%q
+count=0
+if [ -f "$count_file" ]; then
+  count=$(cat "$count_file")
+fi
+count=$((count + 1))
+printf '%%s\n' "$count" > "$count_file"
+if printf '%%s' "$*" | grep -q 'features.unified_exec=true'; then
+  printf '%%s\n' fallback >> "$kind_log"
+else
+  printf '%%s\n' primary >> "$kind_log"
+fi
+if printf '%%s' "$*" | grep -q -- '--last'; then
+  printf '%%s\n' last >> "$last_log"
+fi
+if [ "$count" -eq 1 ]; then
+  printf '%%s\n' '{"type":"thread.started","thread_id":"thr-primary"}'
+  printf '%%s\n' '{"type":"turn.failed","error":{"message":"primary execution failed"}}'
+elif [ "$(cat "$mode")" = "block" ]; then
+  sleep 30
+else
+  printf '%%s\n' '{"type":"thread.started","thread_id":"thr-retry"}'
+  printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"retry complete"}}'
+  printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}'
+fi
+`, countFile, kindLog, lastLog, modeFile)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(repo, ".watchtower", "config.yaml")
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured := strings.Replace(string(config), "codex_bin: codex", "codex_bin: "+stub, 1)
+	configured = strings.Replace(configured, "pull: true", "pull: false", 1)
+	codexFallbackConfig := "codex:\n  primary:\n    feature_overrides:\n      unified_exec: false\n  fallback:\n    feature_overrides:\n      unified_exec: true\n"
+	defaultCodexConfig := "codex:\n  primary:\n    feature_overrides: {}\n"
+	if !strings.Contains(configured, defaultCodexConfig) {
+		t.Fatalf("generated config missing default Codex block:\n%s", configured)
+	}
+	configured = strings.Replace(configured, defaultCodexConfig, codexFallbackConfig, 1)
+	if err := os.WriteFile(configPath, []byte(configured), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flowBody := `name: default
+stages:
+  - name: execute
+    agents: [{package: executor}]
+    gate: auto
+    workspace: none
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	issueID := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base, "--title", "codex restart")))
+	database := filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.db")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st, openErr := store.Open(database)
+		if openErr == nil {
+			runs, runsErr := st.StageRuns(issueID)
+			if runsErr == nil && len(runs) == 1 {
+				attempts, attemptsErr := st.LoadOperation(context.Background(), strconv.FormatInt(runs[0].ID, 10))
+				st.Close()
+				if attemptsErr == nil && len(attempts) == 2 && attempts[1].State == runner.AttemptRunning {
+					break
+				}
+				continue
+			}
+			st.Close()
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if time.Now().After(deadline) {
+		countBytes, _ := os.ReadFile(countFile)
+		kindBytes, _ := os.ReadFile(kindLog)
+		st, openErr := store.Open(database)
+		var issues []store.IssueRow
+		var runs []store.StageRun
+		var attempts []runner.Attempt
+		var events []core.Event
+		if openErr == nil {
+			issues, _ = st.Issues()
+			runs, _ = st.StageRuns(issueID)
+			if len(runs) > 0 {
+				attempts, _ = st.LoadOperation(context.Background(), strconv.FormatInt(runs[len(runs)-1].ID, 10))
+			}
+			events, _ = st.EventsSince(0)
+			st.Close()
+		}
+		t.Fatalf("fallback attempt did not reach running state: open=%v count=%q kinds=%q issues=%+v runs=%+v attempts=%+v events=%+v", openErr, countBytes, kindBytes, issues, runs, attempts, events)
+	}
+
+	stopDaemons(base)
+	if err := os.WriteFile(modeFile, []byte("success\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = run(t, bin, repo, "status", "--data", base)
+	sock := filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.sock")
+	client, err := proto.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := client.Do(proto.Command{Op: "setup_outline"})
+	client.Close()
+	if err != nil || !setup.OK || setup.Setup == nil {
+		t.Fatalf("reloaded setup = %+v, err = %v", setup, err)
+	}
+	if setup.Setup.Repo.CodexPolicy != "fallback_once" || setup.Setup.Repo.CodexPrimary == nil || setup.Setup.Repo.CodexFallback == nil ||
+		setup.Setup.Repo.CodexPrimary.FeatureOverrides["unified_exec"] || !setup.Setup.Repo.CodexFallback.FeatureOverrides["unified_exec"] {
+		t.Fatalf("reloaded Codex setup = %+v", setup.Setup.Repo)
+	}
+	countBytes, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds, err := os.ReadFile(kindLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(countBytes)) != "2" || string(kinds) != "primary\nfallback\n" {
+		t.Fatalf("restart relaunched or changed fallback argv: count=%q kinds=%q", countBytes, kinds)
+	}
+	if _, err := os.Stat(lastLog); !os.IsNotExist(err) {
+		t.Fatalf("restart used --last: err=%v", err)
+	}
+
+	if out := run(t, bin, repo, "retry", "--data", base, issueID); !strings.Contains(out, "retry "+issueID) {
+		t.Fatalf("retry output = %q", out)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(run(t, bin, repo, "issues", "--data", base), issueID+"  done") {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	countBytes, err = os.ReadFile(countFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds, err = os.ReadFile(kindLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(countBytes)) != "3" || string(kinds) != "primary\nfallback\nprimary\n" {
+		t.Fatalf("explicit retry argv history: count=%q kinds=%q", countBytes, kinds)
+	}
+	if _, err := os.Stat(lastLog); !os.IsNotExist(err) {
+		t.Fatalf("explicit retry used --last: err=%v", err)
 	}
 }
 

@@ -9,6 +9,46 @@ Codex it also reports the repository model/effort pair. The load stamp makes
 stale daemon state readable rather than confusing. What the panel reports
 about agents is resolved elsewhere — see agent-prompt-and-model-resolution.
 
+## Codex profiles and fallback
+
+New repositories use a Codex primary profile with an explicit empty feature map
+and terminal policy:
+
+```yaml
+codex:
+  primary:
+    feature_overrides: {}
+```
+
+The only supported feature override is the boolean `unified_exec`. An opt-in
+fallback keeps the same binary, model, and effort and changes only the
+supported feature state. With no fallback the effective policy is `terminal`;
+adding a fallback opts the operation into the bounded `fallback_once` policy:
+
+```yaml
+codex:
+  primary:
+    feature_overrides:
+      unified_exec: false
+  fallback:
+    feature_overrides:
+      unified_exec: true
+```
+
+Unknown feature names, non-boolean values, missing profile data, mismatched
+profile identity, and an identical primary/fallback pair are rejected before a
+process launches. A configured fallback is reserved and attempted at most
+once for each runner operation. A daemon restart records an interrupted
+operation as terminal and exposes the existing manual retry path; it never
+loops the primary or duplicates a reserved/consumed fallback automatically.
+
+The setup panel reports the daemon's cached normalized profiles, effective
+feature overrides, fallback policy, and redacted initial/resumed argv shape.
+Prompts, developer instructions, environment values, access or resume tokens,
+and raw stderr are omitted from setup, stored attempt metadata, lifecycle
+events, and terminal errors. Restart the daemon after editing configuration so
+the cached view and the runner use the new profiles.
+
 The inspector describes loaded configuration, not lane completion. In
 particular, a completed merge-verifier transcript does not make an issue done.
 Final-stage completion requires strict `merge-decision.json` and

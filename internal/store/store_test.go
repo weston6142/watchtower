@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"strings"
@@ -13,8 +14,67 @@ import (
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
+	"github.com/weston6142/watchtower/internal/runner"
 	_ "modernc.org/sqlite"
 )
+
+func TestRunnerAttemptsPersistSafeLifecycleAcrossReopen(t *testing.T) {
+	database := t.TempDir() + "/runner-attempts.db"
+	s, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := runner.Attempt{
+		OperationID: "operation-1", IssueID: "GH-38", Stage: "execute", AgentPackage: "executor",
+		Kind: runner.AttemptPrimary, RedactedArgv: []string{"exec", "--json", "features.unified_exec=false", "[redacted]"},
+	}
+	for _, update := range []runner.Attempt{
+		{State: runner.AttemptRunning}, {State: runner.AttemptFailed, FailureClass: runner.FailureLaunch},
+		{Kind: runner.AttemptFallback, State: runner.AttemptReserved, FailureClass: runner.FailureLaunch},
+		{Kind: runner.AttemptFallback, State: runner.AttemptRunning, FailureClass: runner.FailureLaunch},
+		{Kind: runner.AttemptFallback, State: runner.AttemptSucceeded, FailureClass: runner.FailureLaunch, SessionID: "session-1", Tokens: 42},
+	} {
+		attempt := base
+		attempt.Kind = update.Kind
+		if attempt.Kind == "" {
+			attempt.Kind = runner.AttemptPrimary
+		}
+		attempt.State, attempt.FailureClass = update.State, update.FailureClass
+		attempt.SessionID, attempt.Tokens = update.SessionID, update.Tokens
+		if err := s.RecordAttempt(context.Background(), attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	attempts, err := s.LoadOperation(context.Background(), "operation-1")
+	if err != nil || len(attempts) != 2 {
+		t.Fatalf("attempts = %+v, err = %v", attempts, err)
+	}
+	if attempts[0].Kind != runner.AttemptPrimary || attempts[0].State != runner.AttemptFailed ||
+		attempts[1].Kind != runner.AttemptFallback || attempts[1].State != runner.AttemptSucceeded || attempts[1].Tokens != 42 {
+		t.Fatalf("latest attempt lifecycle = %+v", attempts)
+	}
+	encoded, _ := json.Marshal(attempts)
+	for _, secret := range []string{"prompt secret", "developer instruction", "thread-secret", "environment-secret", "stderr-secret"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("attempt metadata leaked %q: %s", secret, encoded)
+		}
+	}
+	if !strings.Contains(string(encoded), "features.unified_exec=false") {
+		t.Fatalf("safe feature metadata missing: %s", encoded)
+	}
+	unused, err := s.LoadOperation(context.Background(), "unused-operation")
+	if err != nil || len(unused) != 0 {
+		t.Fatalf("unused operation = %+v, err = %v", unused, err)
+	}
+}
 
 func TestLegacyIssueDefaultsToManualPlanReview(t *testing.T) {
 	database := t.TempDir() + "/legacy.db"

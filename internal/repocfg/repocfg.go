@@ -27,12 +27,61 @@ type Config struct {
 	CodexBin     string           `yaml:"codex_bin"`
 	CodexModel   string           `yaml:"codex_model"`
 	CodexEffort  string           `yaml:"codex_effort"`
+	Codex        CodexConfig      `yaml:"codex"`
 	TestCmd      string           `yaml:"test_cmd"`
 	TestArgv     []string         `yaml:"-"`
 	Theme        string           `yaml:"theme"`
 	Pull         bool             `yaml:"pull"`
 	Push         bool             `yaml:"push"`
 	PlanReview   PlanReviewConfig `yaml:"plan_review"`
+}
+
+type CodexProfile struct {
+	Bin              string          `yaml:"bin"`
+	Model            string          `yaml:"model"`
+	Effort           string          `yaml:"effort"`
+	FeatureOverrides map[string]bool `yaml:"feature_overrides"`
+}
+
+type CodexConfig struct {
+	Primary  CodexProfile  `yaml:"primary"`
+	Fallback *CodexProfile `yaml:"fallback,omitempty"`
+}
+
+func (c *CodexConfig) UnmarshalYAML(node *yaml.Node) error {
+	*c = CodexConfig{}
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("codex must be a mapping")
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		name := node.Content[index].Value
+		value := node.Content[index+1]
+		switch name {
+		case "primary":
+			if err := value.Decode(&c.Primary); err != nil {
+				return fmt.Errorf("codex.primary.feature_overrides.unified_exec must be a boolean: %w", err)
+			}
+		case "fallback":
+			if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+				continue
+			}
+			var profile CodexProfile
+			if err := value.Decode(&profile); err != nil {
+				return fmt.Errorf("codex.fallback.feature_overrides.unified_exec must be a boolean: %w", err)
+			}
+			c.Fallback = &profile
+		}
+	}
+	return nil
+}
+
+const (
+	CodexPolicyTerminal     = "terminal"
+	CodexPolicyFallbackOnce = "fallback_once"
+)
+
+var supportedCodexFeatures = map[string]struct{}{
+	"unified_exec": {},
 }
 
 type PlanReviewConfig struct {
@@ -106,6 +155,9 @@ func Load(repoRoot string) (Config, error) {
 		fillGaps(&cfg)
 	} else if !os.IsNotExist(err) {
 		return Config{}, err
+	}
+	if err := normalizeCodex(&cfg); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", ConfigPath(repoRoot), err)
 	}
 	if !filepath.IsAbs(cfg.Flows) {
 		cfg.Flows = filepath.Join(repoRoot, cfg.Flows)
@@ -222,6 +274,101 @@ func fillGaps(cfg *Config) {
 			cfg.PlanReview.PolicyVersion = d.PlanReview.PolicyVersion
 		}
 	}
+}
+
+func normalizeCodex(cfg *Config) error {
+	primary := cfg.Codex.Primary
+	if primary.Bin == "" {
+		primary.Bin = cfg.CodexBin
+	}
+	if primary.Model == "" {
+		primary.Model = cfg.CodexModel
+	}
+	if primary.Effort == "" {
+		primary.Effort = cfg.CodexEffort
+	}
+	primary.FeatureOverrides = cloneFeatureOverrides(primary.FeatureOverrides)
+	if err := ValidateCodexFeatures("codex.primary", primary.FeatureOverrides); err != nil {
+		return err
+	}
+
+	var fallback *CodexProfile
+	if cfg.Codex.Fallback != nil {
+		candidate := *cfg.Codex.Fallback
+		if candidate.Bin != "" && candidate.Bin != primary.Bin {
+			return fmt.Errorf("codex.fallback.bin must match codex.primary.bin (%q)", primary.Bin)
+		}
+		if candidate.Model != "" && candidate.Model != primary.Model {
+			return fmt.Errorf("codex.fallback.model must match codex.primary.model (%q)", primary.Model)
+		}
+		if candidate.Effort != "" && candidate.Effort != primary.Effort {
+			return fmt.Errorf("codex.fallback.effort must match codex.primary.effort (%q)", primary.Effort)
+		}
+		candidate.Bin = primary.Bin
+		candidate.Model = primary.Model
+		candidate.Effort = primary.Effort
+		candidate.FeatureOverrides = cloneFeatureOverrides(candidate.FeatureOverrides)
+		if err := ValidateCodexFeatures("codex.fallback", candidate.FeatureOverrides); err != nil {
+			return err
+		}
+		if featureOverridesEqual(primary.FeatureOverrides, candidate.FeatureOverrides) {
+			return fmt.Errorf("codex.fallback must differ from codex.primary; set a supported feature override or remove fallback")
+		}
+		fallback = &candidate
+	}
+
+	cfg.Codex.Primary = primary
+	cfg.Codex.Fallback = fallback
+	// Keep the flat fields normalized for legacy callers and CLI flag handling.
+	cfg.CodexBin = primary.Bin
+	cfg.CodexModel = primary.Model
+	cfg.CodexEffort = primary.Effort
+	return nil
+}
+
+// ValidateCodexFeatures checks the supported feature override schema at a
+// runner boundary as well as during repository configuration loading.
+func ValidateCodexFeatures(path string, features map[string]bool) error {
+	for name := range features {
+		if _, ok := supportedCodexFeatures[name]; !ok {
+			return fmt.Errorf("%s.feature_overrides.%s is unsupported; use one of unified_exec", path, name)
+		}
+	}
+	return nil
+}
+
+func cloneFeatureOverrides(features map[string]bool) map[string]bool {
+	if features == nil {
+		return nil
+	}
+	clone := make(map[string]bool, len(features))
+	for name, value := range features {
+		clone[name] = value
+	}
+	return clone
+}
+
+func featureOverridesEqual(left, right map[string]bool) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for name, value := range left {
+		if right[name] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func (c Config) EffectiveCodex() (CodexProfile, *CodexProfile) {
+	return c.Codex.Primary, c.Codex.Fallback
+}
+
+func (c Config) CodexPolicy() string {
+	if c.Codex.Fallback != nil {
+		return CodexPolicyFallbackOnce
+	}
+	return CodexPolicyTerminal
 }
 
 // FindRepo resolves linked worktrees to their common checkout, then walks up

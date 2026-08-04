@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/review"
+	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/transcript"
 )
@@ -322,6 +324,14 @@ func (sv *Server) exec(cmd Command) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
+		attempts := make([]runner.Attempt, 0)
+		for _, run := range runs {
+			loaded, err := sv.st.LoadOperation(context.Background(), strconv.FormatInt(run.ID, 10))
+			if err != nil {
+				return Response{Error: err.Error()}
+			}
+			attempts = append(attempts, loaded...)
+		}
 		tokens, err := sv.st.IssueTokens(cmd.IssueID)
 		if err != nil {
 			return Response{Error: err.Error()}
@@ -353,7 +363,7 @@ func (sv *Server) exec(cmd Command) Response {
 			}
 		}
 		return Response{OK: true, Detail: &IssueDetail{
-			Issue: issue, Runs: runs, Tokens: tokens, Artifacts: artifacts,
+			Issue: issue, Runs: runs, Attempts: attempts, Tokens: tokens, Artifacts: artifacts,
 			Model: model, Effort: effort,
 			LastError: lastError, Attempt: attempt, AttemptOf: attemptOf, Budget: sv.budget, Levers: issue.Levers,
 			Cleanup: integration.Cleanup, Dollars: float64(tokens) / 1_000_000 * sv.pricePerMTok,

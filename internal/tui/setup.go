@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -127,10 +128,28 @@ func setupRepoLines(r proto.RepoSetup) []string {
 		second = append(second, r.CodexModel+"/"+r.CodexEffort)
 	}
 	const gutter = 7
-	return []string{
+	lines := []string{
 		label.Render(padCell("REPO", gutter)) + value.Render(truncate(strings.Join(first, " · "), setupRowWidth-gutter)),
 		label.Render(padCell("", gutter)) + value.Render(truncate(strings.Join(second, " · "), setupRowWidth-gutter)),
 	}
+	if r.Runner == "codex" && r.CodexPrimary != nil {
+		detail := []string{"codex " + r.CodexPolicy}
+		features := make([]string, 0, len(r.CodexPrimary.FeatureOverrides))
+		for feature := range r.CodexPrimary.FeatureOverrides {
+			features = append(features, feature)
+		}
+		sort.Strings(features)
+		for _, feature := range features {
+			enabled := r.CodexPrimary.FeatureOverrides[feature]
+			detail = append(detail, fmt.Sprintf("features.%s=%t", feature, enabled))
+		}
+		if r.CodexFallback != nil {
+			detail = append(detail, "fallback configured")
+		}
+		lines = append(lines, label.Render(padCell("", gutter))+
+			value.Render(truncate(strings.Join(detail, " · "), setupRowWidth-gutter)))
+	}
+	return lines
 }
 
 // setupStageLine is a stage's one-line summary: enough to answer "what gates

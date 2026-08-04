@@ -3,6 +3,8 @@ package codex
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 const (
@@ -18,12 +20,13 @@ const (
 // Event is the provider-neutral subset of one Codex JSONL event needed by the
 // runner and operator transcript.
 type Event struct {
-	Kind     string
-	ThreadID string
-	Text     string
-	Tool     string
-	Tokens   int
-	Error    string
+	Kind         string
+	ThreadID     string
+	Text         string
+	Tool         string
+	Tokens       int
+	Error        string
+	FailureClass runner.FailureClass
 }
 
 type rawEvent struct {
@@ -31,7 +34,9 @@ type rawEvent struct {
 	ThreadID string `json:"thread_id"`
 	Message  string `json:"message"`
 	Error    *struct {
-		Message string `json:"message"`
+		Message  string `json:"message"`
+		Code     string `json:"code"`
+		Category string `json:"category"`
 	} `json:"error"`
 	Usage *struct {
 		Input  int `json:"input_tokens"`
@@ -92,8 +97,10 @@ func ParseLine(line []byte) Event {
 		return Event{Kind: KindComplete, Tokens: tokens}
 	case "turn.failed", "error":
 		message := ""
+		classification := ""
 		if raw.Error != nil {
 			message = raw.Error.Message
+			classification = raw.Error.Code + " " + raw.Error.Category
 		}
 		if message == "" {
 			message = raw.Message
@@ -101,7 +108,7 @@ func ParseLine(line []byte) Event {
 		if message == "" {
 			message = "codex turn failed"
 		}
-		return Event{Kind: KindFailed, Error: message}
+		return Event{Kind: KindFailed, Error: message, FailureClass: classifyFailureMessage(classification + " " + message)}
 	}
 	return Event{Kind: KindOther}
 }

@@ -5,6 +5,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -84,6 +85,7 @@ type Overview struct {
 type IssueDetail struct {
 	Issue            store.IssueRow    `json:"issue"`
 	Runs             []store.StageRun  `json:"runs"`
+	Attempts         []runner.Attempt  `json:"attempts,omitempty"`
 	Tokens           int               `json:"tokens"`
 	Artifacts        []string          `json:"artifacts"`
 	Model            string            `json:"model,omitempty"`
@@ -114,17 +116,20 @@ type SetupView struct {
 // RepoSetup is the repo-level config after flag overrides — what the daemon
 // holds, not what config.yaml says.
 type RepoSetup struct {
-	Runner       string  `json:"runner"` // codex|claude|fake
-	Slots        int     `json:"slots"`
-	Budget       int     `json:"budget"` // 0 = off
-	PricePerMTok float64 `json:"price_per_mtok"`
-	ClaudeBin    string  `json:"claude_bin"`
-	CodexBin     string  `json:"codex_bin,omitempty"`
-	CodexModel   string  `json:"codex_model,omitempty"`
-	CodexEffort  string  `json:"codex_effort,omitempty"`
-	TestCmd      string  `json:"test_cmd,omitempty"`
-	Pull         bool    `json:"pull"`
-	Push         bool    `json:"push"`
+	Runner        string             `json:"runner"` // codex|claude|fake
+	Slots         int                `json:"slots"`
+	Budget        int                `json:"budget"` // 0 = off
+	PricePerMTok  float64            `json:"price_per_mtok"`
+	ClaudeBin     string             `json:"claude_bin"`
+	CodexBin      string             `json:"codex_bin,omitempty"`
+	CodexModel    string             `json:"codex_model,omitempty"`
+	CodexEffort   string             `json:"codex_effort,omitempty"`
+	CodexPolicy   string             `json:"codex_policy,omitempty"`
+	CodexPrimary  *CodexProfileSetup `json:"codex_primary,omitempty"`
+	CodexFallback *CodexProfileSetup `json:"codex_fallback,omitempty"`
+	TestCmd       string             `json:"test_cmd,omitempty"`
+	Pull          bool               `json:"pull"`
+	Push          bool               `json:"push"`
 	// Workspace is the resolved provider name — "treehouse", "git worktree",
 	// or "" when the runner provisions none.
 	Workspace string `json:"workspace"`
@@ -132,6 +137,16 @@ type RepoSetup struct {
 	// A string, not a time.Time, so render paths never call time.Now() and
 	// the golden snapshots stay deterministic.
 	LoadedAt string `json:"loaded_at"`
+}
+
+type CodexProfileSetup struct {
+	Label            string          `json:"label"`
+	Bin              string          `json:"bin"`
+	Model            string          `json:"model"`
+	Effort           string          `json:"effort"`
+	FeatureOverrides map[string]bool `json:"feature_overrides,omitempty"`
+	InitialArgv      []string        `json:"initial_argv,omitempty"`
+	ResumedArgv      []string        `json:"resumed_argv,omitempty"`
 }
 
 type StageSetup struct {

@@ -9,6 +9,9 @@ price_per_mtok: 0     # estimated $/Mtok (0=hide cost)
 codex_bin: codex
 codex_model: gpt-5.6-luna
 codex_effort: xhigh
+codex:
+  primary:
+    feature_overrides: {}
 claude_bin: claude
 test_cmd: ""          # required when any flow uses merge_barrier, e.g. "scripts/verify"
 plan_review:

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +137,182 @@ func testDecisionIdentities() map[string]decision.AgentIdentity {
 func newEngine(t *testing.T, r runner.Runner) (*Engine, *store.Store) {
 	t.Helper()
 	return newEngineCfg(t, r, nil)
+}
+
+type typedStageRunner struct {
+	result  runner.Result
+	results map[string]runner.Result
+	sink    runner.AttemptSink
+}
+
+func (r *typedStageRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
+	_ chan<- runner.Ask) <-chan runner.Result {
+	done := make(chan runner.Result, 1)
+	go func() {
+		result := r.result
+		if configured, ok := r.results[agentPkg]; ok {
+			result = configured
+		}
+		operationID := runner.OperationID(ctx)
+		for index := range result.Attempts {
+			attempt := result.Attempts[index]
+			attempt.OperationID, attempt.IssueID = operationID, issueID
+			attempt.Stage, attempt.AgentPackage = stage, agentPkg
+			if r.sink != nil {
+				_ = r.sink.RecordAttempt(ctx, attempt)
+			}
+		}
+		done <- result
+	}()
+	return done
+}
+
+func (r *typedStageRunner) SetAttemptSink(sink runner.AttemptSink) { r.sink = sink }
+
+func TestTerminalStageMapsTypedRunnerFailureToFinalStageOutcome(t *testing.T) {
+	f := flow.Flow{Name: "typed", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}},
+		Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+	}}}
+	result := runner.Result{
+		FailureClass: runner.FailureLaunch,
+		Attempt:      runner.Attempt{Kind: runner.AttemptPrimary, State: runner.AttemptTerminal, FailureClass: runner.FailureLaunch},
+		Attempts:     []runner.Attempt{{Kind: runner.AttemptPrimary, State: runner.AttemptTerminal, FailureClass: runner.FailureLaunch, RedactedArgv: []string{"exec", "[redacted]"}}},
+		NextAction:   "restore the Codex executable",
+		Err:          errors.New("Codex primary launch failed"),
+	}
+	e, s := newEngineCfg(t, &typedStageRunner{result: result}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"typed": f}
+	})
+	id, err := e.CreateIssue("typed failure", "", "typed", levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("typed runner failure unexpectedly succeeded")
+	}
+	rows, err := s.StageRuns(id)
+	if err != nil || len(rows) != 1 || rows[0].Status != "failed" {
+		t.Fatalf("stage runs = %+v, err = %v", rows, err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed bool
+	for _, event := range events {
+		if event.Type != core.EvStageFailed {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["final"] == true {
+			failed = true
+			if payload["failure_class"] != string(runner.FailureLaunch) ||
+				payload["attempt_kind"] != string(runner.AttemptPrimary) ||
+				payload["next_action"] != "restore the Codex executable" {
+				t.Fatalf("typed stage failure payload = %v", payload)
+			}
+		}
+	}
+	if !failed {
+		t.Fatal("no final typed stage failure event")
+	}
+	attempts, err := s.LoadOperation(context.Background(), "1")
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("durable attempt history = %+v, err = %v", attempts, err)
+	}
+}
+
+func TestFallbackLifecycleCompletesAllStage(t *testing.T) {
+	f := flow.Flow{Name: "fallback", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}},
+		Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+	}}}
+	result := runner.Result{
+		FallbackConsumed: true,
+		Attempt:          runner.Attempt{Kind: runner.AttemptFallback, State: runner.AttemptSucceeded, FailureClass: runner.FailureLaunch},
+		Attempts: []runner.Attempt{
+			{Kind: runner.AttemptPrimary, State: runner.AttemptFailed, FailureClass: runner.FailureLaunch},
+			{Kind: runner.AttemptFallback, State: runner.AttemptReserved, FailureClass: runner.FailureLaunch},
+			{Kind: runner.AttemptFallback, State: runner.AttemptSucceeded, FailureClass: runner.FailureLaunch},
+		},
+	}
+	e, s := newEngineCfg(t, &typedStageRunner{result: result}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"fallback": f}
+	})
+	id, err := e.CreateIssue("fallback success", "", "fallback", levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 1 || runs[0].Status != "succeeded" {
+		t.Fatalf("stage runs = %+v, err = %v", runs, err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		if event.Type != core.EvRunnerAttempt {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		seen[payload["attempt_kind"].(string)+":"+payload["state"].(string)] = true
+	}
+	for _, key := range []string{"primary:failed", "fallback:reserved", "fallback:succeeded"} {
+		if !seen[key] {
+			t.Errorf("missing lifecycle event %q: %v", key, seen)
+		}
+	}
+}
+
+func TestEngineCompletionAnyKeepsAgentFallbackAccountingIndependent(t *testing.T) {
+	f := flow.Flow{Name: "any", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "first"}, {Package: "second"}},
+		Parallel: true, Completion: flow.CompletionAny, Workspace: "none", Gate: flow.GateAuto,
+	}}}
+	r := &typedStageRunner{results: map[string]runner.Result{
+		"first": {FallbackConsumed: true, Attempt: runner.Attempt{Kind: runner.AttemptFallback, State: runner.AttemptSucceeded}, Attempts: []runner.Attempt{
+			{Kind: runner.AttemptPrimary, State: runner.AttemptFailed, FailureClass: runner.FailureLaunch},
+			{Kind: runner.AttemptFallback, State: runner.AttemptSucceeded},
+		}},
+		"second": {Err: errors.New("second agent failed"), FailureClass: runner.FailureExecution, Attempt: runner.Attempt{Kind: runner.AttemptPrimary, State: runner.AttemptTerminal}, Attempts: []runner.Attempt{
+			{Kind: runner.AttemptPrimary, State: runner.AttemptTerminal, FailureClass: runner.FailureExecution},
+		}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) { cfg.Flows = map[string]flow.Flow{"any": f} })
+	id, err := e.CreateIssue("any completion", "", "any", levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("stage runs = %+v, err = %v", runs, err)
+	}
+	operationIDs, err := s.LoadOperation(context.Background(), "1")
+	if err != nil || len(operationIDs) == 0 {
+		t.Fatalf("first agent attempts = %+v, err = %v", operationIDs, err)
+	}
+	other, err := s.LoadOperation(context.Background(), "2")
+	if err != nil || len(other) == 0 {
+		t.Fatalf("second agent attempts = %+v, err = %v", other, err)
+	}
+	if operationIDs[0].IssueID != id || other[0].IssueID != id || operationIDs[0].OperationID == other[0].OperationID {
+		t.Fatalf("agent operation identities crossed: first=%+v second=%+v", operationIDs, other)
+	}
 }
 
 func scripts() map[string]runner.Script {
@@ -3430,6 +3607,186 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	default:
 		t.Fatal("retried decision did not expose context")
 	}
+}
+
+func TestRehydrateRunnerAttempts(t *testing.T) {
+	f := flow.Flow{Name: "restart-attempts", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+		Workspace: "none", Completion: flow.CompletionAll, Gate: flow.GateAuto,
+	}}}
+	cases := []struct {
+		name              string
+		states            []runner.AttemptState
+		wantFinalFailure  bool
+		wantTerminalState runner.AttemptState
+	}{
+		{name: "primary failed before fallback", states: []runner.AttemptState{runner.AttemptFailed}, wantFinalFailure: true},
+		{name: "fallback interrupted", states: []runner.AttemptState{runner.AttemptFailed, runner.AttemptReserved, runner.AttemptRunning}, wantFinalFailure: true, wantTerminalState: runner.AttemptTerminal},
+		{name: "fallback already succeeded", states: []runner.AttemptState{runner.AttemptFailed, runner.AttemptReserved, runner.AttemptRunning, runner.AttemptSucceeded}, wantFinalFailure: true, wantTerminalState: runner.AttemptSucceeded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { s.Close() })
+			starts := 0
+			restartedRunner := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/executor": {SessionID: "retry-session"}}}
+			restartedRunner.OnStart = func(_, _, _, _ string) error {
+				starts++
+				return nil
+			}
+			first := newEngineOnFileWithFlow(t, s, restartedRunner, t.TempDir(), f)
+			id, err := first.DraftIssue("restart attempt", "", f.Name, "regular", levers.Preset(f, flow.LeverYolo), 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := issueRowByID(t, mustIssues(t, s), id)
+			row.State = "running"
+			if err := s.UpsertIssue(row); err != nil {
+				t.Fatal(err)
+			}
+			runID, err := s.InsertStageRun(store.StageRun{IssueID: id, Stage: "execute", Agent: "executor", Status: "running"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for index, state := range tc.states {
+				kind := runner.AttemptPrimary
+				if index > 0 {
+					kind = runner.AttemptFallback
+				}
+				if err := s.RecordAttempt(context.Background(), runner.Attempt{
+					OperationID: strconv.FormatInt(runID, 10), IssueID: id, Stage: "execute", AgentPackage: "executor",
+					Kind: kind, State: state, FailureClass: runner.FailureExecution,
+					RedactedArgv: []string{"exec", "features.unified_exec=false", "[redacted-prompt]"},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			restarted := newEngineOnFileWithFlow(t, s, restartedRunner, t.TempDir(), f)
+			if err := restarted.Rehydrate(); err != nil {
+				t.Fatal(err)
+			}
+			if starts != 0 {
+				t.Fatalf("rehydrate launched runner %d times", starts)
+			}
+			attempts, err := s.LoadOperation(context.Background(), strconv.FormatInt(runID, 10))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantAttempts := 1
+			if len(tc.states) > 1 {
+				wantAttempts = 2
+			}
+			if len(attempts) != wantAttempts {
+				t.Fatalf("attempt history = %+v, want %d attempt records", attempts, wantAttempts)
+			}
+			if tc.wantTerminalState != "" && attempts[len(attempts)-1].State != tc.wantTerminalState {
+				t.Fatalf("latest attempt = %+v, want %s", attempts[len(attempts)-1], tc.wantTerminalState)
+			}
+			if attempts[len(attempts)-1].RedactedArgv[2] != "[redacted-prompt]" {
+				t.Fatalf("redacted attempt = %+v", attempts[len(attempts)-1])
+			}
+			events, err := s.EventsSince(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			finalFailures := 0
+			for _, event := range events {
+				if event.IssueID == id && event.Type == core.EvStageFailed {
+					finalFailures++
+				}
+			}
+			if (finalFailures > 0) != tc.wantFinalFailure {
+				t.Fatalf("stage failure count = %d, want failure=%t", finalFailures, tc.wantFinalFailure)
+			}
+
+			if tc.name == "primary failed before fallback" {
+				if err := restarted.RetryStage(context.Background(), id); err != nil {
+					t.Fatal(err)
+				}
+				runs, err := s.StageRuns(id)
+				if err != nil || len(runs) != 2 || strconv.FormatInt(runs[0].ID, 10) == strconv.FormatInt(runs[1].ID, 10) {
+					t.Fatalf("explicit retry stage runs = %+v, err = %v", runs, err)
+				}
+				if starts != 1 {
+					t.Fatalf("explicit retry launched runner %d times", starts)
+				}
+			}
+		})
+	}
+}
+
+func TestRehydrateDoesNotCompleteStageFromRunnerSuccessAlone(t *testing.T) {
+	f := flow.Flow{Name: "restart-gates", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+		Workspace: "none", Completion: flow.CompletionAll, Gate: flow.GateApproveArtifact,
+		Artifacts: []string{"result.md"},
+	}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	id := "GH-38"
+	if err := s.UpsertIssue(store.IssueRow{ID: id, Title: "interrupted after runner success", Flow: f.Name, State: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	runID, err := s.InsertStageRun(store.StageRun{IssueID: id, Stage: "execute", Agent: "executor", Status: "succeeded"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID := strconv.FormatInt(runID, 10)
+	for _, attempt := range []runner.Attempt{
+		{OperationID: operationID, IssueID: id, Stage: "execute", AgentPackage: "executor", Kind: runner.AttemptPrimary, State: runner.AttemptFailed, FailureClass: runner.FailureLaunch},
+		{OperationID: operationID, IssueID: id, Stage: "execute", AgentPackage: "executor", Kind: runner.AttemptFallback, State: runner.AttemptSucceeded, FailureClass: runner.FailureLaunch},
+	} {
+		if err := s.RecordAttempt(context.Background(), attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restarted := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, t.TempDir(), f)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawFailure, sawCompletion bool
+	for _, event := range events {
+		if event.IssueID != id {
+			continue
+		}
+		switch event.Type {
+		case core.EvStageFailed:
+			var payload map[string]any
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			sawFailure = payload["final"] == true
+		case core.EvStageCompleted:
+			sawCompletion = true
+		}
+	}
+	if sawCompletion {
+		t.Fatal("rehydration marked a runner success as a completed stage before applying artifact gates")
+	}
+	if !sawFailure {
+		t.Fatal("rehydration did not expose an interrupted stage as a terminal retryable failure")
+	}
+}
+
+func mustIssues(t *testing.T, s *store.Store) []store.IssueRow {
+	t.Helper()
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
 }
 
 func TestDecisionWireEnvelopeFailsBeforePresentation(t *testing.T) {
