@@ -907,16 +907,12 @@ fi
 	}
 	configured := strings.Replace(string(config), "codex_bin: codex", "codex_bin: "+stub, 1)
 	configured = strings.Replace(configured, "pull: true", "pull: false", 1)
-	configured += fmt.Sprintf(`
-codex:
-  policy: fallback_once
-  primary:
-    feature_overrides:
-      unified_exec: false
-  fallback:
-    feature_overrides:
-      unified_exec: true
-`)
+	codexFallbackConfig := "codex:\n  primary:\n    feature_overrides:\n      unified_exec: false\n  fallback:\n    feature_overrides:\n      unified_exec: true\n"
+	defaultCodexConfig := "codex:\n  primary:\n    feature_overrides: {}\n"
+	if !strings.Contains(configured, defaultCodexConfig) {
+		t.Fatalf("generated config missing default Codex block:\n%s", configured)
+	}
+	configured = strings.Replace(configured, defaultCodexConfig, codexFallbackConfig, 1)
 	if err := os.WriteFile(configPath, []byte(configured), 0o644); err != nil {
 		t.Fatal(err)
 	}
