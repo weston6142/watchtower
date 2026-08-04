@@ -216,7 +216,7 @@ func (sv *Server) exec(cmd Command) Response {
 		if err := sv.resolvePlannerOverride(cmd.PlannerBudget); err != nil {
 			return Response{Error: err.Error()}
 		}
-		if err := sv.eng.LaunchIssue(cmd.IssueID); err != nil {
+		if err := sv.eng.LaunchIssueWithBudget(cmd.IssueID, cmd.PlannerBudget); err != nil {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}
@@ -250,7 +250,7 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		// Runs asynchronously; failures surface as stage_failed events
 		// in the log rather than in this response.
-		go sv.eng.StartIssue(context.Background(), cmd.IssueID)
+		go sv.eng.StartIssueWithBudget(context.Background(), cmd.IssueID, cmd.PlannerBudget)
 		return Response{OK: true, IssueID: cmd.IssueID}
 	case "pause_issue":
 		if err := sv.eng.Pause(cmd.IssueID); err != nil {
@@ -271,7 +271,7 @@ func (sv *Server) exec(cmd Command) Response {
 		if err := sv.resolvePlannerOverride(cmd.PlannerBudget); err != nil {
 			return Response{Error: err.Error()}
 		}
-		go sv.eng.RetryStage(context.Background(), cmd.IssueID)
+		go sv.eng.RetryStageWithBudget(context.Background(), cmd.IssueID, cmd.PlannerBudget)
 		return Response{OK: true, IssueID: cmd.IssueID}
 	case "abandon_issue":
 		if err := sv.eng.Abandon(cmd.IssueID); err != nil {

@@ -842,6 +842,7 @@ func runDaemon(args []string) {
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
+		PlannerBudget:      cfg.PlannerBudget,
 		PlanReview:         cfg.PlanReviewSettings(),
 		DecisionIdentities: decisionIdentities,
 		Marshal:            seq, Train: train,
@@ -892,6 +893,7 @@ func runDaemon(args []string) {
 	srv.SetTranscript(transcriptBuffer)
 	srv.SetPricePerMTok(*pricePerMTok)
 	srv.SetBudget(*budget)
+	srv.SetPlannerBudget(cfg.PlannerBudget)
 	// The setup inspector reports what the daemon is running, so these are the
 	// post-override values, and the workspace is the provider actually held —
 	// workspace.Detect picks treehouse purely on PATH and nothing else can see
