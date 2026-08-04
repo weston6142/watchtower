@@ -31,8 +31,11 @@ func fixtureSetupView() proto.SetupView {
 		Repo: proto.RepoSetup{
 			Runner: "codex", Slots: 4, PricePerMTok: 0,
 			CodexBin: "codex", CodexModel: "gpt-5.6-luna", CodexEffort: "xhigh",
-			ClaudeBin: "claude",
-			Pull:      true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
+			CodexPolicy:   "fallback_once",
+			CodexPrimary:  &proto.CodexProfileSetup{Label: "primary", Bin: "codex", Model: "gpt-5.6-luna", Effort: "xhigh", FeatureOverrides: map[string]bool{"unified_exec": false}},
+			CodexFallback: &proto.CodexProfileSetup{Label: "fallback", Bin: "codex", Model: "gpt-5.6-luna", Effort: "xhigh", FeatureOverrides: map[string]bool{"unified_exec": true}},
+			ClaudeBin:     "claude",
+			Pull:          true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
 		},
 		Stages: []proto.StageSetup{
 			{Name: "brainstorm", Gate: "decision_queue", Workspace: "none", Completion: "all",
@@ -86,7 +89,7 @@ func TestSetupHeaderNamesResolvedWorkspace(t *testing.T) {
 	got := ansi.Strip(renderSetup(fixtureSetupState(), 120, 50))
 	for _, want := range []string{
 		"workspace treehouse", "codex", "codex_bin codex", "gpt-5.6-luna", "xhigh",
-		"4 slots", "loaded 12:55", "pull on", "push on",
+		"4 slots", "loaded 12:55", "pull on", "push on", "fallback_once", "features.unified_exec=false",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("header missing %q in:\n%s", want, got)

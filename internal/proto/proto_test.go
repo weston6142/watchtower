@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -967,10 +968,71 @@ func fixtureRepoSetup() RepoSetup {
 }
 
 func fixtureCodexRepoSetup() RepoSetup {
+	primary := &CodexProfileSetup{
+		Label: "primary", Bin: "codex", Model: "gpt-5.6-luna", Effort: "xhigh",
+		FeatureOverrides: map[string]bool{"unified_exec": false},
+		InitialArgv:      []string{"exec", "--json", "-c", "features.unified_exec=false", "[redacted]"},
+		ResumedArgv:      []string{"exec", "resume", "--json", "-c", "features.unified_exec=false", "[redacted]"},
+	}
+	fallback := &CodexProfileSetup{
+		Label: "fallback", Bin: "codex", Model: "gpt-5.6-luna", Effort: "xhigh",
+		FeatureOverrides: map[string]bool{"unified_exec": true},
+		InitialArgv:      []string{"exec", "--json", "-c", "features.unified_exec=true", "[redacted]"},
+		ResumedArgv:      []string{"exec", "resume", "--json", "-c", "features.unified_exec=true", "[redacted]"},
+	}
 	return RepoSetup{
 		Runner: "codex", Slots: 4, CodexBin: "codex",
 		CodexModel: "gpt-5.6-luna", CodexEffort: "xhigh",
+		CodexPolicy: "fallback_once", CodexPrimary: primary, CodexFallback: fallback,
 		ClaudeBin: "claude", Workspace: "treehouse", LoadedAt: "12:55",
+	}
+}
+
+func TestCodexSetupReportsCachedRedactedProfiles(t *testing.T) {
+	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureCodexRepoSetup())
+	r, err := c.Do(Command{Op: "setup_outline"})
+	if err != nil || r.Setup == nil || r.Setup.Repo.CodexPrimary == nil || r.Setup.Repo.CodexFallback == nil {
+		t.Fatalf("setup profiles = %+v, err = %v", r.Setup, err)
+	}
+	if r.Setup.Repo.CodexPolicy != "fallback_once" || !strings.Contains(strings.Join(r.Setup.Repo.CodexPrimary.InitialArgv, " "), "features.unified_exec=false") {
+		t.Fatalf("Codex setup = %+v", r.Setup.Repo)
+	}
+	for _, secret := range []string{"prompt secret", "developer instruction", "thread-secret", "environment-secret", "stderr-secret"} {
+		encoded, _ := json.Marshal(r.Setup.Repo)
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("setup leaked %q", secret)
+		}
+	}
+}
+
+func TestIssueDetailReportsOnlyRedactedRunnerAttempts(t *testing.T) {
+	c, s := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureCodexRepoSetup())
+	created, err := c.Do(Command{Op: "create_issue", Title: "runner attempt", Flow: "default", Preset: "regular"})
+	if err != nil || !created.OK {
+		t.Fatalf("create issue: %+v, err = %v", created, err)
+	}
+	if _, err := s.InsertStageRun(store.StageRun{IssueID: created.IssueID, Stage: "execute", Agent: "executor", Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAttempt(context.Background(), runner.Attempt{
+		OperationID: "1", IssueID: created.IssueID, Stage: "execute", AgentPackage: "executor",
+		Kind: runner.AttemptPrimary, State: runner.AttemptFailed, FailureClass: runner.FailureExecution,
+		RedactedArgv: []string{"exec", "--json", "[redacted-prompt]", "features.unified_exec=false"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := c.Do(Command{Op: "issue_detail", IssueID: created.IssueID})
+	if err != nil || !detail.OK || detail.Detail == nil || len(detail.Detail.Attempts) != 1 {
+		t.Fatalf("issue detail: %+v, err = %v", detail, err)
+	}
+	if detail.Detail.Attempts[0].OperationID != "1" || detail.Detail.Attempts[0].RedactedArgv[2] != "[redacted-prompt]" {
+		t.Fatalf("attempt evidence = %+v", detail.Detail.Attempts)
+	}
+	encoded, _ := json.Marshal(detail.Detail)
+	for _, secret := range []string{"prompt secret", "developer instruction", "thread-secret", "environment-secret", "stderr-secret"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("issue detail leaked %q", secret)
+		}
 	}
 }
 

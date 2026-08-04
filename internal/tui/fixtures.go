@@ -178,7 +178,10 @@ func fixtureSetup() *setupState {
 		Repo: proto.RepoSetup{
 			Runner: "codex", Slots: 4, CodexBin: "codex",
 			CodexModel: "gpt-5.6-luna", CodexEffort: "xhigh", ClaudeBin: "claude",
-			Pull: true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
+			CodexPolicy:   "fallback_once",
+			CodexPrimary:  &proto.CodexProfileSetup{Label: "primary", Bin: "codex", Model: "gpt-5.6-luna", Effort: "xhigh", FeatureOverrides: map[string]bool{"unified_exec": false}},
+			CodexFallback: &proto.CodexProfileSetup{Label: "fallback", Bin: "codex", Model: "gpt-5.6-luna", Effort: "xhigh", FeatureOverrides: map[string]bool{"unified_exec": true}},
+			Pull:          true, Push: true, Workspace: "treehouse", LoadedAt: "12:55",
 		},
 		Stages: []proto.StageSetup{
 			{Name: "brainstorm", Gate: "auto", Workspace: "worktree", Completion: "all",

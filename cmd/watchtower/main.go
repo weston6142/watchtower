@@ -711,6 +711,14 @@ func runDaemon(args []string) {
 	}
 	var run runner.Runner
 	var ws workspace.Provider
+	primaryCodex := cfg.Codex.Primary
+	primaryCodex.Bin, primaryCodex.Model, primaryCodex.Effort = *codexBin, *codexModel, *codexEffort
+	var fallbackCodex *repocfg.CodexProfile
+	if cfg.Codex.Fallback != nil {
+		fallback := *cfg.Codex.Fallback
+		fallback.Bin, fallback.Model, fallback.Effort = primaryCodex.Bin, primaryCodex.Model, primaryCodex.Effort
+		fallbackCodex = &fallback
+	}
 	switch *runnerKind {
 	case "fake":
 		fake := fakeForFlows(flows)
@@ -742,6 +750,7 @@ func runDaemon(args []string) {
 		run = &codex.CodeRunner{
 			Bin: *codexBin, Packages: packages,
 			DefaultModel: *codexModel, DefaultEffort: *codexEffort,
+			PrimaryProfile: primaryCodex, FallbackProfile: fallbackCodex,
 		}
 		ws = workspace.Detect(repo)
 	default:
@@ -826,14 +835,30 @@ func runDaemon(args []string) {
 	if ws != nil {
 		wsName = ws.Name()
 	}
-	srv.SetRepoSetup(proto.RepoSetup{
+	setup := proto.RepoSetup{
 		Runner: *runnerKind, Slots: *slotN, Budget: *budget,
 		PricePerMTok: *pricePerMTok, ClaudeBin: *claudeBin, TestCmd: *testCmd,
 		CodexBin: *codexBin, CodexModel: *codexModel, CodexEffort: *codexEffort,
 		Pull: cfg.Pull, Push: cfg.Push, Workspace: wsName,
 		LoadedAt: time.Now().Format("15:04"),
-	})
+	}
+	if *runnerKind == "codex" {
+		setup.CodexPolicy = cfg.CodexPolicy()
+		setup.CodexPrimary = codexProfileSetup("primary", codex.DescribeCodexProfile(primaryCodex))
+		if fallbackCodex != nil {
+			setup.CodexFallback = codexProfileSetup("fallback", codex.DescribeCodexProfile(*fallbackCodex))
+		}
+	}
+	srv.SetRepoSetup(setup)
 	fatal(srv.Serve(l))
+}
+
+func codexProfileSetup(label string, profile codex.CodexProfileSetup) *proto.CodexProfileSetup {
+	return &proto.CodexProfileSetup{
+		Label: label, Bin: profile.Bin, Model: profile.Model, Effort: profile.Effort,
+		FeatureOverrides: profile.FeatureOverrides,
+		InitialArgv:      profile.InitialArgv, ResumedArgv: profile.ResumedArgv,
+	}
 }
 
 func runStop(args []string) error {
