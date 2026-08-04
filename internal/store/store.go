@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 const schema = `
@@ -41,7 +43,20 @@ CREATE TABLE IF NOT EXISTS stage_checkpoints(
   status TEXT NOT NULL,
   session_id TEXT,
   failure TEXT,
-  created_at TEXT NOT NULL);
+	created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS runner_attempts(
+  operation_id TEXT NOT NULL,
+  attempt_kind TEXT NOT NULL,
+  issue_id TEXT NOT NULL DEFAULT '',
+  stage TEXT NOT NULL DEFAULT '',
+  agent TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT '',
+  failure_class TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL DEFAULT '',
+  tokens INTEGER NOT NULL DEFAULT 0,
+  redacted_argv TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(operation_id, attempt_kind));
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, question TEXT, options TEXT,
   recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
@@ -478,6 +493,70 @@ func (s *Store) StageRuns(issueID string) ([]StageRun, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) RecordAttempt(_ context.Context, attempt runner.Attempt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	argv, err := json.Marshal(attempt.RedactedArgv)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO runner_attempts(
+			operation_id,attempt_kind,issue_id,stage,agent,state,failure_class,session_id,tokens,redacted_argv,updated_at
+		 ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(operation_id,attempt_kind) DO UPDATE SET
+			issue_id=excluded.issue_id,
+			stage=excluded.stage,
+			agent=excluded.agent,
+			state=excluded.state,
+			failure_class=excluded.failure_class,
+			session_id=excluded.session_id,
+			tokens=excluded.tokens,
+			redacted_argv=excluded.redacted_argv,
+			updated_at=excluded.updated_at`,
+		attempt.OperationID, string(attempt.Kind), attempt.IssueID, attempt.Stage, attempt.AgentPackage,
+		string(attempt.State), string(attempt.FailureClass), attempt.SessionID, attempt.Tokens,
+		string(argv), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) LoadOperation(_ context.Context, operationID string) ([]runner.Attempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(
+		`SELECT operation_id,attempt_kind,issue_id,stage,agent,state,failure_class,session_id,tokens,redacted_argv
+		 FROM runner_attempts WHERE operation_id=?
+		 ORDER BY CASE attempt_kind WHEN 'primary' THEN 0 WHEN 'fallback' THEN 1 ELSE 2 END`, operationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var attempts []runner.Attempt
+	for rows.Next() {
+		var attempt runner.Attempt
+		var kind, state, failureClass, argv string
+		if err := rows.Scan(&attempt.OperationID, &kind, &attempt.IssueID, &attempt.Stage, &attempt.AgentPackage,
+			&state, &failureClass, &attempt.SessionID, &attempt.Tokens, &argv); err != nil {
+			return nil, err
+		}
+		attempt.Kind = runner.AttemptKind(kind)
+		attempt.State = runner.AttemptState(state)
+		attempt.FailureClass = runner.FailureClass(failureClass)
+		if argv == "" {
+			argv = "[]"
+		}
+		if err := json.Unmarshal([]byte(argv), &attempt.RedactedArgv); err != nil {
+			return nil, fmt.Errorf("decode runner attempt argv: %w", err)
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, rows.Err()
+}
+
+func (s *Store) RunnerAttempts(operationID string) ([]runner.Attempt, error) {
+	return s.LoadOperation(context.Background(), operationID)
 }
 
 func (s *Store) InsertStageCheckpoint(checkpoint StageCheckpoint) (int64, error) {

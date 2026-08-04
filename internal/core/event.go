@@ -52,6 +52,7 @@ const (
 	EvIssueAbandoned             EventType = "issue_abandoned"
 	EvStageKilled                EventType = "stage_killed"
 	EvLeverChanged               EventType = "lever_changed"
+	EvRunnerAttempt              EventType = "runner_attempt"
 )
 
 type Event struct {
