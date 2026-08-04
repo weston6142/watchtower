@@ -73,14 +73,26 @@ func (l *Ledger) Next() Candidate {
 }
 
 func (l *Ledger) read(source Source) (Source, bool) {
+	if cached, ok := l.cached(source); ok {
+		return cached, false
+	}
+	l.observe(source)
+	return source, true
+}
+
+func (l *Ledger) cached(source Source) (Source, bool) {
+	fingerprints := l.observed[source.ID]
+	if cached, ok := fingerprints[source.Fingerprint]; ok {
+		return cached, true
+	}
+	return Source{}, false
+}
+
+func (l *Ledger) observe(source Source) {
 	fingerprints := l.observed[source.ID]
 	if fingerprints == nil {
 		fingerprints = make(map[string]Source)
 		l.observed[source.ID] = fingerprints
 	}
-	if cached, ok := fingerprints[source.Fingerprint]; ok {
-		return cached, false
-	}
 	fingerprints[source.Fingerprint] = source
-	return source, true
 }

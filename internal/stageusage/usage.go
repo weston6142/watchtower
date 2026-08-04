@@ -38,13 +38,13 @@ var (
 )
 
 type DimensionLimit struct {
-	Warning int64
-	Hard    int64
+	Warning int64 `yaml:"warn" json:"warn"`
+	Hard    int64 `yaml:"hard" json:"hard"`
 }
 
 type ElapsedLimit struct {
-	Warning time.Duration
-	Hard    time.Duration
+	Warning time.Duration `yaml:"warn" json:"warn"`
+	Hard    time.Duration `yaml:"hard" json:"hard"`
 }
 
 type Limits struct {

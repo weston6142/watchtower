@@ -25,10 +25,11 @@ type StreamEvent struct {
 	// Tools holds one-line summaries of the tool_use blocks in this message,
 	// already prefixed. They are what an operator watching a stage sees while
 	// the agent is working rather than talking.
-	Tools     []string
-	ToolCalls []runner.ToolCall
-	Tokens    int
-	IsError   bool
+	Tools       []string
+	ToolCalls   []runner.ToolCall
+	Tokens      int
+	TokensKnown bool
+	IsError     bool
 }
 
 type rawLine struct {
@@ -92,7 +93,7 @@ func ParseLine(line []byte) StreamEvent {
 		if u != nil {
 			tok = u.InputTokens + u.OutputTokens
 		}
-		return StreamEvent{Kind: KindResult, Tokens: tok, IsError: r.IsError}
+		return StreamEvent{Kind: KindResult, Tokens: tok, TokensKnown: u != nil, IsError: r.IsError}
 	default:
 		return StreamEvent{Kind: KindOther}
 	}

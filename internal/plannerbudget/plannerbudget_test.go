@@ -60,6 +60,7 @@ func TestProfileRejectsUnboundedAndInvalidLimits(t *testing.T) {
 		{Calls: stageusage.DimensionLimit{Warning: 2, Hard: 2}, Tokens: fixtureProfile().Tokens, Elapsed: fixtureProfile().Elapsed},
 		{Calls: stageusage.DimensionLimit{Warning: 1, Hard: math.MaxInt64}, Tokens: fixtureProfile().Tokens, Elapsed: fixtureProfile().Elapsed},
 		{Calls: fixtureProfile().Calls, Tokens: fixtureProfile().Tokens, Elapsed: stageusage.ElapsedLimit{Warning: 0, Hard: time.Minute}},
+		{Calls: fixtureProfile().Calls, Tokens: fixtureProfile().Tokens, Elapsed: stageusage.ElapsedLimit{Warning: time.Minute, Hard: time.Duration(math.MaxInt64)}},
 		{Calls: fixtureProfile().Calls, Tokens: fixtureProfile().Tokens, Elapsed: stageusage.ElapsedLimit{Warning: 2 * time.Minute, Hard: time.Minute}},
 	}
 	for i, profile := range cases {

@@ -54,7 +54,9 @@ func (p Profile) Validate() error {
 	if err := validateDimension(p.Tokens); err != nil {
 		return err
 	}
-	if p.Elapsed.Warning <= 0 || p.Elapsed.Hard <= 0 || p.Elapsed.Warning >= p.Elapsed.Hard {
+	if p.Elapsed.Warning <= 0 || p.Elapsed.Hard <= 0 ||
+		p.Elapsed.Warning == time.Duration(math.MaxInt64) || p.Elapsed.Hard == time.Duration(math.MaxInt64) ||
+		p.Elapsed.Warning >= p.Elapsed.Hard {
 		return errors.New("planner elapsed limits must be positive and warning must be below hard")
 	}
 	return nil

@@ -94,9 +94,9 @@ func TestLoadPlannerBudgetYAMLAndRejectsInvalidDurations(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`planner_budget:
-  calls: {warn: 24, hard: 32}
-  tokens: {warn: 200000, hard: 250000}
-  elapsed: {warn: 8m, hard: 10m}
+  calls: {warn: 3, hard: 4}
+  tokens: {warn: 30, hard: 40}
+  elapsed: {warn: 3s, hard: 4s}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -104,9 +104,10 @@ func TestLoadPlannerBudgetYAMLAndRejectsInvalidDurations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := plannerbudget.DefaultProfile()
-	if cfg.PlannerBudget != want || cfg.PlannerBudget.Elapsed.Warning != 8*time.Minute {
-		t.Fatalf("planner budget = %+v want %+v", cfg.PlannerBudget, want)
+	if cfg.PlannerBudget.Calls.Warning != 3 || cfg.PlannerBudget.Calls.Hard != 4 ||
+		cfg.PlannerBudget.Tokens.Warning != 30 || cfg.PlannerBudget.Tokens.Hard != 40 ||
+		cfg.PlannerBudget.Elapsed.Warning != 3*time.Second || cfg.PlannerBudget.Elapsed.Hard != 4*time.Second {
+		t.Fatalf("planner budget = %+v", cfg.PlannerBudget)
 	}
 
 	for _, body := range []string{

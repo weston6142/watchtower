@@ -362,6 +362,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 	gotComplete := false
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64<<10), maxLineBytes)
+	stopReading := false
 	for scanner.Scan() {
 		event := ParseLine(scanner.Bytes())
 		switch event.Kind {
@@ -375,6 +376,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 			if err != nil {
 				result.failed = err
 				_ = cmd.Process.Kill()
+				stopReading = true
 				continue
 			}
 			if !decision.Allowed {
@@ -393,6 +395,9 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 			if result.failureClass == "" {
 				result.failureClass = classifyFailureMessage(event.Error)
 			}
+		}
+		if stopReading {
+			break
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {

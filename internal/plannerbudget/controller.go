@@ -31,21 +31,39 @@ func (c *Controller) Add(source Source) { c.ledger.Add(source) }
 func (c *Controller) Next() Candidate { return c.ledger.Next() }
 
 func (c *Controller) Read(source Source) ReadResult {
-	read, charged := c.ledger.read(source)
-	if !charged {
-		return ReadResult{Source: read, Content: read.Content, Snapshot: c.meter.Snapshot()}
+	lease, result := c.AdmitSource(source)
+	if result.Err != nil || !result.Charged {
+		return result
 	}
 	reservation := source.Reservation
 	if reservation <= 0 {
 		reservation = 1
 	}
-	lease, _, err := c.meter.Admit(source.ID, reservation)
-	if err != nil {
-		return ReadResult{Source: read, Content: read.Content, Charged: true, Snapshot: c.meter.Snapshot(), Err: err}
-	}
 	actual := reservation
 	snapshot, err := c.meter.Reconcile(lease, &actual, nil)
-	return ReadResult{Source: read, Content: read.Content, Charged: true, Snapshot: snapshot, Err: err}
+	result.Snapshot = snapshot
+	result.Err = err
+	return result
+}
+
+// AdmitSource reserves a new source read without reconciling it. Unchanged
+// sources are returned from the attempt ledger without consuming budget.
+func (c *Controller) AdmitSource(source Source) (stageusage.Lease, ReadResult) {
+	if cached, ok := c.ledger.cached(source); ok {
+		return stageusage.Lease{}, ReadResult{
+			Source: cached, Content: cached.Content, Snapshot: c.meter.Snapshot(),
+		}
+	}
+	reservation := source.Reservation
+	if reservation <= 0 {
+		reservation = 1
+	}
+	lease, snapshot, err := c.meter.Admit(source.ID, reservation)
+	if err != nil {
+		return stageusage.Lease{}, ReadResult{Source: source, Content: source.Content, Snapshot: snapshot, Err: err}
+	}
+	c.ledger.observe(source)
+	return lease, ReadResult{Source: source, Content: source.Content, Charged: true, Snapshot: snapshot}
 }
 
 func (c *Controller) Admit(source string, reservation int64) (stageusage.Lease, stageusage.Snapshot, error) {

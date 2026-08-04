@@ -59,17 +59,23 @@ type Config struct {
 }
 
 type plannerExplorationGate struct {
-	mu         sync.Mutex
-	controller *plannerbudget.Controller
+	mu          sync.Mutex
+	controller  *plannerbudget.Controller
+	leases      map[string]stageusage.Lease
+	nextLeaseID uint64
+	onSnapshot  func(stageusage.Snapshot)
 }
 
 func (g *plannerExplorationGate) Admit(_ context.Context, call runner.ToolCall) (runner.ToolDecision, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	result := g.controller.Read(plannerbudget.Source{
+	lease, result := g.controller.AdmitSource(plannerbudget.Source{
 		ID: call.SourceID, Fingerprint: call.Fingerprint, Reservation: call.Reservation,
 	})
 	if result.Err != nil {
+		if g.onSnapshot != nil {
+			g.onSnapshot(result.Snapshot)
+		}
 		if errors.Is(result.Err, stageusage.ErrAdmissionClosed) {
 			return runner.ToolDecision{}, nil
 		}
@@ -78,11 +84,31 @@ func (g *plannerExplorationGate) Admit(_ context.Context, call runner.ToolCall) 
 	if !result.Charged {
 		return runner.ToolDecision{CachedContent: result.Content}, nil
 	}
-	return runner.ToolDecision{Allowed: true, LeaseID: call.SourceID}, nil
+	g.nextLeaseID++
+	leaseID := fmt.Sprintf("planner-lease-%d", g.nextLeaseID)
+	if g.leases == nil {
+		g.leases = make(map[string]stageusage.Lease)
+	}
+	g.leases[leaseID] = lease
+	if g.onSnapshot != nil {
+		g.onSnapshot(result.Snapshot)
+	}
+	return runner.ToolDecision{Allowed: true, LeaseID: leaseID}, nil
 }
 
-func (g *plannerExplorationGate) Complete(context.Context, runner.ToolDecision, *int64, error) error {
-	return nil
+func (g *plannerExplorationGate) Complete(_ context.Context, decision runner.ToolDecision, actual *int64, operationErr error) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	lease, ok := g.leases[decision.LeaseID]
+	if !ok {
+		return stageusage.ErrUnknownLease
+	}
+	delete(g.leases, decision.LeaseID)
+	snapshot, err := g.controller.Reconcile(lease, actual, operationErr)
+	if g.onSnapshot != nil {
+		g.onSnapshot(snapshot)
+	}
+	return err
 }
 
 type Sequencer interface {
@@ -2420,6 +2446,7 @@ func (e *Engine) runStageOnce(
 		"merge_barrier": st.MergeBarrier})
 	var plannerController *plannerbudget.Controller
 	var plannerGate runner.ExplorationGate
+	var plannerRunner runner.PlannerRunner
 	if st.Name == "plan" {
 		profile, resolveErr := plannerbudget.Resolve(e.cfg.PlannerBudget, plannerOverride)
 		if resolveErr != nil {
@@ -2435,7 +2462,26 @@ func (e *Engine) runStageOnce(
 		if controllerErr != nil {
 			return fmt.Errorf("planner budget: %w", controllerErr)
 		}
-		plannerGate = &plannerExplorationGate{controller: plannerController}
+		var ok bool
+		plannerRunner, ok = e.cfg.Runner.(runner.PlannerRunner)
+		if !ok {
+			err := fmt.Errorf("planner runner does not implement exploration admission")
+			outcome := plannerController.Finish(err)
+			e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
+				"stage": st.Name, "attempt": attempt,
+				"outcome": string(outcome), "snapshot": plannerController.Snapshot(),
+			})
+			return err
+		}
+		plannerGate = &plannerExplorationGate{
+			controller: plannerController,
+			onSnapshot: func(snapshot stageusage.Snapshot) {
+				e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
+					"stage": st.Name, "attempt": attempt,
+					"outcome": string(plannerController.Outcome()), "snapshot": snapshot,
+				})
+			},
+		}
 		e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
 			"stage": st.Name, "attempt": attempt,
 			"outcome": string(plannerbudget.OutcomeNormal), "snapshot": plannerController.Snapshot(),
@@ -2446,6 +2492,8 @@ func (e *Engine) runStageOnce(
 		pkg string
 		res runner.Result
 	}
+	var plannerTokensMu sync.Mutex
+	plannerTokensRecorded := false
 	dones := make(chan agentDone, len(st.Agents))
 	runAgent := func(a flow.AgentRef) {
 		runID, insErr := e.cfg.Store.InsertStageRun(store.StageRun{
@@ -2459,7 +2507,7 @@ func (e *Engine) runStageOnce(
 		asks := make(chan runner.Ask)
 		var resc <-chan runner.Result
 		if plannerGate != nil {
-			if plannerRunner, ok := e.cfg.Runner.(runner.PlannerRunner); ok {
+			if plannerRunner != nil {
 				resc = plannerRunner.RunPlanner(agentCtx, is.id, st.Name, a.Package, workdir, asks, plannerGate)
 			} else {
 				resc = e.cfg.Runner.Run(agentCtx, is.id, st.Name, a.Package, workdir, asks)
@@ -2479,7 +2527,14 @@ func (e *Engine) runStageOnce(
 					}
 					tokens := res.Tokens
 					if plannerController != nil {
-						tokens = int(plannerController.Snapshot().ChargedTokens)
+						plannerTokensMu.Lock()
+						if !plannerTokensRecorded {
+							tokens = int(plannerController.Snapshot().ChargedTokens)
+							plannerTokensRecorded = true
+						} else {
+							tokens = 0
+						}
+						plannerTokensMu.Unlock()
 					}
 					if err := e.cfg.Store.FinishStageRun(runID, status, res.SessionID, tokens); err != nil && res.Err == nil {
 						res.Err = fmt.Errorf("finish stage run: %w", err)
@@ -2523,18 +2578,18 @@ func (e *Engine) runStageOnce(
 			break
 		}
 	}
-	if st.Completion == flow.CompletionAll && firstErr != nil {
-		return firstErr
-	}
-	if st.Completion == flow.CompletionAny && succeeded == 0 {
-		return firstErr
-	}
 	if plannerController != nil {
 		outcome := plannerController.Finish(firstErr)
 		e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
 			"stage": st.Name, "attempt": attempt,
 			"outcome": string(outcome), "snapshot": plannerController.Snapshot(),
 		})
+	}
+	if st.Completion == flow.CompletionAll && firstErr != nil {
+		return firstErr
+	}
+	if st.Completion == flow.CompletionAny && succeeded == 0 {
+		return firstErr
 	}
 	if st.MergeBarrier {
 		if err := e.writeVerificationReceipt(ctx, is, workdir); err != nil {
