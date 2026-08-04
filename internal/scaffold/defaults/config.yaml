@@ -5,6 +5,10 @@ packages: .watchtower/packages
 runner: codex         # codex|claude|fake
 slots: 4              # concurrent heavy slots
 budget: 0             # per-issue token budget (0=off)
+planner_budget:
+  calls: {warn: 24, hard: 32}
+  tokens: {warn: 200000, hard: 250000}
+  elapsed: {warn: 8m, hard: 10m}
 price_per_mtok: 0     # estimated $/Mtok (0=hide cost)
 codex_bin: codex
 codex_model: gpt-5.6-luna

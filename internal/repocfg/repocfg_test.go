@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/weston6142/watchtower/internal/plannerbudget"
 )
 
 func TestLoadPlanReviewSettings(t *testing.T) {
@@ -78,6 +81,45 @@ func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	}
 	if cfg.Packages != filepath.Join(root, ".watchtower", "packages") {
 		t.Fatalf("packages not resolved: %s", cfg.Packages)
+	}
+	if cfg.PlannerBudget != plannerbudget.DefaultProfile() {
+		t.Fatalf("planner budget defaults = %+v", cfg.PlannerBudget)
+	}
+}
+
+func TestLoadPlannerBudgetYAMLAndRejectsInvalidDurations(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".watchtower")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`planner_budget:
+  calls: {warn: 24, hard: 32}
+  tokens: {warn: 200000, hard: 250000}
+  elapsed: {warn: 8m, hard: 10m}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := plannerbudget.DefaultProfile()
+	if cfg.PlannerBudget != want || cfg.PlannerBudget.Elapsed.Warning != 8*time.Minute {
+		t.Fatalf("planner budget = %+v want %+v", cfg.PlannerBudget, want)
+	}
+
+	for _, body := range []string{
+		"planner_budget:\n  elapsed: {warn: 0s, hard: 10m}\n",
+		"planner_budget:\n  elapsed: {warn: -1s, hard: 10m}\n",
+		"planner_budget:\n  elapsed: {warn: 8m, hard: 8m}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(root); err == nil {
+			t.Fatalf("invalid planner budget accepted: %s", body)
+		}
 	}
 }
 

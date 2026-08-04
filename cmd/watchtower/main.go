@@ -28,6 +28,7 @@ import (
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/priority"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
@@ -45,6 +46,60 @@ import (
 func defaultData() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "watchtower")
+}
+
+type plannerBudgetFlags struct {
+	callsWarn, callsHard     int64
+	tokensWarn, tokensHard   int64
+	elapsedWarn, elapsedHard time.Duration
+}
+
+func bindPlannerBudgetFlags(fs *flag.FlagSet) *plannerBudgetFlags {
+	values := &plannerBudgetFlags{}
+	fs.Int64Var(&values.callsWarn, "planner-calls-warn", -1, "planner calls warning threshold")
+	fs.Int64Var(&values.callsHard, "planner-calls-hard", -1, "planner calls hard threshold")
+	fs.Int64Var(&values.tokensWarn, "planner-tokens-warn", -1, "planner tokens warning threshold")
+	fs.Int64Var(&values.tokensHard, "planner-tokens-hard", -1, "planner tokens hard threshold")
+	fs.DurationVar(&values.elapsedWarn, "planner-elapsed-warn", 0, "planner elapsed warning threshold")
+	fs.DurationVar(&values.elapsedHard, "planner-elapsed-hard", 0, "planner elapsed hard threshold")
+	return values
+}
+
+func plannerBudgetOverride(fs *flag.FlagSet, values *plannerBudgetFlags) *plannerbudget.Override {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	override := &plannerbudget.Override{}
+	if set["planner-calls-warn"] || set["planner-calls-hard"] {
+		override.Calls = &plannerbudget.DimensionOverride{}
+		if set["planner-calls-warn"] {
+			override.Calls.Warning = &values.callsWarn
+		}
+		if set["planner-calls-hard"] {
+			override.Calls.Hard = &values.callsHard
+		}
+	}
+	if set["planner-tokens-warn"] || set["planner-tokens-hard"] {
+		override.Tokens = &plannerbudget.DimensionOverride{}
+		if set["planner-tokens-warn"] {
+			override.Tokens.Warning = &values.tokensWarn
+		}
+		if set["planner-tokens-hard"] {
+			override.Tokens.Hard = &values.tokensHard
+		}
+	}
+	if set["planner-elapsed-warn"] || set["planner-elapsed-hard"] {
+		override.Elapsed = &plannerbudget.ElapsedOverride{}
+		if set["planner-elapsed-warn"] {
+			override.Elapsed.Warning = &values.elapsedWarn
+		}
+		if set["planner-elapsed-hard"] {
+			override.Elapsed.Hard = &values.elapsedHard
+		}
+	}
+	if override.Calls == nil && override.Tokens == nil && override.Elapsed == nil {
+		return nil
+	}
+	return override
 }
 
 func main() {
@@ -174,6 +229,7 @@ func main() {
 		preset := fs.String("preset", "regular", "yolo|regular|strict")
 		prio := fs.Int("priority", 0, "priority")
 		draft := fs.Bool("draft", false, "save to the backlog instead of starting")
+		plannerFlags := bindPlannerBudgetFlags(fs)
 		var attachments attachFlag
 		var dependsOn stringListFlag
 		fs.Var(&attachments, "attach", "attach a file to the issue (repeatable)")
@@ -192,7 +248,8 @@ func main() {
 		r := mustDo(c, proto.Command{Op: "create_issue", Title: *title, Body: *body,
 			Flow: *flowName, Preset: *preset, Priority: *prio, Attach: resolved,
 			DependsOn: dependsOn})
-		mustDo(c, proto.Command{Op: "start_issue", IssueID: r.IssueID})
+		mustDo(c, proto.Command{Op: "start_issue", IssueID: r.IssueID,
+			PlannerBudget: plannerBudgetOverride(fs, plannerFlags)})
 		fmt.Println(r.IssueID)
 	case "decisions":
 		fs := flag.NewFlagSet("decisions", flag.ExitOnError)
@@ -420,6 +477,7 @@ func main() {
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		plannerFlags := bindPlannerBudgetFlags(fs)
 		fs.Parse(args)
 		if len(fs.Args()) != 1 {
 			fmt.Fprintf(os.Stderr, "usage: watchtower %s <issue-id>\n", cmd)
@@ -432,7 +490,8 @@ func main() {
 			"kill": "kill_stage", "retry": "retry_stage",
 			"abandon": "abandon_issue", "launch": "launch_issue",
 		}
-		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0]})
+		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0],
+			PlannerBudget: plannerBudgetOverride(fs, plannerFlags)})
 		fmt.Println(cmd, fs.Args()[0])
 	case "lever":
 		fs := flag.NewFlagSet("lever", flag.ExitOnError)

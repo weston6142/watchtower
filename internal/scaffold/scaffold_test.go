@@ -45,6 +45,9 @@ func TestInitCreatesTree(t *testing.T) {
 		"codex_bin: codex",
 		"codex_model: gpt-5.6-luna",
 		"codex_effort: xhigh",
+		"planner_budget:",
+		"warn: 24",
+		"hard: 32",
 	} {
 		if !strings.Contains(string(cfg), want) {
 			t.Errorf("generated config missing %q:\n%s", want, cfg)
@@ -71,13 +74,41 @@ func TestScaffoldCodexDefaultsAreExplicitAndTerminal(t *testing.T) {
 	if !strings.Contains(string(generatedBytes), "codex:\n") || !strings.Contains(string(generatedBytes), "feature_overrides: {}") {
 		t.Fatalf("generated config omits explicit primary feature map:\n%s", generatedBytes)
 	}
-
 	shippedBytes, err := os.ReadFile(filepath.Join("..", "..", "dist", "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(shippedBytes), "codex:\n") || !strings.Contains(string(shippedBytes), "feature_overrides: {}") || strings.Contains(string(shippedBytes), "fallback:") {
 		t.Fatalf("shipped config does not document terminal Codex defaults:\n%s", shippedBytes)
+	}
+}
+
+func TestScaffoldShipsPlannerBudgetDefaults(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	generated, err := repocfg.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shippedBytes, err := os.ReadFile(filepath.Join("..", "..", "dist", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shippedRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(shippedRoot, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shippedRoot, ".watchtower", "config.yaml"), shippedBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shipped, err := repocfg.Load(shippedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generated.PlannerBudget != shipped.PlannerBudget {
+		t.Fatalf("generated planner budget=%+v shipped=%+v", generated.PlannerBudget, shipped.PlannerBudget)
 	}
 }
 
