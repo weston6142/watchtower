@@ -129,12 +129,14 @@ type overviewMsg struct {
 	generation uint64
 	overview   *proto.Overview
 	err        error
+	transport  bool
 }
 
 type detailMsg struct {
 	generation uint64
 	detail     *proto.IssueDetail
 	err        error
+	transport  bool
 }
 
 type answerMsg struct {
@@ -142,24 +144,28 @@ type answerMsg struct {
 	decisionID int64
 	response   proto.Response
 	err        error
+	transport  bool
 }
 
 type archMsg struct {
 	generation uint64
 	arch       *archmap.Map
 	err        error
+	transport  bool
 }
 
 type proposalsMsg struct {
 	generation uint64
 	proposals  []store.ProposalRow
 	err        error
+	transport  bool
 }
 
 type transcriptMsg struct {
 	generation uint64
 	lines      []string
 	err        error
+	transport  bool
 }
 
 type confirmState struct {
@@ -177,6 +183,7 @@ type commandMsg struct {
 	generation uint64
 	response   proto.Response
 	err        error
+	transport  bool
 }
 
 type leverApplyMsg struct {
@@ -184,12 +191,14 @@ type leverApplyMsg struct {
 	response   proto.Response
 	values     map[string]string
 	err        error
+	transport  bool
 }
 
 type setupMsg struct {
 	generation uint64
 	view       *proto.SetupView
 	err        error
+	transport  bool
 }
 
 type setupPromptMsg struct {
@@ -198,12 +207,14 @@ type setupPromptMsg struct {
 	pkg        string
 	lines      []string
 	err        error
+	transport  bool
 }
 
 type createIssueMsg struct {
 	generation uint64
 	response   proto.Response
 	err        error
+	transport  bool
 }
 
 type backlogState struct{ Sel int }
@@ -354,6 +365,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.staleGeneration(msg.generation) {
 			return m, nil
 		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -367,6 +381,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.staleGeneration(msg.generation) {
 			return m, nil
 		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -377,6 +394,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transcriptMsg:
 		if m.staleGeneration(msg.generation) {
 			return m, nil
+		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -393,6 +413,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case detailMsg:
 		if m.staleGeneration(msg.generation) {
 			return m, nil
+		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -429,6 +452,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.staleGeneration(msg.generation) {
 			return m, nil
 		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -445,6 +471,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.staleGeneration(msg.generation) {
 			return m, nil
 		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -456,6 +485,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case leverApplyMsg:
 		if m.staleGeneration(msg.generation) {
 			return m, nil
+		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -475,6 +507,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.staleGeneration(msg.generation) {
 			return m, nil
 		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
+		}
 		m.wantSetup = false
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -486,6 +521,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setupPromptMsg:
 		if m.staleGeneration(msg.generation) {
 			return m, nil
+		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
 		}
 		if m.setup == nil {
 			// f closed the panel while the fetch was in flight. Opening the
@@ -511,6 +549,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.staleGeneration(msg.generation) {
 			return m, nil
 		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -527,6 +568,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case archMsg:
 		if m.staleGeneration(msg.generation) {
 			return m, nil
+		}
+		if msg.transport {
+			return m, m.beginReconnect(msg.err)
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -1087,7 +1131,7 @@ func (m Model) issueCommand(issueID, op string) tea.Cmd {
 	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: op, IssueID: issueID})
-		return commandMsg{generation: generation, response: r, err: err}
+		return commandMsg{generation: generation, response: r, err: err, transport: err != nil}
 	}
 }
 
@@ -1126,7 +1170,7 @@ func (m *Model) openSetup() tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "setup_outline", IssueID: issueID})
 		if err != nil {
-			return setupMsg{generation: generation, err: err}
+			return setupMsg{generation: generation, err: err, transport: true}
 		}
 		if !r.OK {
 			return setupMsg{generation: generation, err: errors.New(r.Error)}
@@ -1164,7 +1208,7 @@ func (m Model) fetchSetupPrompt(stage, pkg string) tea.Cmd {
 		r, err := client.Do(proto.Command{Op: "setup_prompt", Stage: stage, Package: pkg,
 			IssueID: issueID, Flow: flowName})
 		if err != nil {
-			return setupPromptMsg{generation: generation, stage: stage, pkg: pkg, err: err}
+			return setupPromptMsg{generation: generation, stage: stage, pkg: pkg, err: err, transport: true}
 		}
 		if !r.OK {
 			return setupPromptMsg{generation: generation, stage: stage, pkg: pkg, err: errors.New(r.Error)}
@@ -1215,7 +1259,7 @@ func (m Model) applyLevers() tea.Cmd {
 			}
 			r, err := client.Do(proto.Command{Op: "set_lever", IssueID: issueID, Stage: stage, Lever: values[stage]})
 			if err != nil {
-				return leverApplyMsg{generation: generation, err: err}
+				return leverApplyMsg{generation: generation, err: err, transport: true}
 			}
 			if !r.OK {
 				return leverApplyMsg{generation: generation, response: r}
@@ -1263,14 +1307,14 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority,
 			Attach: attachments, DependsOn: parseDependencies(modal.DependsOn)})
 		if err != nil {
-			return createIssueMsg{generation: generation, err: err}
+			return createIssueMsg{generation: generation, err: err, transport: true}
 		}
 		if !r.OK {
 			return createIssueMsg{generation: generation, response: r}
 		}
 		started, err := client.Do(proto.Command{Op: "start_issue", IssueID: r.IssueID})
 		if err != nil {
-			return createIssueMsg{generation: generation, err: err}
+			return createIssueMsg{generation: generation, err: err, transport: true}
 		}
 		if !started.OK {
 			return createIssueMsg{generation: generation, response: started}
@@ -1310,7 +1354,7 @@ func (m Model) modalCommand(modal modalState, op, issueID string) tea.Cmd {
 		r, err := client.Do(proto.Command{Op: op, IssueID: issueID, Title: modal.Title,
 			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority,
 			Attach: attachments, DependsOn: parseDependencies(modal.DependsOn)})
-		return createIssueMsg{generation: generation, response: r, err: err}
+		return createIssueMsg{generation: generation, response: r, err: err, transport: err != nil}
 	}
 }
 
@@ -1465,7 +1509,7 @@ func (m Model) answerDecision(option int) tea.Cmd {
 	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "answer_decision", DecisionID: decisionID, Option: &option, Actor: actor})
-		return answerMsg{generation: generation, decisionID: decisionID, response: r, err: err}
+		return answerMsg{generation: generation, decisionID: decisionID, response: r, err: err, transport: err != nil}
 	}
 }
 
@@ -1480,7 +1524,7 @@ func (m Model) answerDecisionText(text string) tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{
 			Op: "answer_decision", DecisionID: decisionID, Text: text, Actor: actor})
-		return answerMsg{generation: generation, decisionID: decisionID, response: r, err: err}
+		return answerMsg{generation: generation, decisionID: decisionID, response: r, err: err, transport: err != nil}
 	}
 }
 
@@ -1493,7 +1537,7 @@ func (m Model) fetchDetail(issueID string) tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "issue_detail", IssueID: issueID})
 		if err != nil {
-			return detailMsg{generation: generation, err: err}
+			return detailMsg{generation: generation, err: err, transport: true}
 		}
 		if !r.OK {
 			return detailMsg{generation: generation, err: errors.New(r.Error)}
@@ -1512,7 +1556,7 @@ func (m Model) fetchArch() tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "arch_map", Repo: repo})
 		if err != nil {
-			return archMsg{generation: generation, err: err}
+			return archMsg{generation: generation, err: err, transport: true}
 		}
 		if !r.OK {
 			return archMsg{generation: generation, err: errors.New(r.Error)}
@@ -1592,7 +1636,7 @@ func (m Model) pollOverview() tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "overview"})
 		if err != nil {
-			return overviewMsg{generation: generation, err: err}
+			return overviewMsg{generation: generation, err: err, transport: true}
 		}
 		if !r.OK {
 			return overviewMsg{generation: generation, err: errors.New(r.Error)}
@@ -1843,7 +1887,7 @@ func (m Model) fetchProposals() tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "list_proposals"})
 		if err != nil {
-			return proposalsMsg{generation: generation, err: err}
+			return proposalsMsg{generation: generation, err: err, transport: true}
 		}
 		if !r.OK {
 			return proposalsMsg{generation: generation, err: errors.New(r.Error)}
@@ -1865,7 +1909,7 @@ func (m Model) resolveProposal(accept bool) tea.Cmd {
 			_, err = client.Do(proto.Command{Op: "start_issue", IssueID: r.IssueID})
 		}
 		if err != nil {
-			return proposalsMsg{generation: generation, err: err}
+			return proposalsMsg{generation: generation, err: err, transport: true}
 		}
 		if !r.OK {
 			return proposalsMsg{generation: generation, err: errors.New(r.Error)}
@@ -1884,7 +1928,7 @@ func (m Model) fetchTranscript() tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "transcript_tail", IssueID: issueID, N: 200})
 		if err != nil {
-			return transcriptMsg{generation: generation, err: err}
+			return transcriptMsg{generation: generation, err: err, transport: true}
 		}
 		if !r.OK {
 			return transcriptMsg{generation: generation, err: errors.New(r.Error)}

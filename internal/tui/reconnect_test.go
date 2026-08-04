@@ -487,3 +487,32 @@ func TestRecoveredModelResumesNormalKeyHandling(t *testing.T) {
 		t.Fatalf("recovered input calls = %v, want pause_issue", replacement.doCalls)
 	}
 }
+
+func TestDetailTransportLossStartsReconnect(t *testing.T) {
+	session := &reconnectTestSession{
+		errors: map[string]error{"issue_detail": errors.New("write unix watchtower.sock: broken pipe")},
+	}
+	m := NewModel(session, []string{"spec", "execute"})
+	m = m.applyEvents([]core.Event{
+		recoveryEvent(t, 81, "GH-1", "running"), recoveryStageEvent(t, 82, "GH-1", "spec"),
+	})
+	m.Focus = Focus{Floor: 1, Card: 0, Issue: "GH-1"}
+	var delays []time.Duration
+	m.retryScheduler = fakeRetryScheduler(&delays, func(generation uint64) tea.Msg {
+		return reconnectTimerMsg{generation: generation}
+	})
+
+	recoveryResult := m.fetchDetail("GH-1")()
+	next, retry := m.Update(recoveryResult)
+	m = next.(Model)
+
+	if m.connection != connectionReconnecting {
+		t.Fatalf("detail transport loss left connection state %v, want reconnecting", m.connection)
+	}
+	if retry == nil || len(delays) != 1 || delays[0] != initialRetryDelay {
+		t.Fatalf("detail transport loss scheduled retry=%v delays=%v, want one initial retry", retry != nil, delays)
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "reconnecting") {
+		t.Fatalf("detail transport loss did not render reconnecting state:\n%s", ansi.Strip(m.View()))
+	}
+}
