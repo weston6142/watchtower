@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 func TestParseLineNormalizesCodexEvents(t *testing.T) {
@@ -40,6 +42,13 @@ func TestParseLineIgnoresMalformedUnknownAndProgressEvents(t *testing.T) {
 		if got := ParseLine([]byte(line)); got.Kind != KindOther {
 			t.Errorf("ParseLine(%q) = %#v, want other", line, got)
 		}
+	}
+}
+
+func TestParseLinePreservesStructuredFailureClass(t *testing.T) {
+	got := ParseLine([]byte(`{"type":"error","error":{"code":"authentication_failed","category":"auth","message":"credentials rejected"}}`))
+	if got.Kind != KindFailed || got.FailureClass != runner.FailureAuthentication {
+		t.Fatalf("structured failure = %#v, want authentication class", got)
 	}
 }
 

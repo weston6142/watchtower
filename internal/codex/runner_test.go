@@ -179,6 +179,107 @@ func TestRedactedInvocationAndErrorEvidenceExcludeSecrets(t *testing.T) {
 	}
 }
 
+func TestTerminalLaunchFailureReturnsTypedAttemptOutcome(t *testing.T) {
+	r := testRunner(filepath.Join(t.TempDir(), "missing-codex"))
+	res := runTurn(t, context.Background(), r, t.TempDir())
+	if res.Err == nil || res.FailureClass != runner.FailureLaunch {
+		t.Fatalf("result = %+v, want launch failure", res)
+	}
+	if res.Attempt.Kind != runner.AttemptPrimary || res.Attempt.State != runner.AttemptTerminal || res.FallbackConsumed {
+		t.Fatalf("attempt outcome = %+v, want terminal primary without fallback", res.Attempt)
+	}
+	if !strings.Contains(res.Err.Error(), "restore") && !strings.Contains(res.Err.Error(), "Codex") {
+		t.Fatalf("launch error is not actionable: %v", res.Err)
+	}
+}
+
+func TestEligibleFailureUsesExactlyOneFallbackAndCompletes(t *testing.T) {
+	bin, state := statefulStub(t,
+		`exit 7`,
+		successfulStub(""),
+	)
+	r := testRunner(bin)
+	r.PrimaryProfile = repocfg.CodexProfile{FeatureOverrides: map[string]bool{"unified_exec": false}}
+	r.FallbackProfile = &repocfg.CodexProfile{FeatureOverrides: map[string]bool{"unified_exec": true}}
+	r.ExtraEnv = []string{"STATE=" + state}
+	res := runTurn(t, context.Background(), r, t.TempDir())
+	if res.Err != nil || !res.FallbackConsumed || res.Attempt.Kind != runner.AttemptFallback || res.Attempt.State != runner.AttemptSucceeded {
+		t.Fatalf("result = %+v, want successful fallback", res)
+	}
+	if got := readCount(t, state); got != 2 {
+		t.Fatalf("process attempts = %d, want one primary and one fallback", got)
+	}
+	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "features.unified_exec=true") {
+		t.Fatalf("fallback argv = %q", got)
+	}
+}
+
+func TestFallbackFailureIsTerminalAndDoesNotStartAThirdProcess(t *testing.T) {
+	bin, state := statefulStub(t, `exit 7`, `exit 8`)
+	r := testRunner(bin)
+	r.FallbackProfile = &repocfg.CodexProfile{FeatureOverrides: map[string]bool{"unified_exec": true}}
+	r.ExtraEnv = []string{"STATE=" + state}
+	res := runTurn(t, context.Background(), r, t.TempDir())
+	if res.Err == nil || !res.FallbackConsumed || res.Attempt.Kind != runner.AttemptFallback || res.Attempt.State != runner.AttemptTerminal {
+		t.Fatalf("result = %+v, want terminal fallback", res)
+	}
+	if !strings.Contains(res.Err.Error(), "primary") || !strings.Contains(res.Err.Error(), "fallback") {
+		t.Fatalf("terminal error omitted attempt outcomes: %v", res.Err)
+	}
+	if got := readCount(t, state); got != 2 {
+		t.Fatalf("process attempts = %d, want exactly two", got)
+	}
+}
+
+func TestNonRetryableProtocolFailureDoesNotUseFallback(t *testing.T) {
+	bin := writeStub(t, `printf '%s\n' '{"type":"thread.started","thread_id":"thr-protocol"}'`)
+	r := testRunner(bin)
+	r.FallbackProfile = &repocfg.CodexProfile{FeatureOverrides: map[string]bool{"unified_exec": true}}
+	res := runTurn(t, context.Background(), r, t.TempDir())
+	if res.Err == nil || res.FailureClass != runner.FailureProtocol || res.FallbackConsumed {
+		t.Fatalf("result = %+v, want terminal protocol failure without fallback", res)
+	}
+}
+
+func TestFallbackRemainsActiveAfterAResumedTurnFailure(t *testing.T) {
+	bin, state := statefulStub(t,
+		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-fallback-resume"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"kind\":\"choice\",\"question\":\"Ship it?\",\"options\":[\"Ship it\",\"Hold\"],\"recommended\":0,\"why\":\"Ready.\",\"consequences\":[\"Ships.\",\"Waits.\"],\"reversible\":\"yes\"}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+		`exit 7`,
+		`printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+	)
+	r := testRunner(bin)
+	r.PrimaryProfile = repocfg.CodexProfile{FeatureOverrides: map[string]bool{"unified_exec": false}}
+	r.FallbackProfile = &repocfg.CodexProfile{FeatureOverrides: map[string]bool{"unified_exec": true}}
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	(<-asks).Reply <- levers.ChoiceResponse(0)
+	res := <-done
+	if res.Err != nil || !res.FallbackConsumed {
+		t.Fatalf("result = %+v, want resumed fallback success", res)
+	}
+	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "features.unified_exec=false") {
+		t.Fatalf("primary resumed argv = %q", got)
+	}
+	if got := strings.Join(readCapturedArgs(t, state, 3), "\n"); !strings.Contains(got, "features.unified_exec=true") || !containsArg(readCapturedArgs(t, state, 3), "thr-fallback-resume") {
+		t.Fatalf("fallback resumed argv = %q", got)
+	}
+}
+
+func readCount(t *testing.T, state string) int {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(state, "count"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
 func TestPackageModelAndEffortOverrideDefaults(t *testing.T) {
 	capture := filepath.Join(t.TempDir(), "argv")
 	bin := writeStub(t, successfulStub(`
