@@ -21,8 +21,8 @@ func TestParseLineNormalizesCodexEvents(t *testing.T) {
 		{"mcp", `{"type":"item.completed","item":{"id":"i4","type":"mcp_tool_call","server":"jira","tool":"search","status":"completed"}}`, Event{Kind: KindTool, Tool: "↳ mcp jira/search"}},
 		{"web", `{"type":"item.completed","item":{"id":"i5","type":"web_search","query":"Codex docs"}}`, Event{Kind: KindTool, Tool: "↳ web Codex docs"}},
 		{"complete", `{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":25}}`, Event{Kind: KindComplete, Tokens: 125}},
-		{"failed", `{"type":"turn.failed","error":{"message":"model unavailable"}}`, Event{Kind: KindFailed, Error: "model unavailable"}},
-		{"error", `{"type":"error","message":"auth failed"}`, Event{Kind: KindFailed, Error: "auth failed"}},
+		{"failed", `{"type":"turn.failed","error":{"message":"model unavailable"}}`, Event{Kind: KindFailed, Error: "model unavailable", FailureClass: runner.FailureExecution}},
+		{"error", `{"type":"error","message":"auth failed"}`, Event{Kind: KindFailed, Error: "auth failed", FailureClass: runner.FailureAuthentication}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
