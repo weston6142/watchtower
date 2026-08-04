@@ -288,7 +288,7 @@ func normalizeCodex(cfg *Config) error {
 		primary.Effort = cfg.CodexEffort
 	}
 	primary.FeatureOverrides = cloneFeatureOverrides(primary.FeatureOverrides)
-	if err := validateCodexFeatures("codex.primary", primary.FeatureOverrides); err != nil {
+	if err := ValidateCodexFeatures("codex.primary", primary.FeatureOverrides); err != nil {
 		return err
 	}
 
@@ -308,10 +308,10 @@ func normalizeCodex(cfg *Config) error {
 		candidate.Model = primary.Model
 		candidate.Effort = primary.Effort
 		candidate.FeatureOverrides = cloneFeatureOverrides(candidate.FeatureOverrides)
-		if err := validateCodexFeatures("codex.fallback", candidate.FeatureOverrides); err != nil {
+		if err := ValidateCodexFeatures("codex.fallback", candidate.FeatureOverrides); err != nil {
 			return err
 		}
-		if reflectFeatureOverridesEqual(primary.FeatureOverrides, candidate.FeatureOverrides) {
+		if featureOverridesEqual(primary.FeatureOverrides, candidate.FeatureOverrides) {
 			return fmt.Errorf("codex.fallback must differ from codex.primary; set a supported feature override or remove fallback")
 		}
 		fallback = &candidate
@@ -326,7 +326,9 @@ func normalizeCodex(cfg *Config) error {
 	return nil
 }
 
-func validateCodexFeatures(path string, features map[string]bool) error {
+// ValidateCodexFeatures checks the supported feature override schema at a
+// runner boundary as well as during repository configuration loading.
+func ValidateCodexFeatures(path string, features map[string]bool) error {
 	for name := range features {
 		if _, ok := supportedCodexFeatures[name]; !ok {
 			return fmt.Errorf("%s.feature_overrides.%s is unsupported; use one of unified_exec", path, name)
@@ -346,7 +348,7 @@ func cloneFeatureOverrides(features map[string]bool) map[string]bool {
 	return clone
 }
 
-func reflectFeatureOverridesEqual(left, right map[string]bool) bool {
+func featureOverridesEqual(left, right map[string]bool) bool {
 	if len(left) != len(right) {
 		return false
 	}
@@ -358,8 +360,8 @@ func reflectFeatureOverridesEqual(left, right map[string]bool) bool {
 	return true
 }
 
-func (c Config) EffectiveCodex() (CodexProfile, *CodexProfile, bool) {
-	return c.Codex.Primary, c.Codex.Fallback, true
+func (c Config) EffectiveCodex() (CodexProfile, *CodexProfile) {
+	return c.Codex.Primary, c.Codex.Fallback
 }
 
 func (c Config) CodexPolicy() string {

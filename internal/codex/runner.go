@@ -355,7 +355,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 	if scanErr := scanner.Err(); scanErr != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		result.failed = c.withStderr(fmt.Errorf("codex JSONL: %w", scanErr), stderrTail.String(), pkg.Prompt, prompt)
+		result.failed = c.withStderr(fmt.Errorf("codex JSONL: %w", scanErr), stderrTail.String(), pkg.Prompt, prompt, threadID)
 		result.failureClass = runner.FailureTransport
 		return result
 	}
@@ -378,46 +378,47 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 		result.failureClass = runner.FailureProtocol
 	}
 	if result.failed != nil {
-		result.failed = c.withStderr(result.failed, stderrTail.String(), pkg.Prompt, prompt)
+		result.failed = c.withStderr(result.failed, stderrTail.String(), pkg.Prompt, prompt, threadID)
 	}
 	return result
 }
 
 func (c *CodeRunner) effectiveProfiles(pkg pkgs.Package) (repocfg.CodexProfile, *repocfg.CodexProfile, error) {
 	primary := c.effectiveProfile(pkg)
-	if err := validateProfileFeatures("codex.primary", primary); err != nil {
+	if err := repocfg.ValidateCodexFeatures("codex.primary", primary.FeatureOverrides); err != nil {
 		return repocfg.CodexProfile{}, nil, err
 	}
 	if c.FallbackProfile == nil {
 		return primary, nil, nil
 	}
 	fallback := *c.FallbackProfile
-	if fallback.Bin != "" && fallback.Bin != primary.Bin {
+	configuredPrimary := c.PrimaryProfile
+	if configuredPrimary.Bin == "" {
+		configuredPrimary.Bin = c.Bin
+	}
+	if configuredPrimary.Model == "" {
+		configuredPrimary.Model = c.DefaultModel
+	}
+	if configuredPrimary.Effort == "" {
+		configuredPrimary.Effort = c.DefaultEffort
+	}
+	if fallback.Bin != "" && fallback.Bin != configuredPrimary.Bin {
 		return repocfg.CodexProfile{}, nil, fmt.Errorf("codex.fallback.bin must match the primary Codex binary")
 	}
-	if fallback.Model != "" && fallback.Model != primary.Model {
+	if fallback.Model != "" && fallback.Model != configuredPrimary.Model {
 		return repocfg.CodexProfile{}, nil, fmt.Errorf("codex.fallback.model must match the primary Codex model")
 	}
-	if fallback.Effort != "" && fallback.Effort != primary.Effort {
+	if fallback.Effort != "" && fallback.Effort != configuredPrimary.Effort {
 		return repocfg.CodexProfile{}, nil, fmt.Errorf("codex.fallback.effort must match the primary Codex effort")
 	}
 	fallback.Bin, fallback.Model, fallback.Effort = primary.Bin, primary.Model, primary.Effort
-	if err := validateProfileFeatures("codex.fallback", fallback); err != nil {
+	if err := repocfg.ValidateCodexFeatures("codex.fallback", fallback.FeatureOverrides); err != nil {
 		return repocfg.CodexProfile{}, nil, err
 	}
 	if equalFeatures(primary.FeatureOverrides, fallback.FeatureOverrides) {
 		return repocfg.CodexProfile{}, nil, fmt.Errorf("codex.fallback is ineffective; it must differ from the primary feature profile")
 	}
 	return primary, &fallback, nil
-}
-
-func validateProfileFeatures(path string, profile repocfg.CodexProfile) error {
-	for name := range profile.FeatureOverrides {
-		if name != "unified_exec" {
-			return fmt.Errorf("%s.feature_overrides.%s is unsupported; use unified_exec", path, name)
-		}
-	}
-	return nil
 }
 
 func equalFeatures(left, right map[string]bool) bool {
@@ -487,17 +488,6 @@ func classifyFailureMessage(message string) runner.FailureClass {
 
 func (c *CodeRunner) SetAttemptSink(sink runner.AttemptSink) { c.AttemptSink = sink }
 
-func (c *CodeRunner) effective(pkg pkgs.Package) (string, string) {
-	model, effort := pkg.Model, pkg.Effort
-	if model == "" {
-		model = c.DefaultModel
-	}
-	if effort == "" {
-		effort = c.DefaultEffort
-	}
-	return model, effort
-}
-
 func (c *CodeRunner) effectiveProfile(pkg pkgs.Package) repocfg.CodexProfile {
 	profile := c.PrimaryProfile
 	if profile.Bin == "" {
@@ -529,12 +519,15 @@ func (c *CodeRunner) emitText(issueID, stage, value string) {
 	}
 }
 
-func (c *CodeRunner) withStderr(base error, stderr, prompt, task string) error {
-	secrets := []string{prompt, task}
+func (c *CodeRunner) withStderr(base error, stderr string, secrets ...string) error {
 	for _, entry := range c.ExtraEnv {
 		if _, value, ok := strings.Cut(entry, "="); ok && value != "" {
 			secrets = append(secrets, value)
 		}
+	}
+	redactedBase := redactText(base.Error(), secrets...)
+	if redactedBase != base.Error() {
+		base = &redactedError{message: redactedBase, cause: base}
 	}
 	stderr = redactText(stderr, secrets...)
 	stderr = strings.TrimSpace(stderr)
@@ -543,6 +536,15 @@ func (c *CodeRunner) withStderr(base error, stderr, prompt, task string) error {
 	}
 	return fmt.Errorf("%w: %s", base, stderr)
 }
+
+type redactedError struct {
+	message string
+	cause   error
+}
+
+func (e *redactedError) Error() string { return e.message }
+
+func (e *redactedError) Unwrap() error { return e.cause }
 
 func configString(key, value string) string {
 	return key + "=" + strconv.Quote(value)

@@ -179,6 +179,19 @@ func TestRedactedInvocationAndErrorEvidenceExcludeSecrets(t *testing.T) {
 	}
 }
 
+func TestStructuredCodexFailureEvidenceExcludesSecrets(t *testing.T) {
+	const eventSecret = "event-token-secret"
+	bin := writeStub(t, `printf '%s\n' '{"type":"thread.started","thread_id":"thr-secret"}'
+printf '%s\n' '{"type":"turn.failed","error":{"message":"request token event-token-secret"}}'`)
+	res := runTurn(t, context.Background(), testRunner(bin), t.TempDir())
+	if res.Err == nil {
+		t.Fatal("expected structured Codex failure")
+	}
+	if strings.Contains(res.Err.Error(), eventSecret) {
+		t.Fatalf("structured failure leaked %q: %v", eventSecret, res.Err)
+	}
+}
+
 func TestTerminalLaunchFailureReturnsTypedAttemptOutcome(t *testing.T) {
 	r := testRunner(filepath.Join(t.TempDir(), "missing-codex"))
 	res := runTurn(t, context.Background(), r, t.TempDir())
@@ -211,6 +224,34 @@ func TestEligibleFailureUsesExactlyOneFallbackAndCompletes(t *testing.T) {
 	}
 	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "features.unified_exec=true") {
 		t.Fatalf("fallback argv = %q", got)
+	}
+}
+
+func TestConfiguredFallbackFollowsPackageModelAndEffortOverrides(t *testing.T) {
+	bin, state := statefulStub(t,
+		`exit 7`,
+		successfulStub(""),
+	)
+	r := testRunner(bin)
+	r.Packages["executor"] = pkgs.Package{
+		Name: "executor", Prompt: "Implement and verify.", Model: "package-model", Effort: "high",
+	}
+	r.PrimaryProfile = repocfg.CodexProfile{
+		Bin: bin, Model: r.DefaultModel, Effort: r.DefaultEffort,
+		FeatureOverrides: map[string]bool{"unified_exec": false},
+	}
+	r.FallbackProfile = &repocfg.CodexProfile{
+		Bin: bin, Model: r.DefaultModel, Effort: r.DefaultEffort,
+		FeatureOverrides: map[string]bool{"unified_exec": true},
+	}
+	r.ExtraEnv = []string{"STATE=" + state}
+
+	res := runTurn(t, context.Background(), r, t.TempDir())
+	if res.Err != nil || res.Attempt.Kind != runner.AttemptFallback || !res.FallbackConsumed {
+		t.Fatalf("result = %+v, want package override-compatible fallback success", res)
+	}
+	if got := readCount(t, state); got != 2 {
+		t.Fatalf("process attempts = %d, want one primary and one fallback", got)
 	}
 }
 

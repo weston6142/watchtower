@@ -3622,7 +3622,7 @@ func TestRehydrateRunnerAttempts(t *testing.T) {
 	}{
 		{name: "primary failed before fallback", states: []runner.AttemptState{runner.AttemptFailed}, wantFinalFailure: true},
 		{name: "fallback interrupted", states: []runner.AttemptState{runner.AttemptFailed, runner.AttemptReserved, runner.AttemptRunning}, wantFinalFailure: true, wantTerminalState: runner.AttemptTerminal},
-		{name: "fallback already succeeded", states: []runner.AttemptState{runner.AttemptFailed, runner.AttemptReserved, runner.AttemptRunning, runner.AttemptSucceeded}, wantFinalFailure: false, wantTerminalState: runner.AttemptSucceeded},
+		{name: "fallback already succeeded", states: []runner.AttemptState{runner.AttemptFailed, runner.AttemptReserved, runner.AttemptRunning, runner.AttemptSucceeded}, wantFinalFailure: true, wantTerminalState: runner.AttemptSucceeded},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3716,6 +3716,67 @@ func TestRehydrateRunnerAttempts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRehydrateDoesNotCompleteStageFromRunnerSuccessAlone(t *testing.T) {
+	f := flow.Flow{Name: "restart-gates", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+		Workspace: "none", Completion: flow.CompletionAll, Gate: flow.GateApproveArtifact,
+		Artifacts: []string{"result.md"},
+	}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	id := "GH-38"
+	if err := s.UpsertIssue(store.IssueRow{ID: id, Title: "interrupted after runner success", Flow: f.Name, State: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	runID, err := s.InsertStageRun(store.StageRun{IssueID: id, Stage: "execute", Agent: "executor", Status: "succeeded"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID := strconv.FormatInt(runID, 10)
+	for _, attempt := range []runner.Attempt{
+		{OperationID: operationID, IssueID: id, Stage: "execute", AgentPackage: "executor", Kind: runner.AttemptPrimary, State: runner.AttemptFailed, FailureClass: runner.FailureLaunch},
+		{OperationID: operationID, IssueID: id, Stage: "execute", AgentPackage: "executor", Kind: runner.AttemptFallback, State: runner.AttemptSucceeded, FailureClass: runner.FailureLaunch},
+	} {
+		if err := s.RecordAttempt(context.Background(), attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restarted := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, t.TempDir(), f)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawFailure, sawCompletion bool
+	for _, event := range events {
+		if event.IssueID != id {
+			continue
+		}
+		switch event.Type {
+		case core.EvStageFailed:
+			var payload map[string]any
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			sawFailure = payload["final"] == true
+		case core.EvStageCompleted:
+			sawCompletion = true
+		}
+	}
+	if sawCompletion {
+		t.Fatal("rehydration marked a runner success as a completed stage before applying artifact gates")
+	}
+	if !sawFailure {
+		t.Fatal("rehydration did not expose an interrupted stage as a terminal retryable failure")
 	}
 }
 

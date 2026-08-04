@@ -460,31 +460,6 @@ func (e *Engine) Rehydrate() error {
 		if err != nil {
 			return err
 		}
-		if hasPersistedAttempt && persistedAttempt.State == runner.AttemptSucceeded {
-			stage := persistedAttempt.Stage
-			stageIdx := 0
-			if f, ok := e.cfg.Flows[row.Flow]; ok {
-				for index, configured := range f.Stages {
-					if configured.Name == stage {
-						stageIdx = index
-						break
-					}
-				}
-			}
-			is := &issueState{
-				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
-				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
-				stageIdx: stageIdx, terminal: true, planReview: row.PlanReviewPolicy,
-			}
-			e.restoreInterruptedWorkspace(is)
-			e.mu.Lock()
-			e.issues[row.ID] = is
-			e.mu.Unlock()
-			e.emit(core.EvStageCompleted, row.ID, map[string]any{
-				"stage": stage, "attempt_kind": string(persistedAttempt.Kind), "recovered": true})
-			continue
-		}
-
 		// Best-effort: on error or missing events the zero values fall back
 		// to the flow's first stage below.
 		stage, attempt, of, _, _ := e.cfg.Store.LastStageEvents(row.ID)

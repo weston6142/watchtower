@@ -151,8 +151,8 @@ codex:
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary, fallback, ok := cfg.EffectiveCodex()
-	if !ok || fallback == nil || cfg.CodexPolicy() != CodexPolicyFallbackOnce {
+	primary, fallback := cfg.EffectiveCodex()
+	if fallback == nil || cfg.CodexPolicy() != CodexPolicyFallbackOnce {
 		t.Fatalf("normalized Codex config = primary=%+v fallback=%+v policy=%q", primary, fallback, cfg.CodexPolicy())
 	}
 	if primary.Bin != "/opt/codex" || primary.Model != "configured-model" || primary.Effort != "high" ||
@@ -170,8 +170,8 @@ func TestLoadLegacyCodexConfigUsesTerminalPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	primary, fallback, ok := cfg.EffectiveCodex()
-	if !ok || fallback != nil || cfg.CodexPolicy() != CodexPolicyTerminal {
+	primary, fallback := cfg.EffectiveCodex()
+	if fallback != nil || cfg.CodexPolicy() != CodexPolicyTerminal {
 		t.Fatalf("legacy normalized Codex config = primary=%+v fallback=%+v policy=%q", primary, fallback, cfg.CodexPolicy())
 	}
 	if primary.Bin != cfg.CodexBin || primary.Model != cfg.CodexModel || primary.Effort != cfg.CodexEffort {
