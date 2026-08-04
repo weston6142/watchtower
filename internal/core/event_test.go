@@ -39,3 +39,9 @@ func TestRunnerAttemptEventHasStablePublicPayload(t *testing.T) {
 		t.Fatalf("runner attempt event = %#v", ev)
 	}
 }
+
+func TestPlannerBudgetUpdatedEventTypeIsAdditive(t *testing.T) {
+	if EvPlannerBudgetUpdated != EventType("planner_budget_updated") {
+		t.Fatalf("planner event type = %q", EvPlannerBudgetUpdated)
+	}
+}

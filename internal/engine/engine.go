@@ -25,10 +25,12 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
 	"github.com/weston6142/watchtower/internal/workspace"
@@ -52,7 +54,35 @@ type Config struct {
 	DataDir            string
 	Workspace          workspace.Provider
 	TokenBudget        int
+	PlannerBudget      plannerbudget.Profile
 	OnLine             func(issueID, stage, line string)
+}
+
+type plannerExplorationGate struct {
+	mu         sync.Mutex
+	controller *plannerbudget.Controller
+}
+
+func (g *plannerExplorationGate) Admit(_ context.Context, call runner.ToolCall) (runner.ToolDecision, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	result := g.controller.Read(plannerbudget.Source{
+		ID: call.SourceID, Fingerprint: call.Fingerprint, Reservation: call.Reservation,
+	})
+	if result.Err != nil {
+		if errors.Is(result.Err, stageusage.ErrAdmissionClosed) {
+			return runner.ToolDecision{}, nil
+		}
+		return runner.ToolDecision{}, result.Err
+	}
+	if !result.Charged {
+		return runner.ToolDecision{CachedContent: result.Content}, nil
+	}
+	return runner.ToolDecision{Allowed: true, LeaseID: call.SourceID}, nil
+}
+
+func (g *plannerExplorationGate) Complete(context.Context, runner.ToolDecision, *int64, error) error {
+	return nil
 }
 
 type Sequencer interface {
@@ -159,6 +189,9 @@ type Engine struct {
 }
 
 func New(cfg Config) *Engine {
+	if cfg.PlannerBudget == (plannerbudget.Profile{}) {
+		cfg.PlannerBudget = plannerbudget.DefaultProfile()
+	}
 	e := &Engine{
 		cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{},
 		reviewContinuations: map[int64]bool{},
@@ -595,6 +628,10 @@ func (e *Engine) unmetDependencies(issueID string) ([]string, error) {
 }
 
 func (e *Engine) startOrWait(ctx context.Context, is *issueState) error {
+	return e.startOrWaitWithPlannerBudget(ctx, is, nil)
+}
+
+func (e *Engine) startOrWaitWithPlannerBudget(ctx context.Context, is *issueState, plannerOverride *plannerbudget.Override) error {
 	unmet, err := e.unmetDependencies(is.id)
 	if err != nil {
 		return err
@@ -606,7 +643,7 @@ func (e *Engine) startOrWait(ctx context.Context, is *issueState) error {
 		e.emit(core.EvIssueWaitingDependencies, is.id, map[string]any{"unmet": unmet})
 		return nil
 	}
-	return e.runAndRecord(ctx, is, 0)
+	return e.runAndRecordWithPlannerBudget(ctx, is, 0, plannerOverride)
 }
 
 func (e *Engine) wakeDependents(ctx context.Context, mergedID string) {
@@ -1429,6 +1466,10 @@ func verificationOwner(f flow.Flow) string {
 // already treat it as the start of a lane), and the flow runs detached like
 // Resume — failures surface as stage_failed events, not in this response.
 func (e *Engine) LaunchIssue(id string) error {
+	return e.LaunchIssueWithBudget(id, nil)
+}
+
+func (e *Engine) LaunchIssueWithBudget(id string, plannerOverride *plannerbudget.Override) error {
 	e.mu.Lock()
 	is, ok := e.issues[id]
 	if !ok {
@@ -1459,7 +1500,7 @@ func (e *Engine) LaunchIssue(id string) error {
 	}
 	e.emit(core.EvIssueCreated, id, map[string]any{
 		"title": title, "flow": flowName, "body": body, "priority": priority})
-	go e.startOrWait(context.Background(), is)
+	go e.startOrWaitWithPlannerBudget(context.Background(), is, plannerOverride)
 	return nil
 }
 
@@ -2253,7 +2294,7 @@ func repositoryState(workdir string, contextPaths []string) (head, branch string
 }
 
 func (e *Engine) runStageOnce(
-	ctx context.Context, is *issueState, st flow.Stage, attempt, of int,
+	ctx context.Context, is *issueState, st flow.Stage, attempt, of int, plannerOverride *plannerbudget.Override,
 ) (runErr error) {
 	// "none" stages share one per-issue dir so artifacts flow between stages
 	// (brainstorm.md -> spec stage, etc.); worktree/readonly stages share the
@@ -2377,6 +2418,29 @@ func (e *Engine) runStageOnce(
 	e.emit(core.EvStageStarted, is.id, map[string]any{
 		"stage": st.Name, "attempt": attempt, "of": of,
 		"merge_barrier": st.MergeBarrier})
+	var plannerController *plannerbudget.Controller
+	var plannerGate runner.ExplorationGate
+	if st.Name == "plan" {
+		profile, resolveErr := plannerbudget.Resolve(e.cfg.PlannerBudget, plannerOverride)
+		if resolveErr != nil {
+			snapshot := stageusage.Snapshot{Stage: st.Name, Attempt: attempt, Status: stageusage.StatusConfigurationErr}
+			e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
+				"stage": st.Name, "attempt": attempt,
+				"outcome": string(plannerbudget.OutcomeConfigurationError), "snapshot": snapshot,
+			})
+			return fmt.Errorf("planner budget configuration: %w", resolveErr)
+		}
+		var controllerErr error
+		plannerController, controllerErr = plannerbudget.NewController(st.Name, attempt, profile, time.Now)
+		if controllerErr != nil {
+			return fmt.Errorf("planner budget: %w", controllerErr)
+		}
+		plannerGate = &plannerExplorationGate{controller: plannerController}
+		e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
+			"stage": st.Name, "attempt": attempt,
+			"outcome": string(plannerbudget.OutcomeNormal), "snapshot": plannerController.Snapshot(),
+		})
+	}
 
 	type agentDone struct {
 		pkg string
@@ -2393,18 +2457,33 @@ func (e *Engine) runStageOnce(
 		}
 		agentCtx := runner.WithOperationID(ctx, strconv.FormatInt(runID, 10))
 		asks := make(chan runner.Ask)
-		resc := e.cfg.Runner.Run(agentCtx, is.id, st.Name, a.Package, workdir, asks)
+		var resc <-chan runner.Result
+		if plannerGate != nil {
+			if plannerRunner, ok := e.cfg.Runner.(runner.PlannerRunner); ok {
+				resc = plannerRunner.RunPlanner(agentCtx, is.id, st.Name, a.Package, workdir, asks, plannerGate)
+			} else {
+				resc = e.cfg.Runner.Run(agentCtx, is.id, st.Name, a.Package, workdir, asks)
+			}
+		} else {
+			resc = e.cfg.Runner.Run(agentCtx, is.id, st.Name, a.Package, workdir, asks)
+		}
 		for {
 			select {
 			case ask := <-asks:
 				e.handleAsk(is, st.Name, a.Package, ask)
 			case res := <-resc:
-				status := "succeeded"
-				if res.Err != nil {
-					status = "failed"
-				}
-				if err := e.cfg.Store.FinishStageRun(runID, status, res.SessionID, res.Tokens); err != nil && res.Err == nil {
-					res.Err = fmt.Errorf("finish stage run: %w", err)
+				if insErr == nil {
+					status := "succeeded"
+					if res.Err != nil {
+						status = "failed"
+					}
+					tokens := res.Tokens
+					if plannerController != nil {
+						tokens = int(plannerController.Snapshot().ChargedTokens)
+					}
+					if err := e.cfg.Store.FinishStageRun(runID, status, res.SessionID, tokens); err != nil && res.Err == nil {
+						res.Err = fmt.Errorf("finish stage run: %w", err)
+					}
 				}
 				dones <- agentDone{a.Package, res}
 				return
@@ -2449,6 +2528,13 @@ func (e *Engine) runStageOnce(
 	}
 	if st.Completion == flow.CompletionAny && succeeded == 0 {
 		return firstErr
+	}
+	if plannerController != nil {
+		outcome := plannerController.Finish(firstErr)
+		e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
+			"stage": st.Name, "attempt": attempt,
+			"outcome": string(outcome), "snapshot": plannerController.Snapshot(),
+		})
 	}
 	if st.MergeBarrier {
 		if err := e.writeVerificationReceipt(ctx, is, workdir); err != nil {
@@ -2559,7 +2645,7 @@ func runnerFailurePayload(err error) map[string]any {
 	}
 }
 
-func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) error {
+func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, plannerOverride *plannerbudget.Override) error {
 	stageCtx, cancel := context.WithCancel(ctx)
 	e.mu.Lock()
 	is.stageCancel = cancel
@@ -2592,7 +2678,7 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 	var err error
 	of := st.Retries + 1
 	for attempt := 0; attempt <= st.Retries; attempt++ {
-		err = e.runStageOnce(stageCtx, is, st, attempt+1, of)
+		err = e.runStageOnce(stageCtx, is, st, attempt+1, of, plannerOverride)
 		if err == nil {
 			break
 		}
@@ -2721,7 +2807,7 @@ func (e *Engine) planReviewAuthorization(is *issueState) (store.DecisionRow, []c
 	return *found, events, nil
 }
 
-func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) error {
+func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plannerOverride *plannerbudget.Override) error {
 	if err := e.freezeTaskSummary(is); err != nil {
 		return err
 	}
@@ -2844,7 +2930,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 				}
 			}
 		}
-		if err := e.runStage(ctx, is, st); errors.Is(err, errDependenciesDiscovered) {
+		if err := e.runStage(ctx, is, st, plannerOverride); errors.Is(err, errDependenciesDiscovered) {
 			unmet, depErr := e.unmetDependencies(is.id)
 			if depErr != nil {
 				return depErr
@@ -2963,7 +3049,11 @@ func gitRevision(dir, revision string) (string, error) {
 // terminally. StartIssue, RetryStage, and Resume all restart a lane through
 // this one path so their bookkeeping cannot drift apart.
 func (e *Engine) runAndRecord(ctx context.Context, is *issueState, startIdx int) error {
-	err := e.runFrom(ctx, is, startIdx)
+	return e.runAndRecordWithPlannerBudget(ctx, is, startIdx, nil)
+}
+
+func (e *Engine) runAndRecordWithPlannerBudget(ctx context.Context, is *issueState, startIdx int, plannerOverride *plannerbudget.Override) error {
+	err := e.runFrom(ctx, is, startIdx, plannerOverride)
 	e.mu.Lock()
 	is.terminal = err != nil
 	e.mu.Unlock()
@@ -2971,13 +3061,17 @@ func (e *Engine) runAndRecord(ctx context.Context, is *issueState, startIdx int)
 }
 
 func (e *Engine) StartIssue(ctx context.Context, id string) error {
+	return e.StartIssueWithBudget(ctx, id, nil)
+}
+
+func (e *Engine) StartIssueWithBudget(ctx context.Context, id string, plannerOverride *plannerbudget.Override) error {
 	e.mu.Lock()
 	is, ok := e.issues[id]
 	e.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("unknown issue %s", id)
 	}
-	return e.startOrWait(ctx, is)
+	return e.startOrWaitWithPlannerBudget(ctx, is, plannerOverride)
 }
 
 func (e *Engine) loadDoneUnmergedForRetry(issueID string) (*issueState, error) {
@@ -3021,6 +3115,10 @@ func (e *Engine) loadDoneUnmergedForRetry(issueID string) (*issueState, error) {
 // across daemon restarts until the operator explicitly retries it. Earlier
 // successful stages are not repeated.
 func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
+	return e.RetryStageWithBudget(ctx, issueID, nil)
+}
+
+func (e *Engine) RetryStageWithBudget(ctx context.Context, issueID string, plannerOverride *plannerbudget.Override) error {
 	e.mu.Lock()
 	is, ok := e.issues[issueID]
 	if !ok {
@@ -3091,7 +3189,7 @@ func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
 	is.terminal = false
 	is.killRequested = false
 	e.mu.Unlock()
-	return e.runAndRecord(ctx, is, startIdx)
+	return e.runAndRecordWithPlannerBudget(ctx, is, startIdx, plannerOverride)
 }
 
 // SetLever changes the routing lever for one stage and records the change.
@@ -3204,7 +3302,7 @@ func (e *Engine) resolveConflict(
 		Completion: flow.CompletionAll,
 		Artifacts:  []string{"conflict-report.md", "conflict-decision.json"},
 	}
-	if err := e.runStage(ctx, is, stage); err != nil {
+	if err := e.runStage(ctx, is, stage, nil); err != nil {
 		return "", err
 	}
 	decision, err := loadConflictDecision(filepath.Join(is.wsPath, "conflict-decision.json"))

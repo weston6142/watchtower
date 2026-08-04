@@ -47,6 +47,7 @@ const (
 	EvArtifactProduced           EventType = "artifact_produced"
 	EvIssueCompleted             EventType = "issue_completed"
 	EvBudgetExceeded             EventType = "budget_exceeded"
+	EvPlannerBudgetUpdated       EventType = "planner_budget_updated"
 	EvIssuePaused                EventType = "issue_paused"
 	EvIssueResumed               EventType = "issue_resumed"
 	EvIssueAbandoned             EventType = "issue_abandoned"

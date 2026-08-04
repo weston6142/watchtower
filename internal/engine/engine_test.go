@@ -20,9 +20,11 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/steward"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
@@ -312,6 +314,71 @@ func TestEngineCompletionAnyKeepsAgentFallbackAccountingIndependent(t *testing.T
 	}
 	if operationIDs[0].IssueID != id || other[0].IssueID != id || operationIDs[0].OperationID == other[0].OperationID {
 		t.Fatalf("agent operation identities crossed: first=%+v second=%+v", operationIDs, other)
+	}
+}
+
+func plannerTestFlow() flow.Flow {
+	return flow.Flow{Name: "planner-test", Stages: []flow.Stage{
+		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "none",
+			Completion: flow.CompletionAll, Gate: flow.GatePlanReview,
+			Artifacts: []string{"plan.md", "touchset.json"}},
+	}}
+}
+
+func TestPlannerBudgetLimitStillArchivesArtifactsAndRequestsPlanReview(t *testing.T) {
+	planFlow := plannerTestFlow()
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"plan/planner": {
+			Tools: []runner.ToolCall{
+				{Name: "read", SourceID: "ISSUE.md", Fingerprint: "v1", Reservation: 1},
+				{Name: "read", SourceID: "STAGE.md", Fingerprint: "v1", Reservation: 1},
+				{Name: "read", SourceID: "internal/engine/engine.go", Fingerprint: "v1", Reservation: 1},
+			},
+			Artifacts: map[string]string{"plan.md": "bounded plan", "touchset.json": `{"globs":[]}`},
+			Tokens:    3, TokensKnown: true,
+		},
+	}}
+	e, st := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{planFlow.Name: planFlow}
+		cfg.PlannerBudget = plannerbudget.Profile{
+			Calls:   stageusage.DimensionLimit{Warning: 1, Hard: 8},
+			Tokens:  stageusage.DimensionLimit{Warning: 1, Hard: 2},
+			Elapsed: stageusage.ElapsedLimit{Warning: time.Minute, Hard: 2 * time.Minute},
+		}
+		cfg.PlanReview = review.PolicySettings{ID: "test", Version: "1", AutoApproveRegular: true, Valid: true}
+	})
+	id, err := e.CreateIssue("bounded planner", "", planFlow.Name, levers.Preset(planFlow, flow.LeverRegular), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var budgetEvent, reviewEvent bool
+	for _, event := range events {
+		budgetEvent = budgetEvent || event.Type == core.EvPlannerBudgetUpdated
+		reviewEvent = reviewEvent || event.Type == core.EvPlanReviewRequested
+	}
+	if !budgetEvent || !reviewEvent {
+		t.Fatalf("events missing planner budget/review: %+v", events)
+	}
+	runs, err := st.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Tokens != 2 || runs[0].Status != "succeeded" {
+		t.Fatalf("stage runs = %+v", runs)
+	}
+	artifacts, err := st.ArtifactPaths(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("archived artifacts = %v", artifacts)
 	}
 }
 
@@ -4355,7 +4422,7 @@ func TestAttachmentsMaterializeForNoneWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	is := e.issues[id]
-	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1); err != nil {
+	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(e.cfg.DataDir, id, "attachments")
@@ -4388,7 +4455,7 @@ func TestAttachmentsMaterializeIntoWorktree(t *testing.T) {
 	// stageWorkdir returns is.wsPath for a non-"none" stage; assigning it
 	// directly exercises that branch without provisioning a git worktree.
 	is.wsPath = t.TempDir()
-	if err := e.runStageOnce(context.Background(), is, worktreeStage(), 1, 1); err != nil {
+	if err := e.runStageOnce(context.Background(), is, worktreeStage(), 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if b, err := os.ReadFile(filepath.Join(is.wsPath, "attachments", "app.log")); err != nil || len(b) != 3 {
@@ -4421,7 +4488,7 @@ func TestMaterializeRefusesForeignAttachmentsDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(foreign, "tracked.txt"), []byte("mine"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err = e.runStageOnce(context.Background(), is, worktreeStage(), 1, 1)
+	err = e.runStageOnce(context.Background(), is, worktreeStage(), 1, 1, nil)
 	if err == nil || !strings.Contains(err.Error(), "is not watchtower's") {
 		t.Fatalf("stage did not refuse: %v", err)
 	}
@@ -4449,7 +4516,7 @@ func TestIssueMDAttachmentSectionOrdering(t *testing.T) {
 		t.Fatal(err)
 	}
 	is := e.issues[id]
-	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1); err != nil {
+	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	md, err := os.ReadFile(filepath.Join(e.cfg.DataDir, id, "ISSUE.md"))
@@ -4476,7 +4543,7 @@ func TestIssueMDOmitsEmptyAttachmentSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	is := e.issues[id]
-	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1); err != nil {
+	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	md, _ := os.ReadFile(filepath.Join(e.cfg.DataDir, id, "ISSUE.md"))
@@ -4496,7 +4563,7 @@ func TestAbandonDeletesAttachmentBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	is := e.issues[id]
-	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1); err != nil {
+	if err := e.runStageOnce(context.Background(), is, noneStage(), 1, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Abandon(id); err != nil {
