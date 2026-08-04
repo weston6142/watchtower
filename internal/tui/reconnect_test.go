@@ -16,14 +16,15 @@ import (
 )
 
 type reconnectTestSession struct {
-	doCalls     []proto.Command
-	closeCalls  int
-	responses   map[string]proto.Response
-	errors      map[string]error
-	blockOp     string
-	started     chan struct{}
-	release     chan struct{}
-	startedOnce bool
+	doCalls       []proto.Command
+	closeCalls    int
+	responses     map[string]proto.Response
+	errors        map[string]error
+	blockOp       string
+	started       chan struct{}
+	release       chan struct{}
+	startedOnce   bool
+	closeUnblocks bool
 }
 
 func (s *reconnectTestSession) Do(command proto.Command) (proto.Response, error) {
@@ -46,6 +47,13 @@ func (s *reconnectTestSession) Do(command proto.Command) (proto.Response, error)
 
 func (s *reconnectTestSession) Close() error {
 	s.closeCalls++
+	if s.closeUnblocks && s.release != nil {
+		select {
+		case <-s.release:
+		default:
+			close(s.release)
+		}
+	}
 	return nil
 }
 
@@ -352,5 +360,130 @@ func TestDelayedOldGenerationCannotOverwriteReplacementState(t *testing.T) {
 	m = next.(Model)
 	if m.Detail.Issue.Title != "fresh detail" || m.Overview.Building != 9 || m.connection != connectionConnected {
 		t.Fatalf("stale generation overwrote replacement state: detail=%+v overview=%+v state=%v", m.Detail, m.Overview, m.connection)
+	}
+}
+
+func disconnectedInputModel(t *testing.T) (Model, *reconnectTestSession) {
+	t.Helper()
+	session := &reconnectTestSession{}
+	m := NewModel(session, []string{"spec", "execute"})
+	m = m.applyEvents([]core.Event{
+		recoveryEvent(t, 51, "GH-1", "running"), recoveryStageEvent(t, 52, "GH-1", "spec"),
+	})
+	m.Focus = Focus{Floor: 1, Card: 0, Issue: "GH-1"}
+	var delays []time.Duration
+	m.retryScheduler = fakeRetryScheduler(&delays, func(generation uint64) tea.Msg {
+		return reconnectTimerMsg{generation: generation}
+	})
+	next, _ := m.Update(pollErrorMsg{err: errors.New("daemon stopped"), transport: true})
+	m = next.(Model)
+	// Keep a session-shaped fixture in the model so connection-dependent keys
+	// can prove they are gated by the lifecycle state, not by a nil guard.
+	m.client = session
+	return m, session
+}
+
+func TestReconnectIgnoresConnectionDependentKeysButKeepsHelpAndQuit(t *testing.T) {
+	m, session := disconnectedInputModel(t)
+	before := len(session.doCalls)
+	if next, cmd := pressKeyCmd(t, m, "p"); cmd != nil || len(session.doCalls) != before {
+		t.Fatalf("p was not gated while reconnecting: cmd=%v calls=%v", cmd != nil, session.doCalls)
+	} else {
+		m = next
+	}
+	if next, cmd := pressKeyCmd(t, m, "enter"); cmd != nil || len(session.doCalls) != before {
+		t.Fatalf("enter was not gated while reconnecting: cmd=%v calls=%v", cmd != nil, session.doCalls)
+	} else {
+		m = next
+	}
+	m, _ = pressKeyCmd(t, m, "?")
+	if !m.help {
+		t.Fatal("help did not remain available while reconnecting")
+	}
+	beforeClose := session.closeCalls
+	m, cmd := pressKeyCmd(t, m, "q")
+	if !isQuit(cmd) {
+		t.Fatal("q did not quit while reconnecting")
+	}
+	if session.closeCalls <= beforeClose {
+		t.Fatalf("quit did not close the active session: before=%d after=%d", beforeClose, session.closeCalls)
+	}
+	if !m.shuttingDown {
+		t.Fatal("quit did not make the model terminal")
+	}
+}
+
+func TestQuitDuringReconnectCancelsTimerAndClosesPartialSession(t *testing.T) {
+	replacement := &reconnectTestSession{
+		blockOp: "overview", started: make(chan struct{}), release: make(chan struct{}), closeUnblocks: true,
+		responses: map[string]proto.Response{}, errors: map[string]error{},
+	}
+	old := NewModel(&reconnectTestSession{}, []string{"spec", "execute"})
+	old = old.applyEvents([]core.Event{
+		recoveryEvent(t, 61, "GH-1", "running"), recoveryStageEvent(t, 62, "GH-1", "spec"),
+	})
+	old.Focus = Focus{Floor: 1, Card: 0, Issue: "GH-1"}
+	var delays []time.Duration
+	old.retryScheduler = fakeRetryScheduler(&delays, func(generation uint64) tea.Msg {
+		return reconnectTimerMsg{generation: generation}
+	})
+	dialCalls := 0
+	old.SetReconnectDialer(func() (Session, error) {
+		dialCalls++
+		return replacement, nil
+	})
+	next, timer := old.Update(pollErrorMsg{err: errors.New("daemon stopped"), transport: true})
+	m := next.(Model)
+	timerMsg := timer()
+	next, attempt := m.Update(timerMsg)
+	m = next.(Model)
+	if attempt == nil {
+		t.Fatal("timer did not begin reconnect attempt")
+	}
+	result := make(chan tea.Msg, 1)
+	go func() { result <- attempt() }()
+	select {
+	case <-replacement.started:
+	case <-time.After(time.Second):
+		t.Fatal("replacement refresh did not reach its blocking operation")
+	}
+	m, quit := pressKeyCmd(t, m, "q")
+	if !isQuit(quit) {
+		t.Fatal("q did not quit during a blocked recovery")
+	}
+	select {
+	case <-result:
+	case <-time.After(time.Second):
+		t.Fatal("quit did not unblock the replacement refresh")
+	}
+	if replacement.closeCalls != 1 {
+		t.Fatalf("replacement close count = %d, want 1", replacement.closeCalls)
+	}
+	if _, pending := m.Update(timerMsg); pending != nil || dialCalls != 1 {
+		t.Fatalf("canceled retry produced future work: cmd=%v dialCalls=%d", pending != nil, dialCalls)
+	}
+}
+
+func TestRecoveredModelResumesNormalKeyHandling(t *testing.T) {
+	replacement := &reconnectTestSession{
+		responses: map[string]proto.Response{
+			"tail": {OK: true, Events: []core.Event{
+				recoveryEvent(t, 71, "GH-1", "running"), recoveryStageEvent(t, 72, "GH-1", "spec"),
+			}},
+			"overview":     {OK: true, Overview: &proto.Overview{}},
+			"issue_detail": {OK: true, Detail: &proto.IssueDetail{Issue: store.IssueRow{ID: "GH-1", Title: "detail"}}},
+		}, errors: map[string]error{},
+	}
+	m, attempt := recoveryModel(t, replacement)
+	next, _ := m.Update(attempt())
+	m = next.(Model)
+	before := len(replacement.doCalls)
+	m, cmd := pressKeyCmd(t, m, "p")
+	if cmd == nil {
+		t.Fatal("recovered model did not resume connection-dependent input")
+	}
+	_ = cmd()
+	if len(replacement.doCalls) != before+1 || replacement.doCalls[len(replacement.doCalls)-1].Op != "pause_issue" {
+		t.Fatalf("recovered input calls = %v, want pause_issue", replacement.doCalls)
 	}
 }

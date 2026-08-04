@@ -63,6 +63,7 @@ type Model struct {
 	reconnectCancel        context.CancelFunc
 	reconnectAttemptActive bool
 	shuttingDown           bool
+	runtime                *reconnectRuntime
 	reconnectFocus         Focus
 	reconnectModes         []string
 	focusPinnedEmpty       bool
@@ -239,6 +240,7 @@ func NewModel(client Session, stages []string) Model {
 		Ids:            map[string]Identity{},
 		Focus:          Focus{},
 		client:         client,
+		runtime:        &reconnectRuntime{},
 		stages:         append([]string(nil), stages...),
 		Actor:          review.DefaultActorID,
 		dismissed:      map[int64]bool{},
@@ -538,7 +540,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		key := msg.String()
 		if key == "ctrl+c" {
+			_ = m.Close()
 			return m, tea.Quit
+		}
+		if m.connection == connectionReconnecting {
+			switch key {
+			case "q":
+				_ = m.Close()
+				return m, tea.Quit
+			case "?":
+				m.help = !m.help
+				return m, nil
+			case "esc":
+				if m.help {
+					m.help = false
+				}
+				return m, nil
+			default:
+				return m, nil
+			}
 		}
 		// The help overlay is modal. It paints over the grid, so it has to
 		// swallow the grid's keys — otherwise p pauses a lane and x arms a

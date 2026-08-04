@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -51,6 +52,50 @@ type reconnectAttemptMsg struct {
 
 type reconnectCanceledMsg struct{ generation uint64 }
 
+type reconnectRuntime struct {
+	mu     sync.Mutex
+	active Session
+	closed bool
+}
+
+func (r *reconnectRuntime) beginEpisode() {
+	r.mu.Lock()
+	r.closed = false
+	r.active = nil
+	r.mu.Unlock()
+}
+
+func (r *reconnectRuntime) install(session Session) bool {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		_ = session.Close()
+		return false
+	}
+	r.active = session
+	r.mu.Unlock()
+	return true
+}
+
+func (r *reconnectRuntime) detach(_ Session) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active == nil {
+		return false
+	}
+	r.active = nil
+	return true
+}
+
+func (r *reconnectRuntime) shutdown() Session {
+	r.mu.Lock()
+	r.closed = true
+	session := r.active
+	r.active = nil
+	r.mu.Unlock()
+	return session
+}
+
 func defaultRetryScheduler(ctx context.Context, generation uint64, delay time.Duration) tea.Cmd {
 	return func() tea.Msg {
 		timer := time.NewTimer(delay)
@@ -74,6 +119,36 @@ func (m *Model) scheduleReconnect(ctx context.Context, generation uint64, delay 
 	return defaultRetryScheduler(ctx, generation, delay)
 }
 
+func (m *Model) ensureReconnectRuntime() *reconnectRuntime {
+	if m.runtime == nil {
+		m.runtime = &reconnectRuntime{}
+	}
+	return m.runtime
+}
+
+func (m *Model) Close() error {
+	if m.shuttingDown {
+		return nil
+	}
+	m.shuttingDown = true
+	m.generation++
+	if m.reconnectCancel != nil {
+		m.reconnectCancel()
+		m.reconnectCancel = nil
+	}
+	var firstErr error
+	if session := m.ensureReconnectRuntime().shutdown(); session != nil {
+		firstErr = session.Close()
+	}
+	if m.client != nil {
+		if err := m.client.Close(); firstErr == nil {
+			firstErr = err
+		}
+		m.client = nil
+	}
+	return firstErr
+}
+
 func (m *Model) beginReconnect(_ error) tea.Cmd {
 	if m.connection == connectionReconnecting || m.shuttingDown {
 		return nil
@@ -81,6 +156,7 @@ func (m *Model) beginReconnect(_ error) tea.Cmd {
 	m.connection = connectionReconnecting
 	m.generation++
 	m.Err = ""
+	m.ensureReconnectRuntime().beginEpisode()
 	m.reconnectFocus = m.Focus
 	m.reconnectModes = append([]string(nil), m.modes...)
 	if m.client != nil {
@@ -117,8 +193,14 @@ func (m *Model) startReconnectAttempt(generation uint64) tea.Cmd {
 		if session == nil {
 			return reconnectAttemptMsg{generation: generation, err: errors.New("reconnect dialer returned no session"), retryable: true}
 		}
+		runtime := m.runtime
+		if runtime != nil && !runtime.install(session) {
+			return reconnectAttemptMsg{generation: generation, err: context.Canceled, retryable: true}
+		}
 		fail := func(err error, retryable bool) tea.Msg {
-			_ = session.Close()
+			if runtime == nil || runtime.detach(session) {
+				_ = session.Close()
+			}
 			return reconnectAttemptMsg{generation: generation, err: err, retryable: retryable}
 		}
 		tail, err := session.Do(proto.Command{Op: "tail", SinceSeq: 0})
@@ -212,6 +294,9 @@ func (m *Model) applyReconnectAttempt(msg reconnectAttemptMsg) tea.Cmd {
 	savedFocus := m.reconnectFocus
 	savedModes := append([]string(nil), m.reconnectModes...)
 	m.client = msg.session
+	if m.runtime != nil {
+		m.runtime.detach(msg.session)
+	}
 	m.State = msg.state
 	m.events = append([]core.Event(nil), msg.events...)
 	m.lastSeq = msg.lastSeq
