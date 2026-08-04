@@ -20,6 +20,7 @@ import (
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/transcript"
 )
@@ -277,10 +278,7 @@ func (sv *Server) exec(cmd Command) Response {
 		default:
 			return Response{Error: "answer_decision requires an option or text"}
 		}
-		actor := strings.TrimSpace(cmd.Actor)
-		if actor == "" {
-			actor = "operator"
-		}
+		actor := review.NormalizeActor(cmd.Actor)
 		if err := sv.eng.AnswerAs(cmd.DecisionID, answer, actor); err != nil {
 			return Response{Error: err.Error()}
 		}

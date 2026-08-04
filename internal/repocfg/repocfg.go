@@ -56,7 +56,7 @@ func Default() Config {
 		// publishing merges is a bigger step, so pushing stays opt-in.
 		Pull: true,
 		PlanReview: PlanReviewConfig{
-			PolicyID: "manual-default", PolicyVersion: "1", Valid: true,
+			PolicyID: review.ManualPolicyID, PolicyVersion: review.ManualPolicyVersion, Valid: true,
 		},
 	}
 }

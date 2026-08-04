@@ -1421,14 +1421,11 @@ func (e *Engine) PendingDecisions() []PendingDecision {
 }
 
 func (e *Engine) Answer(decisionID int64, response levers.Response) error {
-	return e.AnswerAs(decisionID, response, "operator")
+	return e.AnswerAs(decisionID, response, review.DefaultActorID)
 }
 
 func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor string) error {
-	actor = strings.TrimSpace(actor)
-	if actor == "" {
-		actor = "operator"
-	}
+	actor = review.NormalizeActor(actor)
 	e.mu.Lock()
 	p, ok := e.pend[decisionID]
 	if !ok {
@@ -2546,12 +2543,10 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 }
 
 func sameResolvedPlanReviewPolicy(left, right review.ResolvedPolicy) bool {
-	return left.Mode == right.Mode && left.HumanRequired == right.HumanRequired &&
-		left.PolicyAutoApproval == right.PolicyAutoApproval && left.PolicyID == right.PolicyID &&
-		left.PolicyVersion == right.PolicyVersion && left.Reason == right.Reason
+	return left == right
 }
 
-func eventHasDecision(events []core.Event, typ core.EventType, issueID string, decisionID int64) bool {
+func hasEventForDecision(events []core.Event, typ core.EventType, issueID string, decisionID int64) bool {
 	for _, event := range events {
 		if event.IssueID != issueID || event.Type != typ {
 			continue
@@ -2574,8 +2569,7 @@ func (e *Engine) planReviewAuthorization(is *issueState) (store.DecisionRow, []c
 	var found *store.DecisionRow
 	for i := range rows {
 		if rows[i].Review != nil && rows[i].ReviewPolicy != nil {
-			candidate := rows[i]
-			found = &candidate
+			found = &rows[i]
 		}
 	}
 	if found == nil {
@@ -2613,7 +2607,7 @@ func (e *Engine) planReviewAuthorization(is *issueState) (store.DecisionRow, []c
 	if err != nil {
 		return store.DecisionRow{}, nil, err
 	}
-	if !eventHasDecision(events, approvalEvent, is.id, found.ID) {
+	if !hasEventForDecision(events, approvalEvent, is.id, found.ID) {
 		return store.DecisionRow{}, nil, fmt.Errorf("plan review approval audit event is missing")
 	}
 	return *found, events, nil
@@ -2726,7 +2720,7 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 			if err != nil {
 				return err
 			}
-			if !eventHasDecision(events, core.EvExecutionStarted, is.id, approval.ID) {
+			if !hasEventForDecision(events, core.EvExecutionStarted, is.id, approval.ID) {
 				payload := map[string]any{
 					"stage": st.Name, "decision_id": approval.ID,
 					"mode":           approval.ReviewPolicy.Mode,

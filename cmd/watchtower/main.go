@@ -31,6 +31,7 @@ import (
 	"github.com/weston6142/watchtower/internal/priority"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/slots"
@@ -207,7 +208,7 @@ func main() {
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		textAnswer := fs.String("text", "", "freeform decision response")
-		actor := fs.String("actor", "operator", "human actor identity")
+		actor := fs.String("actor", review.DefaultActorID, "human actor identity")
 		fs.Parse(args)
 		rest := fs.Args()
 		// The documented form puts --text after the id. The standard flag

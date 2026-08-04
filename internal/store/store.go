@@ -841,7 +841,7 @@ func (s *Store) ResolveArtifactReview(
 		(*response.Option != 0 && *response.Option != 1) {
 		return "", fmt.Errorf("artifact review response must be approve or revise")
 	}
-	provenance := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: "operator"}
+	provenance := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: review.DefaultActorID}
 	if len(provenances) > 0 && provenances[0] != nil {
 		copy := *provenances[0]
 		provenance = &copy

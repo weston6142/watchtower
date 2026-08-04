@@ -102,10 +102,7 @@ func decisionPolicyLines(policy *review.ResolvedPolicy, approval *review.Approva
 	if approval != nil {
 		switch approval.Kind {
 		case review.ApprovalHuman:
-			actor := approval.ActorID
-			if actor == "" {
-				actor = "operator"
-			}
+			actor := review.NormalizeActor(approval.ActorID)
 			lines = append(lines, wrapIndent("approved by: "+actor, width, "")...)
 		case review.ApprovalPolicy:
 			id := approval.PolicyID

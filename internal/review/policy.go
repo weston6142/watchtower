@@ -32,11 +32,25 @@ const (
 	ApprovalPolicy ApprovalKind = "policy"
 )
 
+const (
+	DefaultActorID      = "operator"
+	ManualPolicyID      = "manual-default"
+	ManualPolicyVersion = "1"
+)
+
 type ApprovalProvenance struct {
 	Kind          ApprovalKind `json:"approval_kind"`
 	ActorID       string       `json:"actor_id,omitempty"`
 	PolicyID      string       `json:"policy_id,omitempty"`
 	PolicyVersion string       `json:"policy_version,omitempty"`
+}
+
+// NormalizeActor applies the canonical identity used for human responses.
+func NormalizeActor(actor string) string {
+	if actor = strings.TrimSpace(actor); actor == "" {
+		return DefaultActorID
+	}
+	return actor
 }
 
 // ResolvePlanReviewPolicy resolves plan authorization once for a run.
@@ -48,10 +62,10 @@ func ResolvePlanReviewPolicy(mode flow.Lever, settings PolicySettings) ResolvedP
 		PolicyVersion: strings.TrimSpace(settings.Version),
 	}
 	if policy.PolicyID == "" {
-		policy.PolicyID = "manual-default"
+		policy.PolicyID = ManualPolicyID
 	}
 	if policy.PolicyVersion == "" {
-		policy.PolicyVersion = "1"
+		policy.PolicyVersion = ManualPolicyVersion
 	}
 	if mode == flow.LeverStrict {
 		policy.Reason = "strict_mode"
@@ -78,8 +92,8 @@ func ManualPlanReviewPolicy(mode flow.Lever) ResolvedPolicy {
 	return ResolvedPolicy{
 		Mode:          string(mode),
 		HumanRequired: true,
-		PolicyID:      "manual-default",
-		PolicyVersion: "1",
+		PolicyID:      ManualPolicyID,
+		PolicyVersion: ManualPolicyVersion,
 		Reason:        "invalid_policy",
 	}
 }

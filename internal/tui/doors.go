@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -162,10 +163,7 @@ func humanizeEvents(evs []core.Event, issueID string) []string {
 				line = "plan review requested: human approval required"
 			}
 		case core.EvPlanReviewHumanApproved:
-			actor := text("actor_id")
-			if actor == "" {
-				actor = "operator"
-			}
+			actor := review.NormalizeActor(text("actor_id"))
 			line = "plan approved by " + actor
 		case core.EvPlanReviewPolicyApproved:
 			policyID := text("policy_id")
@@ -186,10 +184,7 @@ func humanizeEvents(evs []core.Event, issueID string) []string {
 				}
 			}
 		case core.EvPlanReviewRejected:
-			actor := text("actor_id")
-			if actor == "" {
-				actor = "operator"
-			}
+			actor := review.NormalizeActor(text("actor_id"))
 			line = "plan review rejected by " + actor
 		case core.EvExecutionStarted:
 			line = "execute authorized"
