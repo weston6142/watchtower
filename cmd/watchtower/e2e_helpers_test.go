@@ -2,18 +2,214 @@ package main_test
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
 )
+
+type towerProcess struct {
+	t      *testing.T
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	mu     sync.Mutex
+	output strings.Builder
+	done   chan struct{}
+}
+
+type towerOutput struct {
+	process *towerProcess
+}
+
+func (w towerOutput) Write(data []byte) (int, error) {
+	w.process.mu.Lock()
+	defer w.process.mu.Unlock()
+	return w.process.output.Write(data)
+}
+
+func startTowerProcess(t *testing.T, bin, base, repo string) *towerProcess {
+	t.Helper()
+	cmd := exec.Command("script", "-qF", "/dev/stdout", "/bin/sh", "-c",
+		"stty columns 120 rows 40; exec \"$@\"", "tower-pty", bin, "tower", "--data", base, "--repo", repo, "--reduced-motion")
+	cmd.Env = append(os.Environ(), "TERM=dumb", "COLUMNS=120", "LINES=40")
+	cmd.Dir = repo
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := &towerProcess{t: t, cmd: cmd, stdin: stdin, done: make(chan struct{})}
+	cmd.Stdout = towerOutput{process: process}
+	cmd.Stderr = towerOutput{process: process}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_ = cmd.Wait()
+		close(process.done)
+	}()
+	t.Cleanup(process.close)
+	return process
+}
+
+func (p *towerProcess) snapshot() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.output.String()
+}
+
+func (p *towerProcess) resetOutput() {
+	p.mu.Lock()
+	p.output.Reset()
+	p.mu.Unlock()
+}
+
+func (p *towerProcess) send(keys string) {
+	p.t.Helper()
+	if _, err := io.WriteString(p.stdin, keys); err != nil {
+		p.t.Fatalf("tower input %q: %v", keys, err)
+	}
+}
+
+func (p *towerProcess) alive() bool {
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func (p *towerProcess) waitForOutput(needle string, timeout time.Duration) string {
+	p.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		raw := p.snapshot()
+		plain := ansi.Strip(raw)
+		if strings.Contains(plain, needle) {
+			return plain
+		}
+		if !p.alive() {
+			p.t.Fatalf("tower exited while waiting for %q:\n%s", needle, plain)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	p.t.Fatalf("tower did not render %q:\n%s", needle, ansi.Strip(p.snapshot()))
+	return ""
+}
+
+func (p *towerProcess) close() {
+	if p.alive() {
+		_, _ = io.WriteString(p.stdin, "q")
+		select {
+		case <-p.done:
+		case <-time.After(2 * time.Second):
+			if p.cmd.Process != nil {
+				_ = p.cmd.Process.Kill()
+			}
+		}
+	}
+	_ = p.stdin.Close()
+}
+
+func daemonPID(t *testing.T, base, repo string) int {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(repocfg.RepoDataDir(base, repo), "daemon.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 || syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	state, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").Output()
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(strings.TrimSpace(string(state)), "Z")
+}
+
+func waitForProcessState(t *testing.T, pid int, wantAlive bool, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if processAlive(pid) == wantAlive {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("process %d alive=%v, want %v", pid, processAlive(pid), wantAlive)
+}
+
+func waitForSocket(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if client, err := proto.Dial(path); err == nil {
+			_ = client.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("socket %s did not accept connections", path)
+}
+
+func waitForSocketUnavailable(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		client, err := proto.Dial(path)
+		if err != nil {
+			return
+		}
+		_ = client.Close()
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("socket %s remained available", path)
+}
+
+func startReplacementDaemon(t *testing.T, bin, base, repo string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(bin, "daemon", "--data", base, "--repo", repo)
+	cmd.Dir = repo
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForSocket(t, filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.sock"), 5*time.Second)
+	t.Cleanup(func() { stopProcess(t, cmd) })
+	return cmd
+}
+
+func stopProcess(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if processAlive(cmd.Process.Pid) {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		waitForProcessState(t, cmd.Process.Pid, false, 5*time.Second)
+	}
+	_ = cmd.Wait()
+}
 
 type e2eOptions struct {
 	mode string
