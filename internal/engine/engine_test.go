@@ -50,6 +50,84 @@ func issueRowByID(t *testing.T, rows []store.IssueRow, id string) store.IssueRow
 	return store.IssueRow{}
 }
 
+func mustIssues(t *testing.T, s *store.Store) []store.IssueRow {
+	t.Helper()
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+func TestPauseBeforeStagePersistsBoundaryAndResumeUsesIt(t *testing.T) {
+	f := flow.Flow{Name: "paused", Stages: []flow.Stage{
+		{Name: "plan", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+		{Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+	}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	runner1 := &runner.FakeRunner{Scripts: map[string]runner.Script{"plan/agent": {}, "execute/agent": {}}}
+	e1 := newEngineOnFileWithFlow(t, s, runner1, t.TempDir(), f)
+	id, err := e1.CreateIssue("pause before stage", "", f.Name, levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e1.Pause(id); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	waitForEvent(t, s, id, core.EvIssuePaused)
+
+	row := issueRowByID(t, mustIssues(t, s), id)
+	if row.State != "paused" {
+		t.Fatalf("stored state = %q, want paused", row.State)
+	}
+	paused, ok, err := s.LoadRunState(id)
+	if err != nil || !ok || paused.Lifecycle != "paused" || paused.Stage != "plan" || paused.StageIndex != 0 || paused.Boundary != "before_stage" {
+		t.Fatalf("paused snapshot = %+v, ok=%v, err=%v", paused, ok, err)
+	}
+
+	if err := e1.Resume(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := e1.Resume(id); err == nil {
+		t.Fatal("duplicate resume unexpectedly started or accepted a second run")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, runErr := s.StageRuns(id)
+		if runErr == nil && len(runs) == 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runs, _ := s.StageRuns(id)
+	t.Fatalf("resume did not run plan and execute exactly once: %+v", runs)
+}
+
+func TestPausePersistenceFailureIsSurfaced(t *testing.T) {
+	e, s := newEngineCfg(t, &runner.FakeRunner{Scripts: scripts()}, nil)
+	id, err := e.CreateIssue("pause failure", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextPausePersistenceForTest()
+	if err := e.Pause(id); err == nil {
+		t.Fatal("pause persistence failure was not returned")
+	}
+	if row := issueRowByID(t, mustIssues(t, s), id); row.State != "running" {
+		t.Fatalf("issue state after failed pause = %q, want running", row.State)
+	}
+	for _, event := range mustEvents(t, s, id) {
+		if event.Type == core.EvIssuePaused {
+			t.Fatal("failed pause emitted issue_paused")
+		}
+	}
+}
+
 func TestPlanReviewPolicyIsSnapshottedAtIssueCreation(t *testing.T) {
 	e, s := newEngineCfg(t, artifactReviewRunner(), func(cfg *Config) {
 		cfg.PlanReview = review.PolicySettings{ID: "manual-default", Version: "1", Valid: true}

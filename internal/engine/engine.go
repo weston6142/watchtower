@@ -150,6 +150,10 @@ type issueState struct {
 	stageCancel         context.CancelFunc
 	killRequested       bool
 	stageIdx            int
+	paused              bool
+	pauseRequested      bool
+	pauseStage          int
+	pauseBoundary       string
 	terminal            bool
 	running             bool
 	draft               bool
@@ -743,14 +747,54 @@ func (e *Engine) CanReset() error {
 // Pause stops an issue at the next boundary between stages.
 func (e *Engine) Pause(issueID string) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	is, ok := e.issues[issueID]
 	if !ok {
+		e.mu.Unlock()
 		return fmt.Errorf("unknown issue %s", issueID)
 	}
+	if is.paused || is.pauseRequested {
+		e.mu.Unlock()
+		return nil
+	}
+	previousGate := is.pauseGate
+	previousRequested := is.pauseRequested
+	previousPaused := is.paused
+	previousStage := is.pauseStage
+	previousBoundary := is.pauseBoundary
 	if is.pauseGate == nil {
 		is.pauseGate = make(chan struct{})
 	}
+	is.pauseRequested = true
+	is.pauseStage = is.stageIdx
+	if is.running {
+		is.pauseStage++
+	}
+	is.pauseBoundary = "before_stage"
+	gate := is.pauseGate
+	stageIdx := is.pauseStage
+	e.mu.Unlock()
+
+	run, err := e.runState(is, stageIdx, "paused", "before_stage")
+	if err == nil {
+		err = e.cfg.Store.PersistPausedRun(run)
+	}
+	if err != nil {
+		e.mu.Lock()
+		if is.pauseGate == gate {
+			is.pauseGate = previousGate
+			is.pauseRequested = previousRequested
+			is.paused = previousPaused
+			is.pauseStage = previousStage
+			is.pauseBoundary = previousBoundary
+		}
+		e.mu.Unlock()
+		return err
+	}
+	e.mu.Lock()
+	if is.pauseGate == gate {
+		is.paused = true
+	}
+	e.mu.Unlock()
 	return nil
 }
 
@@ -766,25 +810,64 @@ func (e *Engine) Resume(issueID string) error {
 		e.mu.Unlock()
 		return fmt.Errorf("unknown issue %s", issueID)
 	}
-	if is.running {
-		if is.pauseGate == nil {
-			e.mu.Unlock()
+	running := is.running
+	gate := is.pauseGate
+	terminal := is.terminal
+	startIdx := is.stageIdx
+	paused := is.paused || is.pauseRequested
+	e.mu.Unlock()
+	if running {
+		if gate == nil || !paused {
 			return fmt.Errorf("issue %s is not paused", issueID)
 		}
-		close(is.pauseGate)
-		is.pauseGate = nil
+		run, err := e.resumeRunState(is, startIdx)
+		if err != nil {
+			return err
+		}
+		if err := e.cfg.Store.ResumeRun(run); err != nil {
+			return err
+		}
+		e.mu.Lock()
+		if is.pauseGate == gate {
+			close(gate)
+			is.pauseGate = nil
+			is.pauseRequested = false
+			is.paused = false
+		}
 		e.mu.Unlock()
 		return nil
 	}
 	// terminal, not merely stopped: a lane created and paused before it ever
 	// started must stay unstarted, and only clear its gate.
-	if !is.terminal {
+	if !terminal {
+		if !paused {
+			return nil
+		}
+		run, err := e.resumeRunState(is, startIdx)
+		if err != nil {
+			return err
+		}
+		if err := e.cfg.Store.ResumeRun(run); err != nil {
+			return err
+		}
+		e.mu.Lock()
 		is.pauseGate = nil
+		is.pauseRequested = false
+		is.paused = false
 		e.mu.Unlock()
 		return nil
 	}
-	startIdx := is.stageIdx
+	run, err := e.resumeRunState(is, startIdx)
+	if err != nil {
+		return err
+	}
+	if err := e.cfg.Store.ResumeRun(run); err != nil {
+		return err
+	}
+	e.mu.Lock()
 	is.pauseGate = nil
+	is.pauseRequested = false
+	is.paused = false
 	is.killRequested = false
 	is.terminal = false
 	e.mu.Unlock()
@@ -792,6 +875,51 @@ func (e *Engine) Resume(issueID string) error {
 	// stage_failed events, not in the caller's response.
 	go e.runAndRecord(context.Background(), is, startIdx)
 	return nil
+}
+
+func (e *Engine) runState(is *issueState, stageIdx int, lifecycle, boundary string) (store.RunState, error) {
+	e.mu.Lock()
+	flowName := is.flowName
+	issueID := is.id
+	worktree := is.wsPath
+	branch := is.branch
+	baseRef := is.baseRef
+	e.mu.Unlock()
+	f, ok := e.cfg.Flows[flowName]
+	if !ok {
+		return store.RunState{}, fmt.Errorf("flow %q is not configured", flowName)
+	}
+	if stageIdx < 0 || stageIdx >= len(f.Stages) {
+		return store.RunState{}, fmt.Errorf("stage index %d is outside flow %q", stageIdx, flowName)
+	}
+	artifacts, err := e.cfg.Store.ArtifactPaths(issueID)
+	if err != nil {
+		return store.RunState{}, err
+	}
+	return store.RunState{
+		IssueID: issueID, Lifecycle: lifecycle, Stage: f.Stages[stageIdx].Name,
+		StageIndex: stageIdx, Boundary: boundary, Worktree: worktree,
+		Branch: branch, BaseRef: baseRef, Artifacts: artifacts,
+	}, nil
+}
+
+func (e *Engine) resumeRunState(is *issueState, stageIdx int) (store.RunState, error) {
+	run, ok, err := e.cfg.Store.LoadRunState(is.id)
+	if err != nil {
+		return store.RunState{}, err
+	}
+	if ok {
+		return run, nil
+	}
+	return e.runState(is, stageIdx, "active", "in_stage")
+}
+
+func (e *Engine) persistActiveRun(is *issueState, stageIdx int) error {
+	run, err := e.runState(is, stageIdx, "active", "in_stage")
+	if err != nil {
+		return err
+	}
+	return e.cfg.Store.PersistActiveRun(run)
 }
 
 // KillStage cancels only the currently running stage and leaves the issue
@@ -2903,9 +3031,24 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plan
 		e.mu.Lock()
 		is.stageIdx = i
 		gate := is.pauseGate
+		pauseStage := is.pauseStage
 		e.mu.Unlock()
 		if gate != nil {
-			e.emit(core.EvIssuePaused, is.id, map[string]string{"stage": st.Name})
+			if pauseStage == 0 && i != 0 {
+				pauseStage = i
+			}
+			paused, err := e.runState(is, pauseStage, "paused", "before_stage")
+			if err != nil {
+				return err
+			}
+			if err := e.cfg.Store.PersistPausedRun(paused); err != nil {
+				return err
+			}
+			e.mu.Lock()
+			is.pauseStage = pauseStage
+			is.paused = true
+			e.mu.Unlock()
+			e.emit(core.EvIssuePaused, is.id, map[string]string{"stage": paused.Stage})
 			select {
 			case <-gate:
 				e.emit(core.EvIssueResumed, is.id, nil)
@@ -2943,6 +3086,12 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plan
 			is.wsPath, is.wsRelease = path, release
 			is.branch, is.baseRef = branch, baseRef
 			e.mu.Unlock()
+			if err := e.persistActiveRun(is, i); err != nil {
+				return err
+			}
+		}
+		if err := e.persistActiveRun(is, i); err != nil {
+			return err
 		}
 		if err := e.checkBudget(is, st.Name); err != nil {
 			return err
