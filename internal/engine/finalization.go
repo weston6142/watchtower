@@ -196,6 +196,44 @@ func (e *Engine) restoreVerifiedWorkspace(
 	return nil
 }
 
+func (e *Engine) restorePersistedWorkspace(is *issueState, run store.RunState) error {
+	if run.Worktree == "" {
+		if run.Branch != "" || run.BaseRef != "" {
+			return fmt.Errorf("persisted workspace identity is incomplete")
+		}
+		e.mu.Lock()
+		is.wsPath = ""
+		is.wsRelease = nil
+		is.branch = ""
+		is.baseRef = ""
+		e.mu.Unlock()
+		return nil
+	}
+	info, err := os.Stat(run.Worktree)
+	if err != nil {
+		return fmt.Errorf("persisted worktree %s: %w", run.Worktree, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("persisted worktree %s is not a directory", run.Worktree)
+	}
+	branch, err := gitCommandOutput(run.Worktree, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	if branch != run.Branch {
+		return fmt.Errorf("persisted branch changed: current %s, snapshot %s", branch, run.Branch)
+	}
+	var release func() error
+	if releaser, ok := e.cfg.Workspace.(workspace.Releaser); ok {
+		release = func() error { return releaser.ReleasePath(run.Worktree) }
+	}
+	e.mu.Lock()
+	is.wsPath, is.wsRelease = run.Worktree, release
+	is.branch, is.baseRef = run.Branch, run.BaseRef
+	e.mu.Unlock()
+	return nil
+}
+
 // restoreInterruptedWorkspace reconnects a restarted engine to the worktree
 // recorded by the last stage run. It is deliberately best-effort: an absent or
 // mismatched worktree falls back to the provider's normal Acquire path, while a

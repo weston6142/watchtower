@@ -385,6 +385,9 @@ func (e *Engine) Rehydrate() error {
 		if row.Review == nil {
 			continue
 		}
+		if issue, ok := issueRows[row.IssueID]; ok && issue.State == "paused" {
+			continue
+		}
 		if previous := reviewCheckpointIDs[row.IssueID]; previous >= row.Review.CheckpointID {
 			continue
 		}
@@ -431,6 +434,22 @@ func (e *Engine) Rehydrate() error {
 			continue
 		}
 		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" || row.State == "abandoned" {
+			continue
+		}
+		if row.State == "paused" {
+			e.mu.Lock()
+			_, known := e.issues[row.ID]
+			e.mu.Unlock()
+			if known {
+				continue
+			}
+			is, err := e.restorePersistedRun(row)
+			if err != nil {
+				return err
+			}
+			e.mu.Lock()
+			e.issues[row.ID] = is
+			e.mu.Unlock()
 			continue
 		}
 		integration, hasIntegration, err := e.cfg.Store.IssueIntegration(row.ID)
@@ -485,6 +504,34 @@ func (e *Engine) Rehydrate() error {
 				}
 				e.mu.Unlock()
 			}(integration)
+			continue
+		}
+		run, hasRun, err := e.cfg.Store.LoadRunState(row.ID)
+		if err != nil {
+			return err
+		}
+		if hasRun && run.Lifecycle == "active" &&
+			(row.State == "running" || strings.HasPrefix(row.State, "running:")) {
+			e.mu.Lock()
+			_, known := e.issues[row.ID]
+			e.mu.Unlock()
+			if known {
+				continue
+			}
+			is, err := e.restorePersistedRun(row)
+			if err != nil {
+				return err
+			}
+			stage, attempt, of, _, _ := e.cfg.Store.LastStageEvents(row.ID)
+			if stage == "" {
+				stage = run.Stage
+			}
+			e.mu.Lock()
+			e.issues[row.ID] = is
+			e.mu.Unlock()
+			e.emit(core.EvStageFailed, row.ID, map[string]any{
+				"stage": stage, "attempt": attempt, "of": of,
+				"error": "daemon restarted — press R to retry", "final": true})
 			continue
 		}
 		if row.State == "backlog" {
@@ -612,6 +659,40 @@ func matrixFromStrings(values map[string]string) levers.Matrix {
 		matrix[stage] = flow.Lever(value)
 	}
 	return matrix
+}
+
+func (e *Engine) restorePersistedRun(row store.IssueRow) (*issueState, error) {
+	run, ok, err := e.cfg.Store.LoadRunState(row.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("paused or active issue %s has no persisted run state", row.ID)
+	}
+	if run.Lifecycle != "paused" && run.Lifecycle != "active" {
+		return nil, fmt.Errorf("issue %s has unsupported run lifecycle %q", row.ID, run.Lifecycle)
+	}
+	f, ok := e.cfg.Flows[row.Flow]
+	if !ok {
+		return nil, fmt.Errorf("flow %q is not configured", row.Flow)
+	}
+	if run.StageIndex < 0 || run.StageIndex >= len(f.Stages) {
+		return nil, fmt.Errorf("run state for %s has invalid stage index %d", row.ID, run.StageIndex)
+	}
+	if f.Stages[run.StageIndex].Name != run.Stage {
+		return nil, fmt.Errorf("run state for %s names stage %q at index %d", row.ID, run.Stage, run.StageIndex)
+	}
+	is := &issueState{
+		id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+		matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+		dependsOn: append([]string(nil), row.DependsOn...), stageIdx: run.StageIndex,
+		terminal: true, paused: run.Lifecycle == "paused", pauseStage: run.StageIndex,
+		pauseBoundary: run.Boundary, planReview: row.PlanReviewPolicy,
+	}
+	if err := e.restorePersistedWorkspace(is, run); err != nil {
+		return nil, fmt.Errorf("restore run %s: %w", row.ID, err)
+	}
+	return is, nil
 }
 
 func (e *Engine) SetDependencies(issueID string, parents []string) error {

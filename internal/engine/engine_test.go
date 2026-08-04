@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -124,6 +125,109 @@ func TestPausePersistenceFailureIsSurfaced(t *testing.T) {
 	for _, event := range mustEvents(t, s, id) {
 		if event.Type == core.EvIssuePaused {
 			t.Fatal("failed pause emitted issue_paused")
+		}
+	}
+}
+
+func testEvent(t *testing.T, typ core.EventType, issueID string, payload any) core.Event {
+	t.Helper()
+	event, err := core.NewEvent(typ, issueID, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event
+}
+
+func countEventType(t *testing.T, s *store.Store, issueID string, typ core.EventType) int {
+	t.Helper()
+	count := 0
+	for _, event := range mustEvents(t, s, issueID) {
+		if event.Type == typ {
+			count++
+		}
+	}
+	return count
+}
+
+func TestRehydrateKeepsPausedRunPausedAndIdempotent(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	f := flow.Flow{Name: "restart", Stages: []flow.Stage{{
+		Name: "plan", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+	}}}
+	if err := s.UpsertIssue(store.IssueRow{ID: "GH-36", Title: "restart", Flow: f.Name, State: "paused"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(testEvent(t, core.EvIssueCreated, "GH-36", map[string]any{"title": "restart", "flow": f.Name})); err != nil {
+		t.Fatal(err)
+	}
+	want := store.RunState{IssueID: "GH-36", Lifecycle: "paused", Stage: "plan", StageIndex: 0, Boundary: "before_stage", Artifacts: []string{"spec.md", "plan.md"}}
+	if err := s.PersistPausedRun(want); err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"plan/agent": {}}, OnStart: func(_, _, _, _ string) error { starts++; return nil }}
+	e := newEngineOnFileWithFlow(t, s, r, t.TempDir(), f)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	before := countEventType(t, s, "GH-36", core.EvStageFailed)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	after := countEventType(t, s, "GH-36", core.EvStageFailed)
+	if before != 0 || after != 0 || starts != 0 {
+		t.Fatalf("paused rehydrate changed failure events or started work: before=%d after=%d starts=%d", before, after, starts)
+	}
+	if row := issueRow(t, s, "GH-36"); row.State != "paused" {
+		t.Fatalf("paused issue state = %q, want paused", row.State)
+	}
+	got, ok, err := s.LoadRunState("GH-36")
+	if err != nil || !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("paused snapshot after repeated rehydrate = %+v, ok=%v, err=%v", got, ok, err)
+	}
+	if err := e.Resume("GH-36"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for starts == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if starts != 1 {
+		t.Fatalf("resume starts = %d, want 1", starts)
+	}
+}
+
+func TestRehydrateActiveWorkerLossRemainsRetryableFailure(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	f := flow.Flow{Name: "active", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+	}}}
+	if err := s.UpsertIssue(store.IssueRow{ID: "GH-37", Title: "active", Flow: f.Name, State: "running:execute"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(testEvent(t, core.EvStageStarted, "GH-37", map[string]any{"stage": "execute", "attempt": 1, "of": 1})); err != nil {
+		t.Fatal(err)
+	}
+	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/agent": {}}}, t.TempDir(), f)
+	projection := &steward.Steward{Store: s}
+	e.cfg.Observers = []func(core.Event){projection.Observe}
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if countEventType(t, s, "GH-37", core.EvStageFailed) != 1 || issueRow(t, s, "GH-37").State != "failed" {
+		t.Fatalf("active loss did not use existing retryable failure path")
+	}
+	for _, event := range mustEvents(t, s, "GH-37") {
+		if event.Type == core.EvIssuePaused {
+			t.Fatal("active worker loss was misclassified as operator pause")
 		}
 	}
 }
@@ -3923,15 +4027,6 @@ func TestRehydrateDoesNotCompleteStageFromRunnerSuccessAlone(t *testing.T) {
 	if !sawFailure {
 		t.Fatal("rehydration did not expose an interrupted stage as a terminal retryable failure")
 	}
-}
-
-func mustIssues(t *testing.T, s *store.Store) []store.IssueRow {
-	t.Helper()
-	rows, err := s.Issues()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return rows
 }
 
 func TestDecisionWireEnvelopeFailsBeforePresentation(t *testing.T) {
