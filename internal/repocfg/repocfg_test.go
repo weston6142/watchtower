@@ -128,6 +128,105 @@ func TestLoadPreservesExplicitClaudeAndCodexOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadNormalizesTypedCodexProfilesAndFallbackPolicy(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".watchtower", "config.yaml"), []byte(`codex_bin: /opt/codex
+codex_model: configured-model
+codex_effort: high
+codex:
+  primary:
+    feature_overrides:
+      unified_exec: false
+  fallback:
+    feature_overrides:
+      unified_exec: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary, fallback, ok := cfg.EffectiveCodex()
+	if !ok || fallback == nil || cfg.CodexPolicy() != CodexPolicyFallbackOnce {
+		t.Fatalf("normalized Codex config = primary=%+v fallback=%+v policy=%q", primary, fallback, cfg.CodexPolicy())
+	}
+	if primary.Bin != "/opt/codex" || primary.Model != "configured-model" || primary.Effort != "high" ||
+		!reflect.DeepEqual(primary.FeatureOverrides, map[string]bool{"unified_exec": false}) {
+		t.Fatalf("primary profile = %+v", primary)
+	}
+	if fallback.Bin != primary.Bin || fallback.Model != primary.Model || fallback.Effort != primary.Effort ||
+		!reflect.DeepEqual(fallback.FeatureOverrides, map[string]bool{"unified_exec": true}) {
+		t.Fatalf("fallback profile = %+v", fallback)
+	}
+}
+
+func TestLoadLegacyCodexConfigUsesTerminalPolicy(t *testing.T) {
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary, fallback, ok := cfg.EffectiveCodex()
+	if !ok || fallback != nil || cfg.CodexPolicy() != CodexPolicyTerminal {
+		t.Fatalf("legacy normalized Codex config = primary=%+v fallback=%+v policy=%q", primary, fallback, cfg.CodexPolicy())
+	}
+	if primary.Bin != cfg.CodexBin || primary.Model != cfg.CodexModel || primary.Effort != cfg.CodexEffort {
+		t.Fatalf("legacy primary = %+v, flat config = %+v", primary, cfg)
+	}
+}
+
+func TestLoadRejectsInvalidCodexProfiles(t *testing.T) {
+	tests := map[string]string{
+		"unknown feature": `codex:
+  primary:
+    feature_overrides:
+      imaginary: false
+`,
+		"invalid unified_exec type": `codex:
+  primary:
+    feature_overrides:
+      unified_exec: "false"
+`,
+		"fallback identity mismatch": `codex:
+  primary:
+    feature_overrides:
+      unified_exec: false
+  fallback:
+    bin: /other/codex
+    feature_overrides:
+      unified_exec: true
+`,
+		"identical fallback": `codex:
+  primary:
+    feature_overrides:
+      unified_exec: false
+  fallback:
+    feature_overrides:
+      unified_exec: false
+`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, ".watchtower", "config.yaml"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(root); err == nil {
+				t.Fatal("invalid Codex profile accepted")
+			} else if !strings.Contains(err.Error(), "codex") {
+				t.Fatalf("validation error = %q, want Codex field context", err)
+			}
+		})
+	}
+}
+
 func TestLoadParsesQuotedTestCommandOnce(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".watchtower")
