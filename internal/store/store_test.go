@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -12,7 +13,84 @@ import (
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
+	_ "modernc.org/sqlite"
 )
+
+func TestLegacyIssueDefaultsToManualPlanReview(t *testing.T) {
+	database := t.TempDir() + "/legacy.db"
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE issues(
+  id TEXT PRIMARY KEY, title TEXT, body TEXT, state TEXT,
+  flow TEXT, levers TEXT, priority INTEGER, links TEXT)`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO issues(id,title,body,state,flow,levers,priority) VALUES(?,?,?,?,?,?,?)`,
+		"GH-legacy", "legacy", "", "running", "default", `{"plan":"regular"}`, 0); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rows, err := s.Issues()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("issues = %+v, err = %v", rows, err)
+	}
+	policy := rows[0].PlanReviewPolicy
+	if policy.Mode != "regular" || !policy.HumanRequired || policy.PolicyAutoApproval ||
+		policy.PolicyID == "" || policy.PolicyVersion == "" {
+		t.Fatalf("legacy plan review policy = %+v", policy)
+	}
+}
+
+func TestPlanReviewPolicyRoundTrips(t *testing.T) {
+	s, err := Open("file:plan-review-evidence?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	policy := &review.ResolvedPolicy{
+		Mode: "regular", PolicyID: "team-ci", PolicyVersion: "2026-08-03",
+		PolicyAutoApproval: true, Reason: "policy_opt_in",
+	}
+	approval := &review.ApprovalProvenance{
+		Kind: review.ApprovalPolicy, PolicyID: "team-ci", PolicyVersion: "2026-08-03",
+	}
+	pendingID, err := s.InsertDecision(DecisionRow{
+		IssueID: "GH-35", Stage: "plan", Question: "Review plan", Options: []string{"approve", "revise"},
+		ReviewPolicy: policy, Approval: approval,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.PendingDecisionRows()
+	if err != nil || len(rows) != 1 || rows[0].ID != pendingID {
+		t.Fatalf("pending rows = %+v, err = %v", rows, err)
+	}
+	if rows[0].ReviewPolicy == nil || rows[0].ReviewPolicy.PolicyID != "team-ci" ||
+		rows[0].Approval == nil || rows[0].Approval.Kind != review.ApprovalPolicy {
+		t.Fatalf("pending plan review evidence = %+v", rows[0])
+	}
+	all, err := s.AllDecisionRows()
+	if err != nil || len(all) != 1 {
+		t.Fatalf("all rows = %+v, err = %v", all, err)
+	}
+	if all[0].ReviewPolicy == nil || all[0].ReviewPolicy.PolicyVersion != "2026-08-03" ||
+		all[0].Approval == nil || all[0].Approval.PolicyVersion != "2026-08-03" {
+		t.Fatalf("all plan review evidence = %+v", all[0])
+	}
+}
 
 func testDecisionContext() *decision.DecisionContext {
 	return &decision.DecisionContext{

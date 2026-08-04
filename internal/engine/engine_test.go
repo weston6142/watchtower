@@ -19,6 +19,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/steward"
@@ -33,6 +34,63 @@ func testFlow() flow.Flow {
 		panic(err)
 	}
 	return f
+}
+
+func issueRowByID(t *testing.T, rows []store.IssueRow, id string) store.IssueRow {
+	t.Helper()
+	for _, row := range rows {
+		if row.ID == id {
+			return row
+		}
+	}
+	t.Fatalf("issue row %s not found in %+v", id, rows)
+	return store.IssueRow{}
+}
+
+func TestPlanReviewPolicyIsSnapshottedAtIssueCreation(t *testing.T) {
+	e, s := newEngineCfg(t, artifactReviewRunner(), func(cfg *Config) {
+		cfg.PlanReview = review.PolicySettings{ID: "manual-default", Version: "1", Valid: true}
+	})
+	id, err := e.CreateIssue("snapshot", "", "default", levers.Preset(testFlow(), flow.LeverRegular), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := issueRowByID(t, rows, id).PlanReviewPolicy
+	if got.Mode != "regular" || !got.HumanRequired || got.PolicyAutoApproval || got.PolicyID != "manual-default" {
+		t.Fatalf("snapshot = %+v", got)
+	}
+
+	e2 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), e.cfg.DataDir, testFlow())
+	e2.cfg.PlanReview = review.PolicySettings{
+		ID: "team-ci", Version: "2026-08-03", AutoApproveRegular: true, Valid: true,
+	}
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issueRowByID(t, rows, id).PlanReviewPolicy; got.PolicyID != "manual-default" || !got.HumanRequired {
+		t.Fatalf("rehydration reread mutable config: %+v", got)
+	}
+
+	strictID, err := e2.CreateIssue("strict snapshot", "", "default", levers.Matrix{"plan": flow.LeverStrict}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	strict := issueRowByID(t, rows, strictID).PlanReviewPolicy
+	if strict.Mode != "strict" || !strict.HumanRequired || strict.PolicyAutoApproval {
+		t.Fatalf("strict snapshot = %+v", strict)
+	}
 }
 
 // newEngineCfg builds a test engine like newEngine but lets the caller adjust

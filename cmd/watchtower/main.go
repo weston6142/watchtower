@@ -765,6 +765,7 @@ func runDaemon(args []string) {
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
+		PlanReview:         cfg.PlanReviewSettings(),
 		DecisionIdentities: decisionIdentities,
 		Marshal:            seq, Train: train,
 		Librarian: lib,

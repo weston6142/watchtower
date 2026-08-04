@@ -47,6 +47,7 @@ type Config struct {
 	Pool               *slots.Pool
 	Flows              map[string]flow.Flow
 	Rules              levers.Rules
+	PlanReview         review.PolicySettings
 	DecisionIdentities map[string]decision.AgentIdentity
 	DataDir            string
 	Workspace          workspace.Provider
@@ -102,6 +103,31 @@ type issueState struct {
 	activeTouchset      *touchset.Set
 	dependsOn           []string
 	waitingDependencies bool
+	planReview          review.ResolvedPolicy
+}
+
+func planReviewLever(f flow.Flow, matrix levers.Matrix) flow.Lever {
+	for _, stage := range f.Stages {
+		if stage.Gate == flow.GatePlanReview {
+			if lever := matrix[stage.Name]; lever != "" {
+				return lever
+			}
+		}
+	}
+	if lever := matrix["plan"]; lever != "" {
+		return lever
+	}
+	return flow.LeverRegular
+}
+
+func (e *Engine) resolvePlanReviewPolicy(flowName string, matrix levers.Matrix) review.ResolvedPolicy {
+	f := e.cfg.Flows[flowName]
+	mode := planReviewLever(f, matrix)
+	settings := e.cfg.PlanReview
+	if !settings.Valid && !settings.AutoApproveRegular && settings.ID == "" && settings.Version == "" {
+		return review.ManualPlanReviewPolicy(mode)
+	}
+	return review.ResolvePlanReviewPolicy(mode, settings)
 }
 
 type Claim struct {
@@ -201,6 +227,7 @@ func (e *Engine) rehydrateArtifactReview(
 		id: row.IssueID, title: issue.Title, body: issue.Body, flowName: issue.Flow,
 		matrix: matrixFromStrings(issue.Levers), priority: issue.Priority,
 		dependsOn: append([]string(nil), issue.DependsOn...), stageIdx: stageIdx, terminal: true,
+		planReview: issue.PlanReviewPolicy,
 	}
 	e.restoreInterruptedWorkspace(is)
 	e.mu.Lock()
@@ -335,7 +362,7 @@ func (e *Engine) Rehydrate() error {
 				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
 				dependsOn: append([]string(nil), row.DependsOn...),
 				claimed:   row.State == "claimed", externalSession: true,
-				terminal: row.State == "failed", stageIdx: finalIdx,
+				terminal: row.State == "failed", stageIdx: finalIdx, planReview: row.PlanReviewPolicy,
 			}
 			if err := e.restoreClaimedWorkspace(is, integration); err != nil {
 				return fmt.Errorf("restore claim %s: %w", row.ID, err)
@@ -350,6 +377,7 @@ func (e *Engine) Rehydrate() error {
 				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
 				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
 				dependsOn: append([]string(nil), row.DependsOn...), running: true,
+				planReview: row.PlanReviewPolicy,
 			}
 			e.mu.Lock()
 			e.issues[row.ID] = is
@@ -378,7 +406,7 @@ func (e *Engine) Rehydrate() error {
 				}
 				e.issues[row.ID] = &issueState{
 					id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
-					matrix: matrix, priority: row.Priority, draft: true,
+					matrix: matrix, priority: row.Priority, draft: true, planReview: row.PlanReviewPolicy,
 				}
 			}
 			e.mu.Unlock()
@@ -390,6 +418,7 @@ func (e *Engine) Rehydrate() error {
 				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
 				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
 				dependsOn: append([]string(nil), row.DependsOn...), waitingDependencies: true,
+				planReview: row.PlanReviewPolicy,
 			}
 			e.mu.Unlock()
 			continue
@@ -428,6 +457,7 @@ func (e *Engine) Rehydrate() error {
 		is := &issueState{
 			id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
 			matrix: matrix, priority: row.Priority, stageIdx: stageIdx, terminal: true,
+			planReview: row.PlanReviewPolicy,
 		}
 		e.restoreInterruptedWorkspace(is)
 		e.mu.Lock()
@@ -775,10 +805,14 @@ func (e *Engine) CreateIssueWithDependencies(title, body, flowName string, m lev
 	if err != nil {
 		return "", err
 	}
+	planReview := e.resolvePlanReviewPolicy(flowName, m)
 	e.mu.Lock()
 	e.nextID++
 	id := fmt.Sprintf("GH-%d", e.nextID)
-	e.issues[id] = &issueState{id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority}
+	e.issues[id] = &issueState{
+		id: id, title: title, body: body, flowName: flowName, matrix: m, priority: priority,
+		planReview: planReview,
+	}
 	e.mu.Unlock()
 	if err := attach.Save(e.issueDir(id), set); err != nil {
 		e.rollbackCreate(id)
@@ -786,6 +820,7 @@ func (e *Engine) CreateIssueWithDependencies(title, body, flowName string, m lev
 	}
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
 		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Levers: matrixStrings(m), Priority: priority,
+		PlanReviewPolicy: planReview,
 	}); err != nil {
 		e.rollbackCreate(id)
 		return "", err
@@ -1340,9 +1375,12 @@ func (e *Engine) LaunchIssue(id string) error {
 	}
 	is.draft = false
 	title, body, flowName, matrix, priority := is.title, is.body, is.flowName, is.matrix, is.priority
+	planReview := e.resolvePlanReviewPolicy(flowName, matrix)
+	is.planReview = planReview
 	e.mu.Unlock()
 	if err := e.cfg.Store.UpsertIssue(store.IssueRow{
 		ID: id, Title: title, Body: body, Flow: flowName, State: "running", Levers: matrixStrings(matrix), Priority: priority,
+		PlanReviewPolicy: planReview,
 	}); err != nil {
 		e.mu.Lock()
 		is.draft = true
@@ -1827,6 +1865,7 @@ func (e *Engine) resolveProposalBatch(
 	}
 	issues := make([]store.IssueRow, 0, len(proposals))
 	edges := make(map[string][]string, len(proposals))
+	planReview := e.resolvePlanReviewPolicy(flowName, matrix)
 	for _, proposal := range proposals {
 		id := keyToID[proposal.Key]
 		for _, dependency := range proposal.DependsOn {
@@ -1840,7 +1879,7 @@ func (e *Engine) resolveProposalBatch(
 		graph[id] = edges[id]
 		issues = append(issues, store.IssueRow{
 			ID: id, Title: proposal.Title, Body: proposal.Body, State: "running",
-			Flow: flowName, Levers: matrixStrings(matrix),
+			Flow: flowName, Levers: matrixStrings(matrix), PlanReviewPolicy: planReview,
 		})
 	}
 	if err := graph.Validate(); err != nil {
@@ -1853,7 +1892,7 @@ func (e *Engine) resolveProposalBatch(
 	for _, issue := range issues {
 		e.issues[issue.ID] = &issueState{
 			id: issue.ID, title: issue.Title, body: issue.Body, flowName: issue.Flow,
-			matrix: matrix, dependsOn: append([]string(nil), edges[issue.ID]...),
+			matrix: matrix, dependsOn: append([]string(nil), edges[issue.ID]...), planReview: planReview,
 		}
 	}
 	e.mu.Unlock()
@@ -2632,7 +2671,7 @@ func (e *Engine) loadDoneUnmergedForRetry(issueID string) (*issueState, error) {
 		id: found.ID, title: found.Title, body: found.Body, flowName: found.Flow,
 		matrix: matrixFromStrings(found.Levers), priority: found.Priority,
 		dependsOn: append([]string(nil), found.DependsOn...),
-		stageIdx:  stageIdx, terminal: true,
+		stageIdx:  stageIdx, terminal: true, planReview: found.PlanReviewPolicy,
 	}
 	e.restoreInterruptedWorkspace(is)
 	return is, nil
