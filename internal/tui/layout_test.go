@@ -67,6 +67,37 @@ func requireGH11Surface(t *testing.T, flow string, width, height int) []string {
 	return requireGH11View(t, FixtureModel(flow, width, height), width, height)
 }
 
+func TestMainFooterKeepsCompactSubset(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		width, height int
+	}{
+		{name: "wide", width: 200, height: 50},
+		{name: "narrow", width: 100, height: 40},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := requireGH11Surface(t, "floor", tc.width, tc.height)
+			_, footer := gh11Footer(t, lines)
+			last := -1
+			for _, term := range gh11FooterTerms {
+				current := strings.Index(footer, term)
+				if current <= last {
+					t.Fatalf("footer item %q is out of order at %dx%d:\n%s", term, tc.width, tc.height, footer)
+				}
+				last = current
+			}
+			if strings.Contains(footer, "investigation") {
+				t.Fatalf("investigation must remain out of compact footer:\n%s", footer)
+			}
+			for _, field := range strings.Fields(footer) {
+				if field == "i" {
+					t.Fatalf("standalone investigation key must remain out of compact footer:\n%s", footer)
+				}
+			}
+		})
+	}
+}
+
 func TestGH11TowerViewDocksFooterAndUsesMainHeight(t *testing.T) {
 	for _, flow := range []string{"floor", "rows"} {
 		t.Run(flow, func(t *testing.T) {

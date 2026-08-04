@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -291,7 +292,7 @@ func TestRenderHelpOverlay(t *testing.T) {
 	for _, want := range []string{
 		"help", "esc close",
 		"NAVIGATION", "CONTROL", "DOORS", "DECISIONS",
-		"war room", "lever editor", "architecture pane / map",
+		"war room", "lever editor", "architecture pane / map", "investigation",
 		"? / esc", "close", "q / ctrl+c", "quit", "STATES",
 	} {
 		if !strings.Contains(out, want) {
@@ -305,4 +306,38 @@ func TestRenderHelpOverlay(t *testing.T) {
 	if !strings.Contains(out, "┌") || !strings.Contains(out, "└") {
 		t.Fatal("expected box border")
 	}
+}
+
+func TestHelpOverlayResponsive(t *testing.T) {
+	for _, width := range []int{200, 100} {
+		t.Run("width-"+strconv.Itoa(width), func(t *testing.T) {
+			out := ansi.Strip(renderHelpOverlay(width))
+			for _, want := range []string{
+				"NAVIGATION", "CONTROL", "DOORS", "DECISIONS", "STATES",
+				"investigation", "? / esc", "q / ctrl+c",
+			} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("width %d missing %q in:\n%s", width, want, out)
+				}
+			}
+			if !helpOverlayHasKeyDescription(out, "i", "investigation") {
+				t.Fatalf("width %d missing i investigation row:\n%s", width, out)
+			}
+			for lineNumber, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+				if got := lipgloss.Width(line); got > width {
+					t.Fatalf("width %d line %d is %d cells wide:\n%s", width, lineNumber, got, out)
+				}
+			}
+		})
+	}
+}
+
+func helpOverlayHasKeyDescription(out, key, description string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		descriptionIndex := strings.Index(line, description)
+		if descriptionIndex >= 0 && strings.Contains(line[:descriptionIndex], key) {
+			return true
+		}
+	}
+	return false
 }

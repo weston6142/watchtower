@@ -1817,10 +1817,7 @@ func (m Model) pagerBodyHeight() int {
 func (m Model) View() string {
 	layoutWidth := m.layoutWidth()
 	towerWidth, railWidth, stacked := mainColumnWidths(layoutWidth)
-	mainBindings := [][2]string{
-		{"j/k", "floors"}, {"tab", "next"}, {"p", "pause/resume"}, {"x", "kill"},
-		{"R", "retry"}, {"T", "stream"}, {"L", "levers"}, {"?", "help"}, {"q", "quit"},
-	}
+	mainBindings := projectMainKeybindingFooter()
 	right := errText(m.Err)
 	if m.archMode == "full" {
 		mainBindings = [][2]string{{"j/k", "module"}, {"/", "filter"}, {"a/esc", "back"}}
