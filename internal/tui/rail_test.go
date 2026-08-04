@@ -192,6 +192,24 @@ func TestRenderArtifactReviewIdentityWrapsInToastAndEditor(t *testing.T) {
 	}
 }
 
+func TestRenderPlanReviewPolicyInToastAndEditor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	d := projection.DecisionView{
+		ID: 35, Stage: "plan", Question: "Approve plan?", Options: []string{"approve", "reject"},
+		ReviewPolicy: &review.ResolvedPolicy{Mode: "regular", HumanRequired: true, PolicyID: "manual-default", PolicyVersion: "1", Reason: "manual_default"},
+	}
+	for _, out := range []string{
+		ansi.Strip(renderToast(d, Identity{Tag: "GH"}, 0, 0, 60)),
+		ansi.Strip(renderDecisionEditor(d, decisionEditor{DecisionID: d.ID, Value: "approve"}, 60)),
+	} {
+		for _, want := range []string{"human approval required", "mode: regular", "policy: manual-default@1"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("plan review policy missing %q:\n%s", want, out)
+			}
+		}
+	}
+}
+
 func TestRenderToastShowsSelectionCursor(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	d := projection.DecisionView{ID: 4, IssueID: "GH-1", Stage: "spec",
@@ -276,7 +294,7 @@ func TestRenderRailProjectionOverridesStaleDetail(t *testing.T) {
 		ID: "GH-1", Title: "live lane", Flow: "default", State: "running", Tokens: 9607,
 	}
 	stale := &proto.IssueDetail{
-		Issue: store.IssueRow{ID: "GH-1", Title: "old lane", Flow: "default", State: "waiting_decision"},
+		Issue:  store.IssueRow{ID: "GH-1", Title: "old lane", Flow: "default", State: "waiting_decision"},
 		Tokens: 2415000,
 	}
 	out := renderRail(st, map[string]Identity{"GH-1": {Tag: "LL"}}, "GH-1", stale, 80)

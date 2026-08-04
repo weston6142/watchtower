@@ -81,3 +81,16 @@ func TestFormatDecisionShowsArtifactReviewIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatDecisionShowsPlanReviewPolicy(t *testing.T) {
+	got := formatDecision(engine.PendingDecision{
+		ID: 35, IssueID: "GH-35", Stage: "plan",
+		D:            levers.Decision{Question: "Approve plan?", Options: []string{"approve", "reject"}},
+		ReviewPolicy: &review.ResolvedPolicy{Mode: "regular", HumanRequired: true, PolicyID: "manual-default", PolicyVersion: "1", Reason: "manual_default"},
+	})
+	for _, want := range []string{"review policy: human approval required", "mode: regular", "policy: manual-default@1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatDecision() missing %q:\n%s", want, got)
+		}
+	}
+}

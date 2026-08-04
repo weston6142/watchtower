@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -89,6 +91,46 @@ func TestTimelineHumanizes(t *testing.T) {
 	}, "GH-1")
 	if len(lines) != 2 || !strings.Contains(lines[0], "merged") || strings.Contains(lines[1], "stage_started") {
 		t.Fatalf("humanize: %v", lines)
+	}
+}
+
+func TestHumanAndPolicyPlanApprovalHaveDistinctTimelineText(t *testing.T) {
+	policy := map[string]any{"mode": "regular", "policy_id": "team-ci", "policy_version": "2026-08-03"}
+	approvedByAlice, err := json.Marshal(map[string]any{
+		"approval_kind": "human", "actor_id": "alice", "review_policy": policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoApproved, err := json.Marshal(map[string]any{
+		"approval_kind": "policy", "policy_id": "team-ci", "policy_version": "2026-08-03", "review_policy": policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []core.Event{
+		{Type: core.EvPlanReviewRequested, IssueID: "GH-35", At: time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC), Payload: json.RawMessage(`{"human_required":true,"mode":"regular","policy_id":"manual-default","policy_version":"1"}`)},
+		{Type: core.EvPlanReviewHumanApproved, IssueID: "GH-35", At: time.Date(2026, 8, 3, 12, 1, 0, 0, time.UTC), Payload: approvedByAlice},
+		{Type: core.EvPlanReviewPolicyApproved, IssueID: "GH-35", At: time.Date(2026, 8, 3, 12, 2, 0, 0, time.UTC), Payload: autoApproved},
+		{Type: core.EvExecutionStarted, IssueID: "GH-35", At: time.Date(2026, 8, 3, 12, 3, 0, 0, time.UTC), Payload: json.RawMessage(`{"stage":"execute"}`)},
+	}
+	lines := humanizeEvents(events, "GH-35")
+	for _, want := range []string{
+		"plan review requested: human approval required",
+		"plan approved by alice",
+		"plan approved automatically by policy team-ci@2026-08-03",
+		"execute authorized",
+	} {
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("timeline missing %q: %v", want, lines)
+		}
 	}
 }
 

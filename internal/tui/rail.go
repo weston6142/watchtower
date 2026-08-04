@@ -85,6 +85,52 @@ func decisionReviewLines(target *review.Target, width int) []string {
 	return lines
 }
 
+func decisionPolicyLines(policy *review.ResolvedPolicy, approval *review.ApprovalProvenance, width int) []string {
+	if policy == nil {
+		return nil
+	}
+	width = max(1, width)
+	requirement := "human approval required"
+	if policy.PolicyAutoApproval {
+		requirement = "approved automatically by policy"
+	}
+	lines := []string{"review policy: " + requirement}
+	lines = append(lines, wrapIndent("mode: "+policy.Mode, width, "")...)
+	lines = append(lines, wrapIndent("policy: "+policy.PolicyID+"@"+policy.PolicyVersion, width, "")...)
+	if approval != nil {
+		switch approval.Kind {
+		case review.ApprovalHuman:
+			actor := approval.ActorID
+			if actor == "" {
+				actor = "operator"
+			}
+			lines = append(lines, wrapIndent("approved by: "+actor, width, "")...)
+		case review.ApprovalPolicy:
+			id := approval.PolicyID
+			version := approval.PolicyVersion
+			if id == "" {
+				id = policy.PolicyID
+			}
+			if version == "" {
+				version = policy.PolicyVersion
+			}
+			lines = append(lines, wrapIndent("policy approval: "+id+"@"+version, width, "")...)
+		}
+	}
+	return lines
+}
+
+func issuePolicyLines(iv *projection.IssueView, width int) []string {
+	if iv == nil || iv.ReviewPolicy.PolicyID == "" {
+		return nil
+	}
+	lines := decisionPolicyLines(&iv.ReviewPolicy, iv.Approval, width)
+	if iv.ReviewStatus != "" && iv.ReviewStatus != "pending" {
+		lines = append(lines, wrapIndent("status: "+strings.ReplaceAll(iv.ReviewStatus, "_", " "), max(1, width), "")...)
+	}
+	return lines
+}
+
 // renderRail draws the focused issue's plain-language FOCUS panel above the
 // pending decision queue. Paths and session IDs intentionally stay here: they
 // are diagnostic details, not grid copy.
@@ -162,6 +208,13 @@ func renderRail(st *projection.State, ids map[string]Identity, focusID string, d
 				if run.Worktree != "" || run.SessionID != "" {
 					lines = append(lines, themeDim.Render(fmt.Sprintf("%s · session %s", run.Worktree, run.SessionID)))
 					break
+				}
+			}
+		}
+		if st != nil {
+			if iv := st.Issues[focusID]; iv != nil {
+				if reviewLines := issuePolicyLines(iv, inner); len(reviewLines) > 0 {
+					lines = append(lines, reviewLines...)
 				}
 			}
 		}
@@ -287,6 +340,10 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 		lines = append(lines, review...)
 		lines = append(lines, "")
 	}
+	if policy := decisionPolicyLines(d.ReviewPolicy, d.Approval, inner); len(policy) > 0 {
+		lines = append(lines, policy...)
+		lines = append(lines, "")
+	}
 	lines = append(lines, wrapIndent(d.Question, inner, "")...)
 	if d.Why != "" {
 		for _, line := range wrapIndent(d.Why, inner, "why · ") {
@@ -341,6 +398,10 @@ func renderDecisionEditor(d projection.DecisionView, editor decisionEditor, widt
 	}
 	if review := decisionReviewLines(d.Review, inner); len(review) > 0 {
 		lines = append(lines, review...)
+		lines = append(lines, "")
+	}
+	if policy := decisionPolicyLines(d.ReviewPolicy, d.Approval, inner); len(policy) > 0 {
+		lines = append(lines, policy...)
 		lines = append(lines, "")
 	}
 	lines = append(lines, wrapIndent(d.Question, inner, "")...)

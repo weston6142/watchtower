@@ -35,6 +35,10 @@ func renderDecisionsDoor(ds []projection.DecisionView, ids map[string]Identity, 
 			rowLines = append(rowLines, review...)
 			rowLines = append(rowLines, "")
 		}
+		if policy := decisionPolicyLines(d.ReviewPolicy, d.Approval, contentWidth); len(policy) > 0 {
+			rowLines = append(rowLines, policy...)
+			rowLines = append(rowLines, "")
+		}
 		rowLines = append(rowLines, wrapIndent(d.Stage+" · "+d.Question, contentWidth, "")...)
 		indent := strings.Repeat(" ", 2+lipgloss.Width(prefix))
 		bodyStyle := lipgloss.NewStyle().Foreground(t.Text)
@@ -151,6 +155,44 @@ func humanizeEvents(evs []core.Event, issueID string) []string {
 			line = "question raised: " + text("question")
 		case core.EvDecisionAnswered:
 			line = "question answered"
+		case core.EvPlanReviewRequested:
+			if required, ok := payload["human_required"].(bool); ok && !required {
+				line = "plan review requested: policy auto approval"
+			} else {
+				line = "plan review requested: human approval required"
+			}
+		case core.EvPlanReviewHumanApproved:
+			actor := text("actor_id")
+			if actor == "" {
+				actor = "operator"
+			}
+			line = "plan approved by " + actor
+		case core.EvPlanReviewPolicyApproved:
+			policyID := text("policy_id")
+			policyVersion := text("policy_version")
+			if raw, ok := payload["review_policy"].(map[string]any); ok {
+				if policyID == "" {
+					policyID, _ = raw["policy_id"].(string)
+				}
+				if policyVersion == "" {
+					policyVersion, _ = raw["policy_version"].(string)
+				}
+			}
+			line = "plan approved automatically by policy"
+			if policyID != "" {
+				line += " " + policyID
+				if policyVersion != "" {
+					line += "@" + policyVersion
+				}
+			}
+		case core.EvPlanReviewRejected:
+			actor := text("actor_id")
+			if actor == "" {
+				actor = "operator"
+			}
+			line = "plan review rejected by " + actor
+		case core.EvExecutionStarted:
+			line = "execute authorized"
 		case core.EvIssuePaused:
 			line = "issue paused"
 		case core.EvIssueResumed:

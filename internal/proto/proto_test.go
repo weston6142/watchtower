@@ -54,6 +54,22 @@ func TestPendingDecisionJSONContext(t *testing.T) {
 	}
 }
 
+func TestAnswerCommandCarriesActor(t *testing.T) {
+	option := 0
+	want := Command{Op: "answer_decision", DecisionID: 35, Option: &option, Actor: "alice"}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Command
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Actor != "alice" || got.DecisionID != want.DecisionID || got.Option == nil || *got.Option != option {
+		t.Fatalf("answer command = %#v, JSON = %s", got, encoded)
+	}
+}
+
 func TestLegacyPendingDecisionJSONOmitsContext(t *testing.T) {
 	encoded, err := json.Marshal(engine.PendingDecision{
 		ID: 32, IssueID: "GH-31", Stage: "spec",

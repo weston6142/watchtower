@@ -277,7 +277,11 @@ func (sv *Server) exec(cmd Command) Response {
 		default:
 			return Response{Error: "answer_decision requires an option or text"}
 		}
-		if err := sv.eng.Answer(cmd.DecisionID, answer); err != nil {
+		actor := strings.TrimSpace(cmd.Actor)
+		if actor == "" {
+			actor = "operator"
+		}
+		if err := sv.eng.AnswerAs(cmd.DecisionID, answer, actor); err != nil {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true}

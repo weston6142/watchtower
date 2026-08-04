@@ -29,6 +29,7 @@ type Command struct {
 	DecisionID    int64    `json:"decision_id,omitempty"`
 	Option        *int     `json:"option,omitempty"`
 	Text          string   `json:"text,omitempty"`
+	Actor         string   `json:"actor,omitempty"`
 	ProposalID    int64    `json:"proposal_id,omitempty"`
 	Accept        bool     `json:"accept,omitempty"`
 	SinceSeq      int64    `json:"since_seq,omitempty"`
