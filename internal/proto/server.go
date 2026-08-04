@@ -358,6 +358,10 @@ func (sv *Server) exec(cmd Command) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
+		plannerSnapshot, plannerOutcome, err := sv.st.LatestPlannerSnapshot(cmd.IssueID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
 		stage, attempt, attemptOf, lastError, err := sv.st.LastStageEvents(cmd.IssueID)
 		if err != nil {
 			return Response{Error: err.Error()}
@@ -387,6 +391,7 @@ func (sv *Server) exec(cmd Command) Response {
 			Cleanup: integration.Cleanup, Dollars: float64(tokens) / 1_000_000 * sv.pricePerMTok,
 			IntegrationState: integration.State,
 			Worktree:         integration.Worktree, Branch: integration.Branch,
+			Planner: plannerSnapshot, PlannerOutcome: plannerOutcome,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

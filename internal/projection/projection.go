@@ -7,6 +7,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/review"
+	"github.com/weston6142/watchtower/internal/stageusage"
 )
 
 type IssueView struct {
@@ -27,19 +28,21 @@ type IssueView struct {
 	// drafted/updated events and read only by the edit modal's prefill:
 	// EvIssueCreated rebuilds the view wholesale, so a launched issue drops
 	// the list, which is fine because a launched issue is not editable.
-	Attachments  []string
-	DependsOn    []string
-	Behind       string
-	Merged       bool
-	Unmerged     bool
-	Paused       bool
-	Killed       bool
-	Cleanup      []string
-	AreaWeights  map[string]int
-	MergedAt     time.Time
-	ReviewPolicy review.ResolvedPolicy
-	ReviewStatus string
-	Approval     *review.ApprovalProvenance
+	Attachments    []string
+	DependsOn      []string
+	Behind         string
+	Merged         bool
+	Unmerged       bool
+	Paused         bool
+	Killed         bool
+	Cleanup        []string
+	AreaWeights    map[string]int
+	MergedAt       time.Time
+	ReviewPolicy   review.ResolvedPolicy
+	ReviewStatus   string
+	Approval       *review.ApprovalProvenance
+	Planner        *stageusage.Snapshot
+	PlannerOutcome string
 }
 
 type DecisionView struct {
@@ -155,6 +158,21 @@ func (s *State) Apply(ev core.Event) {
 			iv.Attempt = int(num("attempt"))
 			iv.AttemptOf = int(num("of"))
 			iv.LastError = ""
+		}
+	case core.EvPlannerBudgetUpdated:
+		if iv != nil {
+			if raw, ok := p["snapshot"]; ok {
+				encoded, err := json.Marshal(raw)
+				if err == nil {
+					var decoded stageusage.Snapshot
+					if json.Unmarshal(encoded, &decoded) == nil {
+						clone := decoded
+						clone.Warnings = append([]stageusage.Dimension(nil), decoded.Warnings...)
+						iv.Planner = &clone
+					}
+				}
+			}
+			iv.PlannerOutcome = str("outcome")
 		}
 	case core.EvIssueWaitingDependencies:
 		if iv != nil {

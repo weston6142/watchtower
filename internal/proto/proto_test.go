@@ -26,6 +26,7 @@ import (
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/steward"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/workspace"
@@ -93,6 +94,32 @@ func TestInvalidPlannerOverrideIsRejectedBeforeStart(t *testing.T) {
 	})
 	if response.Error == "" {
 		t.Fatal("invalid planner override reached engine start")
+	}
+}
+
+func TestIssueDetailExposesLatestPlannerSnapshot(t *testing.T) {
+	s, err := store.Open("file:planner-detail?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.UpsertIssue(store.IssueRow{ID: "GH-39", Title: "bounded", State: "running", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := stageusage.Snapshot{Stage: "plan", CallsUsed: 2, ChargedTokens: 40, Status: stageusage.StatusWarning}
+	ev, err := core.NewEvent(core.EvPlannerBudgetUpdated, "GH-39", map[string]any{
+		"stage": "plan", "outcome": "warning", "snapshot": snapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ev); err != nil {
+		t.Fatal(err)
+	}
+	response := NewServer(nil, s).exec(Command{Op: "issue_detail", IssueID: "GH-39"})
+	if !response.OK || response.Detail == nil || response.Detail.Planner == nil ||
+		response.Detail.Planner.ChargedTokens != 40 || response.Detail.PlannerOutcome != "warning" {
+		t.Fatalf("issue detail = %+v", response)
 	}
 }
 

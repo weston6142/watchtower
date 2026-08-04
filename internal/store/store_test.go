@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/stageusage"
 	_ "modernc.org/sqlite"
 )
 
@@ -414,6 +416,50 @@ func TestAppendAssignsSeqAndReplays(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Type != core.EvStageStarted {
 		t.Fatalf("replay wrong: %+v", got)
+	}
+}
+
+func TestPlannerSnapshotEventContainsMetadataOnly(t *testing.T) {
+	snapshot := stageusage.Snapshot{CallsUsed: 3, ChargedTokens: 99, LastSource: "spec.md"}
+	ev, err := core.NewEvent(core.EvPlannerBudgetUpdated, "GH-39", map[string]any{
+		"stage": "plan", "outcome": "budget_limited", "snapshot": snapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(ev.Payload), "source contents") || strings.Contains(string(ev.Payload), "password") {
+		t.Fatalf("payload leaked private content: %s", ev.Payload)
+	}
+}
+
+func TestLatestPlannerSnapshotSurvivesStoreReopen(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "watchtower.db")
+	store, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := stageusage.Snapshot{Stage: "plan", Attempt: 2, CallsUsed: 3, ChargedTokens: 99, Status: stageusage.StatusBudgetLimited}
+	ev, err := core.NewEvent(core.EvPlannerBudgetUpdated, "GH-39", map[string]any{
+		"stage": "plan", "outcome": "budget_limited", "snapshot": snapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(ev); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, outcome, err := reopened.LatestPlannerSnapshot("GH-39")
+	if err != nil || got == nil || outcome != "budget_limited" || got.ChargedTokens != 99 || got.Attempt != 2 {
+		t.Fatalf("snapshot=%+v outcome=%q err=%v", got, outcome, err)
 	}
 }
 
