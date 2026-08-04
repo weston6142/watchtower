@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -31,6 +32,17 @@ CREATE TABLE IF NOT EXISTS issues(
   id TEXT PRIMARY KEY, title TEXT, body TEXT, state TEXT,
   flow TEXT, levers TEXT, priority INTEGER, links TEXT,
   plan_review_policy TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS issue_run_state(
+  issue_id TEXT PRIMARY KEY,
+  lifecycle TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT '',
+  stage_index INTEGER NOT NULL DEFAULT 0,
+  boundary TEXT NOT NULL DEFAULT '',
+  worktree TEXT NOT NULL DEFAULT '',
+  branch TEXT NOT NULL DEFAULT '',
+  base_ref TEXT NOT NULL DEFAULT '',
+  artifacts TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS stage_runs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, stage TEXT, agent TEXT,
   session_id TEXT, worktree TEXT, artifacts TEXT, status TEXT, tokens INTEGER);
@@ -93,6 +105,7 @@ type Store struct {
 	mu                               sync.Mutex
 	seq                              int64
 	failNextArtifactReviewResolution bool
+	failNextPausePersistence         bool
 }
 
 type StageRun struct {
@@ -179,6 +192,18 @@ type IssueRow struct {
 	Priority         int
 	DependsOn        []string
 	PlanReviewPolicy review.ResolvedPolicy
+}
+
+type RunState struct {
+	IssueID    string
+	Lifecycle  string
+	Stage      string
+	StageIndex int
+	Boundary   string
+	Worktree   string
+	Branch     string
+	BaseRef    string
+	Artifacts  []string
 }
 
 const (
@@ -1437,6 +1462,128 @@ func (s *Store) UpsertIssue(r IssueRow) error {
 			flow=excluded.flow, levers=excluded.levers, priority=excluded.priority,
 			plan_review_policy=excluded.plan_review_policy`,
 		r.ID, r.Title, r.Body, r.State, r.Flow, string(levers), r.Priority, string(policy))
+	return err
+}
+
+// FailNextPausePersistenceForTest injects one failure before a pause write.
+// It exists only to exercise the pause acknowledgement contract in tests.
+func (s *Store) FailNextPausePersistenceForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextPausePersistence = true
+}
+
+func (s *Store) PersistPausedRun(run RunState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failNextPausePersistence {
+		s.failNextPausePersistence = false
+		return errors.New("injected pause persistence failure")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := updateIssueState(tx, run.IssueID, "paused"); err != nil {
+		return err
+	}
+	if err := upsertRunState(tx, run, "paused"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) PersistActiveRun(run RunState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := upsertRunState(tx, run, "active"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ResumeRun(run RunState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := updateIssueState(tx, run.IssueID, "running"); err != nil {
+		return err
+	}
+	if err := upsertRunState(tx, run, "active"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) LoadRunState(issueID string) (RunState, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var run RunState
+	var artifacts string
+	err := s.db.QueryRow(`
+		SELECT issue_id,lifecycle,stage,stage_index,boundary,worktree,branch,base_ref,artifacts
+		FROM issue_run_state WHERE issue_id=?`, issueID).Scan(
+		&run.IssueID, &run.Lifecycle, &run.Stage, &run.StageIndex, &run.Boundary,
+		&run.Worktree, &run.Branch, &run.BaseRef, &artifacts)
+	if err == sql.ErrNoRows {
+		return RunState{}, false, nil
+	}
+	if err != nil {
+		return RunState{}, false, err
+	}
+	if err := json.Unmarshal([]byte(artifacts), &run.Artifacts); err != nil {
+		return RunState{}, false, fmt.Errorf("decode run state artifacts: %w", err)
+	}
+	return run, true, nil
+}
+
+func updateIssueState(tx *sql.Tx, issueID, state string) error {
+	result, err := tx.Exec(`UPDATE issues SET state=? WHERE id=?`, state, issueID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("issue %s not found", issueID)
+	}
+	return nil
+}
+
+func upsertRunState(tx *sql.Tx, run RunState, lifecycle string) error {
+	artifacts, err := json.Marshal(run.Artifacts)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`
+		INSERT INTO issue_run_state(
+			issue_id,lifecycle,stage,stage_index,boundary,worktree,branch,base_ref,artifacts,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(issue_id) DO UPDATE SET
+			lifecycle=excluded.lifecycle,
+			stage=excluded.stage,
+			stage_index=excluded.stage_index,
+			boundary=excluded.boundary,
+			worktree=excluded.worktree,
+			branch=excluded.branch,
+			base_ref=excluded.base_ref,
+			artifacts=excluded.artifacts,
+			updated_at=excluded.updated_at`,
+		run.IssueID, lifecycle, run.Stage, run.StageIndex, run.Boundary,
+		run.Worktree, run.Branch, run.BaseRef, string(artifacts),
+		time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 
