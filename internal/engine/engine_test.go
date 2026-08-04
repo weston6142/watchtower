@@ -80,7 +80,11 @@ func TestPauseBeforeStagePersistsBoundaryAndResumeUsesIt(t *testing.T) {
 	if err := e1.Pause(id); err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = e1.StartIssue(context.Background(), id)
+	}()
 	waitForEvent(t, s, id, core.EvIssuePaused)
 
 	row := issueRowByID(t, mustIssues(t, s), id)
@@ -102,6 +106,7 @@ func TestPauseBeforeStagePersistsBoundaryAndResumeUsesIt(t *testing.T) {
 	for time.Now().Before(deadline) {
 		runs, runErr := s.StageRuns(id)
 		if runErr == nil && len(runs) == 2 {
+			<-done
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
