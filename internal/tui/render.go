@@ -83,7 +83,7 @@ func renderNoticeRow(st *projection.State, ids map[string]Identity, width int) s
 }
 
 func renderReconnectPanel(width, height int) string {
-	panel := styleStatusWarn().Render("reconnecting…")
+	panel := styleStatusWarn().Render(reconnectingLabel)
 	if height <= 0 {
 		return panel
 	}

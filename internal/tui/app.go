@@ -342,16 +342,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.tick()
 	case pollErrorMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
-		if !msg.transport {
-			if msg.err != nil {
-				m.Err = msg.err.Error()
-			}
-			return m, m.tick()
+		if msg.err != nil {
+			m.Err = msg.err.Error()
 		}
-		return m, m.beginReconnect(msg.err)
+		return m, m.tick()
 	case reconnectTimerMsg:
 		if msg.generation != m.generation || m.connection != connectionReconnecting || m.shuttingDown {
 			return m, nil
@@ -362,11 +359,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reconnectCanceledMsg:
 		return m, nil
 	case overviewMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -378,11 +372,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case proposalsMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -392,11 +383,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.doorSel = min(m.doorSel, max(0, len(m.proposals)-1))
 		return m, nil
 	case transcriptMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -411,11 +399,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.doorLines = msg.lines
 		return m, nil
 	case detailMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -449,11 +434,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case answerMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -468,11 +450,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case commandMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -483,11 +462,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case leverApplyMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -504,11 +480,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.leverEditor = nil
 		return m, nil
 	case setupMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		m.wantSetup = false
 		if msg.err != nil {
@@ -519,11 +492,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setup.clampTop(m.Height)
 		return m, nil
 	case setupPromptMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if m.setup == nil {
 			// f closed the panel while the fetch was in flight. Opening the
@@ -546,11 +516,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case createIssueMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -566,11 +533,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modal = nil
 		return m, nil
 	case archMsg:
-		if m.staleGeneration(msg.generation) {
-			return m, nil
-		}
-		if msg.transport {
-			return m, m.beginReconnect(msg.err)
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
 		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -1979,7 +1943,7 @@ func (m Model) writeHeaderRows(b *strings.Builder, width int) {
 
 func (m Model) noticeRow(width int) string {
 	if m.connection == connectionReconnecting {
-		return truncate("reconnecting…", width)
+		return truncate(reconnectingLabel, width)
 	}
 	return renderNoticeRow(m.State, m.Ids, width)
 }

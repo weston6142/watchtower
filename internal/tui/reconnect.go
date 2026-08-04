@@ -32,6 +32,7 @@ const (
 const (
 	initialRetryDelay = 250 * time.Millisecond
 	maxRetryDelay     = 4 * time.Second
+	reconnectingLabel = "reconnecting…"
 )
 
 type retryScheduler func(context.Context, uint64, time.Duration) tea.Cmd
@@ -77,7 +78,7 @@ func (r *reconnectRuntime) install(session Session) bool {
 	return true
 }
 
-func (r *reconnectRuntime) detach(_ Session) bool {
+func (r *reconnectRuntime) detach() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.active == nil {
@@ -173,6 +174,19 @@ func (m Model) staleGeneration(generation uint64) bool {
 	return generation != m.generation
 }
 
+// handleSessionMessage centralizes the lifecycle checks shared by responses
+// from the active daemon session. A true handled result means the caller must
+// return the command because the message was stale or started reconnecting.
+func (m *Model) handleSessionMessage(generation uint64, transport bool, err error) (tea.Cmd, bool) {
+	if m.staleGeneration(generation) {
+		return nil, true
+	}
+	if transport {
+		return m.beginReconnect(err), true
+	}
+	return nil, false
+}
+
 func (m *Model) startReconnectAttempt(generation uint64) tea.Cmd {
 	if m.shuttingDown || m.connection != connectionReconnecting || generation != m.generation || m.reconnectAttemptActive {
 		return nil
@@ -198,7 +212,7 @@ func (m *Model) startReconnectAttempt(generation uint64) tea.Cmd {
 			return reconnectAttemptMsg{generation: generation, err: context.Canceled, retryable: true}
 		}
 		fail := func(err error, retryable bool) tea.Msg {
-			if runtime == nil || runtime.detach(session) {
+			if runtime == nil || runtime.detach() {
 				_ = session.Close()
 			}
 			return reconnectAttemptMsg{generation: generation, err: err, retryable: retryable}
@@ -269,7 +283,7 @@ func (m *Model) retryAfterReconnectFailure(generation uint64) tea.Cmd {
 		return nil
 	}
 	m.reconnectAttemptActive = false
-	m.retryDelay = minRetryDelay(m.retryDelay*2, maxRetryDelay)
+	m.retryDelay = capRetryDelay(m.retryDelay*2, maxRetryDelay)
 	return m.scheduleReconnect(m.reconnectContext, generation, m.retryDelay)
 }
 
@@ -295,7 +309,7 @@ func (m *Model) applyReconnectAttempt(msg reconnectAttemptMsg) tea.Cmd {
 	savedModes := append([]string(nil), m.reconnectModes...)
 	m.client = msg.session
 	if m.runtime != nil {
-		m.runtime.detach(msg.session)
+		m.runtime.detach()
 	}
 	m.State = msg.state
 	m.events = append([]core.Event(nil), msg.events...)
@@ -333,7 +347,7 @@ func (m *Model) applyReconnectAttempt(msg reconnectAttemptMsg) tea.Cmd {
 	return m.tick()
 }
 
-func minRetryDelay(delay, maxDelay time.Duration) time.Duration {
+func capRetryDelay(delay, maxDelay time.Duration) time.Duration {
 	if delay > maxDelay {
 		return maxDelay
 	}
