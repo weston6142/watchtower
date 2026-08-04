@@ -2447,14 +2447,18 @@ func (e *Engine) runStageOnce(
 	var plannerController *plannerbudget.Controller
 	var plannerGate runner.ExplorationGate
 	var plannerRunner runner.PlannerRunner
+	var emitPlannerSnapshot func(plannerbudget.Outcome, stageusage.Snapshot)
 	if st.Name == "plan" {
+		emitPlannerSnapshot = func(outcome plannerbudget.Outcome, snapshot stageusage.Snapshot) {
+			e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
+				"stage": st.Name, "attempt": attempt,
+				"outcome": string(outcome), "snapshot": snapshot,
+			})
+		}
 		profile, resolveErr := plannerbudget.Resolve(e.cfg.PlannerBudget, plannerOverride)
 		if resolveErr != nil {
 			snapshot := stageusage.Snapshot{Stage: st.Name, Attempt: attempt, Status: stageusage.StatusConfigurationErr}
-			e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
-				"stage": st.Name, "attempt": attempt,
-				"outcome": string(plannerbudget.OutcomeConfigurationError), "snapshot": snapshot,
-			})
+			emitPlannerSnapshot(plannerbudget.OutcomeConfigurationError, snapshot)
 			return fmt.Errorf("planner budget configuration: %w", resolveErr)
 		}
 		var controllerErr error
@@ -2467,25 +2471,16 @@ func (e *Engine) runStageOnce(
 		if !ok {
 			err := fmt.Errorf("planner runner does not implement exploration admission")
 			outcome := plannerController.Finish(err)
-			e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
-				"stage": st.Name, "attempt": attempt,
-				"outcome": string(outcome), "snapshot": plannerController.Snapshot(),
-			})
+			emitPlannerSnapshot(outcome, plannerController.Snapshot())
 			return err
 		}
 		plannerGate = &plannerExplorationGate{
 			controller: plannerController,
 			onSnapshot: func(snapshot stageusage.Snapshot) {
-				e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
-					"stage": st.Name, "attempt": attempt,
-					"outcome": string(plannerController.Outcome()), "snapshot": snapshot,
-				})
+				emitPlannerSnapshot(plannerController.Outcome(), snapshot)
 			},
 		}
-		e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
-			"stage": st.Name, "attempt": attempt,
-			"outcome": string(plannerbudget.OutcomeNormal), "snapshot": plannerController.Snapshot(),
-		})
+		emitPlannerSnapshot(plannerbudget.OutcomeNormal, plannerController.Snapshot())
 	}
 
 	type agentDone struct {
@@ -2580,10 +2575,7 @@ func (e *Engine) runStageOnce(
 	}
 	if plannerController != nil {
 		outcome := plannerController.Finish(firstErr)
-		e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
-			"stage": st.Name, "attempt": attempt,
-			"outcome": string(outcome), "snapshot": plannerController.Snapshot(),
-		})
+		emitPlannerSnapshot(outcome, plannerController.Snapshot())
 	}
 	if st.Completion == flow.CompletionAll && firstErr != nil {
 		return firstErr

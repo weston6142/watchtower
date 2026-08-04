@@ -158,7 +158,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 		case KindInit:
 			res.SessionID = ev.SessionID
 		case KindAssistantText:
-			decisions, err := c.admitTools(ctx, gate, ev.ToolCalls)
+			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
 			if err != nil {
 				return abort(err)
 			}
@@ -211,7 +211,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 				res.DependsOn = deps.Normalize(append(res.DependsOn, dependsOn...))
 			}
 		case KindToolUse:
-			decisions, err := c.admitTools(ctx, gate, ev.ToolCalls)
+			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
 			if err != nil {
 				return abort(err)
 			}
@@ -278,7 +278,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 	return res
 }
 
-func (c *CodeRunner) admitTools(ctx context.Context, gate runner.ExplorationGate, calls []runner.ToolCall) ([]runner.ToolDecision, error) {
+func admitTools(ctx context.Context, gate runner.ExplorationGate, calls []runner.ToolCall) ([]runner.ToolDecision, error) {
 	if gate == nil {
 		return nil, nil
 	}

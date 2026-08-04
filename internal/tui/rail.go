@@ -176,7 +176,7 @@ func plannerDimensions(dimensions []stageusage.Dimension) string {
 	return strings.Join(parts, ", ")
 }
 
-func renderPlannerBudget(snapshot *stageusage.Snapshot, width int) []string {
+func renderPlannerBudget(snapshot *stageusage.Snapshot) []string {
 	if snapshot == nil {
 		return nil
 	}
@@ -260,7 +260,7 @@ func renderRail(st *projection.State, ids map[string]Identity, focusID string, d
 			)
 		}
 		if planner != nil {
-			lines = append(lines, renderPlannerBudget(planner, inner)...)
+			lines = append(lines, renderPlannerBudget(planner)...)
 		} else if metadata != nil && metadata.Budget > 0 {
 			percent := tokens * 100 / metadata.Budget
 			percent = max(0, min(100, percent))

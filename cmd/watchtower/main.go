@@ -65,36 +65,41 @@ func bindPlannerBudgetFlags(fs *flag.FlagSet) *plannerBudgetFlags {
 	return values
 }
 
+func plannerIntegerOverride(set map[string]bool, warnName, hardName string, warning, hard int64) *plannerbudget.DimensionOverride {
+	if !set[warnName] && !set[hardName] {
+		return nil
+	}
+	override := &plannerbudget.DimensionOverride{}
+	if set[warnName] {
+		override.Warning = &warning
+	}
+	if set[hardName] {
+		override.Hard = &hard
+	}
+	return override
+}
+
+func plannerElapsedOverride(set map[string]bool, warnName, hardName string, warning, hard time.Duration) *plannerbudget.ElapsedOverride {
+	if !set[warnName] && !set[hardName] {
+		return nil
+	}
+	override := &plannerbudget.ElapsedOverride{}
+	if set[warnName] {
+		override.Warning = &warning
+	}
+	if set[hardName] {
+		override.Hard = &hard
+	}
+	return override
+}
+
 func plannerBudgetOverride(fs *flag.FlagSet, values *plannerBudgetFlags) *plannerbudget.Override {
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-	override := &plannerbudget.Override{}
-	if set["planner-calls-warn"] || set["planner-calls-hard"] {
-		override.Calls = &plannerbudget.DimensionOverride{}
-		if set["planner-calls-warn"] {
-			override.Calls.Warning = &values.callsWarn
-		}
-		if set["planner-calls-hard"] {
-			override.Calls.Hard = &values.callsHard
-		}
-	}
-	if set["planner-tokens-warn"] || set["planner-tokens-hard"] {
-		override.Tokens = &plannerbudget.DimensionOverride{}
-		if set["planner-tokens-warn"] {
-			override.Tokens.Warning = &values.tokensWarn
-		}
-		if set["planner-tokens-hard"] {
-			override.Tokens.Hard = &values.tokensHard
-		}
-	}
-	if set["planner-elapsed-warn"] || set["planner-elapsed-hard"] {
-		override.Elapsed = &plannerbudget.ElapsedOverride{}
-		if set["planner-elapsed-warn"] {
-			override.Elapsed.Warning = &values.elapsedWarn
-		}
-		if set["planner-elapsed-hard"] {
-			override.Elapsed.Hard = &values.elapsedHard
-		}
+	override := &plannerbudget.Override{
+		Calls:   plannerIntegerOverride(set, "planner-calls-warn", "planner-calls-hard", values.callsWarn, values.callsHard),
+		Tokens:  plannerIntegerOverride(set, "planner-tokens-warn", "planner-tokens-hard", values.tokensWarn, values.tokensHard),
+		Elapsed: plannerElapsedOverride(set, "planner-elapsed-warn", "planner-elapsed-hard", values.elapsedWarn, values.elapsedHard),
 	}
 	if override.Calls == nil && override.Tokens == nil && override.Elapsed == nil {
 		return nil
@@ -477,7 +482,10 @@ func main() {
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
-		plannerFlags := bindPlannerBudgetFlags(fs)
+		var plannerFlags *plannerBudgetFlags
+		if cmd == "retry" || cmd == "launch" {
+			plannerFlags = bindPlannerBudgetFlags(fs)
+		}
 		fs.Parse(args)
 		if len(fs.Args()) != 1 {
 			fmt.Fprintf(os.Stderr, "usage: watchtower %s <issue-id>\n", cmd)
@@ -490,8 +498,11 @@ func main() {
 			"kill": "kill_stage", "retry": "retry_stage",
 			"abandon": "abandon_issue", "launch": "launch_issue",
 		}
-		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0],
-			PlannerBudget: plannerBudgetOverride(fs, plannerFlags)})
+		var plannerOverride *plannerbudget.Override
+		if plannerFlags != nil {
+			plannerOverride = plannerBudgetOverride(fs, plannerFlags)
+		}
+		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0], PlannerBudget: plannerOverride})
 		fmt.Println(cmd, fs.Args()[0])
 	case "lever":
 		fs := flag.NewFlagSet("lever", flag.ExitOnError)

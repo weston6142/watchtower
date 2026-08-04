@@ -72,14 +72,6 @@ func (l *Ledger) Next() Candidate {
 	return Candidate{Source: source}
 }
 
-func (l *Ledger) read(source Source) (Source, bool) {
-	if cached, ok := l.cached(source); ok {
-		return cached, false
-	}
-	l.observe(source)
-	return source, true
-}
-
 func (l *Ledger) cached(source Source) (Source, bool) {
 	fingerprints := l.observed[source.ID]
 	if cached, ok := fingerprints[source.Fingerprint]; ok {

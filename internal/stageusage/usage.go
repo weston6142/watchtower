@@ -132,7 +132,7 @@ func New(stage string, attempt int, limits Limits, now func() time.Time) (*Meter
 		},
 	}
 	m.mu.Lock()
-	m.updateLocked(nil, false, nil)
+	m.updateLocked(nil, false)
 	m.mu.Unlock()
 	return m, nil
 }
@@ -159,7 +159,7 @@ func (m *Meter) Admit(source string, reservation int64) (Lease, Snapshot, error)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.updateLocked(nil, false, nil)
+	m.updateLocked(nil, false)
 	if m.snapshot.Stopped {
 		return Lease{}, m.snapshotLocked(), &AdmissionError{Dimension: m.snapshot.StopDimension, Snapshot: m.snapshotLocked()}
 	}
@@ -182,7 +182,7 @@ func (m *Meter) Admit(source string, reservation int64) (Lease, Snapshot, error)
 	m.snapshot.CallsUsed++
 	m.snapshot.ChargedTokens += reservation
 	m.snapshot.LastSource = source
-	m.updateLocked(nil, false, nil)
+	m.updateLocked(nil, false)
 	return lease, m.snapshotLocked(), nil
 }
 
@@ -209,9 +209,9 @@ func (m *Meter) Reconcile(lease Lease, actual *int64, operationErr error) (Snaps
 		m.snapshot.ChargedTokens += *actual
 	}
 	m.snapshot.LastSource = stored.source
-	m.updateLocked(operationErr, true, nil)
+	m.updateLocked(operationErr, true)
 	m.snapshot.InFlightReconciliation = false
-	m.updateLocked(operationErr, false, nil)
+	m.updateLocked(operationErr, false)
 	return m.snapshotLocked(), nil
 }
 
@@ -220,7 +220,7 @@ func (m *Meter) Reconcile(lease Lease, actual *int64, operationErr error) (Snaps
 func (m *Meter) Finish(operationErr error) Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.updateLocked(operationErr, false, nil)
+	m.updateLocked(operationErr, false)
 	if m.snapshot.Stopped {
 		return m.snapshotLocked()
 	}
@@ -235,7 +235,7 @@ func (m *Meter) Finish(operationErr error) Snapshot {
 func (m *Meter) Snapshot() Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.updateLocked(nil, false, nil)
+	m.updateLocked(nil, false)
 	return m.snapshotLocked()
 }
 
@@ -247,7 +247,7 @@ func (m *Meter) elapsedLocked() time.Duration {
 	return elapsed
 }
 
-func (m *Meter) updateLocked(operationErr error, completed bool, _ error) {
+func (m *Meter) updateLocked(operationErr error, completed bool) {
 	elapsed := m.elapsedLocked()
 	m.snapshot.ElapsedMillis = elapsed.Milliseconds()
 	m.addWarningLocked(DimensionCalls, m.snapshot.CallsUsed >= m.limits.Calls.Warning)
