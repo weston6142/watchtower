@@ -15,6 +15,7 @@ import (
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/runner"
 )
 
@@ -30,6 +31,7 @@ type CodeRunner struct {
 	Packages        map[string]pkgs.Package
 	DefaultModel    string
 	DefaultEffort   string
+	PrimaryProfile  repocfg.CodexProfile
 	ExtraEnv        []string
 	OnProposal      func(string, runner.Proposal)
 	OnProposalBatch func(string, []runner.Proposal)
@@ -46,10 +48,11 @@ func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 }
 
 type turnResult struct {
-	threadID string
-	tokens   int
-	events   []Event
-	failed   error
+	threadID   string
+	tokens     int
+	events     []Event
+	failed     error
+	invocation invocation
 }
 
 func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir string,
@@ -58,7 +61,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	if !ok {
 		return runner.Result{Err: fmt.Errorf("unknown agent package %q", agentPkg)}
 	}
-	model, effort := c.effective(pkg)
+	profile := c.effectiveProfile(pkg)
 	var res runner.Result
 	threadID := ""
 	prompt := agentprotocol.TaskMessage(stage, issueID)
@@ -66,7 +69,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	decisionAccepted := false
 
 	for {
-		turn := c.runTurn(ctx, workdir, pkg, model, effort, threadID, prompt)
+		turn := c.runTurn(ctx, workdir, pkg, profile, threadID, prompt)
 		if turn.threadID != "" {
 			if threadID != "" && turn.threadID != threadID {
 				res.Err = fmt.Errorf("codex resume returned thread %q, want %q", turn.threadID, threadID)
@@ -162,24 +165,20 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 }
 
 func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Package,
-	model, effort, threadID, prompt string) turnResult {
-	configArgs := []string{
-		"-m", model,
-		"-c", configString("model_reasoning_effort", effort),
-		"-c", configString("sandbox_mode", "danger-full-access"),
-		"-c", configString("approval_policy", "never"),
-		"-c", configString("developer_instructions", pkg.Prompt),
+	profile repocfg.CodexProfile, threadID, prompt string) turnResult {
+	kind := turnInitial
+	if threadID != "" {
+		kind = turnResumed
 	}
-	var args []string
-	if threadID == "" {
-		args = append([]string{"exec", "--json", "-C", workdir}, configArgs...)
-	} else {
-		args = append([]string{"exec", "resume", "--json"}, configArgs...)
-		args = append(args, threadID)
-	}
-	args = append(args, prompt)
+	invocation := buildInvocation(profile, turnDescriptor{
+		Workdir:       workdir,
+		Kind:          kind,
+		ResumeID:      threadID,
+		PackagePrompt: pkg.Prompt,
+		Prompt:        prompt,
+	})
 
-	cmd := exec.CommandContext(ctx, c.Bin, args...)
+	cmd := exec.CommandContext(ctx, profile.Bin, invocation.Argv...)
 	cmd.Dir = workdir
 	cmd.Env = append(os.Environ(), c.ExtraEnv...)
 	// If a shell wrapper leaves a child holding the JSONL pipe open after
@@ -187,12 +186,12 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 	cmd.WaitDelay = 250 * time.Millisecond
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return turnResult{failed: fmt.Errorf("codex stdout: %w", err)}
+		return turnResult{failed: fmt.Errorf("codex stdout: %w", err), invocation: invocation}
 	}
 	var stderrTail tailBuffer
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrTail)
 	if err := cmd.Start(); err != nil {
-		return turnResult{failed: fmt.Errorf("codex start: %w", err)}
+		return turnResult{failed: fmt.Errorf("codex start: %w", err), invocation: invocation}
 	}
 
 	var result turnResult
@@ -250,6 +249,26 @@ func (c *CodeRunner) effective(pkg pkgs.Package) (string, string) {
 	return model, effort
 }
 
+func (c *CodeRunner) effectiveProfile(pkg pkgs.Package) repocfg.CodexProfile {
+	profile := c.PrimaryProfile
+	if profile.Bin == "" {
+		profile.Bin = c.Bin
+	}
+	if pkg.Model != "" {
+		profile.Model = pkg.Model
+	}
+	if profile.Model == "" {
+		profile.Model = c.DefaultModel
+	}
+	if pkg.Effort != "" {
+		profile.Effort = pkg.Effort
+	}
+	if profile.Effort == "" {
+		profile.Effort = c.DefaultEffort
+	}
+	return profile
+}
+
 func (c *CodeRunner) emitText(issueID, stage, value string) {
 	if c.OnLine == nil {
 		return
@@ -262,17 +281,13 @@ func (c *CodeRunner) emitText(issueID, stage, value string) {
 }
 
 func (c *CodeRunner) withStderr(base error, stderr, prompt, task string) error {
-	if prompt != "" {
-		stderr = strings.ReplaceAll(stderr, prompt, "[redacted prompt]")
-	}
-	if task != "" {
-		stderr = strings.ReplaceAll(stderr, task, "[redacted task]")
-	}
+	secrets := []string{prompt, task}
 	for _, entry := range c.ExtraEnv {
 		if _, value, ok := strings.Cut(entry, "="); ok && value != "" {
-			stderr = strings.ReplaceAll(stderr, value, "[redacted env]")
+			secrets = append(secrets, value)
 		}
 	}
+	stderr = redactText(stderr, secrets...)
 	stderr = strings.TrimSpace(stderr)
 	if stderr == "" {
 		return base

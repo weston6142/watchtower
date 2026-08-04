@@ -13,6 +13,7 @@ import (
 	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/runner"
 )
 
@@ -93,6 +94,88 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE"; done`))
 	}
 	if got, want := args[len(args)-1], agentprotocol.TaskMessage("execute", "GH-1"); got != want {
 		t.Fatalf("final argument = %q, want %q", got, want)
+	}
+}
+
+func TestInitialAndResumedTurnsUseTheConfiguredFeatureOverride(t *testing.T) {
+	bin, state := statefulStub(t,
+		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-feature"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"kind\":\"choice\",\"question\":\"Ship it?\",\"options\":[\"Ship it\",\"Hold\"],\"recommended\":0,\"why\":\"Ready.\",\"consequences\":[\"Ships.\",\"Waits.\"],\"reversible\":\"yes\"}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+		`printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+	)
+	r := testRunner(bin)
+	r.PrimaryProfile = repocfg.CodexProfile{FeatureOverrides: map[string]bool{"unified_exec": false}}
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	(<-asks).Reply <- levers.ChoiceResponse(0)
+	if res := <-done; res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	for index := 1; index <= 2; index++ {
+		args := readCapturedArgs(t, state, index)
+		joined := strings.Join(args, "\n")
+		if !strings.Contains(joined, "-c\nfeatures.unified_exec=false") {
+			t.Fatalf("turn %d missing separate feature override: %s", index, joined)
+		}
+	}
+	args := readCapturedArgs(t, state, 2)
+	if len(args) < 4 || args[0] != "exec" || args[1] != "resume" || args[2] != "--json" ||
+		!containsArg(args, "thr-feature") {
+		t.Fatalf("resumed turn did not preserve the explicit thread token: %q", args)
+	}
+	if strings.Contains(strings.Join(args, "\n"), "--last") {
+		t.Fatalf("resumed turn used --last: %q", args)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRedactedInvocationAndErrorEvidenceExcludeSecrets(t *testing.T) {
+	const (
+		workdir      = "/private/worktree/secret-worktree"
+		pkgPrompt    = "developer instruction secret"
+		turnPrompt   = "turn prompt secret"
+		resumeID     = "thread-secret"
+		envSecret    = "environment-secret"
+		stderrSecret = "stderr-secret"
+	)
+	invocation := buildInvocation(repocfg.CodexProfile{
+		Bin: "codex", Model: "gpt-5.6-luna", Effort: "xhigh",
+		FeatureOverrides: map[string]bool{"unified_exec": false},
+	}, turnDescriptor{
+		Workdir: workdir, ResumeID: resumeID, PackagePrompt: pkgPrompt,
+		Prompt: turnPrompt,
+	})
+	redacted := strings.Join(invocation.RedactedArgv, "\n")
+	for _, secret := range []string{workdir, pkgPrompt, turnPrompt, resumeID} {
+		if strings.Contains(redacted, secret) {
+			t.Fatalf("redacted argv leaked %q: %q", secret, redacted)
+		}
+	}
+	if !strings.Contains(redacted, "features.unified_exec=false") || !strings.Contains(redacted, "exec") {
+		t.Fatalf("redacted argv lost safe structure: %q", redacted)
+	}
+
+	bin := writeStub(t, "printf '%s\\n' '"+stderrSecret+"' >&2\nexit 7")
+	r := testRunner(bin)
+	r.PrimaryProfile = repocfg.CodexProfile{FeatureOverrides: map[string]bool{"unified_exec": false}}
+	r.ExtraEnv = []string{"SENTINEL_SECRET=" + envSecret}
+	res := runTurn(t, context.Background(), r, t.TempDir())
+	if res.Err == nil {
+		t.Fatal("expected stub failure")
+	}
+	for _, secret := range []string{pkgPrompt, turnPrompt, envSecret, stderrSecret} {
+		if strings.Contains(res.Err.Error(), secret) {
+			t.Fatalf("error evidence leaked %q: %q", secret, res.Err)
+		}
 	}
 }
 
