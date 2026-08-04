@@ -10,27 +10,36 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/weston6142/watchtower/internal/review"
 	"gopkg.in/yaml.v3"
 )
 
 // Config mirrors the daemon flags. Zero fields are filled from Default()
 // after unmarshalling, so a partial config.yaml is fine.
 type Config struct {
-	Flows        string   `yaml:"flows"`
-	Packages     string   `yaml:"packages"`
-	Runner       string   `yaml:"runner"`
-	Slots        int      `yaml:"slots"`
-	Budget       int      `yaml:"budget"`
-	PricePerMTok float64  `yaml:"price_per_mtok"`
-	ClaudeBin    string   `yaml:"claude_bin"`
-	CodexBin     string   `yaml:"codex_bin"`
-	CodexModel   string   `yaml:"codex_model"`
-	CodexEffort  string   `yaml:"codex_effort"`
-	TestCmd      string   `yaml:"test_cmd"`
-	TestArgv     []string `yaml:"-"`
-	Theme        string   `yaml:"theme"`
-	Pull         bool     `yaml:"pull"`
-	Push         bool     `yaml:"push"`
+	Flows        string           `yaml:"flows"`
+	Packages     string           `yaml:"packages"`
+	Runner       string           `yaml:"runner"`
+	Slots        int              `yaml:"slots"`
+	Budget       int              `yaml:"budget"`
+	PricePerMTok float64          `yaml:"price_per_mtok"`
+	ClaudeBin    string           `yaml:"claude_bin"`
+	CodexBin     string           `yaml:"codex_bin"`
+	CodexModel   string           `yaml:"codex_model"`
+	CodexEffort  string           `yaml:"codex_effort"`
+	TestCmd      string           `yaml:"test_cmd"`
+	TestArgv     []string         `yaml:"-"`
+	Theme        string           `yaml:"theme"`
+	Pull         bool             `yaml:"pull"`
+	Push         bool             `yaml:"push"`
+	PlanReview   PlanReviewConfig `yaml:"plan_review"`
+}
+
+type PlanReviewConfig struct {
+	PolicyID           string `yaml:"policy_id"`
+	PolicyVersion      string `yaml:"policy_version"`
+	AutoApproveRegular bool   `yaml:"auto_approve_regular"`
+	Valid              bool   `yaml:"-"`
 }
 
 func Default() Config {
@@ -46,6 +55,37 @@ func Default() Config {
 		// Fast-forwarding the base from origin is safe, so it defaults on;
 		// publishing merges is a bigger step, so pushing stays opt-in.
 		Pull: true,
+		PlanReview: PlanReviewConfig{
+			PolicyID: "manual-default", PolicyVersion: "1", Valid: true,
+		},
+	}
+}
+
+func (c *PlanReviewConfig) UnmarshalYAML(node *yaml.Node) error {
+	var decoded struct {
+		PolicyID           string `yaml:"policy_id"`
+		PolicyVersion      string `yaml:"policy_version"`
+		AutoApproveRegular bool   `yaml:"auto_approve_regular"`
+	}
+	if node.Kind != yaml.MappingNode || node.Decode(&decoded) != nil {
+		*c = PlanReviewConfig{}
+		return nil
+	}
+	*c = PlanReviewConfig{
+		PolicyID:           decoded.PolicyID,
+		PolicyVersion:      decoded.PolicyVersion,
+		AutoApproveRegular: decoded.AutoApproveRegular,
+		Valid:              true,
+	}
+	return nil
+}
+
+func (c Config) PlanReviewSettings() review.PolicySettings {
+	return review.PolicySettings{
+		ID:                 c.PlanReview.PolicyID,
+		Version:            c.PlanReview.PolicyVersion,
+		AutoApproveRegular: c.PlanReview.AutoApproveRegular,
+		Valid:              c.PlanReview.Valid,
 	}
 }
 
@@ -173,6 +213,14 @@ func fillGaps(cfg *Config) {
 	}
 	if cfg.CodexEffort == "" {
 		cfg.CodexEffort = d.CodexEffort
+	}
+	if cfg.PlanReview.Valid {
+		if cfg.PlanReview.PolicyID == "" {
+			cfg.PlanReview.PolicyID = d.PlanReview.PolicyID
+		}
+		if cfg.PlanReview.PolicyVersion == "" {
+			cfg.PlanReview.PolicyVersion = d.PlanReview.PolicyVersion
+		}
 	}
 }
 

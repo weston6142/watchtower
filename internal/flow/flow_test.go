@@ -28,6 +28,21 @@ func TestLoadRejectsBadGate(t *testing.T) {
 	}
 }
 
+func TestLoadPlanReviewGate(t *testing.T) {
+	f, err := loadBytes([]byte(`name: plan-review
+stages:
+  - name: plan
+    agents: [{package: planner}]
+    gate: plan_review
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Stages[0].Gate; got != GatePlanReview {
+		t.Fatalf("plan gate = %q, want %q", got, GatePlanReview)
+	}
+}
+
 func TestLoadAllowsFlowWithoutMergeBarrier(t *testing.T) {
 	f, err := loadBytes([]byte(`name: research
 stages:

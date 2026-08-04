@@ -19,6 +19,7 @@ const (
 	GateApproveArtifact Gate = "approve_artifact"
 	GateDecisionQueue   Gate = "decision_queue"
 	GateAuto            Gate = "auto"
+	GatePlanReview      Gate = "plan_review"
 
 	// CompletionAll requires every agent in the stage to succeed;
 	// CompletionAny requires at least one.
@@ -121,7 +122,7 @@ func loadBytes(b []byte) (Flow, error) {
 			return Flow{}, fmt.Errorf("stage %q bad workspace %q", st.Name, st.Workspace)
 		}
 		switch st.Gate {
-		case GateApproveArtifact, GateDecisionQueue, GateAuto:
+		case GateApproveArtifact, GateDecisionQueue, GateAuto, GatePlanReview:
 		default:
 			return Flow{}, fmt.Errorf("stage %q bad gate %q", st.Name, st.Gate)
 		}
