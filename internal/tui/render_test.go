@@ -335,8 +335,13 @@ func TestHelpOverlayResponsive(t *testing.T) {
 func helpOverlayHasKeyDescription(out, key, description string) bool {
 	for _, line := range strings.Split(out, "\n") {
 		descriptionIndex := strings.Index(line, description)
-		if descriptionIndex >= 0 && strings.Contains(line[:descriptionIndex], key) {
-			return true
+		if descriptionIndex < 0 {
+			continue
+		}
+		for _, token := range strings.Fields(line[:descriptionIndex]) {
+			if token == key {
+				return true
+			}
 		}
 	}
 	return false
