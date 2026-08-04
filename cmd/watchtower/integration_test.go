@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1024,6 +1025,190 @@ stages:
 	if _, err := os.Stat(lastLog); !os.IsNotExist(err) {
 		t.Fatalf("explicit retry used --last: err=%v", err)
 	}
+}
+
+func TestPausedLaneSurvivesControlledDaemonRestart(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	flowBody := `name: default
+stages:
+  - name: plan
+    agents: [{package: agent}]
+    gate: auto
+    workspace: none
+  - name: execute
+    agents: [{package: agent}]
+    gate: auto
+    workspace: none
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, bin, repo, "status", "--data", base)
+	socket := filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.sock")
+	client, err := proto.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := client.Do(proto.Command{Op: "create_issue", Title: "paused restart", Flow: "default", Preset: "yolo"})
+	if err != nil || !created.OK {
+		client.Close()
+		t.Fatalf("create issue: %v %+v", err, created)
+	}
+	id := created.IssueID
+	if response, err := client.Do(proto.Command{Op: "pause_issue", IssueID: id}); err != nil || !response.OK {
+		client.Close()
+		t.Fatalf("pause issue: %v %+v", err, response)
+	}
+	if response, err := client.Do(proto.Command{Op: "start_issue", IssueID: id}); err != nil || !response.OK {
+		client.Close()
+		t.Fatalf("start issue: %v %+v", err, response)
+	}
+
+	readDetail := func() proto.IssueDetail {
+		response, detailErr := client.Do(proto.Command{Op: "issue_detail", IssueID: id})
+		if detailErr != nil || !response.OK || response.Detail == nil {
+			t.Fatalf("issue detail: %v %+v", detailErr, response)
+		}
+		return *response.Detail
+	}
+	readOverview := func() proto.Overview {
+		response, overviewErr := client.Do(proto.Command{Op: "overview"})
+		if overviewErr != nil || !response.OK || response.Overview == nil {
+			t.Fatalf("overview: %v %+v", overviewErr, response)
+		}
+		return *response.Overview
+	}
+	readEvents := func() []core.Event {
+		response, eventsErr := client.Do(proto.Command{Op: "tail"})
+		if eventsErr != nil || !response.OK {
+			t.Fatalf("tail: %v %+v", eventsErr, response)
+		}
+		return response.Events
+	}
+	readRunState := func() store.RunState {
+		st, storeErr := store.Open(filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.db"))
+		if storeErr != nil {
+			t.Fatal(storeErr)
+		}
+		defer st.Close()
+		run, ok, loadErr := st.LoadRunState(id)
+		if loadErr != nil || !ok {
+			t.Fatalf("run state: %v ok=%v run=%+v", loadErr, ok, run)
+		}
+		return run
+	}
+	countIssueEvent := func(events []core.Event, typ core.EventType) int {
+		count := 0
+		for _, event := range events {
+			if event.IssueID == id && event.Type == typ {
+				count++
+			}
+		}
+		return count
+	}
+	noRestartFailure := func(events []core.Event) bool {
+		for _, event := range events {
+			if event.IssueID != id || event.Type != core.EvStageFailed {
+				continue
+			}
+			if strings.Contains(string(event.Payload), "daemon restarted") {
+				return false
+			}
+		}
+		return true
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	var firstDetail proto.IssueDetail
+	for time.Now().Before(deadline) {
+		firstDetail = readDetail()
+		if firstDetail.Issue.State == "paused" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if firstDetail.Issue.State != "paused" {
+		client.Close()
+		t.Fatalf("issue did not pause: %+v", firstDetail.Issue)
+	}
+	for time.Now().Before(deadline) {
+		if countIssueEvent(readEvents(), core.EvIssuePaused) == 1 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	firstEvents := readEvents()
+	firstOverview := readOverview()
+	firstRun := readRunState()
+	if len(firstDetail.Runs) != 0 || countIssueEvent(firstEvents, core.EvIssuePaused) != 1 ||
+		firstOverview.Building != 0 || firstOverview.Failing != 0 || firstOverview.Queued != 0 ||
+		!noRestartFailure(firstEvents) || firstRun.Lifecycle != "paused" ||
+		firstRun.Stage != "plan" || firstRun.StageIndex != 0 || firstRun.Boundary != "before_stage" {
+		client.Close()
+		t.Fatalf("initial paused state was not durable and idle: detail=%+v overview=%+v run=%+v events=%+v", firstDetail, firstOverview, firstRun, firstEvents)
+	}
+	firstDetailBytes, err := json.Marshal(firstDetail)
+	if err != nil {
+		client.Close()
+		t.Fatal(err)
+	}
+
+	client.Close()
+	for restart := 0; restart < 2; restart++ {
+		stopDaemons(base)
+		run(t, bin, repo, "status", "--data", base)
+		client, err = proto.Dial(socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		detail := readDetail()
+		overview := readOverview()
+		events := readEvents()
+		run := readRunState()
+		detailBytes, marshalErr := json.Marshal(detail)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if string(detailBytes) != string(firstDetailBytes) || !reflect.DeepEqual(run, firstRun) ||
+			countIssueEvent(events, core.EvIssuePaused) != 1 || !noRestartFailure(events) ||
+			overview.Building != 0 || overview.Failing != 0 || overview.Queued != 0 {
+			client.Close()
+			t.Fatalf("restart %d changed paused state: detail=%+v overview=%+v run=%+v events=%+v", restart+1, detail, overview, run, events)
+		}
+		client.Close()
+	}
+
+	client, err = proto.Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response, resumeErr := client.Do(proto.Command{Op: "resume_issue", IssueID: id}); resumeErr != nil || !response.OK {
+		client.Close()
+		t.Fatalf("resume issue: %v %+v", resumeErr, response)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		detail := readDetail()
+		if len(detail.Runs) == 2 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	resumed := readDetail()
+	if len(resumed.Runs) != 2 || resumed.Runs[0].Stage != "plan" || resumed.Runs[1].Stage != "execute" {
+		client.Close()
+		t.Fatalf("resume did not continue exactly once: %+v", resumed.Runs)
+	}
+	if response, resumeErr := client.Do(proto.Command{Op: "resume_issue", IssueID: id}); resumeErr != nil {
+		client.Close()
+		t.Fatalf("duplicate resume: %v %+v", resumeErr, response)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if detail := readDetail(); len(detail.Runs) != 2 {
+		client.Close()
+		t.Fatalf("duplicate resume created another stage run: %+v", detail.Runs)
+	}
+	client.Close()
 }
 
 // runErr is like run but expects failure and returns the combined output.
