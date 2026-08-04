@@ -21,6 +21,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
@@ -52,6 +53,46 @@ func TestPendingDecisionJSONContext(t *testing.T) {
 		decoded.Context.AgentName != "Executor" || decoded.Context.AgentColor != "green" ||
 		decoded.Context.AgentSymbol != "⚙" {
 		t.Fatalf("pending JSON context = %#v, JSON = %s", decoded.Context, encoded)
+	}
+}
+
+func TestPlannerOverrideRoundTripsThroughCommandJSON(t *testing.T) {
+	warn, hard := int64(4), int64(5)
+	elapsedWarn, elapsedHard := 2*time.Minute, 3*time.Minute
+	want := Command{
+		Op:      "start_issue",
+		IssueID: "GH-39",
+		PlannerBudget: &plannerbudget.Override{
+			Calls:   &plannerbudget.DimensionOverride{Warning: &warn, Hard: &hard},
+			Elapsed: &plannerbudget.ElapsedOverride{Warning: &elapsedWarn, Hard: &elapsedHard},
+		},
+	}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Command
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.PlannerBudget == nil || *got.PlannerBudget.Calls.Warning != warn ||
+		*got.PlannerBudget.Calls.Hard != hard ||
+		*got.PlannerBudget.Elapsed.Warning != elapsedWarn {
+		t.Fatalf("planner override = %+v from %s", got.PlannerBudget, data)
+	}
+}
+
+func TestInvalidPlannerOverrideIsRejectedBeforeStart(t *testing.T) {
+	zero := int64(0)
+	sv := NewServer(nil, nil)
+	response := sv.exec(Command{
+		Op: "start_issue", IssueID: "GH-39",
+		PlannerBudget: &plannerbudget.Override{
+			Calls: &plannerbudget.DimensionOverride{Warning: &zero},
+		},
+	})
+	if response.Error == "" {
+		t.Fatal("invalid planner override reached engine start")
 	}
 }
 
