@@ -785,6 +785,9 @@ func (s *Store) RequestArtifactReview(target review.Target, d DecisionRow) (int6
 	d.Stage = canonical.Stage
 	d.Status = "pending"
 	d.Review = &canonical
+	if d.ReviewPolicy != nil && !validResolvedPolicy(*d.ReviewPolicy) {
+		return 0, fmt.Errorf("invalid plan review policy")
+	}
 	encodedArtifacts, err := json.Marshal(canonical.Artifacts)
 	if err != nil {
 		return 0, err
@@ -826,7 +829,10 @@ func (s *Store) RequestArtifactReview(target review.Target, d DecisionRow) (int6
 
 // ResolveArtifactReview durably records an explicit accept/revise response
 // only when the checkpoint still contains the exact pending target.
-func (s *Store) ResolveArtifactReview(id int64, target review.Target, response levers.Response) (review.Outcome, error) {
+func (s *Store) ResolveArtifactReview(
+	id int64, target review.Target, response levers.Response,
+	provenances ...*review.ApprovalProvenance,
+) (review.Outcome, error) {
 	canonical, err := target.Canonical()
 	if err != nil {
 		return review.OutcomeStale, err
@@ -834,6 +840,14 @@ func (s *Store) ResolveArtifactReview(id int64, target review.Target, response l
 	if response.Kind != levers.DecisionChoice || response.Option == nil ||
 		(*response.Option != 0 && *response.Option != 1) {
 		return "", fmt.Errorf("artifact review response must be approve or revise")
+	}
+	provenance := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: "operator"}
+	if len(provenances) > 0 && provenances[0] != nil {
+		copy := *provenances[0]
+		provenance = &copy
+	}
+	if err := validateApprovalProvenance(provenance); err != nil {
+		return "", err
 	}
 
 	s.mu.Lock()
@@ -862,6 +876,29 @@ func (s *Store) ResolveArtifactReview(id int64, target review.Target, response l
 	}
 	if stored.Review == nil {
 		return "", fmt.Errorf("decision %d is not an artifact review", id)
+	}
+	if stored.ReviewPolicy != nil {
+		if !validResolvedPolicy(*stored.ReviewPolicy) {
+			return "", fmt.Errorf("decision %d has invalid plan review policy", id)
+		}
+		switch provenance.Kind {
+		case review.ApprovalHuman:
+			if !stored.ReviewPolicy.HumanRequired {
+				return "", fmt.Errorf("decision %d does not accept human approval", id)
+			}
+		case review.ApprovalPolicy:
+			if !stored.ReviewPolicy.PolicyAutoApproval ||
+				stored.ReviewPolicy.Mode == string(flow.LeverStrict) ||
+				provenance.PolicyID != stored.ReviewPolicy.PolicyID ||
+				provenance.PolicyVersion != stored.ReviewPolicy.PolicyVersion {
+				return "", fmt.Errorf("policy approval does not match resolved plan review policy")
+			}
+			if *response.Option != 0 {
+				return "", fmt.Errorf("policy approval cannot reject a plan review")
+			}
+		}
+	} else if provenance.Kind != review.ApprovalHuman {
+		return "", fmt.Errorf("artifact review does not accept policy approval")
 	}
 	storedTarget, err := stored.Review.Canonical()
 	if err != nil {
@@ -904,10 +941,21 @@ func (s *Store) ResolveArtifactReview(id int64, target review.Target, response l
 	if err != nil {
 		return "", err
 	}
+	stored.Approval = provenance
+	updatedEvidence, err := json.Marshal(stored)
+	if err != nil {
+		return "", err
+	}
+	statusValue := "answered"
+	answeredBy := provenance.ActorID
+	if provenance.Kind == review.ApprovalPolicy {
+		statusValue = "auto"
+		answeredBy = "policy:" + provenance.PolicyID + "@" + provenance.PolicyVersion
+	}
 	answeredAt := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := tx.Exec(
-		`UPDATE decisions SET status='answered',answer=?,answered_at=? WHERE id=? AND status='pending'`,
-		string(answer), answeredAt, id)
+		`UPDATE decisions SET status=?,answer=?,answered_by=?,evidence=?,answered_at=? WHERE id=? AND status='pending'`,
+		statusValue, string(answer), answeredBy, string(updatedEvidence), answeredAt, id)
 	if err != nil {
 		return "", err
 	}

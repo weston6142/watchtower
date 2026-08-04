@@ -64,12 +64,13 @@ type Sequencer interface {
 }
 
 type PendingDecision struct {
-	ID      int64
-	IssueID string
-	Stage   string
-	D       levers.Decision
-	Context *decision.DecisionContext `json:"context,omitempty"`
-	Review  *review.Target            `json:"review,omitempty"`
+	ID           int64
+	IssueID      string
+	Stage        string
+	D            levers.Decision
+	Context      *decision.DecisionContext `json:"context,omitempty"`
+	Review       *review.Target            `json:"review,omitempty"`
+	ReviewPolicy *review.ResolvedPolicy    `json:"review_policy,omitempty"`
 }
 
 type pending struct {
@@ -195,7 +196,8 @@ func (e *Engine) rehydrateArtifactReview(
 		return false, false, fmt.Errorf("checkpoint %d is missing", row.Review.CheckpointID)
 	}
 	statusActive := (row.Status == "pending" && checkpoint.Status == "awaiting_review") ||
-		(row.Status == "answered" && (checkpoint.Status == "handoff_authorized" || checkpoint.Status == "revision_required"))
+		((row.Status == "answered" || row.Status == "auto") &&
+			(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "revision_required" || checkpoint.Status == "succeeded"))
 	if !statusActive {
 		return false, false, nil
 	}
@@ -242,12 +244,13 @@ func (e *Engine) rehydrateArtifactReview(
 		e.pend[row.ID] = &pending{
 			PendingDecision: PendingDecision{
 				ID: row.ID, IssueID: row.IssueID, Stage: row.Stage, D: d,
-				Context: row.Context, Review: row.Review,
+				Context: row.Context, Review: row.Review, ReviewPolicy: row.ReviewPolicy,
 			},
 		}
 	}
 	e.mu.Unlock()
-	return true, row.Status == "answered" && checkpoint.Status == "handoff_authorized", nil
+	return true, (row.Status == "answered" || row.Status == "auto") &&
+		(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "succeeded"), nil
 }
 
 // Rehydrate rebuilds in-memory state from the store after a daemon restart.
@@ -1418,6 +1421,14 @@ func (e *Engine) PendingDecisions() []PendingDecision {
 }
 
 func (e *Engine) Answer(decisionID int64, response levers.Response) error {
+	return e.AnswerAs(decisionID, response, "operator")
+}
+
+func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor string) error {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "operator"
+	}
 	e.mu.Lock()
 	p, ok := e.pend[decisionID]
 	if !ok {
@@ -1431,14 +1442,28 @@ func (e *Engine) Answer(decisionID int64, response levers.Response) error {
 	if p.Review != nil {
 		target := *p.Review
 		e.mu.Unlock()
-		if _, err := e.cfg.Store.ResolveArtifactReview(decisionID, target, response); err != nil {
+		provenance := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: actor}
+		if _, err := e.cfg.Store.ResolveArtifactReview(decisionID, target, response, provenance); err != nil {
 			return fmt.Errorf("resolve artifact review %d: %w", decisionID, err)
+		}
+		if p.ReviewPolicy != nil {
+			policy := *p.ReviewPolicy
+			payload := planReviewPayload(p.ID, p.Stage, policy)
+			payload["approval_kind"] = string(review.ApprovalHuman)
+			payload["actor_id"] = actor
+			eventType := core.EvPlanReviewHumanApproved
+			if legacyAnswer(response) != 0 {
+				eventType = core.EvPlanReviewRejected
+			}
+			if _, err := e.appendEvent(eventType, p.IssueID, payload); err != nil {
+				return fmt.Errorf("append plan review outcome: %w", err)
+			}
 		}
 		e.mu.Lock()
 		delete(e.pend, decisionID)
 		e.mu.Unlock()
 		e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
-			"decision_id": p.ID, "response": response, "review": target})
+			"decision_id": p.ID, "response": response, "review": target, "actor_id": actor})
 		if p.reply != nil {
 			p.reply <- response
 		} else {
@@ -1529,6 +1554,16 @@ func decisionRequiredPayloadWithReview(
 	return payload
 }
 
+func planReviewPayload(id int64, stage string, policy review.ResolvedPolicy) map[string]any {
+	return map[string]any{
+		"review_kind": "plan", "stage": stage, "decision_id": id,
+		"mode": policy.Mode, "human_required": policy.HumanRequired,
+		"policy_auto_approval": policy.PolicyAutoApproval,
+		"policy_id":            policy.PolicyID, "policy_version": policy.PolicyVersion,
+		"reason": policy.Reason,
+	}
+}
+
 func (e *Engine) artifactReviewTarget(is *issueState, stage string, checkpointID int64, artifacts []contextpack.Artifact) (review.Target, error) {
 	f, ok := e.cfg.Flows[is.flowName]
 	if !ok {
@@ -1594,6 +1629,92 @@ func (e *Engine) requestArtifactReview(
 		PendingDecision: PendingDecision{
 			ID: rowID, IssueID: is.id, Stage: st.Name, D: d,
 			Context: &decisionContext, Review: &target,
+		},
+		reply: make(chan levers.Response, 1),
+	}
+	e.mu.Lock()
+	e.pend[rowID] = p
+	e.mu.Unlock()
+	response, ok := <-p.reply
+	if !ok {
+		return levers.Response{}, nil
+	}
+	return response, nil
+}
+
+func (e *Engine) requestPlanReview(
+	is *issueState, st flow.Stage, checkpointID int64, artifacts []contextpack.Artifact,
+) (levers.Response, error) {
+	target, err := e.artifactReviewTarget(is, st.Name, checkpointID, artifacts)
+	if err != nil {
+		return levers.Response{}, err
+	}
+	agentPkg, err := e.decisionAgentPackage(is.flowName, st.Name)
+	if err != nil {
+		return levers.Response{}, err
+	}
+	decisionContext, err := e.buildDecisionContext(is, agentPkg)
+	if err != nil {
+		return levers.Response{}, err
+	}
+	e.mu.Lock()
+	policy := is.planReview
+	e.mu.Unlock()
+	d := levers.Decision{
+		Question: "Approve plan for execution?",
+		Options:  []string{"approve", "reject"}, Recommended: 0, Importance: 1.0,
+	}
+	if err := validateDecisionEnvelope(is.id, st.Name, d, decisionContext); err != nil {
+		return levers.Response{}, err
+	}
+	if err := validateDecisionWireValue("plan review target", target); err != nil {
+		return levers.Response{}, err
+	}
+	rowID, err := e.cfg.Store.RequestArtifactReview(target, store.DecisionRow{
+		IssueID: is.id, Stage: st.Name, Question: d.Question,
+		Options: d.Options, Recommended: d.Recommended, Kind: d.Kind,
+		Importance: d.Importance, Context: &decisionContext, ReviewPolicy: &policy,
+		BlockingCost: e.blockingCost(is.id),
+	})
+	if err != nil {
+		return levers.Response{}, fmt.Errorf("request plan review: %w", err)
+	}
+	requested := planReviewPayload(rowID, st.Name, policy)
+	if _, err := e.appendEvent(core.EvPlanReviewRequested, is.id, requested); err != nil {
+		_ = e.cfg.Store.DeleteDecision(rowID)
+		return levers.Response{}, fmt.Errorf("append plan review request: %w", err)
+	}
+	if policy.PolicyAutoApproval {
+		provenance := &review.ApprovalProvenance{
+			Kind: review.ApprovalPolicy, PolicyID: policy.PolicyID, PolicyVersion: policy.PolicyVersion,
+		}
+		if _, err := e.cfg.Store.ResolveArtifactReview(rowID, target, levers.ChoiceResponse(0), provenance); err != nil {
+			return levers.Response{}, fmt.Errorf("resolve plan review policy: %w", err)
+		}
+		payload := planReviewPayload(rowID, st.Name, policy)
+		payload["approval_kind"] = string(review.ApprovalPolicy)
+		payload["response"] = levers.ChoiceResponse(0)
+		if _, err := e.appendEvent(core.EvDecisionAutoResolved, is.id, payload); err != nil {
+			return levers.Response{}, fmt.Errorf("append plan policy resolution: %w", err)
+		}
+		if _, err := e.appendEvent(core.EvPlanReviewPolicyApproved, is.id, payload); err != nil {
+			return levers.Response{}, fmt.Errorf("append plan policy approval: %w", err)
+		}
+		return levers.ChoiceResponse(0), nil
+	}
+	if !policy.HumanRequired {
+		return levers.Response{}, fmt.Errorf("plan review policy is unresolved")
+	}
+	decisionPayload := decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target)
+	decisionPayload["review_policy"] = policy
+	if _, err := e.appendEvent(core.EvDecisionRequired, is.id, decisionPayload); err != nil {
+		_ = e.cfg.Store.DeleteDecision(rowID)
+		return levers.Response{}, fmt.Errorf("append plan review decision: %w", err)
+	}
+	p := &pending{
+		PendingDecision: PendingDecision{
+			ID: rowID, IssueID: is.id, Stage: st.Name, D: d,
+			Context: &decisionContext, Review: &target, ReviewPolicy: &policy,
 		},
 		reply: make(chan levers.Response, 1),
 	}
@@ -2281,7 +2402,19 @@ func (e *Engine) runStageOnce(
 			"stage": st.Name, "artifact": artifact.Name,
 			"path": filepath.Join(e.issueDir(is.id), "artifacts", artifact.Name)})
 	}
-	if st.Gate == flow.GateApproveArtifact {
+	if st.Gate == flow.GatePlanReview {
+		response, err := e.requestPlanReview(is, st, checkpointID, checkpointArtifacts)
+		if err != nil {
+			return err
+		}
+		if legacyAnswer(response) != 0 {
+			if e.wasKilled(is) {
+				e.emit(core.EvStageKilled, is.id, map[string]string{"stage": st.Name})
+				return context.Canceled
+			}
+			return fmt.Errorf("plan review rejected")
+		}
+	} else if st.Gate == flow.GateApproveArtifact {
 		response, err := e.requestArtifactReview(is, st, checkpointID, checkpointArtifacts)
 		if err != nil {
 			return err
@@ -2412,6 +2545,80 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage) er
 	return nil
 }
 
+func sameResolvedPlanReviewPolicy(left, right review.ResolvedPolicy) bool {
+	return left.Mode == right.Mode && left.HumanRequired == right.HumanRequired &&
+		left.PolicyAutoApproval == right.PolicyAutoApproval && left.PolicyID == right.PolicyID &&
+		left.PolicyVersion == right.PolicyVersion && left.Reason == right.Reason
+}
+
+func eventHasDecision(events []core.Event, typ core.EventType, issueID string, decisionID int64) bool {
+	for _, event := range events {
+		if event.IssueID != issueID || event.Type != typ {
+			continue
+		}
+		var payload struct {
+			DecisionID int64 `json:"decision_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.DecisionID == decisionID {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) planReviewAuthorization(is *issueState) (store.DecisionRow, []core.Event, error) {
+	rows, err := e.cfg.Store.ArtifactReviewRows(is.id)
+	if err != nil {
+		return store.DecisionRow{}, nil, err
+	}
+	var found *store.DecisionRow
+	for i := range rows {
+		if rows[i].Review != nil && rows[i].ReviewPolicy != nil {
+			candidate := rows[i]
+			found = &candidate
+		}
+	}
+	if found == nil {
+		return store.DecisionRow{}, nil, fmt.Errorf("plan review approval is missing")
+	}
+	if !sameResolvedPlanReviewPolicy(is.planReview, *found.ReviewPolicy) {
+		return store.DecisionRow{}, nil, fmt.Errorf("plan review policy snapshot is inconsistent")
+	}
+	if found.Status != "answered" && found.Status != "auto" {
+		return store.DecisionRow{}, nil, fmt.Errorf("plan review is not approved")
+	}
+	if found.Response.Kind != levers.DecisionChoice || found.Response.Option == nil || *found.Response.Option != 0 ||
+		found.Approval == nil {
+		return store.DecisionRow{}, nil, fmt.Errorf("plan review approval provenance is missing")
+	}
+	policy := *found.ReviewPolicy
+	approval := *found.Approval
+	var approvalEvent core.EventType
+	switch {
+	case policy.HumanRequired && approval.Kind == review.ApprovalHuman && approval.ActorID != "":
+		if found.Status != "answered" {
+			return store.DecisionRow{}, nil, fmt.Errorf("human plan approval has invalid status")
+		}
+		approvalEvent = core.EvPlanReviewHumanApproved
+	case policy.PolicyAutoApproval && approval.Kind == review.ApprovalPolicy &&
+		approval.PolicyID == policy.PolicyID && approval.PolicyVersion == policy.PolicyVersion:
+		if found.Status != "auto" {
+			return store.DecisionRow{}, nil, fmt.Errorf("policy plan approval has invalid status")
+		}
+		approvalEvent = core.EvPlanReviewPolicyApproved
+	default:
+		return store.DecisionRow{}, nil, fmt.Errorf("plan review approval provenance is not permitted")
+	}
+	events, err := e.cfg.Store.EventsSince(0)
+	if err != nil {
+		return store.DecisionRow{}, nil, err
+	}
+	if !eventHasDecision(events, approvalEvent, is.id, found.ID) {
+		return store.DecisionRow{}, nil, fmt.Errorf("plan review approval audit event is missing")
+	}
+	return *found, events, nil
+}
+
 func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) error {
 	if err := e.freezeTaskSummary(is); err != nil {
 		return err
@@ -2504,6 +2711,36 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int) erro
 		}
 		if err := e.checkBudget(is, st.Name); err != nil {
 			return err
+		}
+		planReviewBeforeExecute := false
+		if st.Name == "execute" {
+			for _, previous := range f.Stages[:i] {
+				if previous.Gate == flow.GatePlanReview {
+					planReviewBeforeExecute = true
+					break
+				}
+			}
+		}
+		if planReviewBeforeExecute {
+			approval, events, err := e.planReviewAuthorization(is)
+			if err != nil {
+				return err
+			}
+			if !eventHasDecision(events, core.EvExecutionStarted, is.id, approval.ID) {
+				payload := map[string]any{
+					"stage": st.Name, "decision_id": approval.ID,
+					"mode":           approval.ReviewPolicy.Mode,
+					"policy_id":      approval.ReviewPolicy.PolicyID,
+					"policy_version": approval.ReviewPolicy.PolicyVersion,
+					"approval_kind":  approval.Approval.Kind,
+				}
+				if approval.Approval.Kind == review.ApprovalHuman {
+					payload["actor_id"] = approval.Approval.ActorID
+				}
+				if _, err := e.appendEvent(core.EvExecutionStarted, is.id, payload); err != nil {
+					return fmt.Errorf("record execution start: %w", err)
+				}
+			}
 		}
 		if err := e.runStage(ctx, is, st); errors.Is(err, errDependenciesDiscovered) {
 			unmet, depErr := e.unmetDependencies(is.id)
