@@ -22,6 +22,8 @@ type Script struct {
 	Artifacts       map[string]string
 	SessionID       string
 	Tokens          int
+	TokensKnown     bool
+	Tools           []ToolCall
 	Fail            bool
 }
 
@@ -120,6 +122,75 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 }
 
 func (f *FakeRunner) SetOnLine(fn func(issueID, stage, line string)) { f.OnLine = fn }
+
+func (f *FakeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, workdir string,
+	_asks chan<- Ask, gate ExplorationGate) <-chan Result {
+	done := make(chan Result, 1)
+	go func() {
+		sc, ok := f.Scripts[stage+"/"+agentPkg]
+		if !ok {
+			done <- Result{Err: fmt.Errorf("no script for %s/%s", stage, agentPkg)}
+			return
+		}
+		if f.OnStart != nil {
+			if err := f.OnStart(issueID, stage, agentPkg, workdir); err != nil {
+				done <- Result{SessionID: sc.SessionID, Err: err}
+				return
+			}
+		}
+		for _, tool := range sc.Tools {
+			decision, err := gate.Admit(ctx, tool)
+			if err != nil {
+				done <- Result{SessionID: sc.SessionID, Err: err}
+				return
+			}
+			if !decision.Allowed {
+				continue
+			}
+			var actual *int64
+			if sc.TokensKnown {
+				value := tool.Reservation
+				actual = &value
+			}
+			if err := gate.Complete(ctx, decision, actual, nil); err != nil {
+				done <- Result{SessionID: sc.SessionID, Err: err}
+				return
+			}
+		}
+		if sc.Fail {
+			done <- Result{SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
+				Err: fmt.Errorf("scripted failure %s/%s", stage, agentPkg)}
+			return
+		}
+		artifacts, err := writeFakeArtifacts(sc.Artifacts, workdir)
+		if err != nil {
+			done <- Result{SessionID: sc.SessionID, Err: err}
+			return
+		}
+		done <- Result{Artifacts: artifacts, DependsOn: append([]string(nil), sc.DependsOn...),
+			SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown}
+	}()
+	return done
+}
+
+func writeFakeArtifacts(declared map[string]string, workdir string) (map[string]string, error) {
+	out := map[string]string{}
+	for name, content := range declared {
+		if content == "" {
+			generated, err := generatedFakeArtifact(name, workdir)
+			if err != nil {
+				return nil, err
+			}
+			content = generated
+		}
+		path := filepath.Join(workdir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return nil, err
+		}
+		out[name] = path
+	}
+	return out, nil
+}
 
 func generatedFakeArtifact(name, workdir string) (string, error) {
 	switch name {

@@ -44,7 +44,16 @@ func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	asks chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
-		done <- c.run(ctx, issueID, stage, agentPkg, workdir, asks)
+		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, nil)
+	}()
+	return done
+}
+
+func (c *CodeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, workdir string,
+	asks chan<- runner.Ask, gate runner.ExplorationGate) <-chan runner.Result {
+	done := make(chan runner.Result, 1)
+	go func() {
+		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, gate)
 	}()
 	return done
 }
@@ -52,14 +61,16 @@ func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 type turnResult struct {
 	threadID     string
 	tokens       int
+	tokensKnown  bool
 	events       []Event
+	leases       []runner.ToolDecision
 	failed       error
 	failureClass runner.FailureClass
 	invocation   invocation
 }
 
-func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	asks chan<- runner.Ask) runner.Result {
+func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, workdir string,
+	asks chan<- runner.Ask, gate runner.ExplorationGate) runner.Result {
 	pkg, ok := c.Packages[agentPkg]
 	if !ok {
 		return runner.Result{Err: fmt.Errorf("unknown agent package %q", agentPkg), FailureClass: runner.FailureConfiguration}
@@ -92,7 +103,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	if err := c.recordAttempt(ctx, primaryAttempt); err != nil {
 		return runner.Result{Err: fmt.Errorf("record primary Codex attempt: %w", err), FailureClass: runner.FailureUnknown, Attempt: primaryAttempt}
 	}
-	primaryResult, continuation := c.runProfile(ctx, issueID, stage, pkg, workdir, primary, nil, asks)
+	primaryResult, continuation := c.runProfile(ctx, issueID, stage, pkg, workdir, primary, nil, asks, gate)
 	primaryAttempt = updateAttempt(primaryAttempt, primaryResult, runner.AttemptRunning)
 	if primaryResult.Err == nil {
 		primaryAttempt.State = runner.AttemptSucceeded
@@ -138,11 +149,12 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	if err := c.recordAttempt(ctx, fallbackAttempt); err != nil {
 		return terminalResult(primaryResult, primaryAttempt, &fallbackAttempt, true, fmt.Errorf("start Codex fallback: %w", err))
 	}
-	fallbackResult, _ := c.runProfile(ctx, issueID, stage, pkg, workdir, *fallback, &continuation, asks)
+	fallbackResult, _ := c.runProfile(ctx, issueID, stage, pkg, workdir, *fallback, &continuation, asks, gate)
 	fallbackAttempt = updateAttempt(fallbackAttempt, fallbackResult, runner.AttemptRunning)
 	fallbackAttempt.FailureClass = fallbackResult.FailureClass
 	fallbackResult.FallbackConsumed = true
 	fallbackResult.Tokens += primaryResult.Tokens
+	fallbackResult.TokensKnown = fallbackResult.TokensKnown || primaryResult.TokensKnown
 	if fallbackResult.SessionID == "" {
 		fallbackResult.SessionID = primaryResult.SessionID
 	}
@@ -179,7 +191,7 @@ type runContinuation struct {
 
 func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg pkgs.Package,
 	workdir string, profile repocfg.CodexProfile, start *runContinuation,
-	asks chan<- runner.Ask) (runner.Result, runContinuation) {
+	asks chan<- runner.Ask, gate runner.ExplorationGate) (runner.Result, runContinuation) {
 	var res runner.Result
 	threadID := ""
 	prompt := agentprotocol.TaskMessage(stage, issueID)
@@ -196,7 +208,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 	}
 
 	for {
-		turn := c.runTurn(ctx, workdir, pkg, profile, threadID, prompt)
+		turn := c.runTurn(ctx, workdir, pkg, profile, threadID, prompt, gate)
 		res.Attempt.RedactedArgv = turn.invocation.RedactedArgv
 		if turn.threadID != "" {
 			if threadID != "" && turn.threadID != threadID {
@@ -210,6 +222,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			}
 		}
 		res.Tokens += turn.tokens
+		res.TokensKnown = res.TokensKnown || turn.tokensKnown
 		if turn.failed != nil {
 			res.Err = turn.failed
 			res.FailureClass = turn.failureClass
@@ -301,7 +314,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 }
 
 func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Package,
-	profile repocfg.CodexProfile, threadID, prompt string) turnResult {
+	profile repocfg.CodexProfile, threadID, prompt string, gate runner.ExplorationGate) turnResult {
 	kind := turnInitial
 	if threadID != "" {
 		kind = turnResumed
@@ -331,6 +344,21 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 	}
 
 	result := turnResult{invocation: invocation}
+	reconcile := func() {
+		if gate == nil {
+			return
+		}
+		var actual *int64
+		if len(result.leases) == 1 && result.tokensKnown {
+			value := int64(result.tokens)
+			actual = &value
+		}
+		for _, decision := range result.leases {
+			if err := gate.Complete(ctx, decision, actual, result.failed); err != nil && result.failed == nil {
+				result.failed = err
+			}
+		}
+	}
 	gotComplete := false
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64<<10), maxLineBytes)
@@ -339,10 +367,25 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 		switch event.Kind {
 		case KindThread:
 			result.threadID = event.ThreadID
+		case KindToolRequest:
+			if gate == nil {
+				continue
+			}
+			decision, err := gate.Admit(ctx, event.ToolCall)
+			if err != nil {
+				result.failed = err
+				_ = cmd.Process.Kill()
+				continue
+			}
+			if !decision.Allowed {
+				continue
+			}
+			result.leases = append(result.leases, decision)
 		case KindText, KindTool:
 			result.events = append(result.events, event)
 		case KindComplete:
 			result.tokens += event.Tokens
+			result.tokensKnown = result.tokensKnown || event.TokensKnown
 			gotComplete = true
 		case KindFailed:
 			result.failed = fmt.Errorf("codex turn failed: %s", event.Error)
@@ -357,6 +400,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 		_ = cmd.Wait()
 		result.failed = c.withStderr(fmt.Errorf("codex JSONL: %w", scanErr), stderrTail.String(), pkg.Prompt, prompt, threadID)
 		result.failureClass = runner.FailureTransport
+		reconcile()
 		return result
 	}
 	waitErr := cmd.Wait()
@@ -377,6 +421,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 		result.failed = fmt.Errorf("codex thread %s ended without completion event", activeThread)
 		result.failureClass = runner.FailureProtocol
 	}
+	reconcile()
 	if result.failed != nil {
 		result.failed = c.withStderr(result.failed, stderrTail.String(), pkg.Prompt, prompt, threadID)
 	}

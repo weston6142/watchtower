@@ -70,6 +70,7 @@ type Result struct {
 	DependsOn        []string
 	SessionID        string
 	Tokens           int
+	TokensKnown      bool
 	FailureClass     FailureClass
 	Attempt          Attempt
 	Attempts         []Attempt
@@ -81,6 +82,29 @@ type Result struct {
 type Runner interface {
 	Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
 		asks chan<- Ask) <-chan Result
+}
+
+type ToolCall struct {
+	Name        string
+	SourceID    string
+	Fingerprint string
+	Reservation int64
+	Priority    int
+}
+
+type ToolDecision struct {
+	Allowed       bool
+	LeaseID       string
+	CachedContent string
+}
+
+type ExplorationGate interface {
+	Admit(context.Context, ToolCall) (ToolDecision, error)
+	Complete(context.Context, ToolDecision, *int64, error) error
+}
+
+type PlannerRunner interface {
+	RunPlanner(context.Context, string, string, string, string, chan<- Ask, ExplorationGate) <-chan Result
 }
 
 // LineSink is implemented by runners that can stream human-readable output.

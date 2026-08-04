@@ -59,13 +59,22 @@ func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	asks chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
-		done <- c.run(ctx, issueID, stage, agentPkg, workdir, asks)
+		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, nil)
 	}()
 	return done
 }
 
-func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	asks chan<- runner.Ask) runner.Result {
+func (c *CodeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, workdir string,
+	asks chan<- runner.Ask, gate runner.ExplorationGate) <-chan runner.Result {
+	done := make(chan runner.Result, 1)
+	go func() {
+		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, gate)
+	}()
+	return done
+}
+
+func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, workdir string,
+	asks chan<- runner.Ask, gate runner.ExplorationGate) runner.Result {
 	pkg, ok := c.Packages[agentPkg]
 	if !ok {
 		return runner.Result{Err: fmt.Errorf("unknown agent package %q", agentPkg)}
@@ -148,6 +157,9 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		case KindInit:
 			res.SessionID = ev.SessionID
 		case KindAssistantText:
+			if err := c.admitTools(ctx, gate, ev.ToolCalls); err != nil {
+				return abort(err)
+			}
 			emit(ev)
 			if d, found := agentprotocol.ExtractDecision(ev.Text); found {
 				incomplete := d.Why == "" ||
@@ -196,9 +208,15 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				res.DependsOn = deps.Normalize(append(res.DependsOn, dependsOn...))
 			}
 		case KindToolUse:
+			if err := c.admitTools(ctx, gate, ev.ToolCalls); err != nil {
+				return abort(err)
+			}
 			emit(ev)
 		case KindResult:
 			res.Tokens += ev.Tokens
+			if ev.Tokens > 0 {
+				res.TokensKnown = true
+			}
 			if c.OnLine != nil {
 				c.OnLine(issueID, stage, fmt.Sprintf("— turn complete (%d tokens) —", ev.Tokens))
 			}
@@ -235,6 +253,25 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		res.Err = fmt.Errorf("claude session %s ended without result event", res.SessionID)
 	}
 	return res
+}
+
+func (c *CodeRunner) admitTools(ctx context.Context, gate runner.ExplorationGate, calls []runner.ToolCall) error {
+	if gate == nil {
+		return nil
+	}
+	for _, call := range calls {
+		decision, err := gate.Admit(ctx, call)
+		if err != nil {
+			return err
+		}
+		if !decision.Allowed {
+			continue
+		}
+		if err := gate.Complete(ctx, decision, nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *CodeRunner) SetOnLine(fn func(issueID, stage, line string)) { c.OnLine = fn }

@@ -20,7 +20,7 @@ func TestParseLineNormalizesCodexEvents(t *testing.T) {
 		{"file", `{"type":"item.completed","item":{"id":"i3","type":"file_change","changes":[{"path":"a.go"}]}}`, Event{Kind: KindTool, Tool: "↳ files a.go"}},
 		{"mcp", `{"type":"item.completed","item":{"id":"i4","type":"mcp_tool_call","server":"jira","tool":"search","status":"completed"}}`, Event{Kind: KindTool, Tool: "↳ mcp jira/search"}},
 		{"web", `{"type":"item.completed","item":{"id":"i5","type":"web_search","query":"Codex docs"}}`, Event{Kind: KindTool, Tool: "↳ web Codex docs"}},
-		{"complete", `{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":25}}`, Event{Kind: KindComplete, Tokens: 125}},
+		{"complete", `{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":25}}`, Event{Kind: KindComplete, Tokens: 125, TokensKnown: true}},
 		{"failed", `{"type":"turn.failed","error":{"message":"model unavailable"}}`, Event{Kind: KindFailed, Error: "model unavailable", FailureClass: runner.FailureExecution}},
 		{"error", `{"type":"error","message":"auth failed"}`, Event{Kind: KindFailed, Error: "auth failed", FailureClass: runner.FailureAuthentication}},
 	}
@@ -65,5 +65,12 @@ func TestParseLineBoundsToolOutput(t *testing.T) {
 	}
 	if n := utf8.RuneCountInString(got.Tool); n > 120 {
 		t.Fatalf("tool output is %d runes: %q", n, got.Tool)
+	}
+}
+
+func TestParseToolRequestBeforeTranscriptCompletion(t *testing.T) {
+	event := ParseLine([]byte(`{"type":"item.started","item":{"type":"command_execution","command":"cat ISSUE.md"}}`))
+	if event.Kind != KindToolRequest || event.ToolCall.SourceID != "ISSUE.md" {
+		t.Fatalf("tool request = %+v", event)
 	}
 }
