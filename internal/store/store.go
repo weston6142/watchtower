@@ -15,6 +15,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/deps"
+	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
 )
@@ -25,7 +26,8 @@ CREATE TABLE IF NOT EXISTS events(
   type TEXT, issue_id TEXT, payload TEXT, at TEXT);
 CREATE TABLE IF NOT EXISTS issues(
   id TEXT PRIMARY KEY, title TEXT, body TEXT, state TEXT,
-  flow TEXT, levers TEXT, priority INTEGER, links TEXT);
+  flow TEXT, levers TEXT, priority INTEGER, links TEXT,
+  plan_review_policy TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS stage_runs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, stage TEXT, agent TEXT,
   session_id TEXT, worktree TEXT, artifacts TEXT, status TEXT, tokens INTEGER);
@@ -118,6 +120,8 @@ type DecisionRow struct {
 	Reversible          string
 	Context             *decision.DecisionContext
 	Review              *review.Target
+	ReviewPolicy        *review.ResolvedPolicy
+	Approval            *review.ApprovalProvenance
 	Status              string
 	Response            levers.Response
 	BlockingCost        int
@@ -150,14 +154,15 @@ type AttachmentRow struct {
 }
 
 type IssueRow struct {
-	ID        string
-	Title     string
-	Body      string
-	State     string
-	Flow      string
-	Levers    map[string]string
-	Priority  int
-	DependsOn []string
+	ID               string
+	Title            string
+	Body             string
+	State            string
+	Flow             string
+	Levers           map[string]string
+	Priority         int
+	DependsOn        []string
+	PlanReviewPolicy review.ResolvedPolicy
 }
 
 const (
@@ -221,6 +226,10 @@ func Open(path string) (*Store, error) {
 	}
 	if err := ensureColumn(db, "decisions", "answered_at",
 		`ALTER TABLE decisions ADD COLUMN answered_at TEXT`); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(db, "issues", "plan_review_policy",
+		`ALTER TABLE issues ADD COLUMN plan_review_policy TEXT NOT NULL DEFAULT '{}'`); err != nil {
 		return nil, err
 	}
 	var max sql.NullInt64
@@ -614,16 +623,66 @@ func (s *Store) ArtifactPaths(issueID string) ([]string, error) {
 // decisionEvidence is the v2 rationale metadata persisted in the decisions
 // table's evidence column.
 type decisionEvidence struct {
-	Kind                levers.DecisionKind       `json:"kind,omitempty"`
-	RecommendedResponse string                    `json:"recommended_response,omitempty"`
-	AllowFreeform       bool                      `json:"allow_freeform,omitempty"`
-	Importance          float64                   `json:"importance,omitempty"`
-	Paths               []string                  `json:"paths,omitempty"`
-	Why                 string                    `json:"why"`
-	Consequences        []string                  `json:"consequences"`
-	Reversible          string                    `json:"reversible"`
-	Context             *decision.DecisionContext `json:"context,omitempty"`
-	Review              *review.Target            `json:"review,omitempty"`
+	Kind                levers.DecisionKind        `json:"kind,omitempty"`
+	RecommendedResponse string                     `json:"recommended_response,omitempty"`
+	AllowFreeform       bool                       `json:"allow_freeform,omitempty"`
+	Importance          float64                    `json:"importance,omitempty"`
+	Paths               []string                   `json:"paths,omitempty"`
+	Why                 string                     `json:"why"`
+	Consequences        []string                   `json:"consequences"`
+	Reversible          string                     `json:"reversible"`
+	Context             *decision.DecisionContext  `json:"context,omitempty"`
+	Review              *review.Target             `json:"review,omitempty"`
+	ReviewPolicy        *review.ResolvedPolicy     `json:"review_policy,omitempty"`
+	Approval            *review.ApprovalProvenance `json:"approval,omitempty"`
+}
+
+func validateApprovalProvenance(approval *review.ApprovalProvenance) error {
+	if approval == nil {
+		return nil
+	}
+	switch approval.Kind {
+	case review.ApprovalHuman:
+		if strings.TrimSpace(approval.ActorID) == "" {
+			return fmt.Errorf("human approval actor is empty")
+		}
+	case review.ApprovalPolicy:
+		if strings.TrimSpace(approval.PolicyID) == "" || strings.TrimSpace(approval.PolicyVersion) == "" {
+			return fmt.Errorf("policy approval identity is incomplete")
+		}
+	default:
+		return fmt.Errorf("unknown approval kind %q", approval.Kind)
+	}
+	return nil
+}
+
+func validResolvedPolicy(policy review.ResolvedPolicy) bool {
+	if strings.TrimSpace(policy.PolicyID) == "" || strings.TrimSpace(policy.PolicyVersion) == "" || strings.TrimSpace(policy.Reason) == "" {
+		return false
+	}
+	switch policy.Mode {
+	case string(flow.LeverYolo), string(flow.LeverRegular), string(flow.LeverStrict):
+	default:
+		return false
+	}
+	if policy.PolicyAutoApproval {
+		return policy.Mode == string(flow.LeverRegular) && !policy.HumanRequired
+	}
+	return policy.HumanRequired
+}
+
+func issuePlanReviewPolicy(raw string, values map[string]string) review.ResolvedPolicy {
+	var policy review.ResolvedPolicy
+	if raw != "" && raw != "null" {
+		if err := json.Unmarshal([]byte(raw), &policy); err == nil && validResolvedPolicy(policy) {
+			return policy
+		}
+	}
+	mode := flow.LeverRegular
+	if value := values["plan"]; value != "" {
+		mode = flow.Lever(value)
+	}
+	return review.ManualPlanReviewPolicy(mode)
 }
 
 type sqlExecutor interface {
@@ -658,9 +717,12 @@ func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 		Kind: kind, RecommendedResponse: d.RecommendedResponse,
 		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
-		Context: d.Context, Review: target,
+		Context: d.Context, Review: target, ReviewPolicy: d.ReviewPolicy, Approval: d.Approval,
 	})
 	if err != nil {
+		return 0, err
+	}
+	if err := validateApprovalProvenance(d.Approval); err != nil {
 		return 0, err
 	}
 	answer := ""
@@ -723,6 +785,9 @@ func (s *Store) RequestArtifactReview(target review.Target, d DecisionRow) (int6
 	d.Stage = canonical.Stage
 	d.Status = "pending"
 	d.Review = &canonical
+	if d.ReviewPolicy != nil && !validResolvedPolicy(*d.ReviewPolicy) {
+		return 0, fmt.Errorf("invalid plan review policy")
+	}
 	encodedArtifacts, err := json.Marshal(canonical.Artifacts)
 	if err != nil {
 		return 0, err
@@ -764,7 +829,10 @@ func (s *Store) RequestArtifactReview(target review.Target, d DecisionRow) (int6
 
 // ResolveArtifactReview durably records an explicit accept/revise response
 // only when the checkpoint still contains the exact pending target.
-func (s *Store) ResolveArtifactReview(id int64, target review.Target, response levers.Response) (review.Outcome, error) {
+func (s *Store) ResolveArtifactReview(
+	id int64, target review.Target, response levers.Response,
+	provenances ...*review.ApprovalProvenance,
+) (review.Outcome, error) {
 	canonical, err := target.Canonical()
 	if err != nil {
 		return review.OutcomeStale, err
@@ -772,6 +840,14 @@ func (s *Store) ResolveArtifactReview(id int64, target review.Target, response l
 	if response.Kind != levers.DecisionChoice || response.Option == nil ||
 		(*response.Option != 0 && *response.Option != 1) {
 		return "", fmt.Errorf("artifact review response must be approve or revise")
+	}
+	provenance := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: review.DefaultActorID}
+	if len(provenances) > 0 && provenances[0] != nil {
+		copy := *provenances[0]
+		provenance = &copy
+	}
+	if err := validateApprovalProvenance(provenance); err != nil {
+		return "", err
 	}
 
 	s.mu.Lock()
@@ -800,6 +876,29 @@ func (s *Store) ResolveArtifactReview(id int64, target review.Target, response l
 	}
 	if stored.Review == nil {
 		return "", fmt.Errorf("decision %d is not an artifact review", id)
+	}
+	if stored.ReviewPolicy != nil {
+		if !validResolvedPolicy(*stored.ReviewPolicy) {
+			return "", fmt.Errorf("decision %d has invalid plan review policy", id)
+		}
+		switch provenance.Kind {
+		case review.ApprovalHuman:
+			if !stored.ReviewPolicy.HumanRequired {
+				return "", fmt.Errorf("decision %d does not accept human approval", id)
+			}
+		case review.ApprovalPolicy:
+			if !stored.ReviewPolicy.PolicyAutoApproval ||
+				stored.ReviewPolicy.Mode == string(flow.LeverStrict) ||
+				provenance.PolicyID != stored.ReviewPolicy.PolicyID ||
+				provenance.PolicyVersion != stored.ReviewPolicy.PolicyVersion {
+				return "", fmt.Errorf("policy approval does not match resolved plan review policy")
+			}
+			if *response.Option != 0 {
+				return "", fmt.Errorf("policy approval cannot reject a plan review")
+			}
+		}
+	} else if provenance.Kind != review.ApprovalHuman {
+		return "", fmt.Errorf("artifact review does not accept policy approval")
 	}
 	storedTarget, err := stored.Review.Canonical()
 	if err != nil {
@@ -842,10 +941,21 @@ func (s *Store) ResolveArtifactReview(id int64, target review.Target, response l
 	if err != nil {
 		return "", err
 	}
+	stored.Approval = provenance
+	updatedEvidence, err := json.Marshal(stored)
+	if err != nil {
+		return "", err
+	}
+	statusValue := "answered"
+	answeredBy := provenance.ActorID
+	if provenance.Kind == review.ApprovalPolicy {
+		statusValue = "auto"
+		answeredBy = "policy:" + provenance.PolicyID + "@" + provenance.PolicyVersion
+	}
 	answeredAt := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := tx.Exec(
-		`UPDATE decisions SET status='answered',answer=?,answered_at=? WHERE id=? AND status='pending'`,
-		string(answer), answeredAt, id)
+		`UPDATE decisions SET status=?,answer=?,answered_by=?,evidence=?,answered_at=? WHERE id=? AND status='pending'`,
+		statusValue, string(answer), answeredBy, string(updatedEvidence), answeredAt, id)
 	if err != nil {
 		return "", err
 	}
@@ -999,6 +1109,15 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 					return nil, fmt.Errorf("decode artifact review target: %w", err)
 				}
 				d.Review = &canonical
+			}
+			if stored.ReviewPolicy != nil {
+				d.ReviewPolicy = stored.ReviewPolicy
+			}
+			if err := validateApprovalProvenance(stored.Approval); err != nil {
+				return nil, fmt.Errorf("decode approval provenance: %w", err)
+			}
+			if stored.Approval != nil {
+				d.Approval = stored.Approval
 			}
 			if contextRaw, ok := raw["context"]; ok {
 				if string(contextRaw) == "null" {
@@ -1159,11 +1278,15 @@ func (s *Store) AcceptProposalBatch(batchID int64, issues []IssueRow, edges map[
 		if err != nil {
 			return err
 		}
+		encodedPolicy, err := json.Marshal(issue.PlanReviewPolicy)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(
-			`INSERT INTO issues(id,title,body,state,flow,levers,priority)
-			 VALUES(?,?,?,?,?,?,?)`,
+			`INSERT INTO issues(id,title,body,state,flow,levers,priority,plan_review_policy)
+			 VALUES(?,?,?,?,?,?,?,?)`,
 			issue.ID, issue.Title, issue.Body, issue.State, issue.Flow,
-			string(encodedLevers), issue.Priority); err != nil {
+			string(encodedLevers), issue.Priority, string(encodedPolicy)); err != nil {
 			return err
 		}
 		for _, parent := range edges[issue.ID] {
@@ -1189,13 +1312,18 @@ func (s *Store) UpsertIssue(r IssueRow) error {
 	if err != nil {
 		return err
 	}
+	policy, err := json.Marshal(r.PlanReviewPolicy)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.Exec(`
-		INSERT INTO issues(id,title,body,state,flow,levers,priority)
-		VALUES(?,?,?,?,?,?,?)
+		INSERT INTO issues(id,title,body,state,flow,levers,priority,plan_review_policy)
+		VALUES(?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title, body=excluded.body, state=excluded.state,
-			flow=excluded.flow, levers=excluded.levers, priority=excluded.priority`,
-		r.ID, r.Title, r.Body, r.State, r.Flow, string(levers), r.Priority)
+			flow=excluded.flow, levers=excluded.levers, priority=excluded.priority,
+			plan_review_policy=excluded.plan_review_policy`,
+		r.ID, r.Title, r.Body, r.State, r.Flow, string(levers), r.Priority, string(policy))
 	return err
 }
 
@@ -1225,7 +1353,7 @@ func (s *Store) SetIssueLever(issueID, stage, lever string) error {
 func (s *Store) Issues() ([]IssueRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT id,title,body,state,flow,levers,priority FROM issues ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id,title,body,state,flow,levers,priority,plan_review_policy FROM issues ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1233,8 +1361,8 @@ func (s *Store) Issues() ([]IssueRow, error) {
 	var out []IssueRow
 	for rows.Next() {
 		var r IssueRow
-		var raw string
-		if err := rows.Scan(&r.ID, &r.Title, &r.Body, &r.State, &r.Flow, &raw, &r.Priority); err != nil {
+		var raw, policyRaw string
+		if err := rows.Scan(&r.ID, &r.Title, &r.Body, &r.State, &r.Flow, &raw, &r.Priority, &policyRaw); err != nil {
 			return nil, err
 		}
 		if raw != "" && raw != "null" {
@@ -1242,6 +1370,7 @@ func (s *Store) Issues() ([]IssueRow, error) {
 				return nil, err
 			}
 		}
+		r.PlanReviewPolicy = issuePlanReviewPolicy(policyRaw, r.Levers)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {

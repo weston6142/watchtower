@@ -19,6 +19,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/steward"
@@ -33,6 +34,63 @@ func testFlow() flow.Flow {
 		panic(err)
 	}
 	return f
+}
+
+func issueRowByID(t *testing.T, rows []store.IssueRow, id string) store.IssueRow {
+	t.Helper()
+	for _, row := range rows {
+		if row.ID == id {
+			return row
+		}
+	}
+	t.Fatalf("issue row %s not found in %+v", id, rows)
+	return store.IssueRow{}
+}
+
+func TestPlanReviewPolicyIsSnapshottedAtIssueCreation(t *testing.T) {
+	e, s := newEngineCfg(t, artifactReviewRunner(), func(cfg *Config) {
+		cfg.PlanReview = review.PolicySettings{ID: "manual-default", Version: "1", Valid: true}
+	})
+	id, err := e.CreateIssue("snapshot", "", "default", levers.Preset(testFlow(), flow.LeverRegular), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := issueRowByID(t, rows, id).PlanReviewPolicy
+	if got.Mode != "regular" || !got.HumanRequired || got.PolicyAutoApproval || got.PolicyID != "manual-default" {
+		t.Fatalf("snapshot = %+v", got)
+	}
+
+	e2 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), e.cfg.DataDir, testFlow())
+	e2.cfg.PlanReview = review.PolicySettings{
+		ID: "team-ci", Version: "2026-08-03", AutoApproveRegular: true, Valid: true,
+	}
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issueRowByID(t, rows, id).PlanReviewPolicy; got.PolicyID != "manual-default" || !got.HumanRequired {
+		t.Fatalf("rehydration reread mutable config: %+v", got)
+	}
+
+	strictID, err := e2.CreateIssue("strict snapshot", "", "default", levers.Matrix{"plan": flow.LeverStrict}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	strict := issueRowByID(t, rows, strictID).PlanReviewPolicy
+	if strict.Mode != "strict" || !strict.HumanRequired || strict.PolicyAutoApproval {
+		t.Fatalf("strict snapshot = %+v", strict)
+	}
 }
 
 // newEngineCfg builds a test engine like newEngine but lets the caller adjust
@@ -117,6 +175,267 @@ func waitForPendingStage(t *testing.T, e *Engine, stage string) PendingDecision 
 			t.Fatalf("pending %s review never appeared", stage)
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+func planReviewFlow() flow.Flow {
+	return flow.Flow{Name: "plan-review", Stages: []flow.Stage{
+		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "none",
+			Completion: flow.CompletionAll, Gate: flow.GatePlanReview, Artifacts: []string{"plan.md"}},
+		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}}, Workspace: "none",
+			Completion: flow.CompletionAll, Gate: flow.GateAuto},
+	}}
+}
+
+func planReviewRunner() *runner.FakeRunner {
+	return &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"plan/planner":     {Artifacts: map[string]string{"plan.md": "plan\n"}},
+		"execute/executor": {},
+	}}
+}
+
+func planReviewSettings(id, version string, auto bool) review.PolicySettings {
+	return review.PolicySettings{ID: id, Version: version, AutoApproveRegular: auto, Valid: true}
+}
+
+func planReviewEvents(t *testing.T, s *store.Store, issueID string, typ core.EventType) []core.Event {
+	t.Helper()
+	events := mustEvents(t, s, issueID)
+	var matching []core.Event
+	for _, event := range events {
+		if event.Type == typ {
+			matching = append(matching, event)
+		}
+	}
+	return matching
+}
+
+func waitForPlanReviewEvent(t *testing.T, s *store.Store, issueID string, typ core.EventType) core.Event {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		if events := planReviewEvents(t, s, issueID, typ); len(events) > 0 {
+			return events[0]
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("event %s for %s never appeared", typ, issueID)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func assertPlanApprovalEvent(t *testing.T, event core.Event, typ core.EventType, kind, actor, policyID, policyVersion string) {
+	t.Helper()
+	if event.Type != typ {
+		t.Fatalf("event type = %s, want %s", event.Type, typ)
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	value := func(key string) string {
+		if payload[key] == nil {
+			return ""
+		}
+		return fmt.Sprint(payload[key])
+	}
+	if value("approval_kind") != kind || value("actor_id") != actor ||
+		value("policy_id") != policyID || value("policy_version") != policyVersion {
+		t.Fatalf("approval payload = %+v", payload)
+	}
+}
+
+func TestPlanReviewAuthorizationMatrix(t *testing.T) {
+	t.Run("regular default requires human approval", func(t *testing.T) {
+		f := planReviewFlow()
+		e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+			cfg.PlanReview = planReviewSettings("manual-default", "1", false)
+		})
+		id, err := e.CreateIssue("manual review", "", f.Name, levers.Matrix{
+			"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+		}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- e.StartIssue(context.Background(), id) }()
+		pending := waitForPendingStage(t, e, "plan")
+		if pending.ReviewPolicy == nil || !pending.ReviewPolicy.HumanRequired || pending.ReviewPolicy.PolicyAutoApproval {
+			t.Fatalf("pending review policy = %+v", pending.ReviewPolicy)
+		}
+		if len(planReviewEvents(t, s, id, core.EvPlanReviewPolicyApproved)) != 0 ||
+			len(planReviewEvents(t, s, id, core.EvExecutionStarted)) != 0 {
+			t.Fatal("manual review emitted automatic approval or execution before response")
+		}
+		if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		assertPlanApprovalEvent(t, waitForPlanReviewEvent(t, s, id, core.EvPlanReviewHumanApproved),
+			core.EvPlanReviewHumanApproved, "human", "operator", "manual-default", "1")
+		if got := len(planReviewEvents(t, s, id, core.EvExecutionStarted)); got != 1 {
+			t.Fatalf("execution_started events = %d, want 1", got)
+		}
+	})
+
+	t.Run("regular explicit auto approval", func(t *testing.T) {
+		f := planReviewFlow()
+		e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+			cfg.PlanReview = planReviewSettings("team-ci", "2026-08-03", true)
+		})
+		id, err := e.CreateIssue("automatic review", "", f.Name, levers.Matrix{
+			"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+		}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- e.StartIssue(context.Background(), id) }()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		assertPlanApprovalEvent(t, waitForPlanReviewEvent(t, s, id, core.EvPlanReviewPolicyApproved),
+			core.EvPlanReviewPolicyApproved, "policy", "", "team-ci", "2026-08-03")
+		if len(e.PendingDecisions()) != 0 || len(planReviewEvents(t, s, id, core.EvPlanReviewHumanApproved)) != 0 {
+			t.Fatal("automatic approval exposed a pending or human approval")
+		}
+		if got := len(planReviewEvents(t, s, id, core.EvExecutionStarted)); got != 1 {
+			t.Fatalf("execution_started events = %d, want 1", got)
+		}
+	})
+
+	t.Run("strict overrides configured auto approval", func(t *testing.T) {
+		f := planReviewFlow()
+		e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+			cfg.PlanReview = planReviewSettings("team-ci", "2026-08-03", true)
+		})
+		id, err := e.CreateIssue("strict review", "", f.Name, levers.Matrix{
+			"plan": flow.LeverStrict, "execute": flow.LeverYolo,
+		}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- e.StartIssue(context.Background(), id) }()
+		pending := waitForPendingStage(t, e, "plan")
+		if pending.ReviewPolicy == nil || !pending.ReviewPolicy.HumanRequired || pending.ReviewPolicy.PolicyAutoApproval {
+			t.Fatalf("strict pending review policy = %+v", pending.ReviewPolicy)
+		}
+		if _, err := s.ResolveArtifactReview(pending.ID, *pending.Review, levers.ChoiceResponse(0), &review.ApprovalProvenance{
+			Kind: review.ApprovalPolicy, PolicyID: "team-ci", PolicyVersion: "2026-08-03",
+		}); err == nil {
+			t.Fatal("strict policy auto-approval authorized execution")
+		}
+		if len(planReviewEvents(t, s, id, core.EvExecutionStarted)) != 0 {
+			t.Fatal("strict run started execution before human approval")
+		}
+		if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestInvalidPlanReviewPolicyFailsClosedToHumanReview(t *testing.T) {
+	f := planReviewFlow()
+	e, _ := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = review.PolicySettings{
+			AutoApproveRegular: true, Valid: true,
+		}
+	})
+	id, err := e.CreateIssue("invalid policy", "", f.Name, levers.Matrix{
+		"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+	}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e, "plan")
+	if pending.ReviewPolicy == nil || !pending.ReviewPolicy.HumanRequired || pending.ReviewPolicy.PolicyAutoApproval {
+		t.Fatalf("invalid policy review = %+v", pending.ReviewPolicy)
+	}
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlanReviewRejectsDuplicateResponse(t *testing.T) {
+	f := planReviewFlow()
+	e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = planReviewSettings("manual-default", "1", false)
+	})
+	id, err := e.CreateIssue("reject review", "", f.Name, levers.Matrix{
+		"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+	}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e, "plan")
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("rejected plan review advanced to execute")
+	}
+	rejected := planReviewEvents(t, s, id, core.EvPlanReviewRejected)
+	if len(rejected) != 1 {
+		t.Fatalf("rejection events = %d, want 1", len(rejected))
+	}
+	assertPlanApprovalEvent(t, rejected[0], core.EvPlanReviewRejected, "human", "operator", "manual-default", "1")
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err == nil {
+		t.Fatal("late response was accepted")
+	}
+	if got := len(planReviewEvents(t, s, id, core.EvPlanReviewHumanApproved)); got != 0 {
+		t.Fatalf("late response created %d approval events", got)
+	}
+}
+
+func TestPlanReviewAuditFailureBlocksExecution(t *testing.T) {
+	f := planReviewFlow()
+	e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = planReviewSettings("manual-default", "1", false)
+	})
+	id, err := e.CreateIssue("audit retry", "", f.Name, levers.Matrix{
+		"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+	}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e, "plan")
+	s.FailNextArtifactReviewResolutionForTest()
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err == nil {
+		t.Fatal("injected approval persistence failure was not returned")
+	}
+	if len(e.PendingDecisions()) != 1 || len(planReviewEvents(t, s, id, core.EvExecutionStarted)) != 0 {
+		t.Fatal("audit failure removed the pending review or started execution")
+	}
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := len(planReviewEvents(t, s, id, core.EvExecutionStarted)); got != 1 {
+		t.Fatalf("execution_started events = %d, want 1", got)
 	}
 }
 

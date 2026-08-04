@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/store"
+	_ "modernc.org/sqlite"
 )
 
 func TestDecisionsJSONIncludesContext(t *testing.T) {
@@ -121,6 +123,182 @@ func TestDefaultFlowRequiresSpecAndPlanArtifactReviews(t *testing.T) {
 		}
 	}
 	run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(pending[0].ID, 10), "0")
+}
+
+func TestPlanReviewPolicyControlsExecutionAcrossProtocol(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	bin := buildBinary(t)
+	base, err := os.MkdirTemp("/tmp", "wt-gh35-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopDaemons(base)
+		_ = os.RemoveAll(base)
+	})
+	repo := initRepo(t, bin, base)
+
+	regularID := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base, "--title", "manual plan review")))
+	spec := waitForDecisionStage(t, bin, repo, base, "spec")
+	run(t, bin, repo, "answer", "--data", base, "--actor", "alice", strconv.FormatInt(spec.ID, 10), "0")
+	plan := waitForDecisionStage(t, bin, repo, base, "plan")
+	if plan.ReviewPolicy == nil || plan.ReviewPolicy.Mode != "regular" || !plan.ReviewPolicy.HumanRequired ||
+		plan.ReviewPolicy.PolicyAutoApproval || plan.ReviewPolicy.PolicyID != "manual-default" || plan.ReviewPolicy.PolicyVersion != "1" {
+		t.Fatalf("manual plan review policy = %+v", plan.ReviewPolicy)
+	}
+	text := run(t, bin, repo, "decisions", "--data", base)
+	for _, want := range []string{"review policy: human approval required", "mode: regular", "policy: manual-default@1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("manual decisions output missing %q:\n%s", want, text)
+		}
+	}
+	if hasIssueEvent(t, base, repo, regularID, core.EvExecutionStarted) {
+		t.Fatal("manual plan review reached execution before an answer")
+	}
+	run(t, bin, repo, "answer", "--data", base, "--actor", "alice", strconv.FormatInt(plan.ID, 10), "0")
+	waitForIssueEvent(t, bin, base, repo, regularID, core.EvExecutionStarted)
+
+	autoRepo := t.TempDir()
+	run(t, bin, autoRepo, "init", "--data", base)
+	configPath := filepath.Join(autoRepo, ".watchtower", "config.yaml")
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured := string(config)
+	configured = strings.Replace(configured, "runner: codex", "runner: fake", 1)
+	configured = strings.Replace(configured, "pull: true", "pull: false", 1)
+	configured = strings.Replace(configured, "test_cmd: \"\"", "test_cmd: \"true\"", 1)
+	if !strings.Contains(configured, "plan_review:") {
+		configured += "\nplan_review:\n  policy_id: team-ci\n  policy_version: \"2026-08-03\"\n  auto_approve_regular: true\n"
+	} else {
+		configured = strings.Replace(configured, "policy_id: manual-default", "policy_id: team-ci", 1)
+		configured = strings.Replace(configured, "policy_version: \"1\"", "policy_version: \"2026-08-03\"", 1)
+		configured = strings.Replace(configured, "auto_approve_regular: false", "auto_approve_regular: true", 1)
+	}
+	if err := os.WriteFile(configPath, []byte(configured), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	autoID := strings.TrimSpace(lastLine(run(t, bin, autoRepo, "new", "--data", base, "--title", "policy plan review")))
+	spec = waitForDecisionStage(t, bin, autoRepo, base, "spec")
+	run(t, bin, autoRepo, "answer", "--data", base, strconv.FormatInt(spec.ID, 10), "0")
+	waitForIssueEvent(t, bin, base, autoRepo, autoID, core.EvPlanReviewPolicyApproved)
+	waitForIssueEvent(t, bin, base, autoRepo, autoID, core.EvExecutionStarted)
+	for _, decision := range pendingDecisions(t, bin, autoRepo, base) {
+		if decision.IssueID == autoID && decision.Stage == "plan" {
+			t.Fatalf("policy-approved plan remained pending: %+v", decision)
+		}
+	}
+
+	strictID := strings.TrimSpace(lastLine(run(t, bin, autoRepo, "new", "--data", base, "--preset", "strict", "--title", "strict plan review")))
+	spec = waitForDecisionStage(t, bin, autoRepo, base, "spec")
+	run(t, bin, autoRepo, "answer", "--data", base, strconv.FormatInt(spec.ID, 10), "0")
+	strictPlan := waitForDecisionStage(t, bin, autoRepo, base, "plan")
+	if strictPlan.ReviewPolicy == nil || !strictPlan.ReviewPolicy.HumanRequired || strictPlan.ReviewPolicy.PolicyAutoApproval ||
+		strictPlan.ReviewPolicy.Mode != "strict" {
+		t.Fatalf("strict plan review policy = %+v", strictPlan.ReviewPolicy)
+	}
+	if hasIssueEvent(t, base, autoRepo, strictID, core.EvPlanReviewPolicyApproved) || hasIssueEvent(t, base, autoRepo, strictID, core.EvExecutionStarted) {
+		t.Fatal("strict plan review was auto-approved")
+	}
+	run(t, bin, autoRepo, "answer", "--data", base, strconv.FormatInt(strictPlan.ID, 10), "0")
+	waitForIssueEvent(t, bin, base, autoRepo, strictID, core.EvExecutionStarted)
+
+	legacyRepo := t.TempDir()
+	run(t, bin, legacyRepo, "init", "--data", base)
+	legacyConfigPath := filepath.Join(legacyRepo, ".watchtower", "config.yaml")
+	legacyConfig, err := os.ReadFile(legacyConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyConfigured := strings.Replace(string(legacyConfig), "runner: codex", "runner: fake", 1)
+	legacyConfigured = strings.Replace(legacyConfigured, "pull: true", "pull: false", 1)
+	legacyConfigured = strings.Replace(legacyConfigured, "test_cmd: \"\"", "test_cmd: \"true\"", 1)
+	if err := os.WriteFile(legacyConfigPath, []byte(legacyConfigured), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacyDB := filepath.Join(repocfg.RepoDataDir(base, legacyRepo), "watchtower.db")
+	if err := os.MkdirAll(filepath.Dir(legacyDB), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", legacyDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE issues(
+  id TEXT PRIMARY KEY, title TEXT, body TEXT, state TEXT,
+  flow TEXT, levers TEXT, priority INTEGER, links TEXT)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	legacyID := strings.TrimSpace(lastLine(run(t, bin, legacyRepo, "new", "--data", base, "--title", "legacy database")))
+	spec = waitForDecisionStage(t, bin, legacyRepo, base, "spec")
+	run(t, bin, legacyRepo, "answer", "--data", base, strconv.FormatInt(spec.ID, 10), "0")
+	legacyPlan := waitForDecisionStage(t, bin, legacyRepo, base, "plan")
+	if legacyPlan.ReviewPolicy == nil || !legacyPlan.ReviewPolicy.HumanRequired || legacyPlan.ReviewPolicy.PolicyID != "manual-default" {
+		t.Fatalf("legacy plan review policy = %+v", legacyPlan.ReviewPolicy)
+	}
+	if hasIssueEvent(t, base, legacyRepo, legacyID, core.EvExecutionStarted) {
+		t.Fatal("legacy plan review bypassed the manual migration fallback")
+	}
+}
+
+func pendingDecisions(t *testing.T, bin, repo, base string) []engine.PendingDecision {
+	t.Helper()
+	var decisions []engine.PendingDecision
+	if err := json.Unmarshal([]byte(run(t, bin, repo, "decisions", "--data", base, "--json")), &decisions); err != nil {
+		t.Fatalf("decisions --json: %v", err)
+	}
+	return decisions
+}
+
+func waitForDecisionStage(t *testing.T, bin, repo, base, stage string) engine.PendingDecision {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, decision := range pendingDecisions(t, bin, repo, base) {
+			if decision.Stage == stage {
+				return decision
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("%s decision did not appear:\n%s", stage, run(t, bin, repo, "decisions", "--data", base, "--json"))
+	return engine.PendingDecision{}
+}
+
+func hasIssueEvent(t *testing.T, base, repo, issueID string, typ core.EventType) bool {
+	t.Helper()
+	st, err := store.Open(filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	events, err := st.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.IssueID == issueID && event.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForIssueEvent(t *testing.T, bin, base, repo, issueID string, typ core.EventType) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if hasIssueEvent(t, base, repo, issueID, typ) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("event %s did not appear for %s:\n%s", typ, issueID, run(t, bin, repo, "tail", "--data", base))
 }
 
 func eventStageName(t *testing.T, event core.Event) string {

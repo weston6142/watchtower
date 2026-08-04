@@ -136,15 +136,34 @@ Flow integration is capability-based, not tied to a stage name or stage count:
   customizable. Runtime behavior and E2E expectations derive from the flow's
   declared capabilities instead of the bundled default flow.
 
-The bundled default flow requires explicit artifact review for both the `spec`
-and `plan` stages. After each producer archives its declared artifacts,
-Watchtower pauses for an explicit `approve` or `revise` answer before handing
-off to the next stage. `watchtower init` does not overwrite an existing
-`.watchtower/flows/default.yaml`; to migrate an existing repository, edit only
-the `gate` fields for `spec` and `plan` to `approve_artifact`, validate and
-restart the flow, then retry the producing stage. A stage already running is
-not changed retroactively, and the migration deletes no prior artifacts,
-decisions, or checkpoints.
+The bundled default flow requires explicit artifact review for `spec` and an
+explicit plan-review authorization for `plan`. After each producer archives its
+declared artifacts, Watchtower pauses before handing off to the next stage.
+The default is manual plan review:
+
+```yaml
+plan_review:
+  policy_id: manual-default
+  policy_version: "1"
+  auto_approve_regular: false
+```
+
+Regular-mode policy auto-approval is an explicit opt-in. For example, a
+repository may set `policy_id: team-ci`, `policy_version: "2026-08-03"`, and
+`auto_approve_regular: true`; strict mode still requires a human regardless of
+that setting. Missing or malformed policy configuration falls back to manual
+human review and never authorizes automatically. Plan review history uses
+`plan_review_requested`, `plan_review_human_approved`,
+`plan_review_policy_approved`, `plan_review_rejected`, and
+`execution_started` to distinguish the request, approval provenance, and
+execution boundary. Changing this configuration affects new runs only; an
+in-flight run keeps its persisted policy snapshot.
+
+`watchtower init` does not overwrite an existing `.watchtower/flows/default.yaml`;
+to migrate an existing repository, leave the `spec` gate as `approve_artifact`
+and change only the `plan` gate to `plan_review`, then validate and restart the
+flow. A stage already running is not changed retroactively, and the migration
+deletes no prior artifacts, decisions, or checkpoints.
 
 Two state vocabularies exist and do not match — reading the wrong one is a
 live source of bugs:

@@ -118,6 +118,83 @@ func TestProjectionDecisionReviewTarget(t *testing.T) {
 	}
 }
 
+func TestPlanReviewProjectionTracksHumanAndPolicyOutcomes(t *testing.T) {
+	policy := review.ResolvedPolicy{
+		Mode: "regular", HumanRequired: true, PolicyID: "manual-default", PolicyVersion: "1", Reason: "manual_default",
+	}
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-35", map[string]any{"title": "review"}))
+	s.Apply(ev(t, core.EvPlanReviewRequested, "GH-35", map[string]any{
+		"decision_id": float64(11), "stage": "plan", "mode": policy.Mode,
+		"human_required": policy.HumanRequired, "policy_id": policy.PolicyID,
+		"policy_version": policy.PolicyVersion, "reason": policy.Reason,
+	}))
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-35", map[string]any{
+		"decision_id": float64(11), "stage": "plan", "question": "Approve?",
+		"options": []any{"approve", "reject"}, "recommended": float64(0),
+		"review_policy": policy,
+	}))
+	if got := s.Decisions[11].ReviewPolicy; got == nil || *got != policy || s.Decisions[11].ReviewStatus != "pending" {
+		t.Fatalf("projected review policy = %#v, want %#v", got, policy)
+	}
+	s.Apply(ev(t, core.EvPlanReviewHumanApproved, "GH-35", map[string]any{
+		"decision_id": float64(11), "stage": "plan", "mode": policy.Mode,
+		"human_required": true, "policy_id": policy.PolicyID, "policy_version": policy.PolicyVersion,
+		"reason": policy.Reason, "approval_kind": "human", "actor_id": "alice",
+	}))
+	if len(s.Decisions) != 0 || s.Issues["GH-35"].ReviewStatus != "approved" ||
+		s.Issues["GH-35"].Approval == nil || s.Issues["GH-35"].Approval.ActorID != "alice" {
+		t.Fatalf("human outcome = issue=%#v decisions=%#v", s.Issues["GH-35"], s.Decisions)
+	}
+
+	policy = review.ResolvedPolicy{
+		Mode: "regular", PolicyAutoApproval: true, PolicyID: "team-ci", PolicyVersion: "2026-08-03", Reason: "policy_opt_in",
+	}
+	s.Apply(ev(t, core.EvPlanReviewRequested, "GH-35", map[string]any{
+		"decision_id": float64(12), "stage": "plan", "mode": policy.Mode,
+		"human_required": false, "policy_auto_approval": true, "policy_id": policy.PolicyID,
+		"policy_version": policy.PolicyVersion, "reason": policy.Reason,
+	}))
+	s.Apply(ev(t, core.EvPlanReviewPolicyApproved, "GH-35", map[string]any{
+		"decision_id": float64(12), "stage": "plan", "mode": policy.Mode,
+		"human_required": false, "policy_auto_approval": true, "policy_id": policy.PolicyID,
+		"policy_version": policy.PolicyVersion, "reason": policy.Reason,
+		"approval_kind": "policy",
+	}))
+	iv := s.Issues["GH-35"]
+	if iv.ReviewPolicy.PolicyID != "team-ci" || iv.ReviewStatus != "approved_automatically" ||
+		iv.Approval == nil || iv.Approval.Kind != review.ApprovalPolicy || iv.Approval.PolicyID != "team-ci" ||
+		len(s.Decisions) != 0 {
+		t.Fatalf("policy outcome = issue=%#v decisions=%#v", iv, s.Decisions)
+	}
+	s.Apply(ev(t, core.EvExecutionStarted, "GH-35", map[string]any{"stage": "execute"}))
+	if iv.CurrentStage != "execute" || iv.State != "running" {
+		t.Fatalf("execution outcome = issue=%#v", iv)
+	}
+
+	policy = review.ResolvedPolicy{
+		Mode: "regular", HumanRequired: true, PolicyID: "manual-default", PolicyVersion: "1", Reason: "manual_default",
+	}
+	s.Apply(ev(t, core.EvPlanReviewRequested, "GH-35", map[string]any{
+		"decision_id": float64(13), "stage": "plan", "mode": policy.Mode,
+		"human_required": true, "policy_id": policy.PolicyID, "policy_version": policy.PolicyVersion,
+		"reason": policy.Reason,
+	}))
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-35", map[string]any{
+		"decision_id": float64(13), "stage": "plan", "question": "Approve?",
+		"options": []any{"approve", "reject"}, "recommended": float64(0), "review_policy": policy,
+	}))
+	s.Apply(ev(t, core.EvPlanReviewRejected, "GH-35", map[string]any{
+		"decision_id": float64(13), "stage": "plan", "mode": policy.Mode,
+		"human_required": true, "policy_id": policy.PolicyID, "policy_version": policy.PolicyVersion,
+		"reason": policy.Reason, "approval_kind": "human", "actor_id": "alice",
+	}))
+	s.Apply(ev(t, core.EvDecisionAnswered, "GH-35", map[string]any{"decision_id": float64(13)}))
+	if iv.ReviewStatus != "rejected" || iv.State != "review_rejected" || len(s.Decisions) != 0 {
+		t.Fatalf("rejection outcome = issue=%#v decisions=%#v", iv, s.Decisions)
+	}
+}
+
 func TestProjectionLegacyDecisionReviewIsNil(t *testing.T) {
 	s := NewState()
 	s.Apply(ev(t, core.EvDecisionRequired, "GH-26", map[string]any{

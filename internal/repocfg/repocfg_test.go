@@ -9,6 +9,59 @@ import (
 	"testing"
 )
 
+func TestLoadPlanReviewSettings(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".watchtower", "config.yaml"), []byte(`plan_review:
+  policy_id: team-ci
+  policy_version: "2026-08-03"
+  auto_approve_regular: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.PlanReviewSettings()
+	if !got.Valid || got.ID != "team-ci" || got.Version != "2026-08-03" || !got.AutoApproveRegular {
+		t.Fatalf("plan review settings = %+v", got)
+	}
+}
+
+func TestLoadPlanReviewDefaultsToManual(t *testing.T) {
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.PlanReviewSettings()
+	if !got.Valid || got.ID != "manual-default" || got.Version != "1" || got.AutoApproveRegular {
+		t.Fatalf("default plan review settings = %+v", got)
+	}
+}
+
+func TestLoadPlanReviewMalformedValueFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".watchtower", "config.yaml"), []byte(`plan_review:
+  auto_approve_regular: [true]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.PlanReviewSettings()
+	if got.Valid || got.AutoApproveRegular {
+		t.Fatalf("malformed plan review settings = %+v", got)
+	}
+}
+
 func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	root := t.TempDir()
 	cfg, err := Load(root)

@@ -8,12 +8,12 @@ stages:
   - name: spec
     agents: [{package: spec-writer}]
     workspace: worktree
-    gate: auto
+    gate: approve_artifact
     artifacts: [spec.md]
   - name: plan
     agents: [{package: planner}]
     workspace: worktree
-    gate: auto
+    gate: plan_review
     artifacts: [plan.md, touchset.json]
   - name: execute
     agents: [{package: executor}]

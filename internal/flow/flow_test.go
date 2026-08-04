@@ -28,6 +28,21 @@ func TestLoadRejectsBadGate(t *testing.T) {
 	}
 }
 
+func TestLoadPlanReviewGate(t *testing.T) {
+	f, err := loadBytes([]byte(`name: plan-review
+stages:
+  - name: plan
+    agents: [{package: planner}]
+    gate: plan_review
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Stages[0].Gate; got != GatePlanReview {
+		t.Fatalf("plan gate = %q, want %q", got, GatePlanReview)
+	}
+}
+
 func TestLoadAllowsFlowWithoutMergeBarrier(t *testing.T) {
 	f, err := loadBytes([]byte(`name: research
 stages:
@@ -162,7 +177,7 @@ func TestShippedDefaultFlowSatisfiesIntegrationContract(t *testing.T) {
 	}
 }
 
-func TestShippedDefaultFlowRequiresArtifactApprovalForSpecAndPlan(t *testing.T) {
+func TestShippedDefaultFlowRequiresArtifactAndPlanReview(t *testing.T) {
 	f, err := Load("../scaffold/defaults/flows/default.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -175,8 +190,8 @@ func TestShippedDefaultFlowRequiresArtifactApprovalForSpecAndPlan(t *testing.T) 
 	if got := byName["spec"]; got.Gate != GateApproveArtifact || len(got.Artifacts) != 1 || got.Artifacts[0] != "spec.md" {
 		t.Fatalf("spec stage = %+v, want approve_artifact with spec.md", got)
 	}
-	if got := byName["plan"]; got.Gate != GateApproveArtifact || len(got.Artifacts) != 2 || got.Artifacts[0] != "plan.md" || got.Artifacts[1] != "touchset.json" {
-		t.Fatalf("plan stage = %+v, want approve_artifact with plan.md and touchset.json", got)
+	if got := byName["plan"]; got.Gate != GatePlanReview || len(got.Artifacts) != 2 || got.Artifacts[0] != "plan.md" || got.Artifacts[1] != "touchset.json" {
+		t.Fatalf("plan stage = %+v, want plan_review with plan.md and touchset.json", got)
 	}
 
 	wantGates := map[string]Gate{

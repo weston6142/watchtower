@@ -22,6 +22,7 @@ import (
 	"github.com/weston6142/watchtower/internal/priority"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -49,6 +50,7 @@ type Model struct {
 	Width         int
 	Height        int
 	Err           string
+	Actor         string
 
 	client           *proto.Client
 	stages           []string
@@ -207,6 +209,7 @@ func NewModel(client *proto.Client, stages []string) Model {
 		Focus:          Focus{},
 		client:         client,
 		stages:         append([]string(nil), stages...),
+		Actor:          review.DefaultActorID,
 		dismissed:      map[int64]bool{},
 		evidenceOpened: map[int64]bool{},
 		retireAfter:    5 * time.Minute,
@@ -1336,8 +1339,9 @@ func (m Model) answerDecision(option int) tea.Cmd {
 	}
 	client := m.client
 	decisionID := m.Toast.ID
+	actor := review.NormalizeActor(m.Actor)
 	return func() tea.Msg {
-		r, err := client.Do(proto.Command{Op: "answer_decision", DecisionID: decisionID, Option: &option})
+		r, err := client.Do(proto.Command{Op: "answer_decision", DecisionID: decisionID, Option: &option, Actor: actor})
 		return answerMsg{decisionID: decisionID, response: r, err: err}
 	}
 }
@@ -1348,9 +1352,10 @@ func (m Model) answerDecisionText(text string) tea.Cmd {
 	}
 	client := m.client
 	decisionID := m.Toast.ID
+	actor := review.NormalizeActor(m.Actor)
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{
-			Op: "answer_decision", DecisionID: decisionID, Text: text})
+			Op: "answer_decision", DecisionID: decisionID, Text: text, Actor: actor})
 		return answerMsg{decisionID: decisionID, response: r, err: err}
 	}
 }

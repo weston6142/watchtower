@@ -31,6 +31,7 @@ import (
 	"github.com/weston6142/watchtower/internal/priority"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/slots"
@@ -207,6 +208,7 @@ func main() {
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
 		textAnswer := fs.String("text", "", "freeform decision response")
+		actor := fs.String("actor", review.DefaultActorID, "human actor identity")
 		fs.Parse(args)
 		rest := fs.Args()
 		// The documented form puts --text after the id. The standard flag
@@ -217,7 +219,7 @@ func main() {
 			rest = rest[:1]
 		}
 		if len(rest) < 1 || len(rest) > 2 || (len(rest) == 2 && *textAnswer != "") {
-			fmt.Fprintln(os.Stderr, "usage: watchtower answer <decision-id> <option> | watchtower answer <decision-id> --text <response>")
+			fmt.Fprintln(os.Stderr, "usage: watchtower answer <decision-id> <option> | watchtower answer <decision-id> --text <response> [--actor actor]")
 			os.Exit(2)
 		}
 		id, err := strconv.ParseInt(rest[0], 10, 64)
@@ -226,7 +228,7 @@ func main() {
 		}
 		c := mustDial(*data, *repoF)
 		defer c.Close()
-		answer := proto.Command{Op: "answer_decision", DecisionID: id, Text: *textAnswer}
+		answer := proto.Command{Op: "answer_decision", DecisionID: id, Text: *textAnswer, Actor: *actor}
 		if len(rest) == 2 {
 			opt, err := strconv.Atoi(rest[1])
 			if err != nil {
@@ -765,6 +767,7 @@ func runDaemon(args []string) {
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
+		PlanReview:         cfg.PlanReviewSettings(),
 		DecisionIdentities: decisionIdentities,
 		Marshal:            seq, Train: train,
 		Librarian: lib,
@@ -966,6 +969,15 @@ func formatDecision(d engine.PendingDecision) string {
 		for _, artifact := range target.Artifacts {
 			fmt.Fprintf(&out, "    %s: %s\n", artifact.Name, artifact.SHA256)
 		}
+	}
+	if policy := d.ReviewPolicy; policy != nil {
+		requirement := "human approval required"
+		if policy.PolicyAutoApproval {
+			requirement = "policy approval pending"
+		}
+		fmt.Fprintf(&out, "review policy: %s\n", requirement)
+		fmt.Fprintf(&out, "    mode: %s\n", policy.Mode)
+		fmt.Fprintf(&out, "    policy: %s@%s\n", policy.PolicyID, policy.PolicyVersion)
 	}
 	if d.D.Kind == levers.DecisionFreeform {
 		fmt.Fprintf(&out, "    recommended: %s\n", d.D.RecommendedResponse)

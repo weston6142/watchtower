@@ -37,4 +37,7 @@ they never imply logical task dependencies.
 Before finishing, self-review specification coverage, placeholders, type and
 interface consistency, ordering, behavior-focused tests, command accuracy,
 commit boundaries, and touchset completeness. Correct every issue you find.
-There is no plan approval loop; finish after the self-review passes.
+
+After writing and self-reviewing `plan.md` and `touchset.json`, stop; the
+`plan_review` stage gate owns plan authorization and creates the review
+request; do not emit a second `watchtower_decision` for plan approval.

@@ -10,6 +10,8 @@ import (
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/repocfg"
+	"gopkg.in/yaml.v3"
 )
 
 func TestInitCreatesTree(t *testing.T) {
@@ -46,6 +48,74 @@ func TestInitCreatesTree(t *testing.T) {
 	} {
 		if !strings.Contains(string(cfg), want) {
 			t.Errorf("generated config missing %q:\n%s", want, cfg)
+		}
+	}
+}
+
+func TestScaffoldShipsManualPlanReviewDefaults(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	generatedCfg, err := repocfg.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := generatedCfg.PlanReviewSettings(); !got.Valid || got.AutoApproveRegular ||
+		got.ID != "manual-default" || got.Version != "1" {
+		t.Fatalf("generated plan review settings = %+v", got)
+	}
+
+	shippedConfigBytes, err := os.ReadFile(filepath.Join("..", "..", "dist", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shippedCfg repocfg.Config
+	if err := yaml.Unmarshal(shippedConfigBytes, &shippedCfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := shippedCfg.PlanReviewSettings(); !got.Valid || got.AutoApproveRegular ||
+		got.ID != "manual-default" || got.Version != "1" {
+		t.Fatalf("shipped plan review settings = %+v", got)
+	}
+
+	generatedFlow, err := flow.Load(filepath.Join(root, ".watchtower", "flows", "default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shippedFlow, err := flow.Load(filepath.Join("..", "..", "dist", "flows", "default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageGate := func(f flow.Flow, name string) flow.Gate {
+		for _, stage := range f.Stages {
+			if stage.Name == name {
+				return stage.Gate
+			}
+		}
+		return ""
+	}
+	for label, f := range map[string]flow.Flow{"generated": generatedFlow, "shipped": shippedFlow} {
+		if got := stageGate(f, "plan"); got != flow.GatePlanReview {
+			t.Fatalf("%s plan gate = %q, want %q", label, got, flow.GatePlanReview)
+		}
+		if got := stageGate(f, "spec"); got != flow.GateApproveArtifact {
+			t.Fatalf("%s spec gate = %q, want %q", label, got, flow.GateApproveArtifact)
+		}
+	}
+
+	for label, path := range map[string]string{
+		"generated": filepath.Join(root, ".watchtower", "packages", "planner", "prompt.md"),
+		"shipped":   filepath.Join("..", "..", "dist", "packages", "planner", "prompt.md"),
+	} {
+		prompt, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(prompt)
+		if !strings.Contains(text, "stage gate owns plan authorization") ||
+			strings.Contains(text, "emit a freeform decision") {
+			t.Fatalf("%s planner prompt does not delegate plan authorization:\n%s", label, text)
 		}
 	}
 }
@@ -96,16 +166,15 @@ func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 	}
 	planner := packages["planner"].Prompt
 	for _, required := range []string{
-		"Approve plan.md as written.",
-		"ask again",
-		"Finish only when the implementation plan is approved.",
+		"stage gate owns plan authorization",
+		"do not emit a second `watchtower_decision` for plan approval.",
 	} {
 		if !strings.Contains(planner, required) {
 			t.Errorf("planner prompt missing %q", required)
 		}
 	}
-	if strings.Contains(planner, "There is no plan approval loop") {
-		t.Error("planner prompt disables plan approval")
+	if strings.Contains(planner, "emit a freeform decision") || strings.Contains(planner, "Approve plan.md as written.") {
+		t.Error("planner prompt still emits a duplicate plan approval decision")
 	}
 	artifactSet := map[string]bool{}
 	for _, stage := range defaultFlow.Stages {
@@ -136,8 +205,8 @@ func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 	if got := byName["spec"]; got.Gate != flow.GateApproveArtifact || len(got.Artifacts) != 1 || got.Artifacts[0] != "spec.md" {
 		t.Fatalf("generated spec stage = %+v, want approve_artifact with spec.md", got)
 	}
-	if got := byName["plan"]; got.Gate != flow.GateApproveArtifact || len(got.Artifacts) != 2 || got.Artifacts[0] != "plan.md" || got.Artifacts[1] != "touchset.json" {
-		t.Fatalf("generated plan stage = %+v, want approve_artifact with plan.md and touchset.json", got)
+	if got := byName["plan"]; got.Gate != flow.GatePlanReview || len(got.Artifacts) != 2 || got.Artifacts[0] != "plan.md" || got.Artifacts[1] != "touchset.json" {
+		t.Fatalf("generated plan stage = %+v, want plan_review with plan.md and touchset.json", got)
 	}
 
 	for _, removed := range []string{"reviewer", "doc-writer"} {

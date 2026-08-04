@@ -156,6 +156,12 @@ func TestApplyEventsBuildsStateAndToast(t *testing.T) {
 	}
 }
 
+func TestNewModelDefaultsDecisionActorToOperator(t *testing.T) {
+	if got := NewModel(nil, []string{"plan"}).Actor; got != "operator" {
+		t.Fatalf("decision actor = %q, want operator", got)
+	}
+}
+
 func TestApplyEventsAutomaticallyFocusesFirstEligibleLane(t *testing.T) {
 	m := NewModel(nil, []string{"spec", "execute"})
 	m = m.applyEvents([]core.Event{

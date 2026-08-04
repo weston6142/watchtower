@@ -27,16 +27,19 @@ type IssueView struct {
 	// drafted/updated events and read only by the edit modal's prefill:
 	// EvIssueCreated rebuilds the view wholesale, so a launched issue drops
 	// the list, which is fine because a launched issue is not editable.
-	Attachments []string
-	DependsOn   []string
-	Behind      string
-	Merged      bool
-	Unmerged    bool
-	Paused      bool
-	Killed      bool
-	Cleanup     []string
-	AreaWeights map[string]int
-	MergedAt    time.Time
+	Attachments  []string
+	DependsOn    []string
+	Behind       string
+	Merged       bool
+	Unmerged     bool
+	Paused       bool
+	Killed       bool
+	Cleanup      []string
+	AreaWeights  map[string]int
+	MergedAt     time.Time
+	ReviewPolicy review.ResolvedPolicy
+	ReviewStatus string
+	Approval     *review.ApprovalProvenance
 }
 
 type DecisionView struct {
@@ -55,6 +58,9 @@ type DecisionView struct {
 	Paths               []string
 	Context             *decision.DecisionContext
 	Review              *review.Target
+	ReviewPolicy        *review.ResolvedPolicy
+	ReviewStatus        string
+	Approval            *review.ApprovalProvenance
 }
 
 type Notice struct {
@@ -89,6 +95,10 @@ func (s *State) Apply(ev core.Event) {
 	str := func(k string) string { v, _ := p[k].(string); return v }
 	num := func(k string) float64 { v, _ := p[k].(float64); return v }
 	boolean := func(k string) bool { v, _ := p[k].(bool); return v }
+	policy := resolvedPolicyFromPayload(p, "review_policy")
+	if policy == nil {
+		policy = resolvedPolicyFromPayload(p, "")
+	}
 
 	iv := s.Issues[ev.IssueID]
 	switch ev.Type {
@@ -124,6 +134,14 @@ func (s *State) Apply(ev core.Event) {
 		s.Issues[ev.IssueID] = &IssueView{ID: ev.IssueID, Title: str("title"), Flow: str("flow"), State: "running", AreaWeights: map[string]int{}}
 		s.Order = append(s.Order, ev.IssueID)
 		removeString(&s.Backlog, ev.IssueID)
+	case core.EvPlanReviewRequested:
+		if iv != nil {
+			if policy != nil {
+				iv.ReviewPolicy = *policy
+			}
+			iv.ReviewStatus = "pending"
+			iv.State = "waiting_decision"
+		}
 	case core.EvStageStarted:
 		if iv != nil {
 			iv.CurrentStage = str("stage")
@@ -183,6 +201,11 @@ func (s *State) Apply(ev core.Event) {
 				}
 			}
 		}
+		decisionPolicy := resolvedPolicyFromPayload(p, "review_policy")
+		decisionReviewStatus := ""
+		if decisionPolicy != nil {
+			decisionReviewStatus = "pending"
+		}
 		id := int64(num("decision_id"))
 		s.Decisions[id] = DecisionView{ID: id, IssueID: ev.IssueID, Stage: str("stage"),
 			Kind: str("kind"), Question: str("question"), Options: opts,
@@ -190,13 +213,41 @@ func (s *State) Apply(ev core.Event) {
 			AllowFreeform: p["allow_freeform"] == true,
 			Why:           str("why"), Consequences: stringsFromPayload(p["consequences"]),
 			Reversible: str("reversible"), Paths: stringsFromPayload(p["paths"]), Context: context,
-			Review: reviewTarget}
+			Review: reviewTarget, ReviewPolicy: decisionPolicy, ReviewStatus: decisionReviewStatus}
 		if iv != nil {
 			iv.State = "waiting_decision"
+			if decisionPolicy != nil {
+				iv.ReviewPolicy = *decisionPolicy
+				iv.ReviewStatus = "pending"
+			}
+		}
+	case core.EvPlanReviewHumanApproved, core.EvPlanReviewPolicyApproved, core.EvPlanReviewRejected:
+		if iv != nil {
+			if policy != nil {
+				iv.ReviewPolicy = *policy
+			}
+			iv.Approval = approvalFromPayload(p, policy)
+			switch ev.Type {
+			case core.EvPlanReviewHumanApproved:
+				iv.ReviewStatus = "approved"
+				iv.State = "running"
+			case core.EvPlanReviewPolicyApproved:
+				iv.ReviewStatus = "approved_automatically"
+				iv.State = "running"
+			case core.EvPlanReviewRejected:
+				iv.ReviewStatus = "rejected"
+				iv.State = "review_rejected"
+			}
+		}
+		delete(s.Decisions, int64(num("decision_id")))
+	case core.EvExecutionStarted:
+		if iv != nil {
+			iv.CurrentStage = str("stage")
+			iv.State = "running"
 		}
 	case core.EvDecisionAnswered:
 		delete(s.Decisions, int64(num("decision_id")))
-		if iv != nil {
+		if iv != nil && iv.ReviewStatus != "rejected" {
 			iv.State = "running"
 		}
 	case core.EvArtifactProduced:
@@ -330,6 +381,67 @@ func (s *State) Apply(ev core.Event) {
 			s.ProposalCount--
 		}
 	}
+}
+
+func resolvedPolicyFromPayload(payload map[string]any, key string) *review.ResolvedPolicy {
+	var raw any
+	if key != "" {
+		raw = payload[key]
+	} else {
+		if _, hasPolicy := payload["policy_id"]; !hasPolicy {
+			if _, hasMode := payload["mode"]; !hasMode {
+				return nil
+			}
+		}
+		raw = payload
+	}
+	if raw == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var policy review.ResolvedPolicy
+	if err := json.Unmarshal(encoded, &policy); err != nil {
+		return nil
+	}
+	return &policy
+}
+
+func approvalFromPayload(payload map[string]any, policy *review.ResolvedPolicy) *review.ApprovalProvenance {
+	var approval review.ApprovalProvenance
+	if raw, ok := payload["approval"]; ok {
+		encoded, err := json.Marshal(raw)
+		if err == nil {
+			_ = json.Unmarshal(encoded, &approval)
+		}
+	}
+	if approval.Kind == "" {
+		kind, _ := payload["approval_kind"].(string)
+		approval.Kind = review.ApprovalKind(kind)
+	}
+	if approval.ActorID == "" {
+		approval.ActorID, _ = payload["actor_id"].(string)
+	}
+	if approval.PolicyID == "" {
+		approval.PolicyID, _ = payload["policy_id"].(string)
+	}
+	if approval.PolicyVersion == "" {
+		approval.PolicyVersion, _ = payload["policy_version"].(string)
+	}
+	if approval.Kind == "" {
+		return nil
+	}
+	if approval.Kind == review.ApprovalPolicy && policy != nil {
+		if approval.PolicyID == "" {
+			approval.PolicyID = policy.PolicyID
+		}
+		if approval.PolicyVersion == "" {
+			approval.PolicyVersion = policy.PolicyVersion
+		}
+	}
+	return &approval
 }
 
 func stringsFromPayload(raw any) []string {
