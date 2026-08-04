@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,32 +53,40 @@ type Model struct {
 	Err           string
 	Actor         string
 
-	client           Session
-	reconnectDialer  Dialer
-	stages           []string
-	lastSeq          int64
-	dismissed        map[int64]bool
-	toastSel         int
-	pager            pagerState
-	openArtifacts    bool
-	openEvidence     bool
-	evidenceDecision *projection.DecisionView
-	evidenceOpened   map[int64]bool
-	acceptStreak     int
-	modes            []string
-	proposals        []store.ProposalRow
-	doorSel          int
-	doorLines        []string
-	stream           streamState
-	events           []core.Event
-	archMode         string
-	archSel          int
-	archFilter       string
-	help             bool
-	rows             bool
-	warExpanded      bool
-	retireAfter      time.Duration
-	retired          map[string]bool
+	client                 Session
+	reconnectDialer        Dialer
+	connection             connectionState
+	generation             uint64
+	retryDelay             time.Duration
+	retryScheduler         retryScheduler
+	reconnectContext       context.Context
+	reconnectCancel        context.CancelFunc
+	reconnectAttemptActive bool
+	shuttingDown           bool
+	stages                 []string
+	lastSeq                int64
+	dismissed              map[int64]bool
+	toastSel               int
+	pager                  pagerState
+	openArtifacts          bool
+	openEvidence           bool
+	evidenceDecision       *projection.DecisionView
+	evidenceOpened         map[int64]bool
+	acceptStreak           int
+	modes                  []string
+	proposals              []store.ProposalRow
+	doorSel                int
+	doorLines              []string
+	stream                 streamState
+	events                 []core.Event
+	archMode               string
+	archSel                int
+	archFilter             string
+	help                   bool
+	rows                   bool
+	warExpanded            bool
+	retireAfter            time.Duration
+	retired                map[string]bool
 	// dayStart is local midnight of the current day, refreshed on every tick.
 	// Injected rather than read from the clock so render paths stay
 	// deterministic and the goldens stay byte-comparable.
@@ -103,7 +112,10 @@ type Msg struct{ Events []core.Event }
 
 type tickMsg struct{}
 
-type pollErrorMsg struct{ err error }
+type pollErrorMsg struct {
+	generation uint64
+	err        error
+}
 
 type overviewMsg struct {
 	overview *proto.Overview
@@ -264,6 +276,9 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
+		if m.connection == connectionReconnecting || m.shuttingDown {
+			return m, nil
+		}
 		m.ticks++
 		// One clock read feeds both statements: two independent reads could
 		// straddle midnight and evaluate staleness against the wrong day. The
@@ -293,8 +308,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.tick()
 	case pollErrorMsg:
-		m.Err = msg.err.Error()
+		if msg.generation != 0 && msg.generation != m.generation {
+			return m, nil
+		}
+		return m, m.beginReconnect(msg.err)
+	case reconnectTimerMsg:
+		if msg.generation != m.generation || m.connection != connectionReconnecting || m.shuttingDown {
+			return m, nil
+		}
+		return m, m.startReconnectAttempt(msg.generation)
+	case reconnectAttemptMsg:
+		if msg.generation != m.generation || m.connection != connectionReconnecting || m.shuttingDown {
+			if msg.session != nil {
+				_ = msg.session.Close()
+			}
+			return m, nil
+		}
+		if msg.err != nil || msg.session == nil {
+			if msg.session != nil {
+				_ = msg.session.Close()
+			}
+			return m, m.retryAfterReconnectFailure(msg.generation)
+		}
+		m.reconnectAttemptActive = false
+		m.client = msg.session
+		m.connection = connectionConnected
+		m.retryDelay = initialRetryDelay
 		return m, m.tick()
+	case reconnectCanceledMsg:
+		return m, nil
 	case overviewMsg:
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -1444,13 +1486,14 @@ func (m Model) tick() tea.Cmd {
 func (m Model) poll() tea.Cmd {
 	client := m.client
 	since := m.lastSeq
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "tail", SinceSeq: since})
 		if err != nil {
-			return pollErrorMsg{err: err}
+			return pollErrorMsg{generation: generation, err: err}
 		}
 		if !r.OK {
-			return pollErrorMsg{err: errors.New(r.Error)}
+			return pollErrorMsg{generation: generation, err: errors.New(r.Error)}
 		}
 		return Msg{Events: r.Events}
 	}
@@ -1795,8 +1838,15 @@ func (m Model) streamSubtitle() string {
 func (m Model) writeHeaderRows(b *strings.Builder, width int) {
 	b.WriteString(renderHeader(m.Overview, width))
 	b.WriteByte('\n')
-	b.WriteString(renderNoticeRow(m.State, m.Ids, width))
+	b.WriteString(m.noticeRow(width))
 	b.WriteByte('\n')
+}
+
+func (m Model) noticeRow(width int) string {
+	if m.connection == connectionReconnecting {
+		return truncate("reconnecting…", width)
+	}
+	return renderNoticeRow(m.State, m.Ids, width)
 }
 
 func pagerModeBindings(mode string) [][2]string {
@@ -1824,6 +1874,23 @@ func (m Model) pagerBodyHeight() int {
 
 func (m Model) View() string {
 	layoutWidth := m.layoutWidth()
+	if m.connection == connectionReconnecting {
+		bindings := [][2]string{{"?", "help"}, {"q", "quit"}}
+		footer := renderKeybar(layoutWidth, bindings, "")
+		footerRows := lipgloss.Height(footer)
+		bodyRows := 0
+		if m.Height > 0 {
+			bodyRows = max(0, m.Height-towerHeaderRows-footerRows)
+		}
+		lines := []string{renderHeader(m.Overview, layoutWidth), m.noticeRow(layoutWidth)}
+		lines = append(lines, padMainContentLines(renderReconnectPanel(layoutWidth, bodyRows), bodyRows)...)
+		lines = append(lines, strings.Split(footer, "\n")...)
+		screen := strings.Join(lines, "\n")
+		if m.help {
+			return m.composite(screen, renderHelpOverlay(layoutWidth), layoutWidth)
+		}
+		return screen
+	}
 	towerWidth, railWidth, stacked := mainColumnWidths(layoutWidth)
 	mainBindings := projectMainKeybindingFooter()
 	right := errText(m.Err)
@@ -1962,7 +2029,7 @@ func (m Model) View() string {
 		}
 		mainContent += separator + shelf
 	}
-	lines := []string{renderHeader(m.Overview, layoutWidth), renderNoticeRow(m.State, m.Ids, layoutWidth)}
+	lines := []string{renderHeader(m.Overview, layoutWidth), m.noticeRow(layoutWidth)}
 	lines = append(lines, padMainContentLines(mainContent, mainRows)...)
 	lines = append(lines, strings.Split(footer, "\n")...)
 	screen := strings.Join(lines, "\n")
