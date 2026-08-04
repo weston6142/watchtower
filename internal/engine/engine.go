@@ -456,6 +456,35 @@ func (e *Engine) Rehydrate() error {
 		if known {
 			continue
 		}
+		persistedAttempt, hasPersistedAttempt, err := e.latestRunnerAttempt(row.ID)
+		if err != nil {
+			return err
+		}
+		if hasPersistedAttempt && persistedAttempt.State == runner.AttemptSucceeded {
+			stage := persistedAttempt.Stage
+			stageIdx := 0
+			if f, ok := e.cfg.Flows[row.Flow]; ok {
+				for index, configured := range f.Stages {
+					if configured.Name == stage {
+						stageIdx = index
+						break
+					}
+				}
+			}
+			is := &issueState{
+				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+				stageIdx: stageIdx, terminal: true, planReview: row.PlanReviewPolicy,
+			}
+			e.restoreInterruptedWorkspace(is)
+			e.mu.Lock()
+			e.issues[row.ID] = is
+			e.mu.Unlock()
+			e.emit(core.EvStageCompleted, row.ID, map[string]any{
+				"stage": stage, "attempt_kind": string(persistedAttempt.Kind), "recovered": true})
+			continue
+		}
+
 		// Best-effort: on error or missing events the zero values fall back
 		// to the flow's first stage below.
 		stage, attempt, of, _, _ := e.cfg.Store.LastStageEvents(row.ID)
@@ -486,18 +515,57 @@ func (e *Engine) Rehydrate() error {
 			matrix: matrix, priority: row.Priority, stageIdx: stageIdx, terminal: true,
 			planReview: row.PlanReviewPolicy,
 		}
+		restartError := "daemon restarted — press R to retry"
+		if hasPersistedAttempt {
+			stage = persistedAttempt.Stage
+			if persistedAttempt.State == runner.AttemptRunning || persistedAttempt.State == runner.AttemptReserved {
+				interrupted := persistedAttempt
+				interrupted.State = runner.AttemptTerminal
+				interrupted.FailureClass = runner.FailureCancellation
+				if err := e.RecordAttempt(context.Background(), interrupted); err != nil {
+					return err
+				}
+				restartError = fmt.Sprintf("daemon restarted during %s %s attempt — press R to retry", persistedAttempt.Stage, persistedAttempt.Kind)
+			} else if persistedAttempt.State == runner.AttemptTerminal {
+				restartError = fmt.Sprintf("daemon restarted after %s %s attempt reached terminal failure — press R to retry", persistedAttempt.Stage, persistedAttempt.Kind)
+			}
+		}
 		e.restoreInterruptedWorkspace(is)
 		e.mu.Lock()
 		e.issues[row.ID] = is
 		e.mu.Unlock()
 		e.emit(core.EvStageFailed, row.ID, map[string]any{
 			"stage": stage, "attempt": attempt, "of": of,
-			"error": "daemon restarted — press R to retry", "final": true})
+			"error": restartError, "final": true})
 	}
 	for _, row := range authorizedReviews {
 		e.scheduleArtifactContinuation(row.ID, row.IssueID, row.Stage, *row.Review, row.Response, true)
 	}
 	return nil
+}
+
+func (e *Engine) latestRunnerAttempt(issueID string) (runner.Attempt, bool, error) {
+	runs, err := e.cfg.Store.StageRuns(issueID)
+	if err != nil {
+		return runner.Attempt{}, false, err
+	}
+	for index := len(runs) - 1; index >= 0; index-- {
+		attempts, err := e.cfg.Store.LoadOperation(context.Background(), strconv.FormatInt(runs[index].ID, 10))
+		if err != nil {
+			return runner.Attempt{}, false, err
+		}
+		if len(attempts) == 0 {
+			continue
+		}
+		latest := attempts[0]
+		for _, attempt := range attempts[1:] {
+			if attempt.Kind == runner.AttemptFallback {
+				latest = attempt
+			}
+		}
+		return latest, true, nil
+	}
+	return runner.Attempt{}, false, nil
 }
 
 func matrixFromStrings(values map[string]string) levers.Matrix {

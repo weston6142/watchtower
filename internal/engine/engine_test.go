@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -3606,6 +3607,125 @@ func TestRehydrateAfterDaemonRestart(t *testing.T) {
 	default:
 		t.Fatal("retried decision did not expose context")
 	}
+}
+
+func TestRehydrateRunnerAttempts(t *testing.T) {
+	f := flow.Flow{Name: "restart-attempts", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
+		Workspace: "none", Completion: flow.CompletionAll, Gate: flow.GateAuto,
+	}}}
+	cases := []struct {
+		name              string
+		states            []runner.AttemptState
+		wantFinalFailure  bool
+		wantTerminalState runner.AttemptState
+	}{
+		{name: "primary failed before fallback", states: []runner.AttemptState{runner.AttemptFailed}, wantFinalFailure: true},
+		{name: "fallback interrupted", states: []runner.AttemptState{runner.AttemptFailed, runner.AttemptReserved, runner.AttemptRunning}, wantFinalFailure: true, wantTerminalState: runner.AttemptTerminal},
+		{name: "fallback already succeeded", states: []runner.AttemptState{runner.AttemptFailed, runner.AttemptReserved, runner.AttemptRunning, runner.AttemptSucceeded}, wantFinalFailure: false, wantTerminalState: runner.AttemptSucceeded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := store.Open(filepath.Join(t.TempDir(), "gh.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { s.Close() })
+			starts := 0
+			restartedRunner := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/executor": {SessionID: "retry-session"}}}
+			restartedRunner.OnStart = func(_, _, _, _ string) error {
+				starts++
+				return nil
+			}
+			first := newEngineOnFileWithFlow(t, s, restartedRunner, t.TempDir(), f)
+			id, err := first.DraftIssue("restart attempt", "", f.Name, "regular", levers.Preset(f, flow.LeverYolo), 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := issueRowByID(t, mustIssues(t, s), id)
+			row.State = "running"
+			if err := s.UpsertIssue(row); err != nil {
+				t.Fatal(err)
+			}
+			runID, err := s.InsertStageRun(store.StageRun{IssueID: id, Stage: "execute", Agent: "executor", Status: "running"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for index, state := range tc.states {
+				kind := runner.AttemptPrimary
+				if index > 0 {
+					kind = runner.AttemptFallback
+				}
+				if err := s.RecordAttempt(context.Background(), runner.Attempt{
+					OperationID: strconv.FormatInt(runID, 10), IssueID: id, Stage: "execute", AgentPackage: "executor",
+					Kind: kind, State: state, FailureClass: runner.FailureExecution,
+					RedactedArgv: []string{"exec", "features.unified_exec=false", "[redacted-prompt]"},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			restarted := newEngineOnFileWithFlow(t, s, restartedRunner, t.TempDir(), f)
+			if err := restarted.Rehydrate(); err != nil {
+				t.Fatal(err)
+			}
+			if starts != 0 {
+				t.Fatalf("rehydrate launched runner %d times", starts)
+			}
+			attempts, err := s.LoadOperation(context.Background(), strconv.FormatInt(runID, 10))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantAttempts := 1
+			if len(tc.states) > 1 {
+				wantAttempts = 2
+			}
+			if len(attempts) != wantAttempts {
+				t.Fatalf("attempt history = %+v, want %d attempt records", attempts, wantAttempts)
+			}
+			if tc.wantTerminalState != "" && attempts[len(attempts)-1].State != tc.wantTerminalState {
+				t.Fatalf("latest attempt = %+v, want %s", attempts[len(attempts)-1], tc.wantTerminalState)
+			}
+			if attempts[len(attempts)-1].RedactedArgv[2] != "[redacted-prompt]" {
+				t.Fatalf("redacted attempt = %+v", attempts[len(attempts)-1])
+			}
+			events, err := s.EventsSince(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			finalFailures := 0
+			for _, event := range events {
+				if event.IssueID == id && event.Type == core.EvStageFailed {
+					finalFailures++
+				}
+			}
+			if (finalFailures > 0) != tc.wantFinalFailure {
+				t.Fatalf("stage failure count = %d, want failure=%t", finalFailures, tc.wantFinalFailure)
+			}
+
+			if tc.name == "primary failed before fallback" {
+				if err := restarted.RetryStage(context.Background(), id); err != nil {
+					t.Fatal(err)
+				}
+				runs, err := s.StageRuns(id)
+				if err != nil || len(runs) != 2 || strconv.FormatInt(runs[0].ID, 10) == strconv.FormatInt(runs[1].ID, 10) {
+					t.Fatalf("explicit retry stage runs = %+v, err = %v", runs, err)
+				}
+				if starts != 1 {
+					t.Fatalf("explicit retry launched runner %d times", starts)
+				}
+			}
+		})
+	}
+}
+
+func mustIssues(t *testing.T, s *store.Store) []store.IssueRow {
+	t.Helper()
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
 }
 
 func TestDecisionWireEnvelopeFailsBeforePresentation(t *testing.T) {
