@@ -58,6 +58,11 @@ func mustDial(base, repoFlag string) *proto.Client {
 	return client
 }
 
+func dialExistingDaemon(base, repo string) (*proto.Client, error) {
+	dataDir := repocfg.RepoDataDir(base, repo)
+	return proto.Dial(filepath.Join(dataDir, sockFileName))
+}
+
 func connectOrStartDaemon(base, repo string) (*proto.Client, bool, error) {
 	dataDir := repocfg.RepoDataDir(base, repo)
 	sock := filepath.Join(dataDir, sockFileName)

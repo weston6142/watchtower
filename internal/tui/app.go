@@ -52,7 +52,8 @@ type Model struct {
 	Err           string
 	Actor         string
 
-	client           *proto.Client
+	client           Session
+	reconnectDialer  Dialer
 	stages           []string
 	lastSeq          int64
 	dismissed        map[int64]bool
@@ -197,7 +198,7 @@ func backlogEntries(s *projection.State) []*projection.IssueView {
 	return entries
 }
 
-func NewModel(client *proto.Client, stages []string) Model {
+func NewModel(client Session, stages []string) Model {
 	flowStages := make([]flow.Stage, len(stages))
 	for i, name := range stages {
 		flowStages[i] = flow.Stage{Name: name}
@@ -216,6 +217,8 @@ func NewModel(client *proto.Client, stages []string) Model {
 		retired:        map[string]bool{},
 	}
 }
+
+func (m *Model) SetReconnectDialer(dialer Dialer) { m.reconnectDialer = dialer }
 
 func (m *Model) SetStageAliases(aliases map[string]string) { m.aliases = aliases }
 

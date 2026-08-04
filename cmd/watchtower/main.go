@@ -120,6 +120,9 @@ func main() {
 		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "get_flow", Flow: "default"})
 		model := tui.NewModel(c, r.FlowStages)
+		model.SetReconnectDialer(func() (tui.Session, error) {
+			return dialExistingDaemon(*data, repoRoot)
+		})
 		reporter := herdr.NewFromEnv()
 		model.SetHerdrReporter(reporter)
 		model.SetPaneSpawner(reporter)
