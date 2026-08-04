@@ -94,3 +94,14 @@ func TestFormatDecisionShowsPlanReviewPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatDecisionDoesNotPresentPendingPolicyAsApproved(t *testing.T) {
+	got := formatDecision(engine.PendingDecision{
+		ID: 36, IssueID: "GH-35", Stage: "plan",
+		D:            levers.Decision{Question: "Approve plan?", Options: []string{"approve", "reject"}},
+		ReviewPolicy: &review.ResolvedPolicy{Mode: "regular", PolicyAutoApproval: true, PolicyID: "team-ci", PolicyVersion: "2026-08-03", Reason: "policy_opt_in"},
+	})
+	if !strings.Contains(got, "review policy: policy approval pending") || strings.Contains(got, "approved automatically by policy") {
+		t.Fatalf("pending policy review = %q", got)
+	}
+}

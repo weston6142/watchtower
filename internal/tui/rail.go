@@ -91,8 +91,10 @@ func decisionPolicyLines(policy *review.ResolvedPolicy, approval *review.Approva
 	}
 	width = max(1, width)
 	requirement := "human approval required"
-	if policy.PolicyAutoApproval {
+	if policy.PolicyAutoApproval && approval != nil && approval.Kind == review.ApprovalPolicy {
 		requirement = "approved automatically by policy"
+	} else if policy.PolicyAutoApproval {
+		requirement = "policy approval pending"
 	}
 	lines := []string{"review policy: " + requirement}
 	lines = append(lines, wrapIndent("mode: "+policy.Mode, width, "")...)

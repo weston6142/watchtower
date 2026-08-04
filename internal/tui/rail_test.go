@@ -210,6 +210,18 @@ func TestRenderPlanReviewPolicyInToastAndEditor(t *testing.T) {
 	}
 }
 
+func TestRenderPendingPolicyReviewIsNotShownAsApproved(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	d := projection.DecisionView{
+		ID: 36, Stage: "plan", Question: "Approve plan?", Options: []string{"approve", "reject"},
+		ReviewPolicy: &review.ResolvedPolicy{Mode: "regular", PolicyAutoApproval: true, PolicyID: "team-ci", PolicyVersion: "2026-08-03", Reason: "policy_opt_in"},
+	}
+	out := ansi.Strip(renderToast(d, Identity{Tag: "GH"}, 0, 0, 60))
+	if !strings.Contains(out, "policy approval pending") || strings.Contains(out, "approved automatically by policy") {
+		t.Fatalf("pending policy review = %q", out)
+	}
+}
+
 func TestRenderToastShowsSelectionCursor(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	d := projection.DecisionView{ID: 4, IssueID: "GH-1", Stage: "spec",

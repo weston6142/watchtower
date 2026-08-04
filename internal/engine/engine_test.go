@@ -344,6 +344,34 @@ func TestPlanReviewAuthorizationMatrix(t *testing.T) {
 	})
 }
 
+func TestInvalidPlanReviewPolicyFailsClosedToHumanReview(t *testing.T) {
+	f := planReviewFlow()
+	e, _ := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = review.PolicySettings{
+			AutoApproveRegular: true, Valid: true,
+		}
+	})
+	id, err := e.CreateIssue("invalid policy", "", f.Name, levers.Matrix{
+		"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+	}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e, "plan")
+	if pending.ReviewPolicy == nil || !pending.ReviewPolicy.HumanRequired || pending.ReviewPolicy.PolicyAutoApproval {
+		t.Fatalf("invalid policy review = %+v", pending.ReviewPolicy)
+	}
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPlanReviewRejectsDuplicateResponse(t *testing.T) {
 	f := planReviewFlow()
 	e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {

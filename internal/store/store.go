@@ -657,7 +657,7 @@ func validateApprovalProvenance(approval *review.ApprovalProvenance) error {
 }
 
 func validResolvedPolicy(policy review.ResolvedPolicy) bool {
-	if policy.PolicyID == "" || policy.PolicyVersion == "" || policy.Reason == "" {
+	if strings.TrimSpace(policy.PolicyID) == "" || strings.TrimSpace(policy.PolicyVersion) == "" || strings.TrimSpace(policy.Reason) == "" {
 		return false
 	}
 	switch policy.Mode {

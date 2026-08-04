@@ -972,7 +972,7 @@ func formatDecision(d engine.PendingDecision) string {
 	if policy := d.ReviewPolicy; policy != nil {
 		requirement := "human approval required"
 		if policy.PolicyAutoApproval {
-			requirement = "approved automatically by policy"
+			requirement = "policy approval pending"
 		}
 		fmt.Fprintf(&out, "review policy: %s\n", requirement)
 		fmt.Fprintf(&out, "    mode: %s\n", policy.Mode)

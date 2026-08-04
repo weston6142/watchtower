@@ -1,6 +1,10 @@
 package review
 
-import "github.com/weston6142/watchtower/internal/flow"
+import (
+	"strings"
+
+	"github.com/weston6142/watchtower/internal/flow"
+)
 
 // PolicySettings is the persisted repository policy used when a run is
 // created. Invalid settings are retained so resolution can fail closed.
@@ -40,8 +44,14 @@ func ResolvePlanReviewPolicy(mode flow.Lever, settings PolicySettings) ResolvedP
 	policy := ResolvedPolicy{
 		Mode:          string(mode),
 		HumanRequired: true,
-		PolicyID:      settings.ID,
-		PolicyVersion: settings.Version,
+		PolicyID:      strings.TrimSpace(settings.ID),
+		PolicyVersion: strings.TrimSpace(settings.Version),
+	}
+	if policy.PolicyID == "" {
+		policy.PolicyID = "manual-default"
+	}
+	if policy.PolicyVersion == "" {
+		policy.PolicyVersion = "1"
 	}
 	if mode == flow.LeverStrict {
 		policy.Reason = "strict_mode"
