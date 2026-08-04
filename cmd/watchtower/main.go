@@ -117,9 +117,11 @@ func main() {
 		fs.Parse(args)
 		repoRoot := resolveRepo(*repo)
 		c := mustDial(*data, *repo)
-		defer c.Close()
 		r := mustDo(c, proto.Command{Op: "get_flow", Flow: "default"})
 		model := tui.NewModel(c, r.FlowStages)
+		model.SetReconnectDialer(func() (tui.Session, error) {
+			return dialExistingDaemon(*data, repoRoot)
+		})
 		reporter := herdr.NewFromEnv()
 		model.SetHerdrReporter(reporter)
 		model.SetPaneSpawner(reporter)
@@ -130,7 +132,12 @@ func main() {
 		if cfg, err := repocfg.Load(repoRoot); err == nil {
 			tui.SetTheme(cfg.Theme) // empty or unknown falls back to tokyo-night
 		}
-		_, runErr := tea.NewProgram(model, tea.WithAltScreen()).Run()
+		finalModel, runErr := tea.NewProgram(model, tea.WithAltScreen()).Run()
+		if final, ok := finalModel.(tui.Model); ok {
+			_ = final.Close()
+		} else {
+			_ = model.Close()
+		}
 		reporter.Idle()
 		if runErr != nil {
 			fatal(runErr)

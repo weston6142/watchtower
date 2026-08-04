@@ -82,6 +82,15 @@ func renderNoticeRow(st *projection.State, ids map[string]Identity, width int) s
 	return truncate(text, width)
 }
 
+func renderReconnectPanel(width, height int) string {
+	panel := styleStatusWarn().Render(reconnectingLabel)
+	if height <= 0 {
+		return panel
+	}
+	return lipgloss.NewStyle().Width(max(1, width)).Height(height).
+		Align(lipgloss.Center, lipgloss.Center).Render(panel)
+}
+
 // parkedHint names the first parked lane and the key that continues it. A lane
 // waiting on a human with nothing on screen saying so reads as a hung tower.
 // Killed lanes are left out: R is their verb, and the kill copy already says so.

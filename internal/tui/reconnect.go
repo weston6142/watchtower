@@ -1,0 +1,363 @@
+package tui
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/projection"
+	"github.com/weston6142/watchtower/internal/proto"
+)
+
+// Session is one serialized connection to the repository daemon.
+type Session interface {
+	Do(proto.Command) (proto.Response, error)
+	Close() error
+}
+
+// Dialer creates a replacement session without owning daemon startup.
+type Dialer func() (Session, error)
+
+type connectionState uint8
+
+const (
+	connectionConnected connectionState = iota
+	connectionReconnecting
+)
+
+const (
+	initialRetryDelay = 250 * time.Millisecond
+	maxRetryDelay     = 4 * time.Second
+	reconnectingLabel = "reconnecting…"
+)
+
+type retryScheduler func(context.Context, uint64, time.Duration) tea.Cmd
+
+type reconnectTimerMsg struct{ generation uint64 }
+
+type reconnectAttemptMsg struct {
+	generation uint64
+	session    Session
+	state      *projection.State
+	events     []core.Event
+	lastSeq    int64
+	overview   *proto.Overview
+	detail     *proto.IssueDetail
+	err        error
+	retryable  bool
+}
+
+type reconnectCanceledMsg struct{ generation uint64 }
+
+type reconnectRuntime struct {
+	mu     sync.Mutex
+	active Session
+	closed bool
+}
+
+func (r *reconnectRuntime) beginEpisode() {
+	r.mu.Lock()
+	r.closed = false
+	r.active = nil
+	r.mu.Unlock()
+}
+
+func (r *reconnectRuntime) install(session Session) bool {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		_ = session.Close()
+		return false
+	}
+	r.active = session
+	r.mu.Unlock()
+	return true
+}
+
+func (r *reconnectRuntime) detach() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active == nil {
+		return false
+	}
+	r.active = nil
+	return true
+}
+
+func (r *reconnectRuntime) shutdown() Session {
+	r.mu.Lock()
+	r.closed = true
+	session := r.active
+	r.active = nil
+	r.mu.Unlock()
+	return session
+}
+
+func defaultRetryScheduler(ctx context.Context, generation uint64, delay time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return reconnectTimerMsg{generation: generation}
+		case <-ctx.Done():
+			return reconnectCanceledMsg{generation: generation}
+		}
+	}
+}
+
+func (m *Model) scheduleReconnect(ctx context.Context, generation uint64, delay time.Duration) tea.Cmd {
+	if m.shuttingDown {
+		return nil
+	}
+	if m.retryScheduler != nil {
+		return m.retryScheduler(ctx, generation, delay)
+	}
+	return defaultRetryScheduler(ctx, generation, delay)
+}
+
+func (m *Model) ensureReconnectRuntime() *reconnectRuntime {
+	if m.runtime == nil {
+		m.runtime = &reconnectRuntime{}
+	}
+	return m.runtime
+}
+
+func (m *Model) Close() error {
+	if m.shuttingDown {
+		return nil
+	}
+	m.shuttingDown = true
+	m.generation++
+	if m.reconnectCancel != nil {
+		m.reconnectCancel()
+		m.reconnectCancel = nil
+	}
+	var firstErr error
+	if session := m.ensureReconnectRuntime().shutdown(); session != nil {
+		firstErr = session.Close()
+	}
+	if m.client != nil {
+		if err := m.client.Close(); firstErr == nil {
+			firstErr = err
+		}
+		m.client = nil
+	}
+	return firstErr
+}
+
+func (m *Model) beginReconnect(_ error) tea.Cmd {
+	if m.connection == connectionReconnecting || m.shuttingDown {
+		return nil
+	}
+	m.connection = connectionReconnecting
+	m.generation++
+	m.Err = ""
+	m.ensureReconnectRuntime().beginEpisode()
+	m.reconnectFocus = m.Focus
+	m.reconnectModes = append([]string(nil), m.modes...)
+	if m.client != nil {
+		_ = m.client.Close()
+		m.client = nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.reconnectContext, m.reconnectCancel = ctx, cancel
+	m.retryDelay = initialRetryDelay
+	return m.scheduleReconnect(ctx, m.generation, m.retryDelay)
+}
+
+func (m Model) staleGeneration(generation uint64) bool {
+	return generation != m.generation
+}
+
+// handleSessionMessage centralizes the lifecycle checks shared by responses
+// from the active daemon session. A true handled result means the caller must
+// return the command because the message was stale or started reconnecting.
+func (m *Model) handleSessionMessage(generation uint64, transport bool, err error) (tea.Cmd, bool) {
+	if m.staleGeneration(generation) {
+		return nil, true
+	}
+	if transport {
+		return m.beginReconnect(err), true
+	}
+	return nil, false
+}
+
+func (m *Model) startReconnectAttempt(generation uint64) tea.Cmd {
+	if m.shuttingDown || m.connection != connectionReconnecting || generation != m.generation || m.reconnectAttemptActive {
+		return nil
+	}
+	m.reconnectAttemptActive = true
+	dialer := m.reconnectDialer
+	savedFocus := m.reconnectFocus
+	stages := append([]string(nil), m.stages...)
+	retired := cloneRetired(m.retired)
+	return func() tea.Msg {
+		if dialer == nil {
+			return reconnectAttemptMsg{generation: generation, err: errors.New("reconnect dialer is not configured"), retryable: true}
+		}
+		session, err := dialer()
+		if err != nil {
+			return reconnectAttemptMsg{generation: generation, err: err, retryable: true}
+		}
+		if session == nil {
+			return reconnectAttemptMsg{generation: generation, err: errors.New("reconnect dialer returned no session"), retryable: true}
+		}
+		runtime := m.runtime
+		if runtime != nil && !runtime.install(session) {
+			return reconnectAttemptMsg{generation: generation, err: context.Canceled, retryable: true}
+		}
+		fail := func(err error, retryable bool) tea.Msg {
+			if runtime == nil || runtime.detach() {
+				_ = session.Close()
+			}
+			return reconnectAttemptMsg{generation: generation, err: err, retryable: retryable}
+		}
+		tail, err := session.Do(proto.Command{Op: "tail", SinceSeq: 0})
+		if err != nil {
+			return fail(err, true)
+		}
+		if !tail.OK {
+			return fail(errors.New(tail.Error), false)
+		}
+		state, lastSeq := buildRecoveryState(tail.Events)
+		overview, err := session.Do(proto.Command{Op: "overview"})
+		if err != nil {
+			return fail(err, true)
+		}
+		if !overview.OK {
+			return fail(errors.New(overview.Error), false)
+		}
+		var detail *proto.IssueDetail
+		if savedFocus.Issue != "" && focusIssue(state, stages, savedFocus.Issue, retired).Issue != "" {
+			response, err := session.Do(proto.Command{Op: "issue_detail", IssueID: savedFocus.Issue})
+			if err != nil {
+				return fail(err, true)
+			}
+			if !response.OK {
+				return fail(errors.New(response.Error), false)
+			}
+			detail = response.Detail
+		}
+		return reconnectAttemptMsg{
+			generation: generation,
+			session:    session,
+			state:      state,
+			events:     tail.Events,
+			lastSeq:    lastSeq,
+			overview:   overview.Overview,
+			detail:     detail,
+		}
+	}
+}
+
+func cloneRetired(retired map[string]bool) map[string]bool {
+	if retired == nil {
+		return nil
+	}
+	copyRetired := make(map[string]bool, len(retired))
+	for issueID, value := range retired {
+		copyRetired[issueID] = value
+	}
+	return copyRetired
+}
+
+func buildRecoveryState(events []core.Event) (*projection.State, int64) {
+	state := projection.NewState()
+	var lastSeq int64
+	for _, event := range events {
+		state.Apply(event)
+		if event.Seq > lastSeq {
+			lastSeq = event.Seq
+		}
+	}
+	return state, lastSeq
+}
+
+func (m *Model) retryAfterReconnectFailure(generation uint64) tea.Cmd {
+	if m.shuttingDown || m.connection != connectionReconnecting || generation != m.generation {
+		return nil
+	}
+	m.reconnectAttemptActive = false
+	m.retryDelay = capRetryDelay(m.retryDelay*2, maxRetryDelay)
+	return m.scheduleReconnect(m.reconnectContext, generation, m.retryDelay)
+}
+
+func (m *Model) applyReconnectAttempt(msg reconnectAttemptMsg) tea.Cmd {
+	if m.staleGeneration(msg.generation) || m.connection != connectionReconnecting || m.shuttingDown {
+		if msg.session != nil {
+			_ = msg.session.Close()
+		}
+		return nil
+	}
+	if msg.err != nil || msg.session == nil || msg.state == nil {
+		if msg.session != nil {
+			_ = msg.session.Close()
+		}
+		if msg.err != nil && !msg.retryable {
+			m.reconnectAttemptActive = false
+			m.Err = msg.err.Error()
+			return nil
+		}
+		return m.retryAfterReconnectFailure(msg.generation)
+	}
+	savedFocus := m.reconnectFocus
+	savedModes := append([]string(nil), m.reconnectModes...)
+	m.client = msg.session
+	if m.runtime != nil {
+		m.runtime.detach()
+	}
+	m.State = msg.state
+	m.events = append([]core.Event(nil), msg.events...)
+	m.lastSeq = msg.lastSeq
+	m.Overview = msg.overview
+	m.Detail = msg.detail
+	m.Focus = savedFocus
+	m.modes = savedModes
+	m.Err = ""
+	m.focusPinnedEmpty = false
+	*m = m.applyEvents(nil)
+	if savedFocus.Issue != "" && focusIssue(m.State, m.stages, savedFocus.Issue, m.retired).Issue != "" {
+		m.Focus = normalizeFocus(savedFocus, m.State, m.stages, m.retired)
+	} else if savedFocus.Issue != "" {
+		m.Focus = Focus{}
+		m.Detail = nil
+		m.modes = nil
+		m.doorLines = nil
+		m.openArtifacts = false
+		m.openEvidence = false
+		m.Evidence = nil
+		m.EvidenceTitle = ""
+		m.evidenceDecision = nil
+		m.leverEditor = nil
+		m.wantLeverEditor = false
+		m.focusPinnedEmpty = true
+	}
+	m.connection = connectionConnected
+	m.reconnectAttemptActive = false
+	m.retryDelay = initialRetryDelay
+	if m.reconnectCancel != nil {
+		m.reconnectCancel()
+		m.reconnectCancel = nil
+	}
+	return m.tick()
+}
+
+func capRetryDelay(delay, maxDelay time.Duration) time.Duration {
+	if delay > maxDelay {
+		return maxDelay
+	}
+	return delay
+}
+
+func isNavigationKey(key string) bool {
+	if key == "j" || key == "k" || key == "h" || key == "l" || key == "g" || key == "tab" ||
+		key == "up" || key == "down" || key == "left" || key == "right" {
+		return true
+	}
+	return len(key) == 1 && key >= "1" && key <= "9"
+}
