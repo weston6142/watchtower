@@ -13,6 +13,41 @@ import (
 	"github.com/weston6142/watchtower/internal/marshal"
 )
 
+type scriptedGate struct {
+	Started   int
+	denyAfter int
+}
+
+func (g *scriptedGate) Admit(_ context.Context, _ ToolCall) (ToolDecision, error) {
+	if g.denyAfter > 0 && g.Started >= g.denyAfter {
+		return ToolDecision{}, nil
+	}
+	g.Started++
+	return ToolDecision{Allowed: true, LeaseID: "lease"}, nil
+}
+
+func (g *scriptedGate) Complete(_ context.Context, _ ToolDecision, _ *int64, _ error) error {
+	return nil
+}
+
+func TestPlannerRunnerStopsAfterDeniedToolAndKeepsSynthesisResult(t *testing.T) {
+	fr := &FakeRunner{Scripts: map[string]Script{
+		"plan/planner": {
+			Tools: []ToolCall{
+				{SourceID: "ISSUE.md", Fingerprint: "v1", Reservation: 5},
+				{SourceID: "internal/engine/engine.go", Fingerprint: "v1", Reservation: 5},
+			},
+			Artifacts: map[string]string{"plan.md": "bounded plan", "touchset.json": `{"globs":[]}`},
+			Tokens:    7, TokensKnown: true,
+		},
+	}}
+	g := &scriptedGate{denyAfter: 1}
+	result := <-fr.RunPlanner(context.Background(), "GH-39", "plan", "planner", t.TempDir(), make(chan Ask), g)
+	if result.Err != nil || len(result.Artifacts) != 2 || g.Started != 1 {
+		t.Fatalf("result=%+v gate=%+v", result, g)
+	}
+}
+
 func TestFakeRunnerPropagatesAskFailure(t *testing.T) {
 	r := &FakeRunner{Scripts: map[string]Script{
 		"ask/agent": {Asks: []levers.Decision{{Question: "Proceed?", Options: []string{"yes"}, Recommended: 0}}},

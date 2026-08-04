@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 // Kinds of StreamEvent produced by ParseLine.
@@ -23,9 +25,11 @@ type StreamEvent struct {
 	// Tools holds one-line summaries of the tool_use blocks in this message,
 	// already prefixed. They are what an operator watching a stage sees while
 	// the agent is working rather than talking.
-	Tools   []string
-	Tokens  int
-	IsError bool
+	Tools       []string
+	ToolCalls   []runner.ToolCall
+	Tokens      int
+	TokensKnown bool
+	IsError     bool
 }
 
 type rawLine struct {
@@ -63,21 +67,23 @@ func ParseLine(line []byte) StreamEvent {
 	case r.Type == "assistant" && r.Message != nil:
 		var parts []string
 		var tools []string
+		var calls []runner.ToolCall
 		for _, c := range r.Message.Content {
 			switch {
 			case c.Type == "text" && c.Text != "":
 				parts = append(parts, c.Text)
 			case c.Type == "tool_use" && c.Name != "":
 				tools = append(tools, toolLinePrefix+toolSummary(c.Name, c.Input))
+				calls = append(calls, toolRequest(c.Name, c.Input))
 			}
 		}
 		text := strings.Join(parts, "\n")
 		// A message with nothing but tool calls used to fall through as an
 		// empty assistant_text, writing a blank line per tool call.
 		if text == "" && len(tools) > 0 {
-			return StreamEvent{Kind: KindToolUse, Tools: tools}
+			return StreamEvent{Kind: KindToolUse, Tools: tools, ToolCalls: calls}
 		}
-		return StreamEvent{Kind: KindAssistantText, Text: text, Tools: tools}
+		return StreamEvent{Kind: KindAssistantText, Text: text, Tools: tools, ToolCalls: calls}
 	case r.Type == "result":
 		u := r.Usage
 		if u == nil && r.Message != nil {
@@ -87,10 +93,26 @@ func ParseLine(line []byte) StreamEvent {
 		if u != nil {
 			tok = u.InputTokens + u.OutputTokens
 		}
-		return StreamEvent{Kind: KindResult, Tokens: tok, IsError: r.IsError}
+		return StreamEvent{Kind: KindResult, Tokens: tok, TokensKnown: u != nil, IsError: r.IsError}
 	default:
 		return StreamEvent{Kind: KindOther}
 	}
+}
+
+func toolRequest(name string, input json.RawMessage) runner.ToolCall {
+	var fields map[string]json.RawMessage
+	source := name
+	if json.Unmarshal(input, &fields) == nil {
+		for _, key := range []string{"file_path", "path", "command", "pattern", "description", "query"} {
+			var value string
+			if raw, ok := fields[key]; ok && json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != "" {
+				parts := strings.Fields(value)
+				source = parts[len(parts)-1]
+				break
+			}
+		}
+	}
+	return runner.ToolCall{Name: name, SourceID: source, Fingerprint: strings.TrimSpace(string(input)), Reservation: 1}
 }
 
 const (

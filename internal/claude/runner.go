@@ -59,13 +59,22 @@ func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	asks chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
-		done <- c.run(ctx, issueID, stage, agentPkg, workdir, asks)
+		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, nil)
 	}()
 	return done
 }
 
-func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	asks chan<- runner.Ask) runner.Result {
+func (c *CodeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, workdir string,
+	asks chan<- runner.Ask, gate runner.ExplorationGate) <-chan runner.Result {
+	done := make(chan runner.Result, 1)
+	go func() {
+		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, gate)
+	}()
+	return done
+}
+
+func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, workdir string,
+	asks chan<- runner.Ask, gate runner.ExplorationGate) runner.Result {
 	pkg, ok := c.Packages[agentPkg]
 	if !ok {
 		return runner.Result{Err: fmt.Errorf("unknown agent package %q", agentPkg)}
@@ -121,6 +130,7 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 	sessionDone := false
 	coachCount := 0
 	decisionAccepted := false
+	var pendingTools []runner.ToolDecision
 	// Replies to the agent (decision answers, coaching) are deferred until the
 	// current turn's result event. A message written mid-turn is absorbed into
 	// the running turn as steering — it never starts a new turn — so an agent
@@ -148,6 +158,11 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		case KindInit:
 			res.SessionID = ev.SessionID
 		case KindAssistantText:
+			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
+			if err != nil {
+				return abort(err)
+			}
+			pendingTools = append(pendingTools, decisions...)
 			emit(ev)
 			if d, found := agentprotocol.ExtractDecision(ev.Text); found {
 				incomplete := d.Why == "" ||
@@ -196,16 +211,35 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				res.DependsOn = deps.Normalize(append(res.DependsOn, dependsOn...))
 			}
 		case KindToolUse:
+			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
+			if err != nil {
+				return abort(err)
+			}
+			pendingTools = append(pendingTools, decisions...)
 			emit(ev)
 		case KindResult:
 			res.Tokens += ev.Tokens
+			res.TokensKnown = res.TokensKnown || ev.TokensKnown
+			if ev.IsError {
+				res.Err = fmt.Errorf("claude session %s ended with error", res.SessionID)
+			}
+			if len(pendingTools) > 0 {
+				var actual *int64
+				if len(pendingTools) == 1 && ev.TokensKnown {
+					value := int64(ev.Tokens)
+					actual = &value
+				}
+				for _, decision := range pendingTools {
+					if err := gate.Complete(ctx, decision, actual, res.Err); err != nil {
+						return abort(err)
+					}
+				}
+				pendingTools = nil
+			}
 			if c.OnLine != nil {
 				c.OnLine(issueID, stage, fmt.Sprintf("— turn complete (%d tokens) —", ev.Tokens))
 			}
 			gotResult = true
-			if ev.IsError {
-				res.Err = fmt.Errorf("claude session %s ended with error", res.SessionID)
-			}
 			// In stream-json input mode the CLI emits one result per turn and
 			// then waits for more input. Send any deferred replies now — the
 			// CLI is idle, so each starts a fresh turn. A turn with no reply
@@ -226,6 +260,13 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			break
 		}
 	}
+	if len(pendingTools) > 0 && gate != nil {
+		for _, decision := range pendingTools {
+			if err := gate.Complete(ctx, decision, nil, res.Err); err != nil && res.Err == nil {
+				res.Err = err
+			}
+		}
+	}
 	stdin.Close()
 	waitErr := cmd.Wait()
 	if res.Err == nil && waitErr != nil {
@@ -235,6 +276,24 @@ func (c *CodeRunner) run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		res.Err = fmt.Errorf("claude session %s ended without result event", res.SessionID)
 	}
 	return res
+}
+
+func admitTools(ctx context.Context, gate runner.ExplorationGate, calls []runner.ToolCall) ([]runner.ToolDecision, error) {
+	if gate == nil {
+		return nil, nil
+	}
+	var decisions []runner.ToolDecision
+	for _, call := range calls {
+		decision, err := gate.Admit(ctx, call)
+		if err != nil {
+			return nil, err
+		}
+		if !decision.Allowed {
+			continue
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, nil
 }
 
 func (c *CodeRunner) SetOnLine(fn func(issueID, stage, line string)) { c.OnLine = fn }

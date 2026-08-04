@@ -20,6 +20,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/stageusage"
 )
 
 const schema = `
@@ -320,6 +321,39 @@ func (s *Store) EventsSince(seq int64) ([]core.Event, error) {
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+// LatestPlannerSnapshot returns the most recent planner usage metadata for an
+// issue. Planner events intentionally contain usage metadata only; source
+// contents and tool payloads are never part of this durable record.
+func (s *Store) LatestPlannerSnapshot(issueID string) (*stageusage.Snapshot, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var raw string
+	err := s.db.QueryRow(
+		`SELECT payload FROM events WHERE issue_id = ? AND type = ? ORDER BY seq DESC LIMIT 1`,
+		issueID, string(core.EvPlannerBudgetUpdated),
+	).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	var payload struct {
+		Snapshot *stageusage.Snapshot `json:"snapshot"`
+		Outcome  string               `json:"outcome"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, "", err
+	}
+	if payload.Snapshot == nil {
+		return nil, payload.Outcome, nil
+	}
+	copy := *payload.Snapshot
+	copy.Warnings = append([]stageusage.Dimension(nil), payload.Snapshot.Warnings...)
+	return &copy, payload.Outcome, nil
 }
 
 func (s *Store) SetIssueIntegration(integration IssueIntegration) error {

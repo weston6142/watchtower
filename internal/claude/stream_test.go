@@ -39,6 +39,9 @@ func TestParseToolUse(t *testing.T) {
 	if ev.Tools[1] != "↳ Read internal/engine/engine.go" {
 		t.Fatalf("tools[1] = %q", ev.Tools[1])
 	}
+	if len(ev.ToolCalls) != 2 || ev.ToolCalls[1].SourceID != "internal/engine/engine.go" {
+		t.Fatalf("tool calls = %+v", ev.ToolCalls)
+	}
 }
 
 // Text and tool blocks in one message must both survive, text first.

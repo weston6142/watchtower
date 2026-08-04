@@ -14,6 +14,7 @@ import (
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/review"
+	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -341,6 +342,67 @@ func TestRenderRailIgnoresDetailFromPreviousFocus(t *testing.T) {
 		if strings.Contains(out, unwanted) {
 			t.Fatalf("new focus rail retained %q:\n%s", unwanted, out)
 		}
+	}
+}
+
+func TestRenderRailUsesPlannerSnapshotWithoutRecalculation(t *testing.T) {
+	detail := &proto.IssueDetail{
+		Issue:  store.IssueRow{ID: "GH-39", Title: "bounded", Flow: "default", State: "running"},
+		Tokens: 999999,
+		Planner: &stageusage.Snapshot{
+			Status: stageusage.StatusWarning, CallsUsed: 4, CallsLimit: 32,
+			ChargedTokens: 1200, TokensLimit: 250000, TokensEstimated: true,
+			ElapsedMillis: 9000, ElapsedLimitMillis: 600000,
+			Warnings: []stageusage.Dimension{stageusage.DimensionTokens},
+		},
+	}
+	out := ansi.Strip(renderRail(projection.NewState(), nil, "", detail, 100))
+	for _, want := range []string{"planner · warning", "calls 4/32", "tokens 1.2k/250k est", "elapsed 9s/10m", "warn: tokens"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rail missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "999999") {
+		t.Fatal("rail recalculated from issue total")
+	}
+}
+
+func TestPlannerRailRendersOutcomesAndLegacyFallback(t *testing.T) {
+	cases := []struct {
+		name     string
+		snapshot stageusage.Snapshot
+		want     []string
+	}{
+		{name: "normal", snapshot: stageusage.Snapshot{Status: stageusage.StatusNormal}, want: []string{"planner · normal"}},
+		{name: "budget limited", snapshot: stageusage.Snapshot{
+			Status: stageusage.StatusBudgetLimited, Stopped: true, StopDimension: stageusage.DimensionTokens,
+			Warnings: []stageusage.Dimension{stageusage.DimensionTokens},
+		}, want: []string{"planner · budget_limited", "stopped: tokens"}},
+		{name: "configuration error", snapshot: stageusage.Snapshot{Status: stageusage.StatusConfigurationErr}, want: []string{"planner · configuration_error"}},
+		{name: "tool error", snapshot: stageusage.Snapshot{Status: stageusage.StatusToolError}, want: []string{"planner · tool_error"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			detail := &proto.IssueDetail{
+				Issue:   store.IssueRow{ID: "GH-39", Title: "bounded", Flow: "default", State: "running"},
+				Planner: &tc.snapshot,
+			}
+			out := ansi.Strip(renderRail(nil, nil, "", detail, 100))
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("rail missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+
+	legacy := &proto.IssueDetail{
+		Issue:  store.IssueRow{ID: "GH-legacy", Title: "legacy", Flow: "default", State: "running"},
+		Tokens: 1200,
+	}
+	out := ansi.Strip(renderRail(nil, nil, "", legacy, 100))
+	if !strings.Contains(out, "spent 1k tokens") || strings.Contains(out, "planner") {
+		t.Fatalf("legacy rail = %s", out)
 	}
 }
 

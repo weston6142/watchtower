@@ -8,13 +8,14 @@ import (
 )
 
 const (
-	KindThread   = "thread"
-	KindText     = "text"
-	KindTool     = "tool"
-	KindComplete = "complete"
-	KindFailed   = "failed"
-	KindOther    = "other"
-	maxToolRunes = 120
+	KindThread      = "thread"
+	KindText        = "text"
+	KindTool        = "tool"
+	KindToolRequest = "tool_request"
+	KindComplete    = "complete"
+	KindFailed      = "failed"
+	KindOther       = "other"
+	maxToolRunes    = 120
 )
 
 // Event is the provider-neutral subset of one Codex JSONL event needed by the
@@ -24,7 +25,9 @@ type Event struct {
 	ThreadID     string
 	Text         string
 	Tool         string
+	ToolCall     runner.ToolCall
 	Tokens       int
+	TokensKnown  bool
 	Error        string
 	FailureClass runner.FailureClass
 }
@@ -89,12 +92,24 @@ func ParseLine(line []byte) Event {
 		case "web_search":
 			return toolEvent("web " + raw.Item.Query)
 		}
+	case "item.started", "item.created":
+		if raw.Item == nil {
+			return Event{Kind: KindOther}
+		}
+		paths := make([]string, 0, len(raw.Item.Changes))
+		for _, change := range raw.Item.Changes {
+			paths = append(paths, change.Path)
+		}
+		if call, ok := requestToolCall(raw.Item.Type, raw.Item.Command, raw.Item.Server, raw.Item.Tool, raw.Item.Query, paths); ok {
+			return Event{Kind: KindToolRequest, ToolCall: call}
+		}
 	case "turn.completed":
 		tokens := 0
+		known := raw.Usage != nil
 		if raw.Usage != nil {
 			tokens = raw.Usage.Input + raw.Usage.Output
 		}
-		return Event{Kind: KindComplete, Tokens: tokens}
+		return Event{Kind: KindComplete, Tokens: tokens, TokensKnown: known}
 	case "turn.failed", "error":
 		message := ""
 		classification := ""
@@ -111,6 +126,36 @@ func ParseLine(line []byte) Event {
 		return Event{Kind: KindFailed, Error: message, FailureClass: classifyFailureMessage(classification + " " + message)}
 	}
 	return Event{Kind: KindOther}
+}
+
+func requestToolCall(kind, command, server, tool, query string, changes []string) (runner.ToolCall, bool) {
+	source := ""
+	fingerprint := ""
+	switch kind {
+	case "command_execution":
+		fields := strings.Fields(command)
+		if len(fields) > 0 {
+			source = fields[len(fields)-1]
+		}
+		fingerprint = normalize(command)
+	case "file_change":
+		if len(changes) > 0 {
+			source = normalize(changes[0])
+		}
+		fingerprint = strings.Join([]string{kind, source}, ":")
+	case "mcp_tool_call":
+		source = normalize(server + "/" + tool)
+		fingerprint = source
+	case "web_search":
+		source = normalize(query)
+		fingerprint = source
+	default:
+		return runner.ToolCall{}, false
+	}
+	if source == "" {
+		return runner.ToolCall{}, false
+	}
+	return runner.ToolCall{Name: kind, SourceID: source, Fingerprint: fingerprint, Reservation: 1}, true
 }
 
 func toolEvent(summary string) Event {

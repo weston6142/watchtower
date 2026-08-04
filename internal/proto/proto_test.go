@@ -21,10 +21,12 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/steward"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/workspace"
@@ -52,6 +54,72 @@ func TestPendingDecisionJSONContext(t *testing.T) {
 		decoded.Context.AgentName != "Executor" || decoded.Context.AgentColor != "green" ||
 		decoded.Context.AgentSymbol != "⚙" {
 		t.Fatalf("pending JSON context = %#v, JSON = %s", decoded.Context, encoded)
+	}
+}
+
+func TestPlannerOverrideRoundTripsThroughCommandJSON(t *testing.T) {
+	warn, hard := int64(4), int64(5)
+	elapsedWarn, elapsedHard := 2*time.Minute, 3*time.Minute
+	want := Command{
+		Op:      "start_issue",
+		IssueID: "GH-39",
+		PlannerBudget: &plannerbudget.Override{
+			Calls:   &plannerbudget.DimensionOverride{Warning: &warn, Hard: &hard},
+			Elapsed: &plannerbudget.ElapsedOverride{Warning: &elapsedWarn, Hard: &elapsedHard},
+		},
+	}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Command
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.PlannerBudget == nil || *got.PlannerBudget.Calls.Warning != warn ||
+		*got.PlannerBudget.Calls.Hard != hard ||
+		*got.PlannerBudget.Elapsed.Warning != elapsedWarn {
+		t.Fatalf("planner override = %+v from %s", got.PlannerBudget, data)
+	}
+}
+
+func TestInvalidPlannerOverrideIsRejectedBeforeStart(t *testing.T) {
+	zero := int64(0)
+	sv := NewServer(nil, nil)
+	response := sv.exec(Command{
+		Op: "start_issue", IssueID: "GH-39",
+		PlannerBudget: &plannerbudget.Override{
+			Calls: &plannerbudget.DimensionOverride{Warning: &zero},
+		},
+	})
+	if response.Error == "" {
+		t.Fatal("invalid planner override reached engine start")
+	}
+}
+
+func TestIssueDetailExposesLatestPlannerSnapshot(t *testing.T) {
+	s, err := store.Open("file:planner-detail?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.UpsertIssue(store.IssueRow{ID: "GH-39", Title: "bounded", State: "running", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := stageusage.Snapshot{Stage: "plan", CallsUsed: 2, ChargedTokens: 40, Status: stageusage.StatusWarning}
+	ev, err := core.NewEvent(core.EvPlannerBudgetUpdated, "GH-39", map[string]any{
+		"stage": "plan", "outcome": "warning", "snapshot": snapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ev); err != nil {
+		t.Fatal(err)
+	}
+	response := NewServer(nil, s).exec(Command{Op: "issue_detail", IssueID: "GH-39"})
+	if !response.OK || response.Detail == nil || response.Detail.Planner == nil ||
+		response.Detail.Planner.ChargedTokens != 40 || response.Detail.PlannerOutcome != "warning" {
+		t.Fatalf("issue detail = %+v", response)
 	}
 }
 

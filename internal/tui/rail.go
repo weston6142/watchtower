@@ -13,6 +13,7 @@ import (
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/review"
+	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -130,6 +131,74 @@ func issuePolicyLines(iv *projection.IssueView, width int) []string {
 	return lines
 }
 
+func formatPlannerElapsed(millis int64) string {
+	if millis < 1000 {
+		return fmt.Sprintf("%dms", millis)
+	}
+	seconds := millis / 1000
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	if minutes < 60 {
+		if seconds%60 == 0 {
+			return fmt.Sprintf("%dm", minutes)
+		}
+		return fmt.Sprintf("%dm%ds", minutes, seconds%60)
+	}
+	hours := minutes / 60
+	if minutes%60 == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, minutes%60)
+}
+
+func compactPlannerTokens(tokens int64) string {
+	if tokens >= 1000 {
+		if tokens < 10000 {
+			return fmt.Sprintf("%.1fk", float64(tokens)/1000)
+		}
+		return fmt.Sprintf("%.0fk", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%d", tokens)
+}
+
+func plannerDimensions(dimensions []stageusage.Dimension) string {
+	seen := make(map[stageusage.Dimension]bool, len(dimensions))
+	parts := make([]string, 0, len(dimensions))
+	for _, dimension := range dimensions {
+		if dimension == "" || seen[dimension] {
+			continue
+		}
+		seen[dimension] = true
+		parts = append(parts, string(dimension))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func renderPlannerBudget(snapshot *stageusage.Snapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	tokens := compactPlannerTokens(snapshot.ChargedTokens) + "/" + compactPlannerTokens(snapshot.TokensLimit)
+	if snapshot.TokensEstimated {
+		tokens += " est"
+	}
+	lines := []string{
+		"planner · " + string(snapshot.Status),
+		fmt.Sprintf("calls %d/%d · tokens %s · elapsed %s/%s",
+			snapshot.CallsUsed, snapshot.CallsLimit, tokens,
+			formatPlannerElapsed(snapshot.ElapsedMillis), formatPlannerElapsed(snapshot.ElapsedLimitMillis)),
+	}
+	if warnings := plannerDimensions(snapshot.Warnings); warnings != "" {
+		lines = append(lines, "warn: "+warnings)
+	}
+	if snapshot.Stopped && snapshot.StopDimension != "" {
+		lines = append(lines, "stopped: "+string(snapshot.StopDimension))
+	}
+	return lines
+}
+
 // renderRail draws the focused issue's plain-language FOCUS panel above the
 // pending decision queue. Paths and session IDs intentionally stay here: they
 // are diagnostic details, not grid copy.
@@ -140,13 +209,18 @@ func renderRail(st *projection.State, ids map[string]Identity, focusID string, d
 	var tokens, attempt, attemptOf int
 	var cleanup []string
 	var metadata *proto.IssueDetail
+	var planner *stageusage.Snapshot
 	if st != nil && focusID != "" {
 		if iv := st.Issues[focusID]; iv != nil {
 			issueID, title, flow, state = iv.ID, iv.Title, iv.Flow, iv.State
 			tokens, lastError = iv.Tokens, iv.LastError
 			attempt, attemptOf, cleanup = iv.Attempt, iv.AttemptOf, iv.Cleanup
+			planner = iv.Planner
 			if det != nil && det.Issue.ID == focusID {
 				metadata = det
+				if planner == nil {
+					planner = det.Planner
+				}
 			}
 		}
 	} else if det != nil {
@@ -154,6 +228,7 @@ func renderRail(st *projection.State, ids map[string]Identity, focusID string, d
 		tokens, lastError = det.Tokens, det.LastError
 		attempt, attemptOf, cleanup = det.Attempt, det.AttemptOf, det.Cleanup
 		metadata = det
+		planner = det.Planner
 	}
 	if issueID != "" {
 		identity := ids[issueID]
@@ -184,7 +259,9 @@ func renderRail(st *projection.State, ids map[string]Identity, focusID string, d
 				"worktree: "+metadata.Worktree,
 			)
 		}
-		if metadata != nil && metadata.Budget > 0 {
+		if planner != nil {
+			lines = append(lines, renderPlannerBudget(planner)...)
+		} else if metadata != nil && metadata.Budget > 0 {
 			percent := tokens * 100 / metadata.Budget
 			percent = max(0, min(100, percent))
 			const budgetBarWidth = 4

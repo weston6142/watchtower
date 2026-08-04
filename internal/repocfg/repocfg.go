@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 	"gopkg.in/yaml.v3"
 )
@@ -17,23 +18,24 @@ import (
 // Config mirrors the daemon flags. Zero fields are filled from Default()
 // after unmarshalling, so a partial config.yaml is fine.
 type Config struct {
-	Flows        string           `yaml:"flows"`
-	Packages     string           `yaml:"packages"`
-	Runner       string           `yaml:"runner"`
-	Slots        int              `yaml:"slots"`
-	Budget       int              `yaml:"budget"`
-	PricePerMTok float64          `yaml:"price_per_mtok"`
-	ClaudeBin    string           `yaml:"claude_bin"`
-	CodexBin     string           `yaml:"codex_bin"`
-	CodexModel   string           `yaml:"codex_model"`
-	CodexEffort  string           `yaml:"codex_effort"`
-	Codex        CodexConfig      `yaml:"codex"`
-	TestCmd      string           `yaml:"test_cmd"`
-	TestArgv     []string         `yaml:"-"`
-	Theme        string           `yaml:"theme"`
-	Pull         bool             `yaml:"pull"`
-	Push         bool             `yaml:"push"`
-	PlanReview   PlanReviewConfig `yaml:"plan_review"`
+	Flows         string                `yaml:"flows"`
+	Packages      string                `yaml:"packages"`
+	Runner        string                `yaml:"runner"`
+	Slots         int                   `yaml:"slots"`
+	Budget        int                   `yaml:"budget"`
+	PricePerMTok  float64               `yaml:"price_per_mtok"`
+	ClaudeBin     string                `yaml:"claude_bin"`
+	CodexBin      string                `yaml:"codex_bin"`
+	CodexModel    string                `yaml:"codex_model"`
+	CodexEffort   string                `yaml:"codex_effort"`
+	Codex         CodexConfig           `yaml:"codex"`
+	TestCmd       string                `yaml:"test_cmd"`
+	TestArgv      []string              `yaml:"-"`
+	Theme         string                `yaml:"theme"`
+	Pull          bool                  `yaml:"pull"`
+	Push          bool                  `yaml:"push"`
+	PlanReview    PlanReviewConfig      `yaml:"plan_review"`
+	PlannerBudget plannerbudget.Profile `yaml:"planner_budget"`
 }
 
 type CodexProfile struct {
@@ -107,6 +109,7 @@ func Default() Config {
 		PlanReview: PlanReviewConfig{
 			PolicyID: review.ManualPolicyID, PolicyVersion: review.ManualPolicyVersion, Valid: true,
 		},
+		PlannerBudget: plannerbudget.DefaultProfile(),
 	}
 }
 
@@ -158,6 +161,9 @@ func Load(repoRoot string) (Config, error) {
 	}
 	if err := normalizeCodex(&cfg); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", ConfigPath(repoRoot), err)
+	}
+	if err := cfg.PlannerBudget.Validate(); err != nil {
+		return Config{}, fmt.Errorf("%s planner_budget: %w", ConfigPath(repoRoot), err)
 	}
 	if !filepath.IsAbs(cfg.Flows) {
 		cfg.Flows = filepath.Join(repoRoot, cfg.Flows)
@@ -265,6 +271,9 @@ func fillGaps(cfg *Config) {
 	}
 	if cfg.CodexEffort == "" {
 		cfg.CodexEffort = d.CodexEffort
+	}
+	if cfg.PlannerBudget == (plannerbudget.Profile{}) {
+		cfg.PlannerBudget = d.PlannerBudget
 	}
 	if cfg.PlanReview.Valid {
 		if cfg.PlanReview.PolicyID == "" {

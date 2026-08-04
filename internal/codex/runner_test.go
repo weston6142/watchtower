@@ -38,6 +38,26 @@ func testRunner(bin string) *CodeRunner {
 	}
 }
 
+type recordingGate struct {
+	completed int
+	actual    *int64
+	failed    error
+}
+
+func (g *recordingGate) Admit(context.Context, runner.ToolCall) (runner.ToolDecision, error) {
+	return runner.ToolDecision{Allowed: true, LeaseID: "lease-1"}, nil
+}
+
+func (g *recordingGate) Complete(_ context.Context, _ runner.ToolDecision, actual *int64, operationErr error) error {
+	g.completed++
+	if actual != nil {
+		value := *actual
+		g.actual = &value
+	}
+	g.failed = operationErr
+	return nil
+}
+
 func runTurn(t *testing.T, ctx context.Context, r *CodeRunner, workdir string) runner.Result {
 	t.Helper()
 	asks := make(chan runner.Ask, 1)
@@ -321,6 +341,22 @@ func readCount(t *testing.T, state string) int {
 	return count
 }
 
+func TestPlannerToolReconcilesAfterTurnUsage(t *testing.T) {
+	bin := writeStub(t, `
+printf '%s\n' '{"type":"thread.started","thread_id":"thr-planner"}'
+printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","command":"cat ISSUE.md"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":7}}'`)
+	gate := &recordingGate{}
+	r := testRunner(bin)
+	done := r.RunPlanner(context.Background(), "GH-39", "plan", "executor", t.TempDir(), make(chan runner.Ask), gate)
+	result := <-done
+	if result.Err != nil || result.Tokens != 12 || !result.TokensKnown {
+		t.Fatalf("result = %+v", result)
+	}
+	if gate.completed != 1 || gate.actual == nil || *gate.actual != 12 || gate.failed != nil {
+		t.Fatalf("gate completion = completed:%d actual:%v err:%v", gate.completed, gate.actual, gate.failed)
+	}
+}
 func TestPackageModelAndEffortOverrideDefaults(t *testing.T) {
 	capture := filepath.Join(t.TempDir(), "argv")
 	bin := writeStub(t, successfulStub(`

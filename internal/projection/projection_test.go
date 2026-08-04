@@ -7,6 +7,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/review"
+	"github.com/weston6142/watchtower/internal/stageusage"
 )
 
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
@@ -38,6 +39,24 @@ func TestReplayBuildsIssueView(t *testing.T) {
 	s.Apply(ev(t, core.EvStageCompleted, "GH-1", map[string]any{"stage": "spec"}))
 	if len(s.Decisions) != 0 || iv.State != "running" || len(iv.Completed) != 1 {
 		t.Fatalf("after answer: %+v decisions=%v", iv, s.Decisions)
+	}
+}
+
+func TestPlannerSnapshotProjectionUsesImmutableMetadata(t *testing.T) {
+	s := NewState()
+	s.Apply(ev(t, core.EvIssueCreated, "GH-39", map[string]any{"title": "bounded"}))
+	snapshot := stageusage.Snapshot{Stage: "plan", Attempt: 1, CallsUsed: 3, ChargedTokens: 99,
+		Status: stageusage.StatusBudgetLimited, LastSource: "spec.md"}
+	s.Apply(ev(t, core.EvPlannerBudgetUpdated, "GH-39", map[string]any{
+		"stage": "plan", "outcome": "budget_limited", "snapshot": snapshot,
+	}))
+	view := s.Issues["GH-39"]
+	if view == nil || view.Planner == nil || view.Planner.ChargedTokens != 99 || view.PlannerOutcome != "budget_limited" {
+		t.Fatalf("planner projection = %+v", view)
+	}
+	snapshot.CallsUsed = 100
+	if view.Planner.CallsUsed == 100 {
+		t.Fatal("projection retained mutable snapshot data")
 	}
 }
 

@@ -5,7 +5,9 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -22,23 +24,24 @@ type Command struct {
 	// Attach carries absolute paths, never bytes: maxMessageBytes bounds a wire
 	// message well under the per-file cap, so the daemon reads the files off the
 	// shared filesystem itself. A bare name retains an existing attachment.
-	Attach        []string `json:"attach,omitempty"`
-	DependsOn     []string `json:"depends_on,omitempty"`
-	IssueID       string   `json:"issue_id,omitempty"`
-	Worktree      string   `json:"worktree,omitempty"`
-	AllowNoChange bool     `json:"allow_no_change,omitempty"`
-	DecisionID    int64    `json:"decision_id,omitempty"`
-	Option        *int     `json:"option,omitempty"`
-	Text          string   `json:"text,omitempty"`
-	Actor         string   `json:"actor,omitempty"`
-	ProposalID    int64    `json:"proposal_id,omitempty"`
-	Accept        bool     `json:"accept,omitempty"`
-	SinceSeq      int64    `json:"since_seq,omitempty"`
-	Repo          string   `json:"repo,omitempty"`
-	Stage         string   `json:"stage,omitempty"`
-	Lever         string   `json:"lever,omitempty"`
-	Package       string   `json:"package,omitempty"` // setup_prompt: which agent package
-	N             int      `json:"n,omitempty"`
+	Attach        []string                `json:"attach,omitempty"`
+	DependsOn     []string                `json:"depends_on,omitempty"`
+	IssueID       string                  `json:"issue_id,omitempty"`
+	Worktree      string                  `json:"worktree,omitempty"`
+	AllowNoChange bool                    `json:"allow_no_change,omitempty"`
+	DecisionID    int64                   `json:"decision_id,omitempty"`
+	Option        *int                    `json:"option,omitempty"`
+	Text          string                  `json:"text,omitempty"`
+	Actor         string                  `json:"actor,omitempty"`
+	ProposalID    int64                   `json:"proposal_id,omitempty"`
+	Accept        bool                    `json:"accept,omitempty"`
+	SinceSeq      int64                   `json:"since_seq,omitempty"`
+	Repo          string                  `json:"repo,omitempty"`
+	Stage         string                  `json:"stage,omitempty"`
+	Lever         string                  `json:"lever,omitempty"`
+	Package       string                  `json:"package,omitempty"` // setup_prompt: which agent package
+	N             int                     `json:"n,omitempty"`
+	PlannerBudget *plannerbudget.Override `json:"planner_budget,omitempty"`
 }
 
 type Response struct {
@@ -83,23 +86,25 @@ type Overview struct {
 }
 
 type IssueDetail struct {
-	Issue            store.IssueRow    `json:"issue"`
-	Runs             []store.StageRun  `json:"runs"`
-	Attempts         []runner.Attempt  `json:"attempts,omitempty"`
-	Tokens           int               `json:"tokens"`
-	Artifacts        []string          `json:"artifacts"`
-	Model            string            `json:"model,omitempty"`
-	Effort           string            `json:"effort,omitempty"`
-	LastError        string            `json:"last_error,omitempty"`
-	Attempt          int               `json:"attempt,omitempty"`
-	AttemptOf        int               `json:"attempt_of,omitempty"`
-	Budget           int               `json:"budget,omitempty"`
-	Levers           map[string]string `json:"levers,omitempty"`
-	Cleanup          []string          `json:"cleanup,omitempty"`
-	Dollars          float64           `json:"dollars,omitempty"`
-	IntegrationState string            `json:"integration_state,omitempty"`
-	Worktree         string            `json:"worktree,omitempty"`
-	Branch           string            `json:"branch,omitempty"`
+	Issue            store.IssueRow       `json:"issue"`
+	Runs             []store.StageRun     `json:"runs"`
+	Attempts         []runner.Attempt     `json:"attempts,omitempty"`
+	Tokens           int                  `json:"tokens"`
+	Artifacts        []string             `json:"artifacts"`
+	Model            string               `json:"model,omitempty"`
+	Effort           string               `json:"effort,omitempty"`
+	LastError        string               `json:"last_error,omitempty"`
+	Attempt          int                  `json:"attempt,omitempty"`
+	AttemptOf        int                  `json:"attempt_of,omitempty"`
+	Budget           int                  `json:"budget,omitempty"`
+	Levers           map[string]string    `json:"levers,omitempty"`
+	Cleanup          []string             `json:"cleanup,omitempty"`
+	Dollars          float64              `json:"dollars,omitempty"`
+	IntegrationState string               `json:"integration_state,omitempty"`
+	Worktree         string               `json:"worktree,omitempty"`
+	Branch           string               `json:"branch,omitempty"`
+	Planner          *stageusage.Snapshot `json:"planner,omitempty"`
+	PlannerOutcome   string               `json:"planner_outcome,omitempty"`
 }
 
 // SetupView is the read-only picture of what the daemon is running: repo-level

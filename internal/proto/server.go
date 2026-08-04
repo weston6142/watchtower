@@ -21,6 +21,7 @@ import (
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/store"
@@ -28,20 +29,21 @@ import (
 )
 
 type Server struct {
-	eng          *engine.Engine
-	st           *store.Store
-	flows        map[string]flow.Flow
-	packages     map[string]pkgs.Package
-	transcript   *transcript.Buffer
-	pricePerMTok float64
-	budget       int
-	repoSetup    RepoSetup
-	listenerMu   sync.Mutex
-	listener     net.Listener
+	eng           *engine.Engine
+	st            *store.Store
+	flows         map[string]flow.Flow
+	packages      map[string]pkgs.Package
+	transcript    *transcript.Buffer
+	pricePerMTok  float64
+	budget        int
+	repoSetup     RepoSetup
+	listenerMu    sync.Mutex
+	listener      net.Listener
+	plannerBudget plannerbudget.Profile
 }
 
 func NewServer(e *engine.Engine, s *store.Store) *Server {
-	return &Server{eng: e, st: s}
+	return &Server{eng: e, st: s, plannerBudget: plannerbudget.DefaultProfile()}
 }
 
 // SetFlows lets the daemon share loaded flows for preset expansion.
@@ -56,6 +58,13 @@ func (sv *Server) SetTranscript(b *transcript.Buffer) { sv.transcript = b }
 func (sv *Server) SetPricePerMTok(price float64) { sv.pricePerMTok = price }
 
 func (sv *Server) SetBudget(budget int) { sv.budget = budget }
+
+func (sv *Server) SetPlannerBudget(profile plannerbudget.Profile) { sv.plannerBudget = profile }
+
+func (sv *Server) resolvePlannerOverride(override *plannerbudget.Override) error {
+	_, err := plannerbudget.Resolve(sv.plannerBudget, override)
+	return err
+}
 
 // SetRepoSetup shares the resolved repo config so the setup inspector can
 // report what the daemon is running rather than what config.yaml says. One
@@ -204,7 +213,10 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}
 	case "launch_issue":
-		if err := sv.eng.LaunchIssue(cmd.IssueID); err != nil {
+		if err := sv.resolvePlannerOverride(cmd.PlannerBudget); err != nil {
+			return Response{Error: err.Error()}
+		}
+		if err := sv.eng.LaunchIssueWithBudget(cmd.IssueID, cmd.PlannerBudget); err != nil {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}
@@ -233,9 +245,12 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}
 	case "start_issue":
+		if err := sv.resolvePlannerOverride(cmd.PlannerBudget); err != nil {
+			return Response{Error: err.Error()}
+		}
 		// Runs asynchronously; failures surface as stage_failed events
 		// in the log rather than in this response.
-		go sv.eng.StartIssue(context.Background(), cmd.IssueID)
+		go sv.eng.StartIssueWithBudget(context.Background(), cmd.IssueID, cmd.PlannerBudget)
 		return Response{OK: true, IssueID: cmd.IssueID}
 	case "pause_issue":
 		if err := sv.eng.Pause(cmd.IssueID); err != nil {
@@ -253,7 +268,10 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}
 	case "retry_stage":
-		go sv.eng.RetryStage(context.Background(), cmd.IssueID)
+		if err := sv.resolvePlannerOverride(cmd.PlannerBudget); err != nil {
+			return Response{Error: err.Error()}
+		}
+		go sv.eng.RetryStageWithBudget(context.Background(), cmd.IssueID, cmd.PlannerBudget)
 		return Response{OK: true, IssueID: cmd.IssueID}
 	case "abandon_issue":
 		if err := sv.eng.Abandon(cmd.IssueID); err != nil {
@@ -340,6 +358,10 @@ func (sv *Server) exec(cmd Command) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
+		plannerSnapshot, plannerOutcome, err := sv.st.LatestPlannerSnapshot(cmd.IssueID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
 		stage, attempt, attemptOf, lastError, err := sv.st.LastStageEvents(cmd.IssueID)
 		if err != nil {
 			return Response{Error: err.Error()}
@@ -369,6 +391,7 @@ func (sv *Server) exec(cmd Command) Response {
 			Cleanup: integration.Cleanup, Dollars: float64(tokens) / 1_000_000 * sv.pricePerMTok,
 			IntegrationState: integration.State,
 			Worktree:         integration.Worktree, Branch: integration.Branch,
+			Planner: plannerSnapshot, PlannerOutcome: plannerOutcome,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)
