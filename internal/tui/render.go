@@ -481,69 +481,20 @@ func shelfLine(item shelfItem, identity Identity, status string) string {
 	return status + " " + tag + " " + title
 }
 
-type helpGroup struct {
-	name string
-	rows [][2]string // key, description
-}
-
-var helpGroups = [][]helpGroup{
-	{ // left column
-		{"NAVIGATION", [][2]string{
-			{"j / k", "floors"},
-			{"h / l", "cards"},
-			{"1..9", "focus issue"},
-			{"tab", "attention / next field"},
-			{"g", "war room"},
-			{"enter", "open artifacts"},
-			{"f", "setup inspector"},
-			{"esc", "back"},
-			{"z", "rows / tower layout"},
-		}},
-		{"CONTROL", [][2]string{
-			{"p", "pause / resume"},
-			{"x", "kill stage"},
-			{"X", "abandon lane"},
-			{"R", "retry failed stage"},
-			{"L", "lever editor"},
-			{"n", "new issue"},
-			{"ctrl+s", "save draft"},
-			{"b", "backlog"},
-			{"l", "launch draft (in backlog)"},
-			{"c", "retire shipped lane"},
-			{"u", "shipped shelf"},
-		}},
-	},
-	{ // right column
-		{"DOORS", [][2]string{
-			{"d", "decisions"},
-			{"t", "triage"},
-			{"e", "timeline"},
-			{"T", "stream"},
-			{"r", "reject tray item"},
-			{"a / A", "architecture pane / map"},
-		}},
-		{"DECISIONS", [][2]string{
-			{"y", "accept recommendation"},
-			{"n", "choose option"},
-			{"o", "show evidence"},
-			{"1..9", "choose option by number"},
-		}},
-	},
-}
-
 func renderHelpOverlay(width int) string {
 	t := activeTheme
 	keyStyle := lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Width(8)
 	descStyle := lipgloss.NewStyle().Foreground(t.Text)
 	headStyle := lipgloss.NewStyle().Foreground(t.Structure).Bold(true)
+	projection := projectMainKeybindingHelp()
 
 	var cols []string
-	for _, col := range helpGroups {
+	for _, col := range projection.Columns {
 		var blocks []string
 		for _, g := range col {
-			lines := []string{headStyle.Render(g.name)}
-			for _, row := range g.rows {
-				lines = append(lines, keyStyle.Render(row[0])+descStyle.Render(row[1]))
+			lines := []string{headStyle.Render(g.Name)}
+			for _, row := range g.Rows {
+				lines = append(lines, keyStyle.Render(row.Key)+descStyle.Render(row.Description))
 			}
 			blocks = append(blocks, strings.Join(lines, "\n"))
 		}
@@ -563,7 +514,7 @@ func renderHelpOverlay(width int) string {
 		lipgloss.NewStyle().Foreground(t.Ok).Render(glyphShipped) + descStyle.Render(" shipped") + dim.Render("  ·  ") +
 		dim.Render(glyphParked) + descStyle.Render(" parked")
 
-	foot := keyChip("? / esc") + dim.Render(" close  ") + keyChip("q / ctrl+c") + dim.Render(" quit")
+	foot := keyChip(projection.Close.Key) + dim.Render(" "+projection.Close.Description+"  ") + keyChip(projection.Quit.Key) + dim.Render(" "+projection.Quit.Description)
 	rule := lipgloss.NewStyle().Foreground(t.Dimmer).Render(strings.Repeat("─", lipgloss.Width(body)))
 
 	const subtitle = "every key in the control room"

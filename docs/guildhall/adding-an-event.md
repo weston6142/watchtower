@@ -14,9 +14,12 @@ The full sweep for a new lane-affecting event:
 5. `internal/proto/server.go` — the op name, if operators can trigger it.
 6. `cmd/watchtower/main.go` — the CLI verb, in the `ops` map beside
    pause/resume/kill/retry/abandon/launch.
-7. `internal/tui/app.go` — the key handler, and the help overlay group (help
-   goldens in `internal/tui/testdata/` change when a key is added; regenerate
-   deliberately, never blanket `-update`).
+7. `internal/tui/app.go` — the key handler. Main control-room display metadata
+   belongs in `internal/tui/keybindings.go`, whose typed registry projects to
+   both the help overlay and compact base footer; `Model.Update` remains the
+   behavior boundary. Context-specific modal, door, and pager bindings stay
+   explicit. Help goldens in `internal/tui/testdata/` change when a main key is
+   added; regenerate deliberately, never blanket `-update`.
 
 Steward and projection are not redundant: the steward answers "what survives a
 daemon restart", the projection answers "what is on screen now". A state that
