@@ -138,6 +138,182 @@ func newEngine(t *testing.T, r runner.Runner) (*Engine, *store.Store) {
 	return newEngineCfg(t, r, nil)
 }
 
+type typedStageRunner struct {
+	result  runner.Result
+	results map[string]runner.Result
+	sink    runner.AttemptSink
+}
+
+func (r *typedStageRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
+	_ chan<- runner.Ask) <-chan runner.Result {
+	done := make(chan runner.Result, 1)
+	go func() {
+		result := r.result
+		if configured, ok := r.results[agentPkg]; ok {
+			result = configured
+		}
+		operationID := runner.OperationID(ctx)
+		for index := range result.Attempts {
+			attempt := result.Attempts[index]
+			attempt.OperationID, attempt.IssueID = operationID, issueID
+			attempt.Stage, attempt.AgentPackage = stage, agentPkg
+			if r.sink != nil {
+				_ = r.sink.RecordAttempt(ctx, attempt)
+			}
+		}
+		done <- result
+	}()
+	return done
+}
+
+func (r *typedStageRunner) SetAttemptSink(sink runner.AttemptSink) { r.sink = sink }
+
+func TestTerminalStageMapsTypedRunnerFailureToFinalStageOutcome(t *testing.T) {
+	f := flow.Flow{Name: "typed", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}},
+		Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+	}}}
+	result := runner.Result{
+		FailureClass: runner.FailureLaunch,
+		Attempt:      runner.Attempt{Kind: runner.AttemptPrimary, State: runner.AttemptTerminal, FailureClass: runner.FailureLaunch},
+		Attempts:     []runner.Attempt{{Kind: runner.AttemptPrimary, State: runner.AttemptTerminal, FailureClass: runner.FailureLaunch, RedactedArgv: []string{"exec", "[redacted]"}}},
+		NextAction:   "restore the Codex executable",
+		Err:          errors.New("Codex primary launch failed"),
+	}
+	e, s := newEngineCfg(t, &typedStageRunner{result: result}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"typed": f}
+	})
+	id, err := e.CreateIssue("typed failure", "", "typed", levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("typed runner failure unexpectedly succeeded")
+	}
+	rows, err := s.StageRuns(id)
+	if err != nil || len(rows) != 1 || rows[0].Status != "failed" {
+		t.Fatalf("stage runs = %+v, err = %v", rows, err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed bool
+	for _, event := range events {
+		if event.Type != core.EvStageFailed {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["final"] == true {
+			failed = true
+			if payload["failure_class"] != string(runner.FailureLaunch) ||
+				payload["attempt_kind"] != string(runner.AttemptPrimary) ||
+				payload["next_action"] != "restore the Codex executable" {
+				t.Fatalf("typed stage failure payload = %v", payload)
+			}
+		}
+	}
+	if !failed {
+		t.Fatal("no final typed stage failure event")
+	}
+	attempts, err := s.LoadOperation(context.Background(), "1")
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("durable attempt history = %+v, err = %v", attempts, err)
+	}
+}
+
+func TestFallbackLifecycleCompletesAllStage(t *testing.T) {
+	f := flow.Flow{Name: "fallback", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}},
+		Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+	}}}
+	result := runner.Result{
+		FallbackConsumed: true,
+		Attempt:          runner.Attempt{Kind: runner.AttemptFallback, State: runner.AttemptSucceeded, FailureClass: runner.FailureLaunch},
+		Attempts: []runner.Attempt{
+			{Kind: runner.AttemptPrimary, State: runner.AttemptFailed, FailureClass: runner.FailureLaunch},
+			{Kind: runner.AttemptFallback, State: runner.AttemptReserved, FailureClass: runner.FailureLaunch},
+			{Kind: runner.AttemptFallback, State: runner.AttemptSucceeded, FailureClass: runner.FailureLaunch},
+		},
+	}
+	e, s := newEngineCfg(t, &typedStageRunner{result: result}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{"fallback": f}
+	})
+	id, err := e.CreateIssue("fallback success", "", "fallback", levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 1 || runs[0].Status != "succeeded" {
+		t.Fatalf("stage runs = %+v, err = %v", runs, err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		if event.Type != core.EvRunnerAttempt {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		seen[payload["attempt_kind"].(string)+":"+payload["state"].(string)] = true
+	}
+	for _, key := range []string{"primary:failed", "fallback:reserved", "fallback:succeeded"} {
+		if !seen[key] {
+			t.Errorf("missing lifecycle event %q: %v", key, seen)
+		}
+	}
+}
+
+func TestEngineCompletionAnyKeepsAgentFallbackAccountingIndependent(t *testing.T) {
+	f := flow.Flow{Name: "any", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "first"}, {Package: "second"}},
+		Parallel: true, Completion: flow.CompletionAny, Workspace: "none", Gate: flow.GateAuto,
+	}}}
+	r := &typedStageRunner{results: map[string]runner.Result{
+		"first": {FallbackConsumed: true, Attempt: runner.Attempt{Kind: runner.AttemptFallback, State: runner.AttemptSucceeded}, Attempts: []runner.Attempt{
+			{Kind: runner.AttemptPrimary, State: runner.AttemptFailed, FailureClass: runner.FailureLaunch},
+			{Kind: runner.AttemptFallback, State: runner.AttemptSucceeded},
+		}},
+		"second": {Err: errors.New("second agent failed"), FailureClass: runner.FailureExecution, Attempt: runner.Attempt{Kind: runner.AttemptPrimary, State: runner.AttemptTerminal}, Attempts: []runner.Attempt{
+			{Kind: runner.AttemptPrimary, State: runner.AttemptTerminal, FailureClass: runner.FailureExecution},
+		}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) { cfg.Flows = map[string]flow.Flow{"any": f} })
+	id, err := e.CreateIssue("any completion", "", "any", levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("stage runs = %+v, err = %v", runs, err)
+	}
+	operationIDs, err := s.LoadOperation(context.Background(), "1")
+	if err != nil || len(operationIDs) == 0 {
+		t.Fatalf("first agent attempts = %+v, err = %v", operationIDs, err)
+	}
+	other, err := s.LoadOperation(context.Background(), "2")
+	if err != nil || len(other) == 0 {
+		t.Fatalf("second agent attempts = %+v, err = %v", other, err)
+	}
+	if operationIDs[0].IssueID != id || other[0].IssueID != id || operationIDs[0].OperationID == other[0].OperationID {
+		t.Fatalf("agent operation identities crossed: first=%+v second=%+v", operationIDs, other)
+	}
+}
+
 func scripts() map[string]runner.Script {
 	return map[string]runner.Script{
 		"brainstorm/brainstorm": {Asks: []levers.Decision{
