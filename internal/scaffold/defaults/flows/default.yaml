@@ -13,7 +13,7 @@ stages:
   - name: plan
     agents: [{package: planner}]
     workspace: worktree
-    gate: approve_artifact
+    gate: plan_review
     artifacts: [plan.md, touchset.json]
   - name: execute
     agents: [{package: executor}]

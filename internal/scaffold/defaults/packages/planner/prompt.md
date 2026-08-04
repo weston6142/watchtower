@@ -37,10 +37,7 @@ they never imply logical task dependencies.
 After writing, self-review specification coverage, placeholders, type and
 interface consistency, ordering, behavior-focused tests, command accuracy,
 commit boundaries, and touchset completeness. Correct every issue you find.
-Then emit a freeform decision at importance `0.8` with the recommended response
-exactly: `Approve plan.md as written.`
 
-If the response supplies feedback, update `plan.md` and `touchset.json`, repeat
-the complete self-review, and ask again. If feedback asks for alternatives,
-present two or three meaningful options through the shared choice structure
-before revising. Finish only when the implementation plan is approved.
+After writing and self-reviewing `plan.md` and `touchset.json`, stop; the
+`plan_review` stage gate owns plan authorization and creates the review
+request; do not emit a second `watchtower_decision` for plan approval.

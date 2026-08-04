@@ -8,5 +8,9 @@ budget: 0             # per-issue token budget (0=off)
 price_per_mtok: 0     # estimated $/Mtok (0=hide cost)
 claude_bin: claude
 test_cmd: ""          # required when any flow uses merge_barrier, e.g. "scripts/verify"
+plan_review:
+  policy_id: manual-default
+  policy_version: "1"
+  auto_approve_regular: false
 pull: true            # fast-forward the default branch from origin before an issue starts
 push: false           # push the default branch to origin after a merge lands
