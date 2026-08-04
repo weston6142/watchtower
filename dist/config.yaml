@@ -7,6 +7,9 @@ slots: 4              # concurrent heavy slots
 budget: 0             # per-issue token budget (0=off)
 price_per_mtok: 0     # estimated $/Mtok (0=hide cost)
 claude_bin: claude
+codex:
+  primary:
+    feature_overrides: {}
 test_cmd: ""          # required when any flow uses merge_barrier, e.g. "scripts/verify"
 plan_review:
   policy_id: manual-default

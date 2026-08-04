@@ -52,6 +52,35 @@ func TestInitCreatesTree(t *testing.T) {
 	}
 }
 
+func TestScaffoldCodexDefaultsAreExplicitAndTerminal(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	generatedBytes, err := os.ReadFile(filepath.Join(root, ".watchtower", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := repocfg.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generated.CodexPolicy() != repocfg.CodexPolicyTerminal || generated.Codex.Fallback != nil || len(generated.Codex.Primary.FeatureOverrides) != 0 {
+		t.Fatalf("generated Codex defaults = %+v, policy=%q", generated.Codex, generated.CodexPolicy())
+	}
+	if !strings.Contains(string(generatedBytes), "codex:\n") || !strings.Contains(string(generatedBytes), "feature_overrides: {}") {
+		t.Fatalf("generated config omits explicit primary feature map:\n%s", generatedBytes)
+	}
+
+	shippedBytes, err := os.ReadFile(filepath.Join("..", "..", "dist", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shippedBytes), "codex:\n") || !strings.Contains(string(shippedBytes), "feature_overrides: {}") || strings.Contains(string(shippedBytes), "fallback:") {
+		t.Fatalf("shipped config does not document terminal Codex defaults:\n%s", shippedBytes)
+	}
+}
+
 func TestScaffoldShipsManualPlanReviewDefaults(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := Init(root); err != nil {
