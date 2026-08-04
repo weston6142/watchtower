@@ -1502,6 +1502,16 @@ func (s *Store) PersistActiveRun(run RunState) error {
 		return err
 	}
 	defer tx.Rollback()
+	var issueState string
+	if err := tx.QueryRow(`SELECT state FROM issues WHERE id=?`, run.IssueID).Scan(&issueState); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("issue %s not found", run.IssueID)
+		}
+		return err
+	}
+	if issueState == "paused" {
+		return tx.Commit()
+	}
 	if err := upsertRunState(tx, run, "active"); err != nil {
 		return err
 	}

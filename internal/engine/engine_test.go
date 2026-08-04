@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -168,8 +169,8 @@ func TestRehydrateKeepsPausedRunPausedAndIdempotent(t *testing.T) {
 	if err := s.PersistPausedRun(want); err != nil {
 		t.Fatal(err)
 	}
-	starts := 0
-	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"plan/agent": {}}, OnStart: func(_, _, _, _ string) error { starts++; return nil }}
+	var starts atomic.Int32
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"plan/agent": {}}, OnStart: func(_, _, _, _ string) error { starts.Add(1); return nil }}
 	e := newEngineOnFileWithFlow(t, s, r, t.TempDir(), f)
 	if err := e.Rehydrate(); err != nil {
 		t.Fatal(err)
@@ -179,8 +180,8 @@ func TestRehydrateKeepsPausedRunPausedAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := countEventType(t, s, "GH-36", core.EvStageFailed)
-	if before != 0 || after != 0 || starts != 0 {
-		t.Fatalf("paused rehydrate changed failure events or started work: before=%d after=%d starts=%d", before, after, starts)
+	if before != 0 || after != 0 || starts.Load() != 0 {
+		t.Fatalf("paused rehydrate changed failure events or started work: before=%d after=%d starts=%d", before, after, starts.Load())
 	}
 	if row := issueRow(t, s, "GH-36"); row.State != "paused" {
 		t.Fatalf("paused issue state = %q, want paused", row.State)
@@ -193,11 +194,11 @@ func TestRehydrateKeepsPausedRunPausedAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for starts == 0 && time.Now().Before(deadline) {
+	for starts.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if starts != 1 {
-		t.Fatalf("resume starts = %d, want 1", starts)
+	if starts.Load() != 1 {
+		t.Fatalf("resume starts = %d, want 1", starts.Load())
 	}
 }
 

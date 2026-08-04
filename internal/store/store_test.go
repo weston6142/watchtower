@@ -160,6 +160,33 @@ func TestPausePersistenceFailureLeavesPriorStateAuthoritative(t *testing.T) {
 	}
 }
 
+func TestActiveSnapshotDoesNotOverwritePausedRun(t *testing.T) {
+	s := pausedRunTestStore(t)
+	if err := s.UpsertIssue(IssueRow{ID: "GH-36", State: "running", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	paused := RunState{
+		IssueID: "GH-36", Lifecycle: "paused", Stage: "plan", StageIndex: 0,
+		Boundary: "before_stage", Artifacts: []string{"plan.md"},
+	}
+	if err := s.PersistPausedRun(paused); err != nil {
+		t.Fatal(err)
+	}
+	active := paused
+	active.Lifecycle = "active"
+	active.Boundary = "in_stage"
+	if err := s.PersistActiveRun(active); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadRunState("GH-36")
+	if err != nil || !ok {
+		t.Fatalf("load run state = %+v, ok=%v, err=%v", got, ok, err)
+	}
+	if !reflect.DeepEqual(got, paused) {
+		t.Fatalf("active snapshot overwrote paused run: got %+v, want %+v", got, paused)
+	}
+}
+
 func TestLegacyIssueDefaultsToManualPlanReview(t *testing.T) {
 	database := t.TempDir() + "/legacy.db"
 	db, err := sql.Open("sqlite", database)
