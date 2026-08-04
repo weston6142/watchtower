@@ -63,6 +63,9 @@ type Model struct {
 	reconnectCancel        context.CancelFunc
 	reconnectAttemptActive bool
 	shuttingDown           bool
+	reconnectFocus         Focus
+	reconnectModes         []string
+	focusPinnedEmpty       bool
 	stages                 []string
 	lastSeq                int64
 	dismissed              map[int64]bool
@@ -108,44 +111,54 @@ type Model struct {
 	ticks           int
 }
 
-type Msg struct{ Events []core.Event }
+type Msg struct {
+	generation uint64
+	Events     []core.Event
+}
 
 type tickMsg struct{}
 
 type pollErrorMsg struct {
 	generation uint64
 	err        error
+	transport  bool
 }
 
 type overviewMsg struct {
-	overview *proto.Overview
-	err      error
+	generation uint64
+	overview   *proto.Overview
+	err        error
 }
 
 type detailMsg struct {
-	detail *proto.IssueDetail
-	err    error
+	generation uint64
+	detail     *proto.IssueDetail
+	err        error
 }
 
 type answerMsg struct {
+	generation uint64
 	decisionID int64
 	response   proto.Response
 	err        error
 }
 
 type archMsg struct {
-	arch *archmap.Map
-	err  error
+	generation uint64
+	arch       *archmap.Map
+	err        error
 }
 
 type proposalsMsg struct {
-	proposals []store.ProposalRow
-	err       error
+	generation uint64
+	proposals  []store.ProposalRow
+	err        error
 }
 
 type transcriptMsg struct {
-	lines []string
-	err   error
+	generation uint64
+	lines      []string
+	err        error
 }
 
 type confirmState struct {
@@ -160,31 +173,36 @@ type decisionEditor struct {
 }
 
 type commandMsg struct {
-	response proto.Response
-	err      error
+	generation uint64
+	response   proto.Response
+	err        error
 }
 
 type leverApplyMsg struct {
-	response proto.Response
-	values   map[string]string
-	err      error
+	generation uint64
+	response   proto.Response
+	values     map[string]string
+	err        error
 }
 
 type setupMsg struct {
-	view *proto.SetupView
-	err  error
+	generation uint64
+	view       *proto.SetupView
+	err        error
 }
 
 type setupPromptMsg struct {
-	stage string
-	pkg   string
-	lines []string
-	err   error
+	generation uint64
+	stage      string
+	pkg        string
+	lines      []string
+	err        error
 }
 
 type createIssueMsg struct {
-	response proto.Response
-	err      error
+	generation uint64
+	response   proto.Response
+	err        error
 }
 
 type backlogState struct{ Sel int }
@@ -299,6 +317,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 	case Msg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		m = m.applyEvents(msg.Events)
 		if m.currentMode() == "timeline" {
 			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
@@ -308,8 +329,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.tick()
 	case pollErrorMsg:
-		if msg.generation != 0 && msg.generation != m.generation {
+		if m.staleGeneration(msg.generation) {
 			return m, nil
+		}
+		if !msg.transport {
+			if msg.err != nil {
+				m.Err = msg.err.Error()
+			}
+			return m, m.tick()
 		}
 		return m, m.beginReconnect(msg.err)
 	case reconnectTimerMsg:
@@ -318,26 +345,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.startReconnectAttempt(msg.generation)
 	case reconnectAttemptMsg:
-		if msg.generation != m.generation || m.connection != connectionReconnecting || m.shuttingDown {
-			if msg.session != nil {
-				_ = msg.session.Close()
-			}
-			return m, nil
-		}
-		if msg.err != nil || msg.session == nil {
-			if msg.session != nil {
-				_ = msg.session.Close()
-			}
-			return m, m.retryAfterReconnectFailure(msg.generation)
-		}
-		m.reconnectAttemptActive = false
-		m.client = msg.session
-		m.connection = connectionConnected
-		m.retryDelay = initialRetryDelay
-		return m, m.tick()
+		return m, m.applyReconnectAttempt(msg)
 	case reconnectCanceledMsg:
 		return m, nil
 	case overviewMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -348,6 +362,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case proposalsMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -356,6 +373,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.doorSel = min(m.doorSel, max(0, len(m.proposals)-1))
 		return m, nil
 	case transcriptMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -369,6 +389,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.doorLines = msg.lines
 		return m, nil
 	case detailMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			m.openArtifacts = false
@@ -401,6 +424,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case answerMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -414,6 +440,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case commandMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -423,6 +452,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case leverApplyMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -438,6 +470,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.leverEditor = nil
 		return m, nil
 	case setupMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		m.wantSetup = false
 		if msg.err != nil {
 			m.Err = msg.err.Error()
@@ -447,6 +482,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setup.clampTop(m.Height)
 		return m, nil
 	case setupPromptMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if m.setup == nil {
 			// f closed the panel while the fetch was in flight. Opening the
 			// pager now would strand it with no outline underneath and Files
@@ -468,6 +506,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case createIssueMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -482,6 +523,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modal = nil
 		return m, nil
 	case archMsg:
+		if m.staleGeneration(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.Err = msg.err.Error()
 			return m, nil
@@ -504,6 +548,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.help = false
 			}
 			return m, nil
+		}
+		if m.focusPinnedEmpty && isNavigationKey(key) {
+			m.focusPinnedEmpty = false
 		}
 		if m.decisionEditor != nil {
 			switch key {
@@ -1017,9 +1064,10 @@ func (m Model) issueCommand(issueID, op string) tea.Cmd {
 		return nil
 	}
 	client := m.client
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: op, IssueID: issueID})
-		return commandMsg{response: r, err: err}
+		return commandMsg{generation: generation, response: r, err: err}
 	}
 }
 
@@ -1054,15 +1102,16 @@ func (m *Model) openSetup() tea.Cmd {
 	}
 	client := m.client
 	issueID := m.Focus.Issue
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "setup_outline", IssueID: issueID})
 		if err != nil {
-			return setupMsg{err: err}
+			return setupMsg{generation: generation, err: err}
 		}
 		if !r.OK {
-			return setupMsg{err: errors.New(r.Error)}
+			return setupMsg{generation: generation, err: errors.New(r.Error)}
 		}
-		return setupMsg{view: r.Setup}
+		return setupMsg{generation: generation, view: r.Setup}
 	}
 }
 
@@ -1090,16 +1139,17 @@ func (m Model) fetchSetupPrompt(stage, pkg string) tea.Cmd {
 	}
 	client := m.client
 	issueID, flowName := m.setup.View.IssueID, m.setup.View.Flow
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "setup_prompt", Stage: stage, Package: pkg,
 			IssueID: issueID, Flow: flowName})
 		if err != nil {
-			return setupPromptMsg{stage: stage, pkg: pkg, err: err}
+			return setupPromptMsg{generation: generation, stage: stage, pkg: pkg, err: err}
 		}
 		if !r.OK {
-			return setupPromptMsg{stage: stage, pkg: pkg, err: errors.New(r.Error)}
+			return setupPromptMsg{generation: generation, stage: stage, pkg: pkg, err: errors.New(r.Error)}
 		}
-		return setupPromptMsg{stage: stage, pkg: pkg, lines: r.Lines}
+		return setupPromptMsg{generation: generation, stage: stage, pkg: pkg, lines: r.Lines}
 	}
 }
 
@@ -1116,6 +1166,7 @@ func (m Model) applyLevers() tea.Cmd {
 		return nil
 	}
 	values := cloneStringMap(m.leverEditor.Matrix)
+	generation := m.generation
 	changed := false
 	for _, stage := range m.leverEditor.Stages {
 		if m.leverEditor.Original[stage] != m.leverEditor.Matrix[stage] {
@@ -1124,10 +1175,14 @@ func (m Model) applyLevers() tea.Cmd {
 		}
 	}
 	if !changed {
-		return func() tea.Msg { return leverApplyMsg{response: proto.Response{OK: true}, values: values} }
+		return func() tea.Msg {
+			return leverApplyMsg{generation: generation, response: proto.Response{OK: true}, values: values}
+		}
 	}
 	if m.client == nil {
-		return func() tea.Msg { return leverApplyMsg{response: proto.Response{OK: true}, values: values} }
+		return func() tea.Msg {
+			return leverApplyMsg{generation: generation, response: proto.Response{OK: true}, values: values}
+		}
 	}
 	client := m.client
 	issueID := m.leverEditor.IssueID
@@ -1140,13 +1195,13 @@ func (m Model) applyLevers() tea.Cmd {
 			}
 			r, err := client.Do(proto.Command{Op: "set_lever", IssueID: issueID, Stage: stage, Lever: values[stage]})
 			if err != nil {
-				return leverApplyMsg{err: err}
+				return leverApplyMsg{generation: generation, err: err}
 			}
 			if !r.OK {
-				return leverApplyMsg{response: r}
+				return leverApplyMsg{generation: generation, response: r}
 			}
 		}
-		return leverApplyMsg{response: proto.Response{OK: true}, values: values}
+		return leverApplyMsg{generation: generation, response: proto.Response{OK: true}, values: values}
 	}
 }
 
@@ -1169,6 +1224,7 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 	if m.client == nil {
 		return nil
 	}
+	generation := m.generation
 	flowName := strings.TrimSpace(modal.FlowName)
 	if flowName == "" {
 		flowName = "default"
@@ -1179,7 +1235,7 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 	}
 	attachments, err := resolveModalAttach(modal)
 	if err != nil {
-		return func() tea.Msg { return createIssueMsg{err: err} }
+		return func() tea.Msg { return createIssueMsg{generation: generation, err: err} }
 	}
 	client := m.client
 	return func() tea.Msg {
@@ -1187,19 +1243,19 @@ func (m Model) createIssue(modal modalState) tea.Cmd {
 			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority,
 			Attach: attachments, DependsOn: parseDependencies(modal.DependsOn)})
 		if err != nil {
-			return createIssueMsg{err: err}
+			return createIssueMsg{generation: generation, err: err}
 		}
 		if !r.OK {
-			return createIssueMsg{response: r}
+			return createIssueMsg{generation: generation, response: r}
 		}
 		started, err := client.Do(proto.Command{Op: "start_issue", IssueID: r.IssueID})
 		if err != nil {
-			return createIssueMsg{err: err}
+			return createIssueMsg{generation: generation, err: err}
 		}
 		if !started.OK {
-			return createIssueMsg{response: started}
+			return createIssueMsg{generation: generation, response: started}
 		}
-		return createIssueMsg{response: r}
+		return createIssueMsg{generation: generation, response: r}
 	}
 }
 
@@ -1216,6 +1272,7 @@ func (m Model) modalCommand(modal modalState, op, issueID string) tea.Cmd {
 	if m.client == nil {
 		return nil
 	}
+	generation := m.generation
 	flowName := strings.TrimSpace(modal.FlowName)
 	if flowName == "" {
 		flowName = "default"
@@ -1226,14 +1283,14 @@ func (m Model) modalCommand(modal modalState, op, issueID string) tea.Cmd {
 	}
 	attachments, err := resolveModalAttach(modal)
 	if err != nil {
-		return func() tea.Msg { return createIssueMsg{err: err} }
+		return func() tea.Msg { return createIssueMsg{generation: generation, err: err} }
 	}
 	client := m.client
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: op, IssueID: issueID, Title: modal.Title,
 			Body: modal.Body, Flow: flowName, Preset: preset, Priority: modal.Priority,
 			Attach: attachments, DependsOn: parseDependencies(modal.DependsOn)})
-		return createIssueMsg{response: r, err: err}
+		return createIssueMsg{generation: generation, response: r, err: err}
 	}
 }
 
@@ -1385,9 +1442,10 @@ func (m Model) answerDecision(option int) tea.Cmd {
 	client := m.client
 	decisionID := m.Toast.ID
 	actor := review.NormalizeActor(m.Actor)
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "answer_decision", DecisionID: decisionID, Option: &option, Actor: actor})
-		return answerMsg{decisionID: decisionID, response: r, err: err}
+		return answerMsg{generation: generation, decisionID: decisionID, response: r, err: err}
 	}
 }
 
@@ -1398,10 +1456,11 @@ func (m Model) answerDecisionText(text string) tea.Cmd {
 	client := m.client
 	decisionID := m.Toast.ID
 	actor := review.NormalizeActor(m.Actor)
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{
 			Op: "answer_decision", DecisionID: decisionID, Text: text, Actor: actor})
-		return answerMsg{decisionID: decisionID, response: r, err: err}
+		return answerMsg{generation: generation, decisionID: decisionID, response: r, err: err}
 	}
 }
 
@@ -1410,15 +1469,16 @@ func (m Model) fetchDetail(issueID string) tea.Cmd {
 		return nil
 	}
 	client := m.client
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "issue_detail", IssueID: issueID})
 		if err != nil {
-			return detailMsg{err: err}
+			return detailMsg{generation: generation, err: err}
 		}
 		if !r.OK {
-			return detailMsg{err: errors.New(r.Error)}
+			return detailMsg{generation: generation, err: errors.New(r.Error)}
 		}
-		return detailMsg{detail: r.Detail}
+		return detailMsg{generation: generation, detail: r.Detail}
 	}
 }
 
@@ -1428,15 +1488,16 @@ func (m Model) fetchArch() tea.Cmd {
 	}
 	client := m.client
 	repo := m.Repo
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "arch_map", Repo: repo})
 		if err != nil {
-			return archMsg{err: err}
+			return archMsg{generation: generation, err: err}
 		}
 		if !r.OK {
-			return archMsg{err: errors.New(r.Error)}
+			return archMsg{generation: generation, err: errors.New(r.Error)}
 		}
-		return archMsg{arch: r.Arch}
+		return archMsg{generation: generation, arch: r.Arch}
 	}
 }
 
@@ -1456,7 +1517,13 @@ func (m Model) applyEvents(evs []core.Event) Model {
 		titles[id] = issue.Title
 	}
 	m.Ids = Identify(m.State.Order, titles)
-	m.Focus = normalizeFocus(m.Focus, m.State, m.stages, m.retired)
+	if m.focusPinnedEmpty {
+		if m.Focus.Issue != "" && m.State.Issues[m.Focus.Issue] == nil {
+			m.Focus = Focus{}
+		}
+	} else {
+		m.Focus = normalizeFocus(m.Focus, m.State, m.stages, m.retired)
+	}
 	if m.dismissed == nil {
 		m.dismissed = map[int64]bool{}
 	}
@@ -1490,26 +1557,27 @@ func (m Model) poll() tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "tail", SinceSeq: since})
 		if err != nil {
-			return pollErrorMsg{generation: generation, err: err}
+			return pollErrorMsg{generation: generation, err: err, transport: true}
 		}
 		if !r.OK {
 			return pollErrorMsg{generation: generation, err: errors.New(r.Error)}
 		}
-		return Msg{Events: r.Events}
+		return Msg{generation: generation, Events: r.Events}
 	}
 }
 
 func (m Model) pollOverview() tea.Cmd {
 	client := m.client
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "overview"})
 		if err != nil {
-			return overviewMsg{err: err}
+			return overviewMsg{generation: generation, err: err}
 		}
 		if !r.OK {
-			return overviewMsg{err: errors.New(r.Error)}
+			return overviewMsg{generation: generation, err: errors.New(r.Error)}
 		}
-		return overviewMsg{overview: r.Overview}
+		return overviewMsg{generation: generation, overview: r.Overview}
 	}
 }
 
@@ -1751,15 +1819,16 @@ func (m Model) fetchProposals() tea.Cmd {
 		return nil
 	}
 	client := m.client
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "list_proposals"})
 		if err != nil {
-			return proposalsMsg{err: err}
+			return proposalsMsg{generation: generation, err: err}
 		}
 		if !r.OK {
-			return proposalsMsg{err: errors.New(r.Error)}
+			return proposalsMsg{generation: generation, err: errors.New(r.Error)}
 		}
-		return proposalsMsg{proposals: r.Proposals}
+		return proposalsMsg{generation: generation, proposals: r.Proposals}
 	}
 }
 
@@ -1769,18 +1838,19 @@ func (m Model) resolveProposal(accept bool) tea.Cmd {
 	}
 	client := m.client
 	proposalID := m.proposals[m.doorSel].ID
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "resolve_proposal", ProposalID: proposalID, Accept: accept, Flow: "default", Preset: "regular"})
 		if err == nil && r.OK && accept && r.IssueID != "" {
 			_, err = client.Do(proto.Command{Op: "start_issue", IssueID: r.IssueID})
 		}
 		if err != nil {
-			return proposalsMsg{err: err}
+			return proposalsMsg{generation: generation, err: err}
 		}
 		if !r.OK {
-			return proposalsMsg{err: errors.New(r.Error)}
+			return proposalsMsg{generation: generation, err: errors.New(r.Error)}
 		}
-		return proposalsMsg{}
+		return proposalsMsg{generation: generation}
 	}
 }
 
@@ -1790,15 +1860,16 @@ func (m Model) fetchTranscript() tea.Cmd {
 	}
 	client := m.client
 	issueID := m.Focus.Issue
+	generation := m.generation
 	return func() tea.Msg {
 		r, err := client.Do(proto.Command{Op: "transcript_tail", IssueID: issueID, N: 200})
 		if err != nil {
-			return transcriptMsg{err: err}
+			return transcriptMsg{generation: generation, err: err}
 		}
 		if !r.OK {
-			return transcriptMsg{err: errors.New(r.Error)}
+			return transcriptMsg{generation: generation, err: errors.New(r.Error)}
 		}
-		return transcriptMsg{lines: r.Lines}
+		return transcriptMsg{generation: generation, lines: r.Lines}
 	}
 }
 
