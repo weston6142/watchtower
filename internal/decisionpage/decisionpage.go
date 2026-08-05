@@ -62,6 +62,12 @@ type Excerpt struct {
 	Cite string
 }
 
+// Proof pairs one verified result with the source that demonstrates it.
+type Proof struct {
+	Claim string
+	Cite  string
+}
+
 type FileRow struct {
 	Path     string
 	Added    int
@@ -70,18 +76,26 @@ type FileRow struct {
 }
 
 type Briefing struct {
-	Question       string
-	AgentLabel     string
-	Importance     float64
-	Reversible     string
-	Options        []Option
+	Question          string
+	AgentLabel        string
+	Importance        float64
+	Reversible        string
+	Action            string
+	Recommendation    string
+	RecommendationWhy string
+	Options           []Option
+	Proof             []Proof
+	ProofMissing      bool
+	AfterAnswer       string
+	// Wins and NextAction remain only until legacy engine page assembly is
+	// replaced by the structured briefing builder.
 	Wins           []string
+	NextAction     string
 	DiagramSVG     template.HTML
 	DiagramCaption string
 	DiagramMissing bool
 	Excerpts       []Excerpt
 	OverrideNote   string
-	NextAction     string
 	EvidenceDocs   []string
 }
 
