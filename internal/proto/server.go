@@ -461,6 +461,9 @@ func (sv *Server) overview() (Overview, error) {
 		if state == "done" || state == "done (unmerged)" || state == "merged" || state == "abandoned" {
 			continue
 		}
+		if state == "paused" {
+			continue
+		}
 		if ev, ok := latest[issue.ID]; ok {
 			switch ev.Type {
 			case core.EvStageFailed, core.EvFinalizationFailed:

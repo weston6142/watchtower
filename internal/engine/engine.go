@@ -150,6 +150,9 @@ type issueState struct {
 	stageCancel         context.CancelFunc
 	killRequested       bool
 	stageIdx            int
+	paused              bool
+	pauseRequested      bool
+	pauseStage          int
 	terminal            bool
 	running             bool
 	draft               bool
@@ -381,6 +384,9 @@ func (e *Engine) Rehydrate() error {
 		if row.Review == nil {
 			continue
 		}
+		if issue, ok := issueRows[row.IssueID]; ok && issue.State == "paused" {
+			continue
+		}
 		if previous := reviewCheckpointIDs[row.IssueID]; previous >= row.Review.CheckpointID {
 			continue
 		}
@@ -427,6 +433,22 @@ func (e *Engine) Rehydrate() error {
 			continue
 		}
 		if row.State == "done" || row.State == "done (unmerged)" || row.State == "merged" || row.State == "abandoned" {
+			continue
+		}
+		if row.State == "paused" {
+			e.mu.Lock()
+			_, known := e.issues[row.ID]
+			e.mu.Unlock()
+			if known {
+				continue
+			}
+			is, err := e.restorePersistedRun(row)
+			if err != nil {
+				return err
+			}
+			e.mu.Lock()
+			e.issues[row.ID] = is
+			e.mu.Unlock()
 			continue
 		}
 		integration, hasIntegration, err := e.cfg.Store.IssueIntegration(row.ID)
@@ -481,6 +503,34 @@ func (e *Engine) Rehydrate() error {
 				}
 				e.mu.Unlock()
 			}(integration)
+			continue
+		}
+		run, hasRun, err := e.cfg.Store.LoadRunState(row.ID)
+		if err != nil {
+			return err
+		}
+		if hasRun && run.Lifecycle == "active" &&
+			(row.State == "running" || strings.HasPrefix(row.State, "running:")) {
+			e.mu.Lock()
+			_, known := e.issues[row.ID]
+			e.mu.Unlock()
+			if known {
+				continue
+			}
+			is, err := e.restorePersistedRun(row)
+			if err != nil {
+				return err
+			}
+			stage, attempt, of, _, _ := e.cfg.Store.LastStageEvents(row.ID)
+			if stage == "" {
+				stage = run.Stage
+			}
+			e.mu.Lock()
+			e.issues[row.ID] = is
+			e.mu.Unlock()
+			e.emit(core.EvStageFailed, row.ID, map[string]any{
+				"stage": stage, "attempt": attempt, "of": of,
+				"error": "daemon restarted — press R to retry", "final": true})
 			continue
 		}
 		if row.State == "backlog" {
@@ -608,6 +658,40 @@ func matrixFromStrings(values map[string]string) levers.Matrix {
 		matrix[stage] = flow.Lever(value)
 	}
 	return matrix
+}
+
+func (e *Engine) restorePersistedRun(row store.IssueRow) (*issueState, error) {
+	run, ok, err := e.cfg.Store.LoadRunState(row.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("paused or active issue %s has no persisted run state", row.ID)
+	}
+	if run.Lifecycle != "paused" && run.Lifecycle != "active" {
+		return nil, fmt.Errorf("issue %s has unsupported run lifecycle %q", row.ID, run.Lifecycle)
+	}
+	f, ok := e.cfg.Flows[row.Flow]
+	if !ok {
+		return nil, fmt.Errorf("flow %q is not configured", row.Flow)
+	}
+	if run.StageIndex < 0 || run.StageIndex >= len(f.Stages) {
+		return nil, fmt.Errorf("run state for %s has invalid stage index %d", row.ID, run.StageIndex)
+	}
+	if f.Stages[run.StageIndex].Name != run.Stage {
+		return nil, fmt.Errorf("run state for %s names stage %q at index %d", row.ID, run.Stage, run.StageIndex)
+	}
+	is := &issueState{
+		id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+		matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+		dependsOn: append([]string(nil), row.DependsOn...), stageIdx: run.StageIndex,
+		terminal: true, paused: run.Lifecycle == "paused", pauseStage: run.StageIndex,
+		planReview: row.PlanReviewPolicy,
+	}
+	if err := e.restorePersistedWorkspace(is, run); err != nil {
+		return nil, fmt.Errorf("restore run %s: %w", row.ID, err)
+	}
+	return is, nil
 }
 
 func (e *Engine) SetDependencies(issueID string, parents []string) error {
@@ -743,14 +827,51 @@ func (e *Engine) CanReset() error {
 // Pause stops an issue at the next boundary between stages.
 func (e *Engine) Pause(issueID string) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	is, ok := e.issues[issueID]
 	if !ok {
+		e.mu.Unlock()
 		return fmt.Errorf("unknown issue %s", issueID)
 	}
+	if is.paused || is.pauseRequested {
+		e.mu.Unlock()
+		return nil
+	}
+	previousGate := is.pauseGate
+	previousRequested := is.pauseRequested
+	previousPaused := is.paused
+	previousStage := is.pauseStage
 	if is.pauseGate == nil {
 		is.pauseGate = make(chan struct{})
 	}
+	is.pauseRequested = true
+	is.pauseStage = is.stageIdx
+	if is.running {
+		is.pauseStage++
+	}
+	gate := is.pauseGate
+	stageIdx := is.pauseStage
+	e.mu.Unlock()
+
+	run, err := e.runState(is, stageIdx, "paused", "before_stage")
+	if err == nil {
+		err = e.cfg.Store.PersistPausedRun(run)
+	}
+	if err != nil {
+		e.mu.Lock()
+		if is.pauseGate == gate {
+			is.pauseGate = previousGate
+			is.pauseRequested = previousRequested
+			is.paused = previousPaused
+			is.pauseStage = previousStage
+		}
+		e.mu.Unlock()
+		return err
+	}
+	e.mu.Lock()
+	if is.pauseGate == gate {
+		is.paused = true
+	}
+	e.mu.Unlock()
 	return nil
 }
 
@@ -766,25 +887,52 @@ func (e *Engine) Resume(issueID string) error {
 		e.mu.Unlock()
 		return fmt.Errorf("unknown issue %s", issueID)
 	}
-	if is.running {
-		if is.pauseGate == nil {
-			e.mu.Unlock()
+	running := is.running
+	gate := is.pauseGate
+	terminal := is.terminal
+	startIdx := is.stageIdx
+	paused := is.paused || is.pauseRequested
+	e.mu.Unlock()
+	if running {
+		if gate == nil || !paused {
 			return fmt.Errorf("issue %s is not paused", issueID)
 		}
-		close(is.pauseGate)
-		is.pauseGate = nil
+		if err := e.persistResumeState(is, startIdx); err != nil {
+			return err
+		}
+		e.mu.Lock()
+		if is.pauseGate == gate {
+			close(gate)
+			is.pauseGate = nil
+			is.pauseRequested = false
+			is.paused = false
+		}
 		e.mu.Unlock()
 		return nil
 	}
 	// terminal, not merely stopped: a lane created and paused before it ever
 	// started must stay unstarted, and only clear its gate.
-	if !is.terminal {
+	if !terminal {
+		if !paused {
+			return nil
+		}
+		if err := e.persistResumeState(is, startIdx); err != nil {
+			return err
+		}
+		e.mu.Lock()
 		is.pauseGate = nil
+		is.pauseRequested = false
+		is.paused = false
 		e.mu.Unlock()
 		return nil
 	}
-	startIdx := is.stageIdx
+	if err := e.persistResumeState(is, startIdx); err != nil {
+		return err
+	}
+	e.mu.Lock()
 	is.pauseGate = nil
+	is.pauseRequested = false
+	is.paused = false
 	is.killRequested = false
 	is.terminal = false
 	e.mu.Unlock()
@@ -792,6 +940,59 @@ func (e *Engine) Resume(issueID string) error {
 	// stage_failed events, not in the caller's response.
 	go e.runAndRecord(context.Background(), is, startIdx)
 	return nil
+}
+
+func (e *Engine) runState(is *issueState, stageIdx int, lifecycle, boundary string) (store.RunState, error) {
+	e.mu.Lock()
+	flowName := is.flowName
+	issueID := is.id
+	worktree := is.wsPath
+	branch := is.branch
+	baseRef := is.baseRef
+	e.mu.Unlock()
+	f, ok := e.cfg.Flows[flowName]
+	if !ok {
+		return store.RunState{}, fmt.Errorf("flow %q is not configured", flowName)
+	}
+	if stageIdx < 0 || stageIdx >= len(f.Stages) {
+		return store.RunState{}, fmt.Errorf("stage index %d is outside flow %q", stageIdx, flowName)
+	}
+	artifacts, err := e.cfg.Store.ArtifactPaths(issueID)
+	if err != nil {
+		return store.RunState{}, err
+	}
+	return store.RunState{
+		IssueID: issueID, Lifecycle: lifecycle, Stage: f.Stages[stageIdx].Name,
+		StageIndex: stageIdx, Boundary: boundary, Worktree: worktree,
+		Branch: branch, BaseRef: baseRef, Artifacts: artifacts,
+	}, nil
+}
+
+func (e *Engine) resumeRunState(is *issueState, stageIdx int) (store.RunState, error) {
+	run, ok, err := e.cfg.Store.LoadRunState(is.id)
+	if err != nil {
+		return store.RunState{}, err
+	}
+	if ok {
+		return run, nil
+	}
+	return e.runState(is, stageIdx, "active", "in_stage")
+}
+
+func (e *Engine) persistResumeState(is *issueState, stageIdx int) error {
+	run, err := e.resumeRunState(is, stageIdx)
+	if err != nil {
+		return err
+	}
+	return e.cfg.Store.ResumeRun(run)
+}
+
+func (e *Engine) persistActiveRun(is *issueState, stageIdx int) error {
+	run, err := e.runState(is, stageIdx, "active", "in_stage")
+	if err != nil {
+		return err
+	}
+	return e.cfg.Store.PersistActiveRun(run)
 }
 
 // KillStage cancels only the currently running stage and leaves the issue
@@ -2903,9 +3104,24 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plan
 		e.mu.Lock()
 		is.stageIdx = i
 		gate := is.pauseGate
+		pauseStage := is.pauseStage
 		e.mu.Unlock()
 		if gate != nil {
-			e.emit(core.EvIssuePaused, is.id, map[string]string{"stage": st.Name})
+			if pauseStage == 0 && i != 0 {
+				pauseStage = i
+			}
+			paused, err := e.runState(is, pauseStage, "paused", "before_stage")
+			if err != nil {
+				return err
+			}
+			if err := e.cfg.Store.PersistPausedRun(paused); err != nil {
+				return err
+			}
+			e.mu.Lock()
+			is.pauseStage = pauseStage
+			is.paused = true
+			e.mu.Unlock()
+			e.emit(core.EvIssuePaused, is.id, map[string]string{"stage": paused.Stage})
 			select {
 			case <-gate:
 				e.emit(core.EvIssueResumed, is.id, nil)
@@ -2943,6 +3159,9 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plan
 			is.wsPath, is.wsRelease = path, release
 			is.branch, is.baseRef = branch, baseRef
 			e.mu.Unlock()
+		}
+		if err := e.persistActiveRun(is, i); err != nil {
+			return err
 		}
 		if err := e.checkBudget(is, st.Name); err != nil {
 			return err

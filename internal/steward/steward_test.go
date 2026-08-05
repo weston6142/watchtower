@@ -58,6 +58,22 @@ func TestStewardProjectsIssueTable(t *testing.T) {
 	}
 }
 
+func TestStewardProjectsPauseAndResumeLifecycle(t *testing.T) {
+	s := newTestStore(t)
+	st := &Steward{Store: s}
+	st.Observe(ev(t, core.EvIssueCreated, "GH-36", map[string]any{
+		"title": "paused", "flow": "default",
+	}))
+	st.Observe(ev(t, core.EvIssuePaused, "GH-36", map[string]string{"stage": "plan"}))
+	if row := findRow(t, s, "GH-36"); row.State != "paused" {
+		t.Fatalf("paused state = %q, want paused", row.State)
+	}
+	st.Observe(ev(t, core.EvIssueResumed, "GH-36", nil))
+	if row := findRow(t, s, "GH-36"); row.State != "running" {
+		t.Fatalf("resumed state = %q, want running", row.State)
+	}
+}
+
 func TestStewardMarksAbandoned(t *testing.T) {
 	s, _ := store.Open("file:st_abandon?mode=memory&cache=shared")
 	defer s.Close()

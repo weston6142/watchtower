@@ -168,17 +168,23 @@ deletes no prior artifacts, decisions, or checkpoints.
 Two state vocabularies exist and do not match — reading the wrong one is a
 live source of bugs:
 
-- **Store** (`IssueRow.State`) is written only by the steward's `setState` (plus
-  the initial `running` from `Engine.CreateIssue`). It uses a stage-qualified
+- **Store** (`IssueRow.State`) is written by the steward's `setState`, the
+  initial `running` from `Engine.CreateIssue`, and the transactional pause /
+  resume persistence path. It uses a stage-qualified
   running form — `running:spec` — plus `backlog`, `claimed`, `verifying`, `waiting:integration`,
-  `integrating`, `failed`, `failed:finalize`, `waiting_decision`, `done`,
+  `integrating`, `paused`, `failed`, `failed:finalize`, `waiting_decision`, `done`,
   `done (unmerged)`, `merged`, `cleanup_needed`, `abandoned`. A
   `cleanup_needed` issue is already semantically merged: dependents wake, while
   the exact worktree-release or safe branch-delete operation remains visible
   and retryable without rerunning stages, merge, or verification. There is
-  **no** `paused` here: the
-  steward has no `issue_paused`/`issue_resumed` case, and `Engine.Pause` is a
-  purely in-memory `pauseGate`. Pause does not survive a daemon restart.
+  also a durable `paused` run state. It records the stage boundary together
+  with the issue, worktree, branch, base, and artifact references. The steward
+  projects existing `issue_paused`/`issue_resumed` events to `paused`/`running`.
+  A paused row rehydrates without a worker, failure event, or overview count;
+  `p` / `watchtower resume <issue-id>` resumes its preserved boundary, and a
+  repeated resume request does not start duplicate execution. A missing worker
+  enters interrupted-stage recovery only when the persisted run state was
+  `active`.
 - **Projection** (`IssueView.State`, what the TUI sees) uses plain `running`,
   never `running:<stage>`; the stage lives in `CurrentStage`. It adds
   `queued_for_slot`, `claimed`, and `paused`, and shares the four explicit finalization

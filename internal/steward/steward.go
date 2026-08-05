@@ -77,6 +77,10 @@ func (st *Steward) Observe(ev core.Event) {
 		setState("waiting_decision")
 	case core.EvDecisionAnswered:
 		setState("running")
+	case core.EvIssuePaused:
+		setState("paused")
+	case core.EvIssueResumed:
+		setState("running")
 	case core.EvStageFailed:
 		setState("failed")
 	case core.EvVerificationReady:

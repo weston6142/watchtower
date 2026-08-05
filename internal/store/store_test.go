@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -75,6 +76,114 @@ func TestRunnerAttemptsPersistSafeLifecycleAcrossReopen(t *testing.T) {
 	unused, err := s.LoadOperation(context.Background(), "unused-operation")
 	if err != nil || len(unused) != 0 {
 		t.Fatalf("unused operation = %+v, err = %v", unused, err)
+	}
+}
+
+func pausedRunTestStore(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open("file:pause-run-" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func pausedRunIssue(t *testing.T, s *Store, id string) IssueRow {
+	t.Helper()
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID == id {
+			return row
+		}
+	}
+	t.Fatalf("issue %s not found", id)
+	return IssueRow{}
+}
+
+func TestPausedRunStateRoundTripsAndResumes(t *testing.T) {
+	s := pausedRunTestStore(t)
+	if err := s.UpsertIssue(IssueRow{
+		ID: "GH-36", Title: "paused", State: "running:execute", Flow: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := RunState{
+		IssueID: "GH-36", Lifecycle: "paused", Stage: "execute", StageIndex: 3,
+		Boundary: "before_stage", Worktree: "/work/GH-36", Branch: "issue/GH-36",
+		BaseRef: "base-sha", Artifacts: []string{"brainstorm.md", "spec.md", "plan.md"},
+	}
+	if err := s.PersistPausedRun(want); err != nil {
+		t.Fatal(err)
+	}
+	row := pausedRunIssue(t, s, "GH-36")
+	if row.State != "paused" {
+		t.Fatalf("issue state = %q, want paused", row.State)
+	}
+	got, ok, err := s.LoadRunState("GH-36")
+	if err != nil || !ok {
+		t.Fatalf("load paused run = %+v, ok=%v, err=%v", got, ok, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("paused run = %+v, want %+v", got, want)
+	}
+	if err := s.ResumeRun(want); err != nil {
+		t.Fatal(err)
+	}
+	if row := pausedRunIssue(t, s, "GH-36"); row.State != "running" {
+		t.Fatalf("resumed issue state = %q, want running", row.State)
+	}
+	got, ok, err = s.LoadRunState("GH-36")
+	if err != nil || !ok || got.Lifecycle != "active" || got.Stage != want.Stage || got.Worktree != want.Worktree {
+		t.Fatalf("resumed run = %+v, ok=%v, err=%v", got, ok, err)
+	}
+}
+
+func TestPausePersistenceFailureLeavesPriorStateAuthoritative(t *testing.T) {
+	s := pausedRunTestStore(t)
+	if err := s.UpsertIssue(IssueRow{ID: "GH-36", State: "running", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextPausePersistenceForTest()
+	err := s.PersistPausedRun(RunState{IssueID: "GH-36", Lifecycle: "paused", Stage: "plan", Boundary: "before_stage"})
+	if err == nil {
+		t.Fatal("pause persistence unexpectedly succeeded")
+	}
+	if row := pausedRunIssue(t, s, "GH-36"); row.State != "running" {
+		t.Fatalf("failed pause changed issue state to %q", row.State)
+	}
+	if _, ok, loadErr := s.LoadRunState("GH-36"); loadErr != nil || ok {
+		t.Fatalf("failed pause left a run record: ok=%v err=%v", ok, loadErr)
+	}
+}
+
+func TestActiveSnapshotDoesNotOverwritePausedRun(t *testing.T) {
+	s := pausedRunTestStore(t)
+	if err := s.UpsertIssue(IssueRow{ID: "GH-36", State: "running", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	paused := RunState{
+		IssueID: "GH-36", Lifecycle: "paused", Stage: "plan", StageIndex: 0,
+		Boundary: "before_stage", Artifacts: []string{"plan.md"},
+	}
+	if err := s.PersistPausedRun(paused); err != nil {
+		t.Fatal(err)
+	}
+	active := paused
+	active.Lifecycle = "active"
+	active.Boundary = "in_stage"
+	if err := s.PersistActiveRun(active); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadRunState("GH-36")
+	if err != nil || !ok {
+		t.Fatalf("load run state = %+v, ok=%v, err=%v", got, ok, err)
+	}
+	if !reflect.DeepEqual(got, paused) {
+		t.Fatalf("active snapshot overwrote paused run: got %+v, want %+v", got, paused)
 	}
 }
 
