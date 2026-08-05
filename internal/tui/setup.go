@@ -77,7 +77,7 @@ func setupOnOff(b bool) string {
 	return "off"
 }
 
-// retryWord pluralizes the retry count; "1 retrys" reads as a bug.
+// retryWord pluralizes the retry count; "1 retry" reads as a bug.
 func retryWord(n int) string {
 	if n == 1 {
 		return "retry"
