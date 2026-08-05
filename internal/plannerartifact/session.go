@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const plannerSessionEnv = "WATCHTOWER_PLANNER_SESSION"
@@ -61,10 +62,24 @@ func Initialize(workdir string) (*Session, error) {
 }
 
 func OpenFromEnv(workdir string) (*Session, error) {
+	return openFromState(workdir, os.Getenv(plannerSessionEnv))
+}
+
+func OpenFromEnvironment(workdir string, env []string) (*Session, error) {
+	stateDir := ""
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && key == plannerSessionEnv {
+			stateDir = value
+		}
+	}
+	return openFromState(workdir, stateDir)
+}
+
+func openFromState(workdir, stateDir string) (*Session, error) {
 	if err := validateWorkdir(workdir); err != nil {
 		return nil, err
 	}
-	stateDir := os.Getenv(plannerSessionEnv)
 	if stateDir == "" {
 		return nil, fmt.Errorf("planner session environment is missing")
 	}

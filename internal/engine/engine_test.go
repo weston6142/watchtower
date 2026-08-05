@@ -524,8 +524,8 @@ func TestPlannerBudgetLimitStillArchivesArtifactsAndRequestsPlanReview(t *testin
 				{Name: "read", SourceID: "STAGE.md", Fingerprint: "v1", Reservation: 1},
 				{Name: "read", SourceID: "internal/engine/engine.go", Fingerprint: "v1", Reservation: 1},
 			},
-			Artifacts: map[string]string{"plan.md": "bounded plan", "touchset.json": `{"globs":[]}`},
-			Tokens:    3, TokensKnown: true,
+			PlannerRequests: plannerArtifactRequests(),
+			Tokens:          3, TokensKnown: true,
 		},
 	}}
 	e, st := newEngineCfg(t, r, func(cfg *Config) {
@@ -990,7 +990,7 @@ func TestArtifactGateBlocksBothHandoffsUntilAccepted(t *testing.T) {
 	f := artifactGateFlow()
 	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"spec/spec-writer":              {Artifacts: map[string]string{"spec.md": "approved spec\n"}},
-		"plan/planner":                  {Artifacts: map[string]string{"plan.md": "approved plan\n", "touchset.json": `{"globs":["internal/**"]}`}},
+		"plan/planner":                  {PlannerRequests: plannerArtifactRequests()},
 		"implementation/implementation": {},
 	}}
 	e, s := newEngineCfg(t, r, func(cfg *Config) {
@@ -1117,7 +1117,7 @@ func TestArtifactGateIgnoresYoloAndRecommendedAnswer(t *testing.T) {
 	f := artifactGateFlow()
 	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"spec/spec-writer":              {Artifacts: map[string]string{"spec.md": "spec\n"}},
-		"plan/planner":                  {Artifacts: map[string]string{"plan.md": "plan\n", "touchset.json": "{}"}},
+		"plan/planner":                  {PlannerRequests: plannerArtifactRequests()},
 		"implementation/implementation": {},
 	}}
 	e, s := newEngineCfg(t, r, func(cfg *Config) { cfg.Flows = map[string]flow.Flow{"artifact-gates": f} })
@@ -3943,7 +3943,7 @@ func newEngineOnFileWithFlow(t *testing.T, s *store.Store, r runner.Runner, data
 func artifactReviewRunner() *runner.FakeRunner {
 	return &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"spec/spec-writer":              {Artifacts: map[string]string{"spec.md": "spec v1\n"}},
-		"plan/planner":                  {Artifacts: map[string]string{"plan.md": "plan v1\n", "touchset.json": "{}"}},
+		"plan/planner":                  {PlannerRequests: plannerArtifactRequests()},
 		"implementation/implementation": {},
 	}}
 }
@@ -3987,9 +3987,7 @@ func TestArtifactReviewRevisionRequiresNewTarget(t *testing.T) {
 		}
 	}
 
-	r.Scripts["plan/planner"] = runner.Script{Artifacts: map[string]string{
-		"plan.md": "plan v2\n", "touchset.json": "{\"globs\":[\"internal/**\"]}",
-	}}
+	r.Scripts["plan/planner"] = runner.Script{PlannerRequests: plannerArtifactRequests()}
 	retryDone := make(chan error, 1)
 	go func() { retryDone <- e.RetryStage(context.Background(), id) }()
 	newPlan := waitForPendingStage(t, e, "plan")

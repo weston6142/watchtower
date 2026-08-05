@@ -28,6 +28,7 @@ import (
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/priority"
 	"github.com/weston6142/watchtower/internal/proto"
@@ -1111,7 +1112,14 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 	for _, f := range flows {
 		for _, st := range f.Stages {
 			arts := map[string]string{}
+			var plannerRequests []plannerartifact.WriteRequest
+			if st.DeclaresArtifact("plan.md") && st.DeclaresArtifact("touchset.json") {
+				plannerRequests = fakePlannerRequests()
+			}
 			for _, a := range st.Artifacts {
+				if plannerRequests != nil {
+					continue
+				}
 				content := ""
 				if a == "touchset.json" {
 					content = `{"globs":["src/**"]}`
@@ -1119,15 +1127,35 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 				arts[a] = content
 			}
 			for _, ag := range st.Agents {
-				scripts[st.Name+"/"+ag.Package] = runner.Script{
-					Artifacts: arts, Tokens: 10,
+				script := runner.Script{
+					Artifacts: arts, PlannerRequests: plannerRequests, Tokens: 10,
 					SessionID: "fake-" + st.Name,
 					Lines:     []string{fmt.Sprintf("fake %s/%s complete", st.Name, ag.Package)},
 				}
+				scripts[st.Name+"/"+ag.Package] = script
 			}
 		}
 	}
 	return &runner.FakeRunner{Scripts: scripts}
+}
+
+func fakePlannerRequests() []plannerartifact.WriteRequest {
+	manifest := plannerartifact.Manifest{Sections: []plannerartifact.ManifestEntry{
+		{Key: "goal", Globs: []string{"src/gh40/goal/**"}},
+		{Key: "architecture", Globs: []string{"src/gh40/architecture/**"}},
+		{Key: "technology-stack", Globs: []string{"src/gh40/technology/**"}},
+		{Key: "execution-contract", Globs: []string{"src/gh40/contract/**"}},
+		{Key: "file-structure", Globs: []string{"src/gh40/files/**"}},
+		{Key: "task-0001", Globs: []string{"src/gh40/task-0001/**"}},
+		{Key: "verification", Globs: []string{"src/gh40/verification/**"}},
+	}}
+	requests := make([]plannerartifact.WriteRequest, 0, len(manifest.Sections))
+	for _, entry := range manifest.Sections {
+		requests = append(requests, plannerartifact.WriteRequest{
+			Manifest: manifest, Key: entry.Key, Markdown: "fake section " + entry.Key, Globs: entry.Globs,
+		})
+	}
+	return requests
 }
 
 // attachFlag collects a repeatable --attach.
