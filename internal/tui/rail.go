@@ -452,11 +452,11 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 			keyChip("enter") + dim.Render(" select  ") +
 			keyChip("y") + dim.Render(" accept ★  ")
 	}
+	// esc/dismiss lives in the box footer; repeating it here overflows the toast width.
 	hint +=
 		keyChip("o") + dim.Render(" evidence  ") +
 			keyChip("w") + dim.Render(" briefing  ") +
-			keyChip("1..9") + dim.Render(" by number  ") +
-			keyChip("esc") + dim.Render(" dismiss")
+			keyChip("1..9") + dim.Render(" by number")
 	lines = append(lines, "", hint)
 	verdict := reversibleVerdict(d.Reversible)
 	title := fmt.Sprintf("DECISION %d · %s %s", d.ID, id.Tag, d.Stage)
