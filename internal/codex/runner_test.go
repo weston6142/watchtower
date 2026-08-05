@@ -117,6 +117,33 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE"; done`))
 	}
 }
 
+func TestPlannerSessionEnvironmentReachesCodexChildWithoutArgLeak(t *testing.T) {
+	envCapture := filepath.Join(t.TempDir(), "planner-env")
+	argvCapture := filepath.Join(t.TempDir(), "planner-argv")
+	sentinel := "private-planner-session-value"
+	bin := writeStub(t, successfulStub(`
+printf '%s' "$WATCHTOWER_PLANNER_SESSION" > "$CAPTURE_ENV"
+: > "$CAPTURE_ARGV"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE_ARGV"; done`))
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"CAPTURE_ENV=" + envCapture, "CAPTURE_ARGV=" + argvCapture}
+	ctx := runner.WithPlannerArtifactEnv(context.Background(), []string{"WATCHTOWER_PLANNER_SESSION=" + sentinel})
+	res := <-r.RunPlanner(ctx, "GH-1", "plan", "executor", t.TempDir(), make(chan runner.Ask), nil)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if got, err := os.ReadFile(envCapture); err != nil {
+		t.Fatal(err)
+	} else if string(got) != sentinel {
+		t.Fatalf("child planner environment = %q, want %q", got, sentinel)
+	}
+	if got, err := os.ReadFile(argvCapture); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(got), sentinel) {
+		t.Fatalf("planner session leaked into child argv: %q", got)
+	}
+}
+
 func TestInitialAndResumedTurnsUseTheConfiguredFeatureOverride(t *testing.T) {
 	bin, state := statefulStub(t,
 		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-feature"}'

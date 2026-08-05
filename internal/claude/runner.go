@@ -95,6 +95,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 	cmd := exec.CommandContext(ctx, c.Bin, args...)
 	cmd.Dir = workdir
 	cmd.Env = append(os.Environ(), c.ExtraEnv...)
+	cmd.Env = append(cmd.Env, runner.PlannerArtifactEnv(ctx)...)
 	if env := EffortEnv(pkg.Effort); env != "" {
 		cmd.Env = append(cmd.Env, env)
 	}
