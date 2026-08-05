@@ -112,11 +112,15 @@ func main() {
 		fatal(err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|stop|init|reset|repos|tower|new|backlog|claim|release|finish|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|stop|init|reset|repos|tower|new|backlog|claim|release|finish|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail|planner-artifact> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	switch cmd {
+	case "planner-artifact":
+		if err := runPlannerArtifact(append([]string{cmd}, args...), os.Stdin, os.Stdout); err != nil {
+			fatal(err)
+		}
 	case "init":
 		fs := flag.NewFlagSet("init", flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")

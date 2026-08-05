@@ -280,6 +280,115 @@ func TestValidateCompleteValidationScopes(t *testing.T) {
 	}
 }
 
+func TestApplySectionPreservesByteSafeContentAndMergesGlobs(t *testing.T) {
+	dir := t.TempDir()
+	session, err := Initialize(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := completeManifest()
+	markdown := "Quoted 'text' and \"text\" with `backticks` and $HOME.\n```go\nfmt.Println(\"patch --> not an anchor\")\n```"
+	if err := session.Apply(requestFor(manifest, "goal", markdown)); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := os.ReadFile(filepath.Join(dir, "plan.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPlan := "# Implementation Plan\n\n<!-- watchtower-section: key=goal -->\n" + markdown + "\n<!-- watchtower-section-end: key=goal -->\n"
+	if string(plan) != wantPlan {
+		t.Fatalf("plan = %q, want %q", plan, wantPlan)
+	}
+	touchset, err := os.ReadFile(filepath.Join(dir, "touchset.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(touchset) != `{"globs":["internal/gh40/goal/**"]}` {
+		t.Fatalf("touchset = %q", touchset)
+	}
+}
+
+func TestApplyReplayAndOrderingAreSafe(t *testing.T) {
+	dir := t.TempDir()
+	session, err := Initialize(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := completeManifest()
+	goal := requestFor(manifest, "goal", "goal")
+	if err := session.Apply(goal); err != nil {
+		t.Fatal(err)
+	}
+	beforePlan := mustRead(t, filepath.Join(dir, "plan.md"))
+	beforeTouchset := mustRead(t, filepath.Join(dir, "touchset.json"))
+	if err := session.Apply(goal); err != nil {
+		t.Fatalf("equivalent replay failed: %v", err)
+	}
+	if !reflect.DeepEqual(beforePlan, mustRead(t, filepath.Join(dir, "plan.md"))) ||
+		!reflect.DeepEqual(beforeTouchset, mustRead(t, filepath.Join(dir, "touchset.json"))) {
+		t.Fatal("equivalent replay changed accepted artifacts")
+	}
+
+	conflict := requestFor(manifest, "goal", "different")
+	if err := session.Apply(conflict); err == nil || !strings.Contains(err.Error(), "key=goal") {
+		t.Fatalf("conflicting replay error = %v", err)
+	}
+	if !reflect.DeepEqual(beforePlan, mustRead(t, filepath.Join(dir, "plan.md"))) ||
+		!reflect.DeepEqual(beforeTouchset, mustRead(t, filepath.Join(dir, "touchset.json"))) {
+		t.Fatal("conflicting replay changed accepted artifacts")
+	}
+
+	if err := session.Apply(requestFor(manifest, "task-0001", "too early")); err == nil ||
+		!strings.Contains(err.Error(), "key=task-0001") {
+		t.Fatalf("out-of-order request error = %v", err)
+	}
+	if !reflect.DeepEqual(beforePlan, mustRead(t, filepath.Join(dir, "plan.md"))) ||
+		!reflect.DeepEqual(beforeTouchset, mustRead(t, filepath.Join(dir, "touchset.json"))) {
+		t.Fatal("out-of-order request changed accepted artifacts")
+	}
+}
+
+func TestExactOperationLimit(t *testing.T) {
+	manifest := completeManifest()
+	entry := manifest.Sections[0]
+	delta, err := json.Marshal(entry.Globs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		length  int
+		wantErr bool
+	}{
+		{name: "exact limit", length: MaxOperationBytes - len(delta)},
+		{name: "first byte over", length: MaxOperationBytes - len(delta) + 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			session, err := Initialize(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforePlan := mustRead(t, filepath.Join(dir, "plan.md"))
+			beforeTouchset := mustRead(t, filepath.Join(dir, "touchset.json"))
+			err = session.Apply(requestFor(manifest, "goal", strings.Repeat("x", tc.length)))
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "observed=65537") || !strings.Contains(err.Error(), "limit=65536") {
+					t.Fatalf("over-limit error = %v", err)
+				}
+				if !reflect.DeepEqual(beforePlan, mustRead(t, filepath.Join(dir, "plan.md"))) ||
+					!reflect.DeepEqual(beforeTouchset, mustRead(t, filepath.Join(dir, "touchset.json"))) {
+					t.Fatal("over-limit request changed artifacts")
+				}
+			} else if err != nil {
+				t.Fatalf("exact-limit request failed: %v", err)
+			}
+		})
+	}
+}
+
 func completeManifest() Manifest {
 	return Manifest{Sections: []ManifestEntry{
 		{Key: "goal", Globs: []string{"internal/gh40/goal/**"}},
@@ -334,6 +443,15 @@ func manifestTouchset(manifest Manifest) []byte {
 	return b
 }
 
+func requestFor(manifest Manifest, key, markdown string) WriteRequest {
+	for _, entry := range manifest.Sections {
+		if entry.Key == key {
+			return WriteRequest{Manifest: manifest, Key: key, Markdown: markdown, Globs: append([]string(nil), entry.Globs...)}
+		}
+	}
+	panic("manifest key not found: " + key)
+}
+
 func writeFile(t *testing.T, path, content string, mode os.FileMode) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), mode); err != nil {
@@ -348,4 +466,13 @@ func mustMode(t *testing.T, path string) os.FileMode {
 		t.Fatal(err)
 	}
 	return info.Mode().Perm()
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
