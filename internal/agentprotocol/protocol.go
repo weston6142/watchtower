@@ -35,6 +35,7 @@ type decisionPayload struct {
 	Why                 string              `json:"why"`
 	Consequences        []string            `json:"consequences"`
 	Reversible          string              `json:"reversible"`
+	Briefing            *levers.Briefing    `json:"briefing,omitempty"`
 }
 
 // Legacy accepts the pre-rename guildhall_* marker key. Removable once no
@@ -84,9 +85,28 @@ func ExtractDecision(text string) (levers.Decision, bool) {
 			AllowFreeform: d.AllowFreeform, Importance: d.Importance,
 			Paths: d.Paths, Why: d.Why,
 			Consequences: d.Consequences, Reversible: d.Reversible,
+			Briefing: normalizeBriefing(d.Briefing, len(d.Options)),
 		}, true
 	}
 	return levers.Decision{}, false
+}
+
+func normalizeBriefing(briefing *levers.Briefing, optionCount int) *levers.Briefing {
+	if briefing == nil {
+		return nil
+	}
+
+	result := *briefing
+	if len(result.OptionDetails) != 0 && len(result.OptionDetails) != optionCount {
+		result.OptionDetails = nil
+	}
+	if len(result.Wins) > 5 {
+		result.Wins = result.Wins[:5]
+	}
+	if len(result.Excerpts) > 3 {
+		result.Excerpts = result.Excerpts[:3]
+	}
+	return &result
 }
 
 type proposalPayload struct {
