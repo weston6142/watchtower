@@ -165,10 +165,11 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 			pendingTools = append(pendingTools, decisions...)
 			emit(ev)
 			if d, found := agentprotocol.ExtractDecision(ev.Text); found {
-				incomplete := d.Why == "" ||
-					(d.Kind == levers.DecisionChoice && len(d.Consequences) != len(d.Options)) ||
-					(d.Kind == levers.DecisionFreeform && len(d.Consequences) == 0)
-				if incomplete && coachCount < 2 {
+				incomplete := agentprotocol.DecisionNeedsCoaching(d)
+				if incomplete {
+					if coachCount >= 2 {
+						return abort(fmt.Errorf("claude decision remained incomplete after 2 coaching attempts"))
+					}
 					coachCount++
 					pendingReplies = append(pendingReplies, agentprotocol.CoachMessage)
 					continue

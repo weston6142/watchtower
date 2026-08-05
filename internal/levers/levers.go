@@ -27,8 +27,15 @@ const (
 // Briefing list caps, shared by protocol normalization and page rendering.
 const (
 	MaxBriefingWins     = 5
+	MaxBriefingProof    = 5
 	MaxBriefingExcerpts = 3
 )
+
+// BriefingProof pairs one verified result with the concrete source that proves it.
+type BriefingProof struct {
+	Claim string `json:"claim"`
+	Cite  string `json:"cite"`
+}
 
 // BriefingExcerpt is a quoted passage from a stage artifact, with citation.
 type BriefingExcerpt struct {
@@ -41,6 +48,7 @@ type BriefingExcerpt struct {
 type Briefing struct {
 	OptionDetails  []string          `json:"option_details"`
 	Wins           []string          `json:"wins"`
+	Proof          []BriefingProof   `json:"proof,omitempty"`
 	Excerpts       []BriefingExcerpt `json:"excerpts"`
 	OverrideNote   string            `json:"override_note"`
 	NextAction     string            `json:"next_action"`

@@ -264,9 +264,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			return res, continuation()
 		}
 		d := *decision
-		incomplete := d.Why == "" ||
-			(d.Kind == levers.DecisionChoice && len(d.Consequences) != len(d.Options)) ||
-			(d.Kind == levers.DecisionFreeform && len(d.Consequences) == 0)
+		incomplete := agentprotocol.DecisionNeedsCoaching(d)
 		if incomplete {
 			if coachCount >= 2 {
 				res.Err = fmt.Errorf("codex decision remained incomplete after 2 coaching attempts")

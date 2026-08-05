@@ -271,9 +271,12 @@ func TestDecisionBriefingRoundTrip(t *testing.T) {
 	defer s.Close()
 
 	want := &levers.Briefing{
-		Wins:       []string{"w1"},
-		NextAction: "press 1",
-		Excerpts:   []levers.BriefingExcerpt{{Text: "t", Cite: "spec.md §1"}},
+		Wins:       []string{"legacy win"},
+		NextAction: "legacy next action",
+		Proof: []levers.BriefingProof{{
+			Claim: "Focused tests pass.", Cite: "go test ./internal/decisionpage",
+		}},
+		Excerpts: []levers.BriefingExcerpt{{Text: "approved requirement", Cite: "spec.md §1"}},
 	}
 	id, err := s.InsertDecision(DecisionRow{
 		IssueID: "GH-1", Stage: "execute", Question: "Q", Options: []string{"a", "b"},
@@ -288,7 +291,9 @@ func TestDecisionBriefingRoundTrip(t *testing.T) {
 	}
 	for _, row := range rows {
 		if row.ID == id {
-			if row.Briefing == nil || row.Briefing.NextAction != "press 1" ||
+			if row.Briefing == nil || row.Briefing.NextAction != "legacy next action" ||
+				len(row.Briefing.Wins) != 1 || len(row.Briefing.Proof) != 1 ||
+				row.Briefing.Proof[0].Cite != "go test ./internal/decisionpage" ||
 				len(row.Briefing.Excerpts) != 1 || row.Briefing.Excerpts[0].Cite != "spec.md §1" {
 				t.Fatalf("briefing lost: %+v", row.Briefing)
 			}

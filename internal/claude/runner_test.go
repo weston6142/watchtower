@@ -112,12 +112,21 @@ func TestDependencyMarkerReturnsIDsAfterAcceptedDecision(t *testing.T) {
 func TestRunnerCoachesIncompleteDecision(t *testing.T) {
 	done, asks := run(t, abs(t, "testdata/coached.sh"), t.TempDir())
 	a := <-asks // must be the COACHED (v2) decision, not the v1 one
-	if a.Decision.Why == "" || len(a.Decision.Consequences) != 2 {
+	if a.Decision.Why == "" || len(a.Decision.Consequences) != 2 || a.Decision.Briefing == nil ||
+		len(a.Decision.Briefing.Proof) != 1 || a.Decision.Briefing.Proof[0].Cite != "go test ./internal/decisionpage" {
 		t.Fatalf("ask not coached to v2: %+v", a.Decision)
 	}
 	a.Reply <- levers.ChoiceResponse(0)
 	if res := <-done; res.Err != nil {
 		t.Fatal(res.Err)
+	}
+}
+
+func TestRunnerStopsAfterTwoIncompleteRetries(t *testing.T) {
+	done, _ := run(t, abs(t, "testdata/coaching-exhausted.sh"), t.TempDir())
+	res := <-done
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "claude decision remained incomplete after 2 coaching attempts") {
+		t.Fatalf("result: %+v", res)
 	}
 }
 
