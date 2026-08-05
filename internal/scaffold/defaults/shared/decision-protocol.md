@@ -38,3 +38,25 @@ asks in every mode. Do not invent a separate approval mechanism.
 Every decision includes a concrete rationale, one consequence per choice (or at
 least one for freeform), affected paths when known, and its reversibility
 boundary. Keep operator-facing language concise.
+
+When useful, include an optional `briefing` object in the same decision marker.
+It gives the operator a compact decision briefing without changing the decision
+contract:
+
+{"briefing":{"option_details":["<one consequence line for option 1>","<one consequence line for option 2>"],"wins":["<verified accomplishment with file or test evidence>"],"excerpts":[{"text":"<short quote from the spec or plan>","cite":"<file and section>"}],"override_note":"<one sentence explaining what overriding the recommendation means>","next_action":"<one closing line telling the operator what to do>","diagram_svg":"<optional inline svg>","diagram_caption":"<what the diagram shows>"}}
+
+Keep `option_details` a parallel array with one short consequence line per
+option. List no more than five verified wins and no more than three short
+evidence excerpts; every excerpt needs a `cite` pointing to its source. Make
+`override_note` and `next_action` concise, concrete, and specific to this
+decision.
+
+If the choice hinges on a mechanism, `diagram_svg` may contain one inline
+`<svg>` with a numeric `viewBox`. Draw only that mechanism. Use only these
+elements: `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`, `path`,
+`text`, `g`, `defs`, and `marker`. Use `currentColor` for strokes. Limit accent
+colors to `#e8a33d`, `#e06c6c`, `#6fcf7f`, and `#58c7d4`. Hrefs must reference
+internal fragments only. Do not include `script`, `style`, `foreignObject`,
+external images, external URLs, event handlers, or inline style attributes.
+The page validates this SVG before displaying it, so omit the diagram when the
+mechanism cannot be represented within these constraints.
