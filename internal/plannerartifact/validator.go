@@ -11,7 +11,6 @@ const planRoot = "# Implementation Plan\n\n"
 
 type planDocument struct {
 	Sections []planSection
-	Keys     []string
 }
 
 type planSection struct {
@@ -98,7 +97,6 @@ func parsePlan(data []byte) (planDocument, error) {
 			return planDocument{}, &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "plan.md", Key: key, Reason: "section end is missing"}
 		}
 		document.Sections = append(document.Sections, planSection{Key: key, Markdown: markdown.String()})
-		document.Keys = append(document.Keys, key)
 	}
 	return document, nil
 }

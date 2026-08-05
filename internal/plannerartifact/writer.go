@@ -199,7 +199,6 @@ func (s *Session) publishPair(plan, touchset []byte, key string) error {
 	if err := os.Rename(stagedTouchset, touchsetPath); err != nil {
 		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "pair", Key: key, Reason: "partial pair publication requires retry"}
 	}
-	s.completedKeys = append(s.completedKeys, key)
 	return nil
 }
 

@@ -2,6 +2,7 @@ package plannerartifact
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,11 +13,10 @@ import (
 const plannerSessionEnv = "WATCHTOWER_PLANNER_SESSION"
 
 type Session struct {
-	workdir       string
-	stateDir      string
-	removeState   bool
-	manifest      *Manifest
-	completedKeys []string
+	workdir     string
+	stateDir    string
+	removeState bool
+	manifest    *Manifest
 }
 
 func Initialize(workdir string) (*Session, error) {
@@ -54,10 +54,9 @@ func Initialize(workdir string) (*Session, error) {
 		return nil, fmt.Errorf("secure planner session: %w", err)
 	}
 	return &Session{
-		workdir:       workdir,
-		stateDir:      stateDir,
-		removeState:   true,
-		completedKeys: append([]string(nil), document.Keys...),
+		workdir:     workdir,
+		stateDir:    stateDir,
+		removeState: true,
 	}, nil
 }
 
@@ -97,14 +96,13 @@ func openFromState(workdir, stateDir string) (*Session, error) {
 	if fresh {
 		return nil, malformedStartingError("pair", fmt.Errorf("planner targets are missing"))
 	}
-	document, err := parsePlan(plan)
-	if err != nil {
+	if _, err := parsePlan(plan); err != nil {
 		return nil, malformedStartingError("plan.md", err)
 	}
 	if _, err := parseTouchset(touchset); err != nil {
 		return nil, malformedStartingError("touchset.json", err)
 	}
-	session := &Session{workdir: workdir, stateDir: stateDir, completedKeys: append([]string(nil), document.Keys...)}
+	session := &Session{workdir: workdir, stateDir: stateDir}
 	manifest, err := session.readManifest()
 	if err != nil {
 		return nil, err
@@ -315,19 +313,8 @@ func finalValidationError(artifact, key, reason string) error {
 
 func diagnosticKey(err error) string {
 	var diagnostic *DiagnosticError
-	if err != nil && errorsAs(err, &diagnostic) {
+	if err != nil && errors.As(err, &diagnostic) {
 		return diagnostic.Key
 	}
 	return ""
-}
-
-func errorsAs(err error, target **DiagnosticError) bool {
-	if err == nil {
-		return false
-	}
-	if diagnostic, ok := err.(*DiagnosticError); ok {
-		*target = diagnostic
-		return true
-	}
-	return false
 }
