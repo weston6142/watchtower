@@ -79,3 +79,10 @@ decision and resumes the agent with `Human decision: <text>`. The
 `allow_freeform` marker and storage field remain for compatibility with older
 artifacts, but are legacy metadata rather than a runtime capability gate;
 missing or false values do not prevent a valid note.
+
+Decision HTML pages keep the original question and place a fixed action
+briefing directly below it: do this now, recommended choice and rationale, one
+consequence per choice, cited proof, and the exact post-answer continuation.
+Watchtower derives the action and continuation from trusted engine state;
+agents provide rationale, consequences, and cited proof. Historical gaps are
+labeled explicitly rather than filled by paraphrasing the question.

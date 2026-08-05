@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -299,12 +300,27 @@ func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 	}
 	for _, required := range []string{
 		`"kind":"choice"`, `"kind":"freeform"`, `"allow_freeform":true`,
+		`"proof":[{"claim":`, `"cite":`,
 		"two or three meaningful options", "one question at",
+		"one concrete consequence per option",
+		"Watchtower derives the operator action",
+		"Watchtower derives what happens after the answer",
 		"directly in your assistant response text", "Never emit it through a tool",
 	} {
 		if !strings.Contains(string(protocol), required) {
 			t.Errorf("decision protocol missing %q", required)
 		}
+	}
+	sourceProtocol, err := os.ReadFile(filepath.Join("defaults", "shared", "decision-protocol.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shippedProtocol, err := os.ReadFile(filepath.Join("..", "..", "dist", "shared", "decision-protocol.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(sourceProtocol, shippedProtocol) {
+		t.Fatal("embedded and shipped decision protocols differ")
 	}
 	librarian := strings.ToLower(packages["librarian"].Prompt)
 	for _, postMerge := range []string{"after merge", "just merged", "post-merge"} {
