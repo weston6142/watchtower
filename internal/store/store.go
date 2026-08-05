@@ -748,10 +748,14 @@ func (s *Store) ArtifactPaths(issueID string) ([]string, error) {
 			return nil, err
 		}
 		var artifact struct {
+			Name string `json:"artifact"`
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal([]byte(payload), &artifact); err != nil {
 			return nil, err
+		}
+		if artifact.Name == "decision.html" {
+			continue
 		}
 		if artifact.Path != "" {
 			if _, ok := seen[artifact.Path]; ok {
