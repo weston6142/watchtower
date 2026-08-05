@@ -224,6 +224,7 @@ func TestValidateManifestRules(t *testing.T) {
 		{name: "missing required key", edit: func(m *Manifest) { m.Sections = m.Sections[:len(m.Sections)-1] }},
 		{name: "duplicate key", edit: func(m *Manifest) { m.Sections[1].Key = m.Sections[0].Key }},
 		{name: "unsafe glob", edit: func(m *Manifest) { m.Sections[0].Globs = []string{"../escape/**"} }},
+		{name: "internal traversal glob", edit: func(m *Manifest) { m.Sections[0].Globs = []string{"internal/gh40/../outside/**"} }},
 		{name: "invalid key", edit: func(m *Manifest) { m.Sections[0].Key = "Goal" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

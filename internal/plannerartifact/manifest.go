@@ -175,6 +175,11 @@ func canonicalGlob(glob string) (string, error) {
 	if filepath.IsAbs(glob) || path.IsAbs(glob) {
 		return "", fmt.Errorf("glob is absolute")
 	}
+	for _, segment := range strings.Split(glob, "/") {
+		if segment == ".." {
+			return "", fmt.Errorf("glob contains traversal")
+		}
+	}
 	cleaned := path.Clean(glob)
 	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return "", fmt.Errorf("glob escapes the repository")
