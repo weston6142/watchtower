@@ -94,6 +94,9 @@ func (e *Engine) buildPageData(
 	for index, stage := range fl.Stages {
 		checkpoint, hasCheckpoint := byStage[stage.Name]
 		floor := decisionpage.Floor{Name: stage.Name, Status: decisionpage.FloorPending}
+		if stage.Name == currentStage {
+			data.StageIndex = index + 1
+		}
 		switch {
 		case hasCheckpoint && (checkpoint.Status == "succeeded" || checkpoint.Status == "handoff_authorized"):
 			floor.Status = decisionpage.FloorDone
@@ -104,7 +107,6 @@ func (e *Engine) buildPageData(
 			floor.Note = checkpoint.Failure
 		case stage.Name == currentStage:
 			floor.Status = decisionpage.FloorCurrent
-			data.StageIndex = index + 1
 		default:
 			floor.Note = futureStageNote(stage)
 		}
