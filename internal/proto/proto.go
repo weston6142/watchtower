@@ -105,6 +105,7 @@ type IssueDetail struct {
 	Branch           string               `json:"branch,omitempty"`
 	Planner          *stageusage.Snapshot `json:"planner,omitempty"`
 	PlannerOutcome   string               `json:"planner_outcome,omitempty"`
+	DecisionPage     string               `json:"decision_page,omitempty"`
 }
 
 // SetupView is the read-only picture of what the daemon is running: repo-level

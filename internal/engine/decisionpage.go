@@ -20,6 +20,17 @@ import (
 	"github.com/weston6142/watchtower/internal/touchset"
 )
 
+// DecisionPagePath returns the stable progress/decision page path for an
+// issue. The daemon data directory is normally absolute; normalize it here so
+// protocol clients always receive an absolute path.
+func (e *Engine) DecisionPagePath(issueID string) string {
+	root, err := filepath.Abs(e.cfg.DataDir)
+	if err != nil {
+		root = e.cfg.DataDir
+	}
+	return filepath.Join(root, issueID, "decision.html")
+}
+
 func (e *Engine) buildPageData(
 	issueID, flowName, title, currentStage string,
 	dec *levers.Decision, ctx *decision.DecisionContext, decisionID int64,

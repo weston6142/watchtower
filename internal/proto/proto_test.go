@@ -123,6 +123,37 @@ func TestIssueDetailExposesLatestPlannerSnapshot(t *testing.T) {
 	}
 }
 
+func TestIssueDetailExposesDecisionPageWhenPresent(t *testing.T) {
+	s, err := store.Open("file:decision-page-detail?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	dataDir := t.TempDir()
+	e := engine.New(engine.Config{Store: s, DataDir: dataDir})
+	if err := s.UpsertIssue(store.IssueRow{ID: "GH-43", Title: "brief", State: "running", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	page := filepath.Join(dataDir, "GH-43", "decision.html")
+	if err := os.MkdirAll(filepath.Dir(page), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(page, []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	response := NewServer(e, s).exec(Command{Op: "issue_detail", IssueID: "GH-43"})
+	if !response.OK || response.Detail == nil || response.Detail.DecisionPage != page {
+		t.Fatalf("issue detail = %+v, want page %q", response, page)
+	}
+	if err := os.Remove(page); err != nil {
+		t.Fatal(err)
+	}
+	response = NewServer(e, s).exec(Command{Op: "issue_detail", IssueID: "GH-43"})
+	if response.Detail == nil || response.Detail.DecisionPage != "" {
+		t.Fatalf("missing decision page was exposed: %+v", response.Detail)
+	}
+}
+
 func TestAnswerCommandCarriesActor(t *testing.T) {
 	option := 0
 	want := Command{Op: "answer_decision", DecisionID: 35, Option: &option, Actor: "alice"}
