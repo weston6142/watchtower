@@ -24,6 +24,12 @@ const (
 	DecisionFreeform DecisionKind = "freeform"
 )
 
+// Briefing list caps, shared by protocol normalization and page rendering.
+const (
+	MaxBriefingWins     = 5
+	MaxBriefingExcerpts = 3
+)
+
 // BriefingExcerpt is a quoted passage from a stage artifact, with citation.
 type BriefingExcerpt struct {
 	Text string `json:"text"`

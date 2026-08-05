@@ -100,11 +100,11 @@ func normalizeBriefing(briefing *levers.Briefing, optionCount int) *levers.Brief
 	if len(result.OptionDetails) != 0 && len(result.OptionDetails) != optionCount {
 		result.OptionDetails = nil
 	}
-	if len(result.Wins) > 5 {
-		result.Wins = result.Wins[:5]
+	if len(result.Wins) > levers.MaxBriefingWins {
+		result.Wins = result.Wins[:levers.MaxBriefingWins]
 	}
-	if len(result.Excerpts) > 3 {
-		result.Excerpts = result.Excerpts[:3]
+	if len(result.Excerpts) > levers.MaxBriefingExcerpts {
+		result.Excerpts = result.Excerpts[:levers.MaxBriefingExcerpts]
 	}
 	return &result
 }

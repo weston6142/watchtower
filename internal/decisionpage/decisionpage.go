@@ -8,6 +8,10 @@ import (
 	"html/template"
 )
 
+// FileName is the on-disk name of the rendered page inside an issue's data
+// directory; it is also the artifact name emitted when the page is written.
+const FileName = "decision.html"
+
 type FloorStatus string
 
 const (

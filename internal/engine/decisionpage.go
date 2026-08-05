@@ -28,7 +28,7 @@ func (e *Engine) DecisionPagePath(issueID string) string {
 	if err != nil {
 		root = e.cfg.DataDir
 	}
-	return filepath.Join(root, issueID, "decision.html")
+	return filepath.Join(root, issueID, decisionpage.FileName)
 }
 
 func (e *Engine) buildPageData(
@@ -90,11 +90,7 @@ func (e *Engine) buildPageData(
 		checkpoint, hasCheckpoint := byStage[stage.Name]
 		floor := decisionpage.Floor{Name: stage.Name, Status: decisionpage.FloorPending}
 		switch {
-		case hasCheckpoint && checkpoint.Status == "succeeded":
-			floor.Status = decisionpage.FloorDone
-			floor.Note = checkpointNote(checkpoint, tokensByStage[stage.Name])
-			data.DoneCount++
-		case hasCheckpoint && checkpoint.Status == "handoff_authorized":
+		case hasCheckpoint && (checkpoint.Status == "succeeded" || checkpoint.Status == "handoff_authorized"):
 			floor.Status = decisionpage.FloorDone
 			floor.Note = checkpointNote(checkpoint, tokensByStage[stage.Name])
 			data.DoneCount++
@@ -181,11 +177,11 @@ func buildDecisionPageBriefing(
 	}
 	if dec.Briefing != nil {
 		briefing.Wins = append(briefing.Wins, dec.Briefing.Wins...)
-		if len(briefing.Wins) > 5 {
-			briefing.Wins = briefing.Wins[:5]
+		if len(briefing.Wins) > levers.MaxBriefingWins {
+			briefing.Wins = briefing.Wins[:levers.MaxBriefingWins]
 		}
 		for _, excerpt := range dec.Briefing.Excerpts {
-			if len(briefing.Excerpts) == 3 {
+			if len(briefing.Excerpts) == levers.MaxBriefingExcerpts {
 				break
 			}
 			briefing.Excerpts = append(briefing.Excerpts, decisionpage.Excerpt{
@@ -248,7 +244,7 @@ func (e *Engine) fillPageFiles(data *decisionpage.PageData, issueID, currentStag
 		data.TouchsetGlobs = append([]string(nil), planned.Globs...)
 	}
 
-	evidencePath := filepath.Join(e.cfg.DataDir, issueID, "evidence", currentStage, "evidence.json")
+	evidencePath := filepath.Join(e.issueDir(issueID), "evidence", currentStage, "evidence.json")
 	encoded, err := os.ReadFile(evidencePath)
 	if err != nil {
 		data.EvidenceMissing = true
@@ -309,12 +305,12 @@ func (e *Engine) writeRenderedDecisionPage(issueID, stage string, decisionID int
 			return
 		}
 	}
-	latest := filepath.Join(e.issueDir(issueID), "decision.html")
+	latest := filepath.Join(e.issueDir(issueID), decisionpage.FileName)
 	if err := os.WriteFile(latest, content, 0o644); err != nil {
 		return
 	}
 	e.emit(core.EvArtifactProduced, issueID, map[string]any{
-		"stage": stage, "artifact": "decision.html", "path": latest, "decision_id": decisionID,
+		"stage": stage, "artifact": decisionpage.FileName, "path": latest, "decision_id": decisionID,
 	})
 }
 

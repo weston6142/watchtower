@@ -1578,11 +1578,10 @@ func (m *Model) openDecisionPageFor(issueID string) tea.Cmd {
 
 func openInBrowser(path string) tea.Cmd {
 	target := path + "#decision"
-	if runtime.GOOS == "darwin" {
-		target = (&url.URL{Scheme: "file", Path: path, Fragment: "decision"}).String()
-	}
 	command := "xdg-open"
 	if runtime.GOOS == "darwin" {
+		// macOS `open` needs a file:// URL for the fragment to survive.
+		target = (&url.URL{Scheme: "file", Path: path, Fragment: "decision"}).String()
 		command = "open"
 	}
 	return func() tea.Msg {

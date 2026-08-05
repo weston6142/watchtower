@@ -16,6 +16,7 @@ import (
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
+	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
@@ -754,7 +755,9 @@ func (s *Store) ArtifactPaths(issueID string) ([]string, error) {
 		if err := json.Unmarshal([]byte(payload), &artifact); err != nil {
 			return nil, err
 		}
-		if artifact.Name == "decision.html" {
+		// The decision page is watchtower-generated presentation, not a stage
+		// artifact the human should review.
+		if artifact.Name == decisionpage.FileName {
 			continue
 		}
 		if artifact.Path != "" {
