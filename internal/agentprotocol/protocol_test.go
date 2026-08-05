@@ -42,6 +42,42 @@ func TestExtractDecisionV2Fields(t *testing.T) {
 	}
 }
 
+func TestExtractDecisionBriefing(t *testing.T) {
+	text := "preamble\n" + `{"watchtower_decision":{"kind":"choice","question":"Gate it?","options":["Gate","Apply"],"recommended":0,"consequences":["safe","crash"],"briefing":{"option_details":["Old daemons ignore the column.","Old daemons crash."],"wins":["migration written"],"excerpts":[{"text":"must be invisible to N−1","cite":"spec.md §2.1"}],"override_note":"Option 2 overrides the spec.","next_action":"Press 1.","diagram_svg":"<svg viewBox=\"0 0 10 10\"></svg>","diagram_caption":"the gate"}}}`
+	d, ok := ExtractDecision(text)
+	if !ok {
+		t.Fatal("decision not extracted")
+	}
+	if d.Briefing == nil {
+		t.Fatal("briefing not extracted")
+	}
+	if len(d.Briefing.OptionDetails) != 2 || d.Briefing.Excerpts[0].Cite != "spec.md §2.1" {
+		t.Fatalf("briefing mis-parsed: %+v", d.Briefing)
+	}
+	if d.Briefing.NextAction != "Press 1." || d.Briefing.DiagramCaption != "the gate" {
+		t.Fatalf("briefing details mis-parsed: %+v", d.Briefing)
+	}
+}
+
+func TestExtractDecisionNoBriefing(t *testing.T) {
+	text := `{"watchtower_decision":{"kind":"choice","question":"Q","options":["a","b"],"consequences":["x","y"]}}`
+	d, ok := ExtractDecision(text)
+	if !ok || d.Briefing != nil {
+		t.Fatalf("want ok with nil briefing, got ok=%v briefing=%+v", ok, d.Briefing)
+	}
+}
+
+func TestExtractDecisionBriefingClampsLists(t *testing.T) {
+	text := `{"watchtower_decision":{"kind":"choice","question":"Q","options":["a","b"],"recommended":0,"briefing":{"option_details":["only one"],"wins":["w1","w2","w3","w4","w5","w6"],"excerpts":[{"text":"1"},{"text":"2"},{"text":"3"},{"text":"4"}]}}}`
+	d, ok := ExtractDecision(text)
+	if !ok || d.Briefing == nil {
+		t.Fatalf("decision = %#v, ok=%v", d, ok)
+	}
+	if len(d.Briefing.OptionDetails) != 0 || len(d.Briefing.Wins) != 5 || len(d.Briefing.Excerpts) != 3 {
+		t.Fatalf("briefing limits not applied: %+v", d.Briefing)
+	}
+}
+
 func TestExtractDecisionIgnoresAgentSuppliedContext(t *testing.T) {
 	text := `{"watchtower_decision":{"kind":"choice","question":"Proceed?","options":["yes","no"],"recommended":0,"context":{"task_summary":"untrusted","agent_name":"spoof","agent_color":"red","agent_symbol":"!"}}}`
 	d, ok := ExtractDecision(text)

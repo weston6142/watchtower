@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -370,6 +371,13 @@ func (sv *Server) exec(cmd Command) Response {
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
+		decisionPage := ""
+		if sv.eng != nil {
+			candidate := sv.eng.DecisionPagePath(cmd.IssueID)
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				decisionPage = candidate
+			}
+		}
 		model, effort := "", ""
 		if f, ok := sv.flows[issue.Flow]; ok {
 			for _, stg := range f.Stages {
@@ -392,6 +400,7 @@ func (sv *Server) exec(cmd Command) Response {
 			IntegrationState: integration.State,
 			Worktree:         integration.Worktree, Branch: integration.Branch,
 			Planner: plannerSnapshot, PlannerOutcome: plannerOutcome,
+			DecisionPage: decisionPage,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

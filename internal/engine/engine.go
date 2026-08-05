@@ -318,15 +318,16 @@ func (e *Engine) rehydrateArtifactReview(
 		planReview: issue.PlanReviewPolicy,
 	}
 	e.restoreInterruptedWorkspace(is)
+	d := levers.Decision{
+		Kind: row.Kind, Question: row.Question, Options: row.Options,
+		Recommended: row.Recommended, RecommendedResponse: row.RecommendedResponse,
+		AllowFreeform: row.AllowFreeform, Importance: row.Importance, Paths: row.Paths,
+		Why: row.Why, Consequences: row.Consequences, Reversible: row.Reversible,
+		Briefing: row.Briefing,
+	}
 	e.mu.Lock()
 	e.issues[row.IssueID] = is
 	if row.Status == "pending" {
-		d := levers.Decision{
-			Kind: row.Kind, Question: row.Question, Options: row.Options,
-			Recommended: row.Recommended, RecommendedResponse: row.RecommendedResponse,
-			AllowFreeform: row.AllowFreeform, Importance: row.Importance, Paths: row.Paths,
-			Why: row.Why, Consequences: row.Consequences, Reversible: row.Reversible,
-		}
 		e.pend[row.ID] = &pending{
 			PendingDecision: PendingDecision{
 				ID: row.ID, IssueID: row.IssueID, Stage: row.Stage, D: d,
@@ -335,6 +336,9 @@ func (e *Engine) rehydrateArtifactReview(
 		}
 	}
 	e.mu.Unlock()
+	if row.Status == "pending" {
+		e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, "")
+	}
 	return true, (row.Status == "answered" || row.Status == "auto") &&
 		(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "succeeded"), nil
 }
@@ -1771,6 +1775,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 		e.mu.Unlock()
 		return fmt.Errorf("invalid response for decision %d", decisionID)
 	}
+	is := e.issues[p.IssueID]
 	if p.Review != nil {
 		target := *p.Review
 		e.mu.Unlock()
@@ -1791,9 +1796,11 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 				return fmt.Errorf("append plan review outcome: %w", err)
 			}
 		}
+		e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, answerStamp(response))
 		e.mu.Lock()
 		delete(e.pend, decisionID)
 		e.mu.Unlock()
+		e.refreshDecisionPage(p.IssueID)
 		e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
 			"decision_id": p.ID, "response": response, "review": target, "actor_id": actor})
 		if p.reply != nil {
@@ -1805,10 +1812,15 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	}
 	delete(e.pend, decisionID)
 	e.mu.Unlock()
+	if err := e.cfg.Store.AnswerDecision(decisionID, response, "answered"); err != nil {
+		return err
+	}
+	e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, answerStamp(response))
+	e.refreshDecisionPage(p.IssueID)
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
 		"decision_id": p.ID, "response": response})
 	p.reply <- response
-	return e.cfg.Store.AnswerDecision(decisionID, response, "answered")
+	return nil
 }
 
 // escalate blocks until the human answers; returns the typed response.
@@ -1967,6 +1979,7 @@ func (e *Engine) requestArtifactReview(
 	e.mu.Lock()
 	e.pend[rowID] = p
 	e.mu.Unlock()
+	e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, "")
 	response, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil
@@ -2053,6 +2066,7 @@ func (e *Engine) requestPlanReview(
 	e.mu.Lock()
 	e.pend[rowID] = p
 	e.mu.Unlock()
+	e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, "")
 	response, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil
@@ -2386,8 +2400,9 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		AllowFreeform: a.Decision.AllowFreeform, Importance: a.Decision.Importance,
 		Paths: a.Decision.Paths,
 		Why:   a.Decision.Why, Consequences: a.Decision.Consequences, Reversible: a.Decision.Reversible,
-		Context: &decisionContext,
-		Status:  "auto", Response: a.Decision.RecommendedAnswer(),
+		Briefing: a.Decision.Briefing,
+		Context:  &decisionContext,
+		Status:   "auto", Response: a.Decision.RecommendedAnswer(),
 		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
@@ -2419,6 +2434,7 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 		Kind: d.Kind, RecommendedResponse: d.RecommendedResponse,
 		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
+		Briefing:     d.Briefing,
 		Context:      &decisionContext,
 		BlockingCost: e.blockingCost(is.id),
 	})
@@ -2439,6 +2455,7 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 	e.mu.Lock()
 	e.pend[rowID] = p
 	e.mu.Unlock()
+	e.writeDecisionPage(is, stage, rowID, d, &decisionContext, "")
 	choice, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil
@@ -2641,6 +2658,7 @@ func (e *Engine) runStageOnce(
 		_ = e.cfg.Store.FinishStageCheckpoint(
 			checkpointID, status, endCommit, strings.Join(sessionIDs, ","),
 			failure, checkpointArtifacts)
+		e.refreshDecisionPage(is.id)
 	}()
 	e.emit(core.EvStageStarted, is.id, map[string]any{
 		"stage": st.Name, "attempt": attempt, "of": of,

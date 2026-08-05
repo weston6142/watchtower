@@ -62,6 +62,7 @@ var mainKeybindingRegistry = []mainKeybinding{
 	{ID: "navigation-attention", Key: "tab", Description: "attention / next field", Group: mainKeybindingGroupNavigation, Column: mainKeybindingColumnLeft, Placement: mainKeybindingPlacementGroup, FooterVisible: true, FooterOrder: 2, FooterDescription: "next"},
 	{ID: "navigation-war-room", Key: "g", Description: "war room", Group: mainKeybindingGroupNavigation, Column: mainKeybindingColumnLeft, Placement: mainKeybindingPlacementGroup},
 	{ID: "navigation-open-artifacts", Key: "enter", Description: "open artifacts", Group: mainKeybindingGroupNavigation, Column: mainKeybindingColumnLeft, Placement: mainKeybindingPlacementGroup},
+	{ID: "navigation-open-decision-page", Key: "w", Description: "open briefing", Group: mainKeybindingGroupNavigation, Column: mainKeybindingColumnLeft, Placement: mainKeybindingPlacementGroup, FooterVisible: true, FooterOrder: 10, FooterDescription: "briefing"},
 	{ID: "navigation-setup-inspector", Key: "f", Description: "setup inspector", Group: mainKeybindingGroupNavigation, Column: mainKeybindingColumnLeft, Placement: mainKeybindingPlacementGroup},
 	{ID: "navigation-back", Key: "esc", Description: "back", Group: mainKeybindingGroupNavigation, Column: mainKeybindingColumnLeft, Placement: mainKeybindingPlacementGroup},
 	{ID: "navigation-rows-layout", Key: "z", Description: "rows / tower layout", Group: mainKeybindingGroupNavigation, Column: mainKeybindingColumnLeft, Placement: mainKeybindingPlacementGroup},

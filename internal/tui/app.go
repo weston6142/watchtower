@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -137,6 +140,18 @@ type detailMsg struct {
 	detail     *proto.IssueDetail
 	err        error
 	transport  bool
+}
+
+type decisionPageMsg struct {
+	generation uint64
+	path       string
+	err        error
+	transport  bool
+}
+
+type browserOpenMsg struct {
+	path string
+	err  error
 }
 
 type answerMsg struct {
@@ -431,6 +446,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.openArtifacts && msg.detail != nil {
 			m.openArtifactList(msg.detail.Artifacts)
 			m.openArtifacts = false
+		}
+		return m, nil
+	case decisionPageMsg:
+		if cmd, handled := m.handleSessionMessage(msg.generation, msg.transport, msg.err); handled {
+			return m, cmd
+		}
+		if msg.err != nil {
+			m.Err = msg.err.Error()
+			return m, nil
+		}
+		if msg.path == "" {
+			m.Err = "no decision page yet for this lane"
+			return m, nil
+		}
+		return m, openInBrowser(msg.path)
+	case browserOpenMsg:
+		if msg.err != nil {
+			m.Err = fmt.Sprintf("browser open failed for %s: %v", msg.path, msg.err)
 		}
 		return m, nil
 	case answerMsg:
@@ -861,6 +894,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.modes = append(m.modes, "timeline")
 			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
 			return m, nil
+		case "w":
+			if m.Focus.Issue == "" {
+				m.Err = msgNoLaneFocused
+				return m, nil
+			}
+			return m, m.openDecisionPageFor(m.Focus.Issue)
 		case "T":
 			// Issue-scoped like p and R: without focus fetchTranscript returns
 			// nil and the door opens empty, which reads as broken.
@@ -915,6 +954,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.dismissToast()
 				case "o":
 					return m, m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
+				case "w":
+					return m, m.openDecisionPageFor(m.Toast.IssueID)
 				}
 				return m, nil
 			}
@@ -947,6 +988,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "o":
 				m.acceptStreak = 0
 				return m, m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
+			case "w":
+				return m, m.openDecisionPageFor(m.Toast.IssueID)
 			}
 			return m, nil
 		}
@@ -1021,7 +1064,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Issue-op keys act on the focused lane; with nothing focused
 			// they would silently no-op, which reads as broken.
 			switch key {
-			case "p", "x", "X", "R", "L", "c", "o", "enter":
+			case "p", "x", "X", "R", "L", "c", "o", "w", "enter":
 				m.Err = msgNoLaneFocused
 				return m, nil
 			}
@@ -1507,6 +1550,51 @@ func (m Model) fetchDetail(issueID string) tea.Cmd {
 			return detailMsg{generation: generation, err: errors.New(r.Error)}
 		}
 		return detailMsg{generation: generation, detail: r.Detail}
+	}
+}
+
+func (m *Model) openDecisionPageFor(issueID string) tea.Cmd {
+	requested := requestFocus(m.Focus, m.State, m.stages, issueID, m.retired)
+	m.Focus = requested
+	if issueID == "" || requested.Issue != issueID {
+		return nil
+	}
+	if m.client == nil {
+		m.Err = "no decision page yet for this lane"
+		return nil
+	}
+	client := m.client
+	generation := m.generation
+	return func() tea.Msg {
+		response, err := client.Do(proto.Command{Op: "issue_detail", IssueID: issueID})
+		if err != nil {
+			return decisionPageMsg{generation: generation, err: err, transport: true}
+		}
+		if !response.OK {
+			return decisionPageMsg{generation: generation, err: errors.New(response.Error)}
+		}
+		if response.Detail == nil {
+			return decisionPageMsg{generation: generation, err: errors.New("issue detail unavailable")}
+		}
+		return decisionPageMsg{generation: generation, path: response.Detail.DecisionPage}
+	}
+}
+
+func openInBrowser(path string) tea.Cmd {
+	target := path + "#decision"
+	command := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		// macOS `open` needs a file:// URL for the fragment to survive.
+		target = (&url.URL{Scheme: "file", Path: path, Fragment: "decision"}).String()
+		command = "open"
+	}
+	return func() tea.Msg {
+		if err := exec.Command(command, target).Start(); err != nil {
+			if fallbackErr := exec.Command(command, path).Start(); fallbackErr != nil {
+				return browserOpenMsg{path: path, err: fmt.Errorf("%v; fallback: %w", err, fallbackErr)}
+			}
+		}
+		return browserOpenMsg{path: path}
 	}
 }
 

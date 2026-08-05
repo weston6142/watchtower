@@ -58,6 +58,14 @@ func TestInvestigateKeyOpensPicker(t *testing.T) {
 	}
 }
 
+func TestDecisionPageKeyRequiresFocus(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = pressKey(t, m, "w")
+	if m.Err != msgNoLaneFocused {
+		t.Fatalf("w without focus error = %q, want %q", m.Err, msgNoLaneFocused)
+	}
+}
+
 func TestInvestigateEnterSpawns(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, ".watchtower"), 0o755); err != nil {

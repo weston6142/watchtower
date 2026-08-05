@@ -13,6 +13,7 @@ func TestMainKeybindingRegistryMetadata(t *testing.T) {
 		"navigation-attention",
 		"navigation-war-room",
 		"navigation-open-artifacts",
+		"navigation-open-decision-page",
 		"navigation-setup-inspector",
 		"navigation-back",
 		"navigation-rows-layout",
@@ -132,6 +133,7 @@ func TestMainKeybindingFooterProjectionPreservesContract(t *testing.T) {
 		{"L", "levers"},
 		{"?", "help"},
 		{"q", "quit"},
+		{"w", "briefing"},
 	}
 	got := projectMainKeybindingFooter()
 	if !reflect.DeepEqual(got, want) {

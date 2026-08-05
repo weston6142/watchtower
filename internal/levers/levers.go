@@ -24,6 +24,30 @@ const (
 	DecisionFreeform DecisionKind = "freeform"
 )
 
+// Briefing list caps, shared by protocol normalization and page rendering.
+const (
+	MaxBriefingWins     = 5
+	MaxBriefingExcerpts = 3
+)
+
+// BriefingExcerpt is a quoted passage from a stage artifact, with citation.
+type BriefingExcerpt struct {
+	Text string `json:"text"`
+	Cite string `json:"cite"`
+}
+
+// Briefing is optional agent-authored context for the decision HTML page.
+// Every field may be empty; the page renders what it gets.
+type Briefing struct {
+	OptionDetails  []string          `json:"option_details"`
+	Wins           []string          `json:"wins"`
+	Excerpts       []BriefingExcerpt `json:"excerpts"`
+	OverrideNote   string            `json:"override_note"`
+	NextAction     string            `json:"next_action"`
+	DiagramSVG     string            `json:"diagram_svg"`
+	DiagramCaption string            `json:"diagram_caption"`
+}
+
 type Decision struct {
 	Kind                DecisionKind
 	Question            string
@@ -38,6 +62,7 @@ type Decision struct {
 	Why           string
 	Consequences  []string
 	Reversible    string
+	Briefing      *Briefing
 }
 
 type Response struct {
