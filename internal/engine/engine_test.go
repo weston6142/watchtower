@@ -739,6 +739,27 @@ func TestPlanReviewAuthorizationMatrix(t *testing.T) {
 		if got := len(planReviewEvents(t, s, id, core.EvExecutionStarted)); got != 1 {
 			t.Fatalf("execution_started events = %d, want 1", got)
 		}
+		rows, err := s.AllDecisionRows()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var autoReview store.DecisionRow
+		for _, row := range rows {
+			if row.IssueID == id && row.Stage == "plan" {
+				autoReview = row
+				break
+			}
+		}
+		pagePath := filepath.Join(e.issueDir(id), "decisions", fmt.Sprintf("%d.html", autoReview.ID))
+		page, err := os.ReadFile(pagePath)
+		if err != nil {
+			t.Fatalf("policy approval page missing: %v", err)
+		}
+		for _, want := range []string{"Answered:", "Do this now", "After you answer", "advances to execute"} {
+			if !strings.Contains(string(page), want) {
+				t.Errorf("policy approval page missing %q: %s", want, page)
+			}
+		}
 	})
 
 	t.Run("strict overrides configured auto approval", func(t *testing.T) {

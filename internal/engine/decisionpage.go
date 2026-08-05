@@ -3,7 +3,6 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"os"
 	"path"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
 )
@@ -33,7 +33,8 @@ func (e *Engine) DecisionPagePath(issueID string) string {
 
 func (e *Engine) buildPageData(
 	issueID, flowName, title, currentStage string,
-	dec *levers.Decision, ctx *decision.DecisionContext, decisionID int64,
+	dec *levers.Decision, ctx *decision.DecisionContext, reviewTarget *review.Target,
+	decisionID int64,
 	answered string,
 ) (decisionpage.PageData, error) {
 	fl, ok := e.cfg.Flows[flowName]
@@ -137,7 +138,7 @@ func (e *Engine) buildPageData(
 
 	e.fillPageFiles(&data, issueID, currentStage)
 	if dec != nil {
-		data.Briefing = buildDecisionPageBriefing(dec, ctx, decisionID)
+		data.Briefing = buildDecisionPageBriefing(dec, ctx, reviewTarget, currentStage, decisionID)
 	}
 	return data, nil
 }
@@ -174,61 +175,6 @@ func futureStageNote(stage flow.Stage) string {
 		return "expects " + strings.Join(stage.Artifacts, ", ")
 	}
 	return "upcoming stage"
-}
-
-func buildDecisionPageBriefing(
-	dec *levers.Decision, ctx *decision.DecisionContext, decisionID int64,
-) *decisionpage.Briefing {
-	briefing := &decisionpage.Briefing{
-		Question: dec.Question, Importance: dec.Importance, Reversible: dec.Reversible,
-	}
-	if ctx != nil {
-		briefing.AgentLabel = ctx.AgentLabel()
-	}
-	for index, option := range dec.Options {
-		item := decisionpage.Option{
-			Key: fmt.Sprintf("%d", index+1), Label: option, Recommended: index == dec.Recommended,
-		}
-		if dec.Briefing != nil && index < len(dec.Briefing.OptionDetails) {
-			item.OneLiner = dec.Briefing.OptionDetails[index]
-		} else if index < len(dec.Consequences) {
-			item.OneLiner = dec.Consequences[index]
-		}
-		briefing.Options = append(briefing.Options, item)
-	}
-	if dec.Kind == levers.DecisionFreeform || dec.AllowFreeform {
-		briefing.Options = append(briefing.Options, decisionpage.Option{
-			Key: "f", Label: "Freeform", OneLiner: "Type your own instruction back to the agent.",
-		})
-	}
-	if dec.Briefing != nil {
-		briefing.Wins = append(briefing.Wins, dec.Briefing.Wins...)
-		if len(briefing.Wins) > levers.MaxBriefingWins {
-			briefing.Wins = briefing.Wins[:levers.MaxBriefingWins]
-		}
-		for _, excerpt := range dec.Briefing.Excerpts {
-			if len(briefing.Excerpts) == levers.MaxBriefingExcerpts {
-				break
-			}
-			briefing.Excerpts = append(briefing.Excerpts, decisionpage.Excerpt{
-				Text: excerpt.Text, Cite: excerpt.Cite,
-			})
-		}
-		briefing.OverrideNote = dec.Briefing.OverrideNote
-		briefing.NextAction = dec.Briefing.NextAction
-		briefing.DiagramCaption = dec.Briefing.DiagramCaption
-		if dec.Briefing.DiagramSVG != "" {
-			if err := decisionpage.ValidateSVG(dec.Briefing.DiagramSVG); err == nil {
-				briefing.DiagramSVG = template.HTML(dec.Briefing.DiagramSVG)
-			} else {
-				briefing.DiagramMissing = true
-			}
-		}
-	}
-	if briefing.NextAction == "" {
-		briefing.NextAction = fmt.Sprintf("Answer decision %d in the TUI.", decisionID)
-	}
-	return briefing
 }
 
 func (e *Engine) fillPageFiles(data *decisionpage.PageData, issueID, currentStage string) {
@@ -305,12 +251,14 @@ func matchesTouchset(file string, planned touchset.Set) bool {
 
 func (e *Engine) writeDecisionPage(
 	is *issueState, stage string, decisionID int64, d levers.Decision,
-	ctx *decision.DecisionContext, answered string,
+	ctx *decision.DecisionContext, reviewTarget *review.Target, answered string,
 ) {
 	if is == nil {
 		return
 	}
-	data, err := e.buildPageData(is.id, is.flowName, is.title, stage, &d, ctx, decisionID, answered)
+	data, err := e.buildPageData(
+		is.id, is.flowName, is.title, stage, &d, ctx, reviewTarget, decisionID, answered,
+	)
 	if err != nil {
 		return
 	}
@@ -355,10 +303,11 @@ func (e *Engine) refreshDecisionPage(issueID string) {
 		if pending.IssueID == issueID {
 			dec := pending.D
 			ctx := pending.Context
+			target := pending.Review
 			stage := pending.Stage
 			id := pending.ID
 			e.mu.Unlock()
-			e.writeDecisionPage(is, stage, id, dec, ctx, "")
+			e.writeDecisionPage(is, stage, id, dec, ctx, target, "")
 			return
 		}
 	}
@@ -376,7 +325,7 @@ func (e *Engine) refreshDecisionPage(issueID string) {
 			}
 		}
 	}
-	data, err := e.buildPageData(issueID, flowName, title, currentStage, nil, nil, 0, "")
+	data, err := e.buildPageData(issueID, flowName, title, currentStage, nil, nil, nil, 0, "")
 	if err == nil {
 		e.writeRenderedDecisionPage(issueID, currentStage, 0, data)
 	}

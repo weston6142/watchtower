@@ -337,7 +337,7 @@ func (e *Engine) rehydrateArtifactReview(
 	}
 	e.mu.Unlock()
 	if row.Status == "pending" {
-		e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, "")
+		e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, row.Review, "")
 	}
 	return true, (row.Status == "answered" || row.Status == "auto") &&
 		(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "succeeded"), nil
@@ -1796,7 +1796,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 				return fmt.Errorf("append plan review outcome: %w", err)
 			}
 		}
-		e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, answerStamp(response))
+		e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, answerStamp(response))
 		e.mu.Lock()
 		delete(e.pend, decisionID)
 		e.mu.Unlock()
@@ -1815,7 +1815,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	if err := e.cfg.Store.AnswerDecision(decisionID, response, "answered"); err != nil {
 		return err
 	}
-	e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, answerStamp(response))
+	e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, answerStamp(response))
 	e.refreshDecisionPage(p.IssueID)
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
 		"decision_id": p.ID, "response": response})
@@ -1945,10 +1945,7 @@ func (e *Engine) requestArtifactReview(
 	if err != nil {
 		return levers.Response{}, err
 	}
-	d := levers.Decision{
-		Question: fmt.Sprintf("Approve %s artifacts?", st.Name),
-		Options:  []string{"approve", "revise"}, Recommended: 0, Importance: 1.0,
-	}
+	d := artifactReviewDecision(target, false)
 	if err := validateDecisionEnvelope(is.id, st.Name, d, decisionContext); err != nil {
 		return levers.Response{}, err
 	}
@@ -1958,7 +1955,8 @@ func (e *Engine) requestArtifactReview(
 	rowID, err := e.cfg.Store.RequestArtifactReview(target, store.DecisionRow{
 		IssueID: is.id, Stage: st.Name, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended, Kind: d.Kind,
-		Importance: d.Importance, Context: &decisionContext,
+		Importance: d.Importance, Why: d.Why, Consequences: d.Consequences,
+		Reversible: d.Reversible, Briefing: d.Briefing, Context: &decisionContext,
 		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
@@ -1979,7 +1977,7 @@ func (e *Engine) requestArtifactReview(
 	e.mu.Lock()
 	e.pend[rowID] = p
 	e.mu.Unlock()
-	e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, "")
+	e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, &target, "")
 	response, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil
@@ -2005,10 +2003,7 @@ func (e *Engine) requestPlanReview(
 	e.mu.Lock()
 	policy := is.planReview
 	e.mu.Unlock()
-	d := levers.Decision{
-		Question: "Approve plan for execution?",
-		Options:  []string{"approve", "reject"}, Recommended: 0, Importance: 1.0,
-	}
+	d := artifactReviewDecision(target, true)
 	if err := validateDecisionEnvelope(is.id, st.Name, d, decisionContext); err != nil {
 		return levers.Response{}, err
 	}
@@ -2018,7 +2013,9 @@ func (e *Engine) requestPlanReview(
 	rowID, err := e.cfg.Store.RequestArtifactReview(target, store.DecisionRow{
 		IssueID: is.id, Stage: st.Name, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended, Kind: d.Kind,
-		Importance: d.Importance, Context: &decisionContext, ReviewPolicy: &policy,
+		Importance: d.Importance, Why: d.Why, Consequences: d.Consequences,
+		Reversible: d.Reversible, Briefing: d.Briefing,
+		Context: &decisionContext, ReviewPolicy: &policy,
 		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
@@ -2045,6 +2042,10 @@ func (e *Engine) requestPlanReview(
 		if _, err := e.appendEvent(core.EvPlanReviewPolicyApproved, is.id, payload); err != nil {
 			return levers.Response{}, fmt.Errorf("append plan policy approval: %w", err)
 		}
+		e.writeDecisionPage(
+			is, st.Name, rowID, d, &decisionContext, &target,
+			answerStamp(levers.ChoiceResponse(0)),
+		)
 		return levers.ChoiceResponse(0), nil
 	}
 	if !policy.HumanRequired {
@@ -2066,7 +2067,7 @@ func (e *Engine) requestPlanReview(
 	e.mu.Lock()
 	e.pend[rowID] = p
 	e.mu.Unlock()
-	e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, "")
+	e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, &target, "")
 	response, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil
@@ -2455,7 +2456,7 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 	e.mu.Lock()
 	e.pend[rowID] = p
 	e.mu.Unlock()
-	e.writeDecisionPage(is, stage, rowID, d, &decisionContext, "")
+	e.writeDecisionPage(is, stage, rowID, d, &decisionContext, nil, "")
 	choice, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil

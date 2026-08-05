@@ -87,16 +87,12 @@ type Briefing struct {
 	Proof             []Proof
 	ProofMissing      bool
 	AfterAnswer       string
-	// Wins and NextAction remain only until legacy engine page assembly is
-	// replaced by the structured briefing builder.
-	Wins           []string
-	NextAction     string
-	DiagramSVG     template.HTML
-	DiagramCaption string
-	DiagramMissing bool
-	Excerpts       []Excerpt
-	OverrideNote   string
-	EvidenceDocs   []string
+	DiagramSVG        template.HTML
+	DiagramCaption    string
+	DiagramMissing    bool
+	Excerpts          []Excerpt
+	OverrideNote      string
+	EvidenceDocs      []string
 }
 
 type PageData struct {

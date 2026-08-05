@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -20,8 +21,11 @@ func TestDecisionPageWritten(t *testing.T) {
 	}}
 	decision := levers.Decision{
 		Kind: levers.DecisionChoice, Question: "Gate the migration?", Options: []string{"Gate", "Apply"},
-		Recommended: 0, Importance: 0.8,
-		Briefing: &levers.Briefing{NextAction: "Press 1.", Wins: []string{"tests pass"}},
+		Recommended: 0, Importance: 0.8, Why: "Compatibility is preserved.",
+		Consequences: []string{"Old daemons continue safely.", "Old daemons fail on restart."},
+		Briefing: &levers.Briefing{Proof: []levers.BriefingProof{{
+			Claim: "Migration tests pass.", Cite: "go test ./internal/store",
+		}}},
 	}
 	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"execute/agent": {Asks: []levers.Decision{decision}},
@@ -47,8 +51,17 @@ func TestDecisionPageWritten(t *testing.T) {
 			t.Fatalf("page %s not written: %v; issue dir=%v events=%+v", file, readErr, entries, events)
 		}
 		page := string(body)
-		if !strings.Contains(page, `id="decision"`) || !strings.Contains(page, p.D.Question) {
-			t.Errorf("%s missing briefing content: %s", file, page)
+		for _, want := range []string{
+			`id="decision"`, p.D.Question,
+			"Do this now", "Choose an option or enter feedback",
+			"Recommended choice and why", "Gate", "Compatibility is preserved.",
+			"What each choice changes", "Old daemons continue safely.",
+			"Already done and proven", "Migration tests pass.", "go test ./internal/store",
+			"After you answer", "resumes Test Agent in execute",
+		} {
+			if !strings.Contains(page, want) {
+				t.Errorf("%s missing %q: %s", file, want, page)
+			}
 		}
 	}
 
@@ -65,6 +78,93 @@ func TestDecisionPageWritten(t *testing.T) {
 	}
 	body, _ := os.ReadFile(perDecision)
 	t.Fatalf("answered page was not stamped: %s", body)
+}
+
+func TestDecisionPageHistoricalGapsAreExplicit(t *testing.T) {
+	f := flow.Flow{Name: "legacy-page", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Gate: flow.GateAuto,
+	}}}
+	e, _ := newEngineCfg(t, &runner.FakeRunner{}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	legacyQuestion := "Repeat this historical question?"
+	data, err := e.buildPageData(
+		"GH-legacy", f.Name, "Legacy decision", "execute",
+		&levers.Decision{Question: legacyQuestion, Options: []string{"yes", "no"}},
+		nil, nil, 42, "",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := decisionpage.Render(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(body)
+	if strings.Count(page, legacyQuestion) != 1 {
+		t.Fatalf("legacy question was reused as fallback: %s", page)
+	}
+	for _, want := range []string{
+		"No rationale was recorded for this historical decision.",
+		"No verified progress was supplied.",
+		"No recorded outcome for this historical option.",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("legacy page missing %q: %s", want, page)
+		}
+	}
+}
+
+func TestArtifactReviewPageBreakdown(t *testing.T) {
+	f := flow.Flow{Name: "artifact-review-page", Stages: []flow.Stage{
+		{Name: "spec", Agents: []flow.AgentRef{{Package: "agent"}}, Gate: flow.GateApproveArtifact, Artifacts: []string{"spec.md"}},
+		{Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Gate: flow.GateAuto},
+	}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"spec/agent":    {Artifacts: map[string]string{"spec.md": "approved design\n"}},
+		"execute/agent": {},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	id, err := e.CreateIssue("Artifact review page", "", f.Name, levers.Preset(f, flow.LeverStrict), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e.StartIssue(context.Background(), id) }()
+	pending := waitForDecisionPagePending(t, e, id, "spec")
+	pagePath := filepath.Join(e.cfg.DataDir, id, "decisions", fmt.Sprintf("%d.html", pending.ID))
+	body, err := os.ReadFile(pagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Review spec.md", "approve", "revise",
+		"advances to execute", "repeats spec",
+		"spec.md is archived and ready for review", "checkpoint",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("artifact review page missing %q: %s", want, body)
+		}
+	}
+
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(1)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		checkpoints, checkErr := s.StageCheckpoints(id)
+		if checkErr == nil {
+			for _, checkpoint := range checkpoints {
+				if checkpoint.Stage == "spec" && checkpoint.Status == "revision_required" {
+					return
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	checkpoints, _ := s.StageCheckpoints(id)
+	t.Fatalf("revision did not preserve revision_required checkpoint: %+v", checkpoints)
 }
 
 func TestDecisionPageRefreshesAtStageBoundary(t *testing.T) {
