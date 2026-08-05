@@ -181,6 +181,61 @@ func TestScaffoldShipsManualPlanReviewDefaults(t *testing.T) {
 	}
 }
 
+func TestScaffoldPlannerPromptContractAndParity(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(filepath.Join("defaults", "packages", "planner", "prompt.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shipped, err := os.ReadFile(filepath.Join("..", "..", "dist", "packages", "planner", "prompt.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := os.ReadFile(filepath.Join(root, ".watchtower", "packages", "planner", "prompt.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(source) != string(shipped) || string(source) != string(generated) {
+		t.Fatal("planner prompt source, shipped, and generated copies differ")
+	}
+	text := string(source)
+	compact := strings.Join(strings.Fields(text), " ")
+	for _, required := range []string{
+		"The engine initializes plan.md and touchset.json before your turn",
+		"goal, architecture, technology-stack, execution-contract, file-structure",
+		"task-NNNN",
+		"verification",
+		"one JSON request containing the full manifest",
+		"MaxOperationBytes",
+		"65,536",
+		"request file or send it on standard input",
+		"must never be a command-line argument",
+		"generated patch",
+		"one-shot replacement",
+		"section-validated",
+		"Read existing anchors on retry",
+		"Never rewrite an accepted section",
+		"are the only durable outputs",
+		"do not emit another plan-approval decision",
+	} {
+		if !strings.Contains(compact, required) {
+			t.Errorf("planner prompt missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"write the complete plan.md and touchset.json in one",
+		"replace the entire plan.md",
+		"one-shot patch for plan.md",
+	} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Errorf("planner prompt still contains one-shot instruction %q", forbidden)
+		}
+	}
+}
+
 func TestInitIdempotentAndNonDestructive(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := Init(root); err != nil {
