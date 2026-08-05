@@ -114,7 +114,14 @@ func (s *Session) Close() error {
 
 func (s *Session) ValidateComplete() error {
 	if s.manifest == nil {
-		return finalValidationError("pair", "", "planner manifest is not initialized")
+		manifest, err := s.readManifest()
+		if err != nil {
+			return finalValidationError("pair", "", "planner manifest is invalid")
+		}
+		if manifest == nil {
+			return finalValidationError("pair", "", "planner manifest is not initialized")
+		}
+		s.manifest = manifest
 	}
 	if err := ValidateManifest(*s.manifest); err != nil {
 		return finalValidationError("pair", "", "manifest is invalid")

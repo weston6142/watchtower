@@ -26,6 +26,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/review"
@@ -2894,6 +2895,14 @@ func (e *Engine) runStageOnce(
 	}); err != nil {
 		return err
 	}
+	var artifactSession *plannerartifact.Session
+	if st.DeclaresArtifact("plan.md") && st.DeclaresArtifact("touchset.json") {
+		artifactSession, err = plannerartifact.Initialize(workdir)
+		if err != nil {
+			return fmt.Errorf("initialize planner artifacts: %w", err)
+		}
+		defer artifactSession.Close()
+	}
 	checkpointID, err := e.cfg.Store.InsertStageCheckpoint(store.StageCheckpoint{
 		IssueID: is.id, Stage: st.Name, StartCommit: startCommit, Status: "running",
 	})
@@ -2985,6 +2994,9 @@ func (e *Engine) runStageOnce(
 			return
 		}
 		agentCtx := runner.WithOperationID(ctx, strconv.FormatInt(runID, 10))
+		if artifactSession != nil {
+			agentCtx = runner.WithPlannerArtifactEnv(agentCtx, artifactSession.Env())
+		}
 		asks := make(chan runner.Ask)
 		var resc <-chan runner.Result
 		if plannerGate != nil {
@@ -3068,6 +3080,11 @@ func (e *Engine) runStageOnce(
 	}
 	if st.Completion == flow.CompletionAny && succeeded == 0 {
 		return firstErr
+	}
+	if artifactSession != nil {
+		if err := artifactSession.ValidateComplete(); err != nil {
+			return fmt.Errorf("validate planner artifacts: %w", err)
+		}
 	}
 	if st.MergeBarrier {
 		if err := e.writeVerificationReceipt(ctx, is, workdir); err != nil {
