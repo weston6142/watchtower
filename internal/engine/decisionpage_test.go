@@ -94,7 +94,8 @@ func TestDecisionPageRefreshesAtStageBoundary(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		body, readErr := os.ReadFile(filepath.Join(e.cfg.DataDir, id, "decision.html"))
-		if readErr == nil && strings.Contains(string(body), "verify") && strings.Contains(string(body), `class="pill done"`) {
+		if readErr == nil && strings.Contains(string(body), `class="pill done"`) &&
+			strings.Contains(string(body), "Stage <b>2 of 2</b> — verify") {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

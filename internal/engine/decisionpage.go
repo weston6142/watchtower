@@ -58,6 +58,11 @@ func (e *Engine) buildPageData(
 
 	if currentStage == "" {
 		currentStage = firstIncompleteStage(fl, byStage)
+	} else if checkpoint, ok := byStage[currentStage]; ok &&
+		(checkpoint.Status == "succeeded" || checkpoint.Status == "handoff_authorized") {
+		// At a stage boundary the caller's notion of "current" is the stage
+		// that just finished; the tower should already point at the next one.
+		currentStage = firstIncompleteStage(fl, byStage)
 	}
 	data := decisionpage.PageData{
 		IssueID: issueID, Title: title, StageTotal: len(fl.Stages),
