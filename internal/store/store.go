@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS runner_attempts(
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, question TEXT, options TEXT,
   recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
-  answered_by TEXT, blocking_cost INTEGER, created_at TEXT, answered_at TEXT);
+  answered_by TEXT, blocking_cost INTEGER, created_at TEXT, answered_at TEXT,
+  briefing TEXT);
 CREATE TABLE IF NOT EXISTS proposals(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, title TEXT, body TEXT,
   status TEXT, depends_on TEXT NOT NULL DEFAULT '[]',
@@ -147,6 +148,7 @@ type DecisionRow struct {
 	Why                 string
 	Consequences        []string
 	Reversible          string
+	Briefing            *levers.Briefing
 	Context             *decision.DecisionContext
 	Review              *review.Target
 	ReviewPolicy        *review.ResolvedPolicy
@@ -267,6 +269,10 @@ func Open(path string) (*Store, error) {
 	}
 	if err := ensureColumn(db, "decisions", "answered_at",
 		`ALTER TABLE decisions ADD COLUMN answered_at TEXT`); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(db, "decisions", "briefing",
+		`ALTER TABLE decisions ADD COLUMN briefing TEXT`); err != nil {
 		return nil, err
 	}
 	if err := ensureColumn(db, "issues", "plan_review_policy",
@@ -881,11 +887,19 @@ func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 	if !d.AnsweredAt.IsZero() {
 		answeredAt = d.AnsweredAt.UTC().Format(time.RFC3339Nano)
 	}
+	briefing := ""
+	if d.Briefing != nil {
+		encoded, err := json.Marshal(d.Briefing)
+		if err != nil {
+			return 0, err
+		}
+		briefing = string(encoded)
+	}
 	res, err := exec.Exec(
-		`INSERT INTO decisions(issue_id,question,options,recommended,lever,status,answer,answered_by,blocking_cost,created_at,evidence,answered_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO decisions(issue_id,question,options,recommended,lever,status,answer,answered_by,blocking_cost,created_at,evidence,answered_at,briefing)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		d.IssueID, d.Question, string(opts), d.Recommended, d.Stage, d.Status,
-		answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), string(evidence), answeredAt)
+		answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), string(evidence), answeredAt, briefing)
 	if err != nil {
 		return 0, err
 	}
@@ -1207,7 +1221,7 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(
-		`SELECT id,issue_id,lever,question,options,recommended,evidence,status,answer,blocking_cost,created_at,answered_at
+		`SELECT id,issue_id,lever,question,options,recommended,evidence,status,answer,blocking_cost,created_at,answered_at,briefing
 		 FROM decisions ` + where + ` ORDER BY blocking_cost DESC, created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -1216,11 +1230,12 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 	var out []DecisionRow
 	for rows.Next() {
 		var d DecisionRow
-		var opts, evidence, answer, created, answeredAt string
+		var opts, evidence, answer, created string
+		var answeredAt, briefing sql.NullString
 		// The legacy Plan 1 schema calls the stage column "lever"; keep using
 		// it as the persisted stage name without a migration.
 		if err := rows.Scan(&d.ID, &d.IssueID, &d.Stage, &d.Question, &opts,
-			&d.Recommended, &evidence, &d.Status, &answer, &d.BlockingCost, &created, &answeredAt); err != nil {
+			&d.Recommended, &evidence, &d.Status, &answer, &d.BlockingCost, &created, &answeredAt, &briefing); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(opts), &d.Options); err != nil {
@@ -1271,6 +1286,13 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 				d.Context = &context
 			}
 		}
+		if briefing.Valid && briefing.String != "" && briefing.String != "null" {
+			var stored levers.Briefing
+			if err := json.Unmarshal([]byte(briefing.String), &stored); err != nil {
+				return nil, fmt.Errorf("decode decision briefing: %w", err)
+			}
+			d.Briefing = &stored
+		}
 		if d.Kind == "" {
 			d.Kind = levers.DecisionChoice
 		}
@@ -1287,8 +1309,8 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 		if err != nil {
 			return nil, err
 		}
-		if answeredAt != "" {
-			d.AnsweredAt, err = time.Parse(time.RFC3339Nano, answeredAt)
+		if answeredAt.Valid && answeredAt.String != "" {
+			d.AnsweredAt, err = time.Parse(time.RFC3339Nano, answeredAt.String)
 			if err != nil {
 				return nil, err
 			}

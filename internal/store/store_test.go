@@ -263,6 +263,41 @@ func TestPlanReviewPolicyRoundTrips(t *testing.T) {
 	}
 }
 
+func TestDecisionBriefingRoundTrip(t *testing.T) {
+	s, err := Open("file:decision-briefing-round-trip?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	want := &levers.Briefing{
+		Wins:       []string{"w1"},
+		NextAction: "press 1",
+		Excerpts:   []levers.BriefingExcerpt{{Text: "t", Cite: "spec.md §1"}},
+	}
+	id, err := s.InsertDecision(DecisionRow{
+		IssueID: "GH-1", Stage: "execute", Question: "Q", Options: []string{"a", "b"},
+		Briefing: want,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.PendingDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID == id {
+			if row.Briefing == nil || row.Briefing.NextAction != "press 1" ||
+				len(row.Briefing.Excerpts) != 1 || row.Briefing.Excerpts[0].Cite != "spec.md §1" {
+				t.Fatalf("briefing lost: %+v", row.Briefing)
+			}
+			return
+		}
+	}
+	t.Fatal("row not found")
+}
+
 func testDecisionContext() *decision.DecisionContext {
 	return &decision.DecisionContext{
 		TaskSummary: "Ship decision context.", AgentName: "Executor",
