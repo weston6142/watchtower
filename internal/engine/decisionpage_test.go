@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
@@ -44,7 +45,16 @@ func TestDecisionPageWritten(t *testing.T) {
 	perDecision := filepath.Join(dir, "decisions", fmt.Sprintf("%d.html", p.ID))
 	latest := filepath.Join(dir, "decision.html")
 	for _, file := range []string{perDecision, latest} {
-		body, readErr := os.ReadFile(file)
+		var body []byte
+		var readErr error
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			body, readErr = os.ReadFile(file)
+			if readErr == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		if readErr != nil {
 			entries, _ := os.ReadDir(dir)
 			events, _ := e.cfg.Store.EventsSince(0)
@@ -72,6 +82,7 @@ func TestDecisionPageWritten(t *testing.T) {
 	for time.Now().Before(deadline) {
 		body, readErr := os.ReadFile(perDecision)
 		if readErr == nil && strings.Contains(string(body), "Answered") {
+			waitForEvent(t, e.cfg.Store, id, core.EvIssueCompleted)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
