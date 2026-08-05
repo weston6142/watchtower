@@ -954,6 +954,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.dismissToast()
 				case "o":
 					return m, m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
+				case "w":
+					return m, m.openDecisionPageFor(m.Toast.IssueID)
 				}
 				return m, nil
 			}
@@ -986,6 +988,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "o":
 				m.acceptStreak = 0
 				return m, m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
+			case "w":
+				return m, m.openDecisionPageFor(m.Toast.IssueID)
 			}
 			return m, nil
 		}

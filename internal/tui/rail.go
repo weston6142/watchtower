@@ -454,6 +454,7 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 	}
 	hint +=
 		keyChip("o") + dim.Render(" evidence  ") +
+			keyChip("w") + dim.Render(" briefing  ") +
 			keyChip("1..9") + dim.Render(" by number  ") +
 			keyChip("esc") + dim.Render(" dismiss")
 	lines = append(lines, "", hint)
