@@ -78,6 +78,17 @@
     .nextline { margin-top: 21px; padding-top: 13px; border-top: 1px solid var(--line); color: var(--ink); }
     .nextline b { color: var(--amber); }
     .doc { display: inline-block; margin-left: 4px; color: var(--cyan); font-size: 12px; }
+    details.floor > summary { cursor: pointer; list-style: none; }
+    details.floor > summary::-webkit-details-marker { display: none; }
+    .chev { margin-left: auto; color: var(--ink-faint); font-size: 11px; transition: transform .15s; }
+    details[open] > summary .chev { transform: rotate(180deg); }
+    details.floor > summary:hover .name { color: var(--cyan); }
+    .floor-detail { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); display: grid; gap: 8px; }
+    .floor-detail a { color: var(--cyan); text-decoration: none; }
+    .floor-detail a:hover { text-decoration: underline; }
+    .links .doc { margin: 0 10px 0 0; }
+    .pastdec { font-size: 13px; color: var(--ink-dim); }
+    .pastanswer { color: var(--green); font-size: 12px; margin-left: 6px; }
     @media (max-width: 650px) {
       .wrap { width: min(100% - 20px, 980px); padding-top: 20px; }
       .floor.current { padding: 16px 14px; }
@@ -101,6 +112,30 @@
         <div class="floor current" id="decision">
           {{template "briefing" $}}
         </div>
+      {{else if .Expandable}}
+        <details class="floor">
+          <summary class="floor-row">
+            <span class="name">{{.Name}}</span>
+            <span class="pill {{.Status}}">{{.Status}}</span>
+            {{if .Note}}<span class="note">{{.Note}}</span>{{end}}
+            <span class="chev" aria-hidden="true">▾</span>
+          </summary>
+          <div class="floor-detail">
+            {{if .Artifacts}}
+              <div class="bhd">Artifacts</div>
+              <div class="links">{{range .Artifacts}}<a class="doc" href="{{.Href}}">{{.Name}}</a>{{end}}</div>
+            {{end}}
+            {{if .Decisions}}
+              <div class="bhd">Decisions</div>
+              {{range .Decisions}}
+                <div class="pastdec">
+                  {{if .Href}}<a href="{{.Href}}">{{.Question}}</a>{{else}}<span>{{.Question}}</span>{{end}}
+                  {{if .Answer}}<span class="pastanswer">→ {{.Answer}}</span>{{end}}
+                </div>
+              {{end}}
+            {{end}}
+          </div>
+        </details>
       {{else}}
         <div class="floor{{if eq .Status "pending"}} pending{{end}}">
           <div class="floor-row">

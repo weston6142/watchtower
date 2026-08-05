@@ -21,10 +21,33 @@ const (
 	FloorFailed  FloorStatus = "failed"
 )
 
+// FloorLink is a relative link to an archived stage artifact
+// (e.g. "artifacts/spec.md"), resolvable from the page's own directory.
+type FloorLink struct {
+	Name string
+	Href string
+}
+
+// FloorDecision summarizes a decision made at a completed stage, with an
+// optional relative link to its archived briefing page.
+type FloorDecision struct {
+	Question string
+	Answer   string
+	Href     string
+}
+
 type Floor struct {
-	Name   string
-	Status FloorStatus
-	Note   string
+	Name      string
+	Status    FloorStatus
+	Note      string
+	Artifacts []FloorLink
+	Decisions []FloorDecision
+}
+
+// Expandable reports whether a completed floor has archived context worth
+// rendering inside a <details> disclosure.
+func (f Floor) Expandable() bool {
+	return len(f.Artifacts) > 0 || len(f.Decisions) > 0
 }
 
 type Option struct {

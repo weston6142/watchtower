@@ -55,6 +55,20 @@ func (e *Engine) buildPageData(
 			tokensByStage[run.Stage] += run.Tokens
 		}
 	}
+	decisionsByStage := map[string][]decisionpage.FloorDecision{}
+	if rows, rowErr := e.cfg.Store.AllDecisionRows(); rowErr == nil {
+		for _, row := range rows {
+			if row.IssueID != issueID || row.Status == "pending" {
+				continue
+			}
+			past := decisionpage.FloorDecision{Question: row.Question, Answer: answerSummary(row)}
+			href := fmt.Sprintf("decisions/%d.html", row.ID)
+			if _, statErr := os.Stat(filepath.Join(e.issueDir(issueID), "decisions", fmt.Sprintf("%d.html", row.ID))); statErr == nil {
+				past.Href = href
+			}
+			decisionsByStage[row.Stage] = append(decisionsByStage[row.Stage], past)
+		}
+	}
 
 	if currentStage == "" {
 		currentStage = firstIncompleteStage(fl, byStage)
@@ -102,6 +116,11 @@ func (e *Engine) buildPageData(
 			floor.Status = decisionpage.FloorDone
 			floor.Note = checkpointNote(checkpoint, tokensByStage[stage.Name])
 			data.DoneCount++
+			for _, artifact := range checkpoint.Artifacts {
+				floor.Artifacts = append(floor.Artifacts, decisionpage.FloorLink{
+					Name: artifact.Name, Href: "artifacts/" + artifact.Name})
+			}
+			floor.Decisions = decisionsByStage[stage.Name]
 		case hasCheckpoint && (checkpoint.Status == "failed" || checkpoint.Status == "killed"):
 			floor.Status = decisionpage.FloorFailed
 			floor.Note = checkpoint.Failure
@@ -363,7 +382,7 @@ func (e *Engine) refreshDecisionPage(issueID string) {
 	}
 }
 
-func answerStamp(response levers.Response) string {
+func answerText(response levers.Response) string {
 	answer := ""
 	if response.Kind == levers.DecisionChoice && response.Option != nil {
 		answer = fmt.Sprintf("option %d", *response.Option+1)
@@ -373,5 +392,18 @@ func answerStamp(response levers.Response) string {
 	if answer == "" {
 		answer = "response recorded"
 	}
-	return fmt.Sprintf("Answered: %s · %s", answer, time.Now().UTC().Format("2006-01-02 15:04"))
+	return answer
+}
+
+func answerStamp(response levers.Response) string {
+	return fmt.Sprintf("Answered: %s · %s", answerText(response), time.Now().UTC().Format("2006-01-02 15:04"))
+}
+
+// answerSummary is the short past-decision line shown inside an expanded
+// done floor; auto-resolved rows are labeled as such.
+func answerSummary(row store.DecisionRow) string {
+	if row.Status == "auto" {
+		return "auto: " + answerText(row.Response)
+	}
+	return answerText(row.Response)
 }
