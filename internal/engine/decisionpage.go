@@ -31,11 +31,20 @@ func (e *Engine) DecisionPagePath(issueID string) string {
 	return filepath.Join(root, issueID, decisionpage.FileName)
 }
 
+type decisionPageResolution struct {
+	Response levers.Response
+	Stamp    string
+}
+
+func resolvedDecisionPage(response levers.Response) *decisionPageResolution {
+	return &decisionPageResolution{Response: response, Stamp: answerStamp(response)}
+}
+
 func (e *Engine) buildPageData(
 	issueID, flowName, title, currentStage string,
 	dec *levers.Decision, ctx *decision.DecisionContext, reviewTarget *review.Target,
 	decisionID int64,
-	answered string,
+	resolution *decisionPageResolution,
 ) (decisionpage.PageData, error) {
 	fl, ok := e.cfg.Flows[flowName]
 	if !ok {
@@ -85,7 +94,10 @@ func (e *Engine) buildPageData(
 	}
 	data := decisionpage.PageData{
 		IssueID: issueID, Title: title, StageTotal: len(fl.Stages),
-		CurrentStage: currentStage, DecisionStage: decisionStage, Answered: answered,
+		CurrentStage: currentStage, DecisionStage: decisionStage,
+	}
+	if resolution != nil {
+		data.Answered = resolution.Stamp
 	}
 	if decisionID > 0 {
 		if rows, rowErr := e.cfg.Store.AllDecisionRows(); rowErr == nil {
@@ -146,7 +158,9 @@ func (e *Engine) buildPageData(
 	}
 	e.fillPageFiles(&data, issueID, filesStage)
 	if dec != nil {
-		data.Briefing = buildDecisionPageBriefing(dec, ctx, reviewTarget, currentStage, decisionID)
+		data.Briefing = buildDecisionPageBriefing(
+			dec, ctx, reviewTarget, currentStage, decisionID, resolution,
+		)
 	}
 	return data, nil
 }
@@ -259,13 +273,13 @@ func matchesTouchset(file string, planned touchset.Set) bool {
 
 func (e *Engine) writeDecisionPage(
 	is *issueState, stage string, decisionID int64, d levers.Decision,
-	ctx *decision.DecisionContext, reviewTarget *review.Target, answered string,
+	ctx *decision.DecisionContext, reviewTarget *review.Target, resolution *decisionPageResolution,
 ) {
 	if is == nil {
 		return
 	}
 	data, err := e.buildPageData(
-		is.id, is.flowName, is.title, stage, &d, ctx, reviewTarget, decisionID, answered,
+		is.id, is.flowName, is.title, stage, &d, ctx, reviewTarget, decisionID, resolution,
 	)
 	if err != nil {
 		return
@@ -315,7 +329,7 @@ func (e *Engine) refreshDecisionPage(issueID string) {
 			stage := pending.Stage
 			id := pending.ID
 			e.mu.Unlock()
-			e.writeDecisionPage(is, stage, id, dec, ctx, target, "")
+			e.writeDecisionPage(is, stage, id, dec, ctx, target, nil)
 			return
 		}
 	}
@@ -333,7 +347,7 @@ func (e *Engine) refreshDecisionPage(issueID string) {
 			}
 		}
 	}
-	data, err := e.buildPageData(issueID, flowName, title, currentStage, nil, nil, nil, 0, "")
+	data, err := e.buildPageData(issueID, flowName, title, currentStage, nil, nil, nil, 0, nil)
 	if err == nil {
 		e.writeRenderedDecisionPage(issueID, currentStage, 0, data)
 	}

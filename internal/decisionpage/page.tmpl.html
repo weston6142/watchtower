@@ -170,15 +170,15 @@
     <h2>{{.Briefing.Question}}</h2>
     <div class="breakdown">
       <section class="brief-block">
-        <div class="hd">Do this now</div>
+        <div class="hd">{{if .Answered}}Recorded outcome{{else}}Do this now{{end}}</div>
         <p>{{.Briefing.Action}}</p>
       </section>
       <section class="brief-block recommended">
-        <div class="hd">Recommended choice and why</div>
+        <div class="hd">{{if .Answered}}Recommendation at decision time{{else}}Recommended choice and why{{end}}</div>
         <p><strong>{{.Briefing.Recommendation}}</strong> — {{.Briefing.RecommendationWhy}}</p>
       </section>
       <section class="brief-block">
-        <div class="hd">What each choice changes</div>
+        <div class="hd">{{if .Answered}}Choices considered{{else}}What each choice changes{{end}}</div>
         <div class="answers">
           {{range .Briefing.Options}}
             <div class="ans{{if .Recommended}} rec{{end}}">
@@ -189,7 +189,7 @@
         </div>
       </section>
       <section class="brief-block">
-        <div class="hd">Already done and proven</div>
+        <div class="hd">{{if .Answered}}Evidence reviewed{{else}}Already done and proven{{end}}</div>
         {{if .Briefing.Proof}}
           {{range .Briefing.Proof}}<p class="proof">{{.Claim}}<span class="cite">— {{.Cite}}</span></p>{{end}}
         {{else if .Briefing.ProofMissing}}
@@ -197,7 +197,7 @@
         {{end}}
       </section>
       <section class="brief-block">
-        <div class="hd">After you answer</div>
+        <div class="hd">{{if .Answered}}What happened next{{else}}After you answer{{end}}</div>
         <p>{{.Briefing.AfterAnswer}}</p>
       </section>
     </div>

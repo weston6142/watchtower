@@ -102,7 +102,7 @@ func TestDecisionPageHistoricalGapsAreExplicit(t *testing.T) {
 	data, err := e.buildPageData(
 		"GH-legacy", f.Name, "Legacy decision", "execute",
 		&levers.Decision{Question: legacyQuestion, Options: []string{"yes", "no"}},
-		nil, nil, 42, "",
+		nil, nil, 42, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -145,22 +145,38 @@ func TestArtifactReviewPageBreakdown(t *testing.T) {
 	go func() { _ = e.StartIssue(context.Background(), id) }()
 	pending := waitForDecisionPagePending(t, e, id, "spec")
 	pagePath := filepath.Join(e.cfg.DataDir, id, "decisions", fmt.Sprintf("%d.html", pending.ID))
-	body, err := os.ReadFile(pagePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := waitForDecisionPageFile(t, pagePath)
 	for _, want := range []string{
 		"Review spec.md", "approve", "revise",
-		"advances to execute", "repeats spec",
+		"advances to execute", "stops this run", "retry the issue to rerun spec",
 		"spec.md is archived and ready for review", "checkpoint",
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("artifact review page missing %q: %s", want, body)
 		}
 	}
+	for _, misleading := range []string{"repeats spec", "Revise to repeat spec"} {
+		if strings.Contains(string(body), misleading) {
+			t.Errorf("artifact review page contains misleading %q: %s", misleading, body)
+		}
+	}
 
 	if err := e.Answer(pending.ID, levers.ChoiceResponse(1)); err != nil {
 		t.Fatal(err)
+	}
+	answered := string(waitForDecisionPageFile(t, pagePath))
+	for _, want := range []string{
+		"Recorded outcome", "revise was selected", "spec.md was archived and reviewed",
+		"Revision stopped this run", "Retry the issue to rerun spec",
+	} {
+		if !strings.Contains(answered, want) {
+			t.Errorf("answered artifact review page missing %q: %s", want, answered)
+		}
+	}
+	for _, misleading := range []string{"Do this now", "After you answer", "ready for review", "repeats spec"} {
+		if strings.Contains(answered, misleading) {
+			t.Errorf("answered artifact review page contains misleading %q: %s", misleading, answered)
+		}
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -243,7 +259,8 @@ func TestTerminalArtifactReviewPageExplainsCompletion(t *testing.T) {
 	body := waitForDecisionPageFile(t, pagePath)
 	page := string(body)
 	for _, want := range []string{
-		"completes the workflow", "Approve to complete the workflow", "Revise to repeat publish",
+		"completes the workflow", "Approve to complete the workflow",
+		"Revise to stop this run", "retry the issue to rerun publish",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("terminal review page missing %q: %s", want, page)
@@ -263,9 +280,21 @@ func TestTerminalArtifactReviewPageExplainsCompletion(t *testing.T) {
 	}
 	waitForEvent(t, e.cfg.Store, id, core.EvIssueCompleted)
 	answered := string(waitForDecisionPageFile(t, pagePath))
-	for _, want := range []string{`id="decision"`, "decision · publish", "Answered:"} {
+	for _, want := range []string{
+		`id="decision"`, "decision · publish", "Answered:",
+		"Recorded outcome", "approve was selected", "Recommendation at decision time",
+		"Choices considered", "release.md was archived and reviewed",
+		"What happened next", "Approval authorized workflow completion",
+	} {
 		if !strings.Contains(answered, want) {
 			t.Errorf("answered terminal review page missing %q: %s", want, answered)
+		}
+	}
+	for _, misleading := range []string{
+		"Do this now", "After you answer", "ready for review", "choose approve or revise",
+	} {
+		if strings.Contains(answered, misleading) {
+			t.Errorf("answered terminal review page contains misleading %q: %s", misleading, answered)
 		}
 	}
 }

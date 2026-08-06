@@ -22,16 +22,18 @@ func buildDecisionPageBriefing(
 	target *review.Target,
 	currentStage string,
 	decisionID int64,
+	resolution *decisionPageResolution,
 ) *decisionpage.Briefing {
 	recommendation, why := decisionPageRecommendation(dec)
-	proof, missing := decisionPageProof(dec.Briefing)
+	proof, missing := decisionPageProof(dec.Briefing, target, resolution != nil)
 	result := &decisionpage.Briefing{
-		Question: dec.Question, Importance: dec.Importance, Reversible: dec.Reversible,
-		Action:         decisionPageAction(dec, target, decisionID),
+		Question: dec.Question, Importance: dec.Importance,
+		Reversible:     decisionPageReversible(dec, target, resolution),
+		Action:         decisionPageAction(dec, target, decisionID, resolution),
 		Recommendation: recommendation, RecommendationWhy: why,
 		Options: decisionPageOptions(dec, target),
 		Proof:   proof, ProofMissing: missing,
-		AfterAnswer: decisionPageContinuation(dec, ctx, target, currentStage),
+		AfterAnswer: decisionPageContinuation(dec, ctx, target, currentStage, resolution),
 	}
 	if ctx != nil {
 		result.AgentLabel = ctx.AgentLabel()
@@ -59,7 +61,15 @@ func buildDecisionPageBriefing(
 	return result
 }
 
-func decisionPageAction(dec *levers.Decision, target *review.Target, decisionID int64) string {
+func decisionPageAction(
+	dec *levers.Decision, target *review.Target, decisionID int64, resolution *decisionPageResolution,
+) string {
+	if resolution != nil {
+		return fmt.Sprintf(
+			"Recorded outcome: %s was selected for decision %d.",
+			decisionPageResponseLabel(dec, resolution.Response), decisionID,
+		)
+	}
 	if target != nil {
 		names := make([]string, 0, len(target.Artifacts))
 		for _, artifact := range target.Artifacts {
@@ -85,6 +95,29 @@ func decisionPageAction(dec *levers.Decision, target *review.Target, decisionID 
 		)
 	}
 	return fmt.Sprintf("Choose an option or enter feedback for decision %d in the TUI.", decisionID)
+}
+
+func decisionPageResponseLabel(dec *levers.Decision, response levers.Response) string {
+	if response.Kind == levers.DecisionChoice && response.Option != nil &&
+		*response.Option >= 0 && *response.Option < len(dec.Options) {
+		return dec.Options[*response.Option]
+	}
+	if response.Kind == levers.DecisionFreeform && strings.TrimSpace(response.Text) != "" {
+		return strings.TrimSpace(response.Text)
+	}
+	return "response"
+}
+
+func decisionPageReversible(
+	dec *levers.Decision, target *review.Target, resolution *decisionPageResolution,
+) string {
+	if target == nil || resolution == nil || resolution.Response.Option == nil {
+		return dec.Reversible
+	}
+	if *resolution.Response.Option == 0 {
+		return "Approval applies only to this archived artifact version."
+	}
+	return "Retrying produces a new artifact version for review."
 }
 
 func decisionPageRecommendation(dec *levers.Decision) (string, string) {
@@ -139,7 +172,25 @@ func decisionPageOptions(dec *levers.Decision, target *review.Target) []decision
 	return options
 }
 
-func decisionPageProof(briefing *levers.Briefing) ([]decisionpage.Proof, bool) {
+func decisionPageProof(
+	briefing *levers.Briefing, target *review.Target, resolved bool,
+) ([]decisionpage.Proof, bool) {
+	if target != nil && resolved {
+		proof := make([]decisionpage.Proof, 0, len(target.Artifacts))
+		for _, artifact := range target.Artifacts {
+			proof = append(proof, decisionpage.Proof{
+				Claim: fmt.Sprintf("%s was archived and reviewed.", artifact.Name),
+				Cite: fmt.Sprintf(
+					"checkpoint %d · %s · sha256 %s",
+					target.CheckpointID, artifact.Name, artifact.SHA256,
+				),
+			})
+		}
+		if len(proof) > levers.MaxBriefingProof {
+			proof = proof[:levers.MaxBriefingProof]
+		}
+		return proof, len(proof) == 0
+	}
 	if briefing == nil {
 		return nil, true
 	}
@@ -164,7 +215,11 @@ func decisionPageProof(briefing *levers.Briefing) ([]decisionpage.Proof, bool) {
 
 func decisionPageContinuation(
 	dec *levers.Decision, ctx *decision.DecisionContext, target *review.Target, currentStage string,
+	resolution *decisionPageResolution,
 ) string {
+	if resolution != nil {
+		return decisionPageResolvedContinuation(dec, ctx, target, currentStage, resolution.Response)
+	}
 	if target != nil {
 		if target.Stage == "" {
 			return nextStageMissing
@@ -180,6 +235,32 @@ func decisionPageContinuation(
 		agent = ctx.AgentName
 	}
 	return fmt.Sprintf("Watchtower records the response and resumes %s in %s.", agent, currentStage)
+}
+
+func decisionPageResolvedContinuation(
+	dec *levers.Decision, ctx *decision.DecisionContext, target *review.Target, currentStage string,
+	response levers.Response,
+) string {
+	if target != nil && response.Option != nil {
+		if *response.Option == 0 {
+			if target.NextStage == "" {
+				return "Approval authorized workflow completion."
+			}
+			return fmt.Sprintf("Approval authorized Watchtower to continue to %s.", target.NextStage)
+		}
+		if isPlanReviewDecision(dec) {
+			return "Rejection stopped this run. Retry the issue to produce and review a new plan."
+		}
+		return fmt.Sprintf("Revision stopped this run. Retry the issue to rerun %s.", target.Stage)
+	}
+	if currentStage == "" {
+		return "Watchtower recorded the response."
+	}
+	agent := "the requesting agent"
+	if ctx != nil && strings.TrimSpace(ctx.AgentName) != "" {
+		agent = ctx.AgentName
+	}
+	return fmt.Sprintf("Watchtower recorded the response and resumed %s in %s.", agent, currentStage)
 }
 
 func artifactReviewDecision(target review.Target, plan bool) levers.Decision {
@@ -224,8 +305,13 @@ func artifactReviewOutcomeCopy(target review.Target, plan bool) ([]string, strin
 		approval = "Authorizes this artifact version and completes the workflow."
 		approvalContinuation = "Approve to complete the workflow."
 	}
-	alternative := fmt.Sprintf("Marks this artifact version for revision and repeats %s.", target.Stage)
-	alternativeContinuation := fmt.Sprintf("Revise to repeat %s.", target.Stage)
+	alternative := fmt.Sprintf(
+		"Marks this artifact version for revision and stops this run; retry the issue to rerun %s.",
+		target.Stage,
+	)
+	alternativeContinuation := fmt.Sprintf(
+		"Revise to stop this run; retry the issue to rerun %s.", target.Stage,
+	)
 	if plan {
 		alternative = "Rejects this plan and stops this run; retry the issue to produce and review a new plan."
 		alternativeContinuation = "Reject to stop this run; retry the issue to produce and review a new plan."
