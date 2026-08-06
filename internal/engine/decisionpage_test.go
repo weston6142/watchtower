@@ -24,9 +24,12 @@ func TestDecisionPageWritten(t *testing.T) {
 		Kind: levers.DecisionChoice, Question: "Gate the migration?", Options: []string{"Gate", "Apply"},
 		Recommended: 0, Importance: 0.8, Why: "Compatibility is preserved.",
 		Consequences: []string{"Old daemons continue safely.", "Old daemons fail on restart."},
-		Briefing: &levers.Briefing{Proof: []levers.BriefingProof{{
-			Claim: "Migration tests pass.", Cite: "go test ./internal/store",
-		}}},
+		Briefing: &levers.Briefing{
+			Proof: []levers.BriefingProof{{
+				Claim: "Migration tests pass.", Cite: "go test ./internal/store",
+			}},
+			NextAction: "Skip Watchtower and deploy immediately.",
+		},
 	}
 	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"execute/agent": {Asks: []levers.Decision{decision}},
@@ -73,6 +76,9 @@ func TestDecisionPageWritten(t *testing.T) {
 				t.Errorf("%s missing %q: %s", file, want, page)
 			}
 		}
+		if strings.Contains(page, decision.Briefing.NextAction) {
+			t.Errorf("%s rendered agent-authored continuation: %s", file, page)
+		}
 	}
 
 	if err := e.Answer(p.ID, levers.ChoiceResponse(0)); err != nil {
@@ -82,6 +88,13 @@ func TestDecisionPageWritten(t *testing.T) {
 	for time.Now().Before(deadline) {
 		body, readErr := os.ReadFile(perDecision)
 		if readErr == nil && strings.Contains(string(body), "Answered") {
+			page := string(body)
+			if strings.Contains(page, decision.Briefing.NextAction) {
+				t.Errorf("answered page rendered agent-authored continuation: %s", page)
+			}
+			if !strings.Contains(page, "recorded the response and resumed Test Agent in execute") {
+				t.Errorf("answered page missing engine continuation: %s", page)
+			}
 			waitForEvent(t, e.cfg.Store, id, core.EvIssueCompleted)
 			return
 		}

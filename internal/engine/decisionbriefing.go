@@ -247,8 +247,8 @@ func decisionPageContinuation(
 		_, continuation := artifactReviewOutcomeCopy(*target, isPlanReviewDecision(dec))
 		return continuation
 	}
-	if dec.Briefing != nil && strings.TrimSpace(dec.Briefing.NextAction) != "" {
-		return dec.Briefing.NextAction
+	if strings.TrimSpace(dec.EngineContinuation) != "" {
+		return dec.EngineContinuation
 	}
 	if currentStage == "" {
 		return nextStageMissing
@@ -281,12 +281,12 @@ func decisionPageResolvedContinuation(
 		}
 		return fmt.Sprintf("Revision stopped this run. Retry the issue to rerun %s.", target.Stage)
 	}
-	if dec.Briefing != nil && strings.TrimSpace(dec.Briefing.NextAction) != "" {
+	if strings.TrimSpace(dec.EngineContinuation) != "" {
 		if response.Option != nil && *response.Option >= 0 && *response.Option < len(dec.Consequences) &&
 			strings.TrimSpace(dec.Consequences[*response.Option]) != "" {
 			return dec.Consequences[*response.Option]
 		}
-		return dec.Briefing.NextAction
+		return dec.EngineContinuation
 	}
 	if currentStage == "" {
 		return "Watchtower recorded the response."

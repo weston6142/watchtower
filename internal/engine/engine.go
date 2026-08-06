@@ -3800,13 +3800,13 @@ func (e *Engine) checkBudget(is *issueState, stage string) error {
 			fmt.Sprintf("Continues into %s and waives further token-budget checks for this issue until Watchtower restarts.", stage),
 			fmt.Sprintf("Stops this run before %s starts; retrying %s asks for budget authorization again.", stage, stage),
 		},
-		Reversible: "Aborting preserves completed stages and can be retried; continuing cannot recover tokens already spent.",
+		Reversible:         "Aborting preserves completed stages and can be retried; continuing cannot recover tokens already spent.",
+		EngineContinuation: fmt.Sprintf("Continue to resume %s with the budget waived, or abort to stop before %s starts.", stage, stage),
 		Briefing: &levers.Briefing{
 			Proof: []levers.BriefingProof{{
 				Claim: fmt.Sprintf("The issue has consumed %d tokens against a configured budget of %d.", spent, e.cfg.TokenBudget),
 				Cite:  "durable stage-run token accounting",
 			}},
-			NextAction: fmt.Sprintf("Continue to resume %s with the budget waived, or abort to stop before %s starts.", stage, stage),
 		},
 	}
 	agentPkg, agentErr := e.decisionAgentPackage(is.flowName, stage)

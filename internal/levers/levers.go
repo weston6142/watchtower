@@ -64,13 +64,14 @@ type Decision struct {
 	RecommendedResponse string
 	// AllowFreeform is retained wire/storage compatibility metadata. It is not
 	// a current capability switch for decision responses.
-	AllowFreeform bool
-	Importance    float64
-	Paths         []string
-	Why           string
-	Consequences  []string
-	Reversible    string
-	Briefing      *Briefing
+	AllowFreeform      bool
+	Importance         float64
+	Paths              []string
+	Why                string
+	Consequences       []string
+	Reversible         string
+	Briefing           *Briefing
+	EngineContinuation string `json:"-"`
 }
 
 type Response struct {
