@@ -94,8 +94,11 @@ func TestDecisionPageWritten(t *testing.T) {
 			if strings.Contains(page, decision.Briefing.NextAction) {
 				t.Errorf("answered page rendered agent-authored continuation: %s", page)
 			}
-			if !strings.Contains(page, "recorded the response and resumed Test Agent in execute") {
+			if !strings.Contains(page, "recorded response authorized Watchtower to resume Test Agent in execute") {
 				t.Errorf("answered page missing engine continuation: %s", page)
+			}
+			if strings.Contains(page, "recorded the response and resumed") {
+				t.Errorf("answered page claims continuation already happened: %s", page)
 			}
 			waitForEvent(t, e.cfg.Store, id, core.EvIssueCompleted)
 			return

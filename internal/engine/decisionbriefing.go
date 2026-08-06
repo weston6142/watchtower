@@ -298,7 +298,7 @@ func decisionPageResolvedContinuation(
 	if ctx != nil && strings.TrimSpace(ctx.AgentName) != "" {
 		agent = ctx.AgentName
 	}
-	return fmt.Sprintf("Watchtower recorded the response and resumed %s in %s.", agent, currentStage)
+	return fmt.Sprintf("The recorded response authorized Watchtower to resume %s in %s.", agent, currentStage)
 }
 
 func artifactReviewDecision(target review.Target, plan bool) levers.Decision {

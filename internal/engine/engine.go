@@ -318,13 +318,7 @@ func (e *Engine) rehydrateArtifactReview(
 		planReview: issue.PlanReviewPolicy,
 	}
 	e.restoreInterruptedWorkspace(is)
-	d := levers.Decision{
-		Kind: row.Kind, Question: row.Question, Options: row.Options,
-		Recommended: row.Recommended, RecommendedResponse: row.RecommendedResponse,
-		AllowFreeform: row.AllowFreeform, Importance: row.Importance, Paths: row.Paths,
-		Why: row.Why, Consequences: row.Consequences, Reversible: row.Reversible,
-		Briefing: row.Briefing, RequiresOption: true,
-	}
+	d := artifactReviewDecisionFromRow(row)
 	e.mu.Lock()
 	e.issues[row.IssueID] = is
 	if row.Status == "pending" {
@@ -343,6 +337,41 @@ func (e *Engine) rehydrateArtifactReview(
 	e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, row.Review, resolution)
 	return true, (row.Status == "answered" || row.Status == "auto") &&
 		(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "succeeded"), nil
+}
+
+func artifactReviewDecisionFromRow(row store.DecisionRow) levers.Decision {
+	return levers.Decision{
+		Kind: row.Kind, Question: row.Question, Options: row.Options,
+		Recommended: row.Recommended, RecommendedResponse: row.RecommendedResponse,
+		AllowFreeform: row.AllowFreeform, Importance: row.Importance, Paths: row.Paths,
+		Why: row.Why, Consequences: row.Consequences, Reversible: row.Reversible,
+		Briefing: row.Briefing, RequiresOption: true,
+	}
+}
+
+func (e *Engine) rebuildResolvedArtifactReviewPages(
+	rows []store.DecisionRow, issueRows map[string]store.IssueRow,
+) {
+	ordered := append([]store.DecisionRow(nil), rows...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	for _, row := range ordered {
+		if row.Review == nil || (row.Status != "answered" && row.Status != "auto") {
+			continue
+		}
+		issue, ok := issueRows[row.IssueID]
+		if !ok {
+			continue
+		}
+		is := &issueState{
+			id: row.IssueID, title: issue.Title, body: issue.Body, flowName: issue.Flow,
+			matrix: matrixFromStrings(issue.Levers), priority: issue.Priority,
+			dependsOn: append([]string(nil), issue.DependsOn...), planReview: issue.PlanReviewPolicy,
+		}
+		e.writeDecisionPage(
+			is, row.Stage, row.ID, artifactReviewDecisionFromRow(row), row.Context, row.Review,
+			resolvedDecisionPage(row.Response, row.Approval, row.AnsweredAt),
+		)
+	}
 }
 
 // Rehydrate rebuilds in-memory state from the store after a daemon restart.
@@ -386,6 +415,7 @@ func (e *Engine) Rehydrate() error {
 	if err != nil {
 		return err
 	}
+	e.rebuildResolvedArtifactReviewPages(reviewRows, issueRows)
 	for _, row := range reviewRows {
 		if row.Review == nil {
 			continue

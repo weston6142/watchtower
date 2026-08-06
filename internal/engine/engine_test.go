@@ -3774,6 +3774,81 @@ func TestResolvedArtifactReviewPageRebuiltAfterRestart(t *testing.T) {
 	}
 }
 
+func TestRehydrateRebuildsEveryResolvedArtifactReviewPage(t *testing.T) {
+	f := artifactGateFlow()
+	s, err := store.Open(filepath.Join(t.TempDir(), "all-resolved-review-pages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "all resolved review pages", State: "failed", Flow: f.Name,
+		Levers: map[string]string{"spec": string(flow.LeverStrict), "plan": string(flow.LeverStrict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		stage        string
+		nextStage    string
+		artifactName string
+		blockingCost int
+	}{
+		{stage: "spec", nextStage: "plan", artifactName: "spec.md", blockingCost: 1},
+		{stage: "plan", nextStage: "implementation", artifactName: "plan.md", blockingCost: 2},
+	}
+	decisionIDs := make(map[string]int64, len(tests))
+	for index, test := range tests {
+		artifacts := []contextpack.Artifact{{
+			Name: test.artifactName, SHA256: strings.Repeat(strconv.Itoa(index+1), 64),
+		}}
+		checkpointID, err := s.InsertStageCheckpoint(store.StageCheckpoint{
+			IssueID: issueID, Stage: test.stage, Status: "awaiting_review", Artifacts: artifacts,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, err := (review.Target{
+			IssueID: issueID, Stage: test.stage, CheckpointID: checkpointID,
+			Artifacts: artifacts, NextStage: test.nextStage,
+		}).Canonical()
+		if err != nil {
+			t.Fatal(err)
+		}
+		decision := artifactReviewDecision(target, false)
+		decisionID, err := s.RequestArtifactReview(target, store.DecisionRow{
+			IssueID: issueID, Stage: test.stage, Question: decision.Question,
+			Options: decision.Options, Recommended: decision.Recommended, Kind: decision.Kind,
+			Importance: decision.Importance, Why: decision.Why, Consequences: decision.Consequences,
+			Reversible: decision.Reversible, Briefing: decision.Briefing, BlockingCost: test.blockingCost,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ResolveArtifactReview(decisionID, target, levers.ChoiceResponse(1)); err != nil {
+			t.Fatal(err)
+		}
+		decisionIDs[test.stage] = decisionID
+	}
+
+	dataDir := t.TempDir()
+	e := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range tests {
+		pagePath := filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionIDs[test.stage]))
+		page, err := os.ReadFile(pagePath)
+		if err != nil {
+			t.Errorf("read %s review page: %v", test.stage, err)
+			continue
+		}
+		if !strings.Contains(string(page), test.artifactName+" was archived and available at decision time") {
+			t.Errorf("%s review page has the wrong archive: %s", test.stage, page)
+		}
+	}
+}
+
 func TestPolicyApprovedReviewPageRebuiltAfterRestart(t *testing.T) {
 	f := planReviewFlow()
 	s, err := store.Open(filepath.Join(t.TempDir(), "policy-review.db"))

@@ -592,7 +592,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
 		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"],\"briefing\":{\"proof\":[{\"claim\":\"Tests pass.\"}]}}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
-		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"],\"briefing\":{\"proof\":[{\"claim\":\"Tests pass.\",\"cite\":\"go test ./internal/decisionpage\"}]}}}"}}'
+		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"],\"reversible\":\"yes\",\"briefing\":{\"proof\":[{\"claim\":\"Tests pass.\",\"cite\":\"go test ./internal/decisionpage\"}]}}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
 		`printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
 	)
@@ -667,7 +667,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 func TestDependencyAfterAcceptedDecisionIsReturned(t *testing.T) {
 	bin, state := statefulStub(t,
 		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-dependency"}'
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"]}}"}}'
+	printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"],\"reversible\":\"yes\"}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
 		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_dependency\":{\"depends_on\":[\" GH-2 \",\"GH-3\",\"GH-2\"]}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
@@ -691,7 +691,7 @@ count=$((count + 1)); printf '%s' "$count" > "$STATE/count"
 for arg in "$@"; do printf '%s\n' "$arg" >> "$STATE/args-$count"; done
 if [ "$count" -eq 1 ]; then
   printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"thr-$IDENT\"}"
-  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"]}}"}}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"],\"reversible\":\"yes\"}}"}}'
 fi
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`)
 	type invocation struct {
