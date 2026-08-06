@@ -8,6 +8,98 @@ import (
 	"github.com/weston6142/watchtower/internal/priority"
 )
 
+type modalEditor struct {
+	Value string
+	Caret int // rune offset between 0 and len([]rune(Value))
+}
+
+func newModalEditor(value string) modalEditor {
+	return modalEditor{Value: value, Caret: len([]rune(value))}
+}
+
+func (e *modalEditor) handle(key string) bool {
+	runes := []rune(e.Value)
+	e.Caret = max(0, min(e.Caret, len(runes)))
+	switch key {
+	case "left":
+		if e.Caret > 0 {
+			e.Caret--
+		}
+	case "right":
+		if e.Caret < len(runes) {
+			e.Caret++
+		}
+	case "up":
+		e.moveVertical(runes, -1)
+	case "down":
+		e.moveVertical(runes, 1)
+	case "backspace":
+		if e.Caret > 0 {
+			runes = append(runes[:e.Caret-1], runes[e.Caret:]...)
+			e.Caret--
+			e.Value = string(runes)
+		}
+	case "tab":
+		return true
+	default:
+		if key != "" && !strings.ContainsAny(key, "\n\r\t") {
+			insert := []rune(key)
+			runes = append(runes[:e.Caret], append(insert, runes[e.Caret:]...)...)
+			e.Caret += len(insert)
+			e.Value = string(runes)
+		}
+	}
+	return true
+}
+
+func (e *modalEditor) lineBounds(runes []rune) (start, end int) {
+	for i := 0; i < e.Caret; i++ {
+		if runes[i] == '\n' {
+			start = i + 1
+		}
+	}
+	end = len(runes)
+	for i := e.Caret; i < len(runes); i++ {
+		if runes[i] == '\n' {
+			end = i
+			break
+		}
+	}
+	return start, end
+}
+
+func (e *modalEditor) moveVertical(runes []rune, delta int) {
+	start, end := e.lineBounds(runes)
+	column := e.Caret - start
+	var targetStart, targetEnd int
+	if delta < 0 {
+		if start == 0 {
+			return
+		}
+		targetEnd = start - 1
+		targetStart = 0
+		for i := targetEnd - 1; i >= 0; i-- {
+			if runes[i] == '\n' {
+				targetStart = i + 1
+				break
+			}
+		}
+	} else {
+		if end == len(runes) {
+			return
+		}
+		targetStart = end + 1
+		targetEnd = len(runes)
+		for i := targetStart; i < len(runes); i++ {
+			if runes[i] == '\n' {
+				targetEnd = i
+				break
+			}
+		}
+	}
+	e.Caret = targetStart + min(column, targetEnd-targetStart)
+}
+
 // modalState is intentionally small: the control room only needs plain rune
 // input for a title and a few optional text fields.
 type modalState struct {

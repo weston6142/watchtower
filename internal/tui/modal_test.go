@@ -26,6 +26,62 @@ func TestModalTyping(t *testing.T) {
 	}
 }
 
+func TestModalEditorInsertsAndBackspacesByRune(t *testing.T) {
+	e := newModalEditor("a界c")
+	if e.Caret != 3 {
+		t.Fatalf("initial caret = %d, want 3", e.Caret)
+	}
+	if !e.handle("left") || !e.handle("left") {
+		t.Fatal("left must be consumed by the editor")
+	}
+	if e.Caret != 1 {
+		t.Fatalf("caret after left twice = %d, want 1", e.Caret)
+	}
+	if !e.handle("é") || e.Value != "aé界c" || e.Caret != 2 {
+		t.Fatalf("rune insertion = value %q caret %d, want aé界c/2", e.Value, e.Caret)
+	}
+	if !e.handle("backspace") || e.Value != "a界c" || e.Caret != 1 {
+		t.Fatalf("rune backspace = value %q caret %d, want a界c/1", e.Value, e.Caret)
+	}
+	if !e.handle("backspace") || e.Value != "界c" || e.Caret != 0 {
+		t.Fatalf("second backspace = value %q caret %d, want 界c/0", e.Value, e.Caret)
+	}
+	if !e.handle("backspace") || e.Value != "界c" || e.Caret != 0 {
+		t.Fatalf("start backspace changed editor: value %q caret %d", e.Value, e.Caret)
+	}
+	if !e.handle("left") || !e.handle("left") || e.Caret != 0 {
+		t.Fatalf("left boundary escaped editor: caret %d", e.Caret)
+	}
+	if !e.handle("right") || !e.handle("right") || e.Caret != 2 {
+		t.Fatalf("right boundary escaped editor: caret %d", e.Caret)
+	}
+}
+
+func TestModalEditorMovesVerticallyAndOwnsBoundaries(t *testing.T) {
+	e := newModalEditor("ab\nlonger\nx")
+	if !e.handle("up") || e.Caret != 4 {
+		t.Fatalf("up from final line = %d, want 4", e.Caret)
+	}
+	if !e.handle("up") || e.Caret != 1 {
+		t.Fatalf("up to first line = %d, want 1", e.Caret)
+	}
+	if !e.handle("up") || e.Caret != 1 {
+		t.Fatalf("first-line up escaped editor: caret %d", e.Caret)
+	}
+	if !e.handle("down") || e.Caret != 4 {
+		t.Fatalf("down to longer line = %d, want 4", e.Caret)
+	}
+	if !e.handle("down") || e.Caret != 11 {
+		t.Fatalf("down to short line should clamp to its end, caret %d", e.Caret)
+	}
+	if !e.handle("down") || e.Caret != 11 {
+		t.Fatalf("last-line down escaped editor: caret %d", e.Caret)
+	}
+	if !e.handle("tab") || e.Caret != 11 {
+		t.Fatalf("tab must not move the editor caret: %d", e.Caret)
+	}
+}
+
 func TestRenderBoxChrome(t *testing.T) {
 	out := ansi.Strip(renderBox("confirm", "", " n cancel ", "really?"))
 	for _, want := range []string{"confirm", "n cancel", "really?", "┌", "└"} {
