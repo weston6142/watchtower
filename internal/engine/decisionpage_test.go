@@ -221,14 +221,16 @@ func TestArtifactReviewPageBreakdown(t *testing.T) {
 	}
 	answered := string(waitForDecisionPageFile(t, pagePath))
 	for _, want := range []string{
-		"Recorded outcome", "revise was selected", "spec.md was archived and reviewed",
+		"Recorded outcome", "revise was selected", "spec.md was archived and available at decision time",
 		"Revision stopped this run", "Retry the issue to rerun spec",
 	} {
 		if !strings.Contains(answered, want) {
 			t.Errorf("answered artifact review page missing %q: %s", want, answered)
 		}
 	}
-	for _, misleading := range []string{"Do this now", "After you answer", "ready for review", "repeats spec"} {
+	for _, misleading := range []string{
+		"Do this now", "After you answer", "ready for review", "repeats spec", "archived and reviewed",
+	} {
 		if strings.Contains(answered, misleading) {
 			t.Errorf("answered artifact review page contains misleading %q: %s", misleading, answered)
 		}
@@ -338,7 +340,7 @@ func TestTerminalArtifactReviewPageExplainsCompletion(t *testing.T) {
 	for _, want := range []string{
 		`id="decision"`, "decision · publish", "Answered:",
 		"Recorded outcome", "approve was selected", "Recommendation at decision time",
-		"Choices considered", "release.md was archived and reviewed",
+		"Choices considered", "release.md was archived and available at decision time",
 		"What happened next", "Approval authorized workflow completion",
 	} {
 		if !strings.Contains(answered, want) {
@@ -347,6 +349,7 @@ func TestTerminalArtifactReviewPageExplainsCompletion(t *testing.T) {
 	}
 	for _, misleading := range []string{
 		"Do this now", "After you answer", "ready for review", "choose approve or revise",
+		"archived and reviewed",
 	} {
 		if strings.Contains(answered, misleading) {
 			t.Errorf("answered terminal review page contains misleading %q: %s", misleading, answered)

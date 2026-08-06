@@ -15,7 +15,9 @@ emit:
 {"watchtower_decision":{"kind":"choice","question":"<one plain question>","options":["<option>","<option>"],"recommended":0,"allow_freeform":true,"importance":0.8,"paths":["<affected path>"],"why":"<why this is recommended>","consequences":["<effect of option 1>","<effect of option 2>"],"reversible":"<when this becomes costly to change>"}}
 
 Set `allow_freeform` when the operator may reasonably want a different answer.
-Do not add an `Other` option; Watchtower provides the freeform path.
+Do not add an `Other` option; for agent-authored choices, Watchtower provides
+the freeform path. By contrast, engine-owned review and token-budget decisions
+require an option and do not accept freeform feedback.
 
 When review or feedback is inherently open-ended, emit:
 

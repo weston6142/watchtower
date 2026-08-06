@@ -188,7 +188,7 @@ func decisionPageProof(
 	if target != nil && resolution != nil {
 		proof := make([]decisionpage.Proof, 0, len(target.Artifacts))
 		for _, artifact := range target.Artifacts {
-			claim := fmt.Sprintf("%s was archived and reviewed.", artifact.Name)
+			claim := fmt.Sprintf("%s was archived and available at decision time.", artifact.Name)
 			if approval, ok := resolution.policyApproval(); ok {
 				claim = fmt.Sprintf(
 					"%s was archived and automatically authorized by policy %s@%s.",

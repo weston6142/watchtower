@@ -72,13 +72,17 @@ partial, or over-limit context fails closed for new decisions. Historical
 decisions without the envelope remain readable through the headerless legacy
 path, without inferred identity.
 
-Choice decisions support both an option response and typed feedback through
-the existing freeform response path. The TUI always presents `Add note...` for
-choices, and submitting that text through `answer_decision` resolves the
-decision and resumes the agent with `Human decision: <text>`. The
-`allow_freeform` marker and storage field remain for compatibility with older
-artifacts, but are legacy metadata rather than a runtime capability gate;
-missing or false values do not prevent a valid note.
+Agent-authored choice decisions support both an option response and typed
+feedback through the existing freeform response path. The TUI presents
+`Add note...` for these choices, and submitting that text through
+`answer_decision` resolves the decision and resumes the agent with
+`Human decision: <text>`. Engine-owned artifact reviews, plan reviews, and
+token-budget gates require a listed option instead: pending-decision JSON
+exposes `requires_option: true`, the TUI omits `Add note...`, and freeform
+responses are rejected. Agents cannot set this capability in decision markers.
+The `allow_freeform` marker and storage field remain for compatibility with
+older artifacts, but are legacy metadata rather than a runtime capability gate
+for agent-authored choices; missing or false values do not prevent a valid note.
 
 Decision HTML pages keep the original question and place a fixed action
 briefing directly below it: do this now, recommended choice and rationale, one

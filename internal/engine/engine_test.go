@@ -3759,13 +3759,15 @@ func TestResolvedArtifactReviewPageRebuiltAfterRestart(t *testing.T) {
 	page := string(waitForDecisionPageFile(t, pagePath))
 	for _, want := range []string{
 		"Answered: option 1 · " + resolved.AnsweredAt.UTC().Format("2006-01-02 15:04"),
-		"approve was selected", "spec.md was archived and reviewed",
+		"approve was selected", "spec.md was archived and available at decision time",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("rehydrated review page missing %q: %s", want, page)
 		}
 	}
-	for _, misleading := range []string{"Do this now", "ready for review", "After you answer"} {
+	for _, misleading := range []string{
+		"Do this now", "ready for review", "After you answer", "archived and reviewed",
+	} {
 		if strings.Contains(page, misleading) {
 			t.Errorf("rehydrated review page contains misleading %q: %s", misleading, page)
 		}
