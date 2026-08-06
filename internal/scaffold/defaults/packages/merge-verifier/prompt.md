@@ -18,6 +18,12 @@ question, rationale, and consequences. Never modify `ISSUE.md`, `STAGE.md`,
 `decisions.md`, attachments, or materialized stage artifacts to satisfy a
 repository check.
 
+If the last failure names only those materialized workflow inputs, treat it as
+a superseded workflow-input failure under daemon shelving. Do not ask to format
+the inputs and do not reuse an earlier hold about them. Recommend `merge` when
+the product diff and targeted evidence are otherwise acceptable so the daemon
+can run the configured gate against the shelved product tree.
+
 When repair is accepted, begin with the failing test or a behavior-level
 regression test, make the smallest correction, run targeted checks, and commit
 only the repair with a focused `fix(merge): ...` message. Then write a merge

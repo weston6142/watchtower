@@ -359,6 +359,7 @@ func TestDefaultMutationStagesUseRepositoryVerification(t *testing.T) {
 		}
 		mergeText := string(mergePrompt)
 		if !strings.Contains(mergeText, "sole owner of the repository-wide gate") ||
+			!strings.Contains(mergeText, "superseded workflow-input failure") ||
 			strings.Contains(mergeText, "Run the required repository-wide gate once") {
 			t.Fatalf("%s merge-verifier prompt duplicates the daemon gate:\n%s", label, mergeText)
 		}
