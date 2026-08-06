@@ -72,7 +72,7 @@ type Decision struct {
 	Reversible         string
 	Briefing           *Briefing
 	EngineContinuation string `json:"-"`
-	RequiresOption     bool   `json:"-"`
+	RequiresOption     bool   `json:"requires_option"`
 }
 
 type Response struct {

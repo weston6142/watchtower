@@ -323,7 +323,7 @@ func (e *Engine) rehydrateArtifactReview(
 		Recommended: row.Recommended, RecommendedResponse: row.RecommendedResponse,
 		AllowFreeform: row.AllowFreeform, Importance: row.Importance, Paths: row.Paths,
 		Why: row.Why, Consequences: row.Consequences, Reversible: row.Reversible,
-		Briefing: row.Briefing,
+		Briefing: row.Briefing, RequiresOption: true,
 	}
 	e.mu.Lock()
 	e.issues[row.IssueID] = is

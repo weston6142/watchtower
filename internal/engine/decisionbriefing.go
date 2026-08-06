@@ -324,7 +324,7 @@ func artifactReviewDecision(target review.Target, plan bool) levers.Decision {
 	}
 	return levers.Decision{
 		Kind: levers.DecisionChoice, Question: question, Options: options,
-		Recommended: 0, Importance: 1.0,
+		Recommended: 0, Importance: 1.0, RequiresOption: true,
 		Why:          "The archived artifact version must be authorized before Watchtower advances the workflow.",
 		Consequences: consequences,
 		Reversible:   "The artifact can be revised before approval; approval authorizes this exact archived version.",

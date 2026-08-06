@@ -110,6 +110,22 @@ func TestRenderDecisionBreakdownOrder(t *testing.T) {
 	}
 }
 
+func TestRenderAnsweredDecisionUsesNeutralEvidenceHeading(t *testing.T) {
+	d := fixturePage(fixtureBriefing())
+	d.Answered = "option 1"
+	got, err := Render(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(got)
+	if !strings.Contains(page, "Evidence available at decision time") {
+		t.Fatalf("answered decision missing neutral evidence heading: %s", page)
+	}
+	if strings.Contains(page, "Evidence reviewed") {
+		t.Fatalf("answered decision claims evidence was reviewed: %s", page)
+	}
+}
+
 func TestRenderDecisionMissingProof(t *testing.T) {
 	briefing := fixtureBriefing()
 	briefing.Proof = nil

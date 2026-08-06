@@ -3604,12 +3604,19 @@ func TestArtifactReviewSurvivesRestart(t *testing.T) {
 	}
 	go func() { _ = e1.StartIssue(context.Background(), id) }()
 	pending := waitForPendingStage(t, e1, "spec")
+	if !pending.D.RequiresOption {
+		t.Fatal("artifact review accepted freeform responses before restart")
+	}
+	if err := e1.Answer(pending.ID, levers.FreeformResponse("revise this")); err == nil {
+		t.Fatal("artifact review accepted freeform response before restart")
+	}
 	want := *pending.Review
 	e2 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
 	if err := e2.Rehydrate(); err != nil {
 		t.Fatal(err)
 	}
-	if got := e2.PendingDecisions(); len(got) != 1 || got[0].Review == nil || !got[0].Review.Matches(want) {
+	if got := e2.PendingDecisions(); len(got) != 1 || got[0].Review == nil ||
+		!got[0].Review.Matches(want) || !got[0].D.RequiresOption {
 		t.Fatalf("rehydrated review = %+v, want %+v", got, want)
 	}
 	rows, err := s.AllDecisionRows()
