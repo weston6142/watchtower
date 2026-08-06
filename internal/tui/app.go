@@ -895,11 +895,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.doorLines = humanizeEvents(m.events, m.Focus.Issue)
 			return m, nil
 		case "w":
-			if m.Focus.Issue == "" {
+			issueID := m.decisionPageTarget()
+			if issueID == "" {
 				m.Err = msgNoLaneFocused
 				return m, nil
 			}
-			return m, m.openDecisionPageFor(m.Focus.Issue)
+			return m, m.openDecisionPageFor(issueID)
 		case "T":
 			// Issue-scoped like p and R: without focus fetchTranscript returns
 			// nil and the door opens empty, which reads as broken.
@@ -954,8 +955,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.dismissToast()
 				case "o":
 					return m, m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
-				case "w":
-					return m, m.openDecisionPageFor(m.Toast.IssueID)
 				}
 				return m, nil
 			}
@@ -991,8 +990,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "o":
 				m.acceptStreak = 0
 				return m, m.openEvidenceFor(m.Toast.IssueID, m.Toast.ID)
-			case "w":
-				return m, m.openDecisionPageFor(m.Toast.IssueID)
 			}
 			return m, nil
 		}
@@ -1556,9 +1553,15 @@ func (m Model) fetchDetail(issueID string) tea.Cmd {
 	}
 }
 
+func (m Model) decisionPageTarget() string {
+	if m.Toast != nil {
+		return m.Toast.IssueID
+	}
+	return m.Focus.Issue
+}
+
 func (m *Model) openDecisionPageFor(issueID string) tea.Cmd {
-	requested := requestFocus(m.Focus, m.State, m.stages, issueID, m.retired)
-	m.Focus = requested
+	requested := focusIssue(m.State, m.stages, issueID, m.retired)
 	if issueID == "" || requested.Issue != issueID {
 		return nil
 	}
