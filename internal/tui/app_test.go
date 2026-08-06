@@ -164,6 +164,29 @@ func TestApplyEventsBuildsStateAndToast(t *testing.T) {
 	}
 }
 
+func TestBacklogViewUsesProjectedActiveBlockers(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	m := NewModel(nil, []string{"spec"})
+	m.Width, m.Height = 140, 40
+	parent := "GH-1"
+	child := "GH-2"
+	m.State.Apply(mkev(t, core.EvIssueCreated, parent, map[string]any{"title": "parent"}))
+	m.State.Apply(mkev(t, core.EvIssueCompleted, parent, nil))
+	m.State.Apply(mkev(t, core.EvIssueDrafted, child, map[string]any{
+		"title": "child", "flow": "default", "preset": "regular", "priority": 1,
+		"depends_on": []string{parent},
+	}))
+	m.backlog = &backlogState{}
+	if out := ansi.Strip(m.View()); strings.Contains(out, "DEPENDS") {
+		t.Fatalf("backlog View rendered satisfied dependency:\n%s", out)
+	}
+
+	m.State.Apply(mkev(t, core.EvIssueCompleted, parent, map[string]any{"merge": "left-unmerged"}))
+	if out := ansi.Strip(m.View()); !strings.Contains(out, "DEPENDS") || !strings.Contains(out, parent) {
+		t.Fatalf("backlog View did not restore unresolved dependency:\n%s", out)
+	}
+}
+
 func TestNewModelDefaultsDecisionActorToOperator(t *testing.T) {
 	if got := NewModel(nil, []string{"plan"}).Actor; got != "operator" {
 		t.Fatalf("decision actor = %q, want operator", got)

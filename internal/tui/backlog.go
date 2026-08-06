@@ -57,6 +57,13 @@ const (
 // issues wait, so it wears the issue modal's clothes — but sized to width x
 // height rather than to the rows it happens to hold.
 func renderBacklog(entries []*projection.IssueView, sel, width, height int) string {
+	return renderBacklogWithActive(entries, sel, width, height, nil)
+}
+
+// renderBacklogWithActive uses projected blockers for the detail pane while
+// retaining the raw dependency list for callers that do not have projection
+// state, such as static fixtures and edit prefill.
+func renderBacklogWithActive(entries []*projection.IssueView, sel, width, height int, active map[string][]string) string {
 	keys := backlogKeys()
 	// The key hints are the one line that is the same at every size, and cutting
 	// them costs the operator the way out of the overlay — so they, not the list,
@@ -80,7 +87,11 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 
 	var detail []string
 	if detailWidth > 0 && sel >= 0 && sel < len(entries) {
-		detail = backlogDetail(entries[sel], detailWidth)
+		dependsOn := entries[sel].DependsOn
+		if active != nil {
+			dependsOn = active[entries[sel].ID]
+		}
+		detail = backlogDetailWithDependencies(entries[sel], detailWidth, dependsOn)
 	}
 	detail = backlogClipDetail(detail, paneRows, detailWidth)
 
@@ -157,6 +168,10 @@ func backlogIDWidth(entries []*projection.IssueView) int {
 // to width: renderBox sizes to its widest content line, so a short body would
 // otherwise shrink the whole frame back to its content.
 func backlogDetail(iv *projection.IssueView, width int) []string {
+	return backlogDetailWithDependencies(iv, width, iv.DependsOn)
+}
+
+func backlogDetailWithDependencies(iv *projection.IssueView, width int, dependsOn []string) []string {
 	t := activeTheme
 	dim := lipgloss.NewStyle().Foreground(t.Dim)
 	cell := func(s string, style lipgloss.Style) string { return style.Render(padCell(s, width)) }
@@ -177,8 +192,8 @@ func backlogDetail(iv *projection.IssueView, width int) []string {
 		{"flow", orElse(iv.Flow, "default")},
 		{"preset", orElse(iv.Preset, string(flow.LeverRegular))},
 	}
-	if len(iv.DependsOn) > 0 {
-		metadata = append(metadata, [2]string{"depends", strings.Join(iv.DependsOn, ", ")})
+	if len(dependsOn) > 0 {
+		metadata = append(metadata, [2]string{"depends", strings.Join(dependsOn, ", ")})
 	}
 	for _, kv := range metadata {
 		label := dim.Render(padCell(strings.ToUpper(kv[0]), labelWidth))

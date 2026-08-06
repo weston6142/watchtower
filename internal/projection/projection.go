@@ -6,6 +6,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
+	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/stageusage"
 )
@@ -91,6 +92,27 @@ type State struct {
 
 func NewState() *State {
 	return &State{Issues: map[string]*IssueView{}, Decisions: map[int64]DecisionView{}}
+}
+
+// ActiveBlockers derives the current backlog projection without changing the
+// raw dependency list stored on the issue view.
+func (s *State) ActiveBlockers(issueID string) []string {
+	if s == nil {
+		return nil
+	}
+	issue := s.Issues[issueID]
+	if issue == nil {
+		return nil
+	}
+	active, err := deps.ActiveBlockers(issue.DependsOn, func(parentID string) (bool, error) {
+		parent := s.Issues[parentID]
+		return parent != nil && !parent.Unmerged &&
+			(parent.State == "done" || parent.State == "cleanup_needed"), nil
+	})
+	if err != nil {
+		return append([]string(nil), issue.DependsOn...)
+	}
+	return active
 }
 
 func (s *State) Apply(ev core.Event) {

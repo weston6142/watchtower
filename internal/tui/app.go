@@ -2160,7 +2160,11 @@ func (m Model) View() string {
 	} else if m.backlog != nil {
 		entries := backlogEntries(m.State)
 		m.backlog.Sel = min(m.backlog.Sel, max(0, len(entries)-1))
-		overlayBox = renderBacklog(entries, m.backlog.Sel, layoutWidth, m.Height)
+		active := make(map[string][]string, len(entries))
+		for _, entry := range entries {
+			active[entry.ID] = m.State.ActiveBlockers(entry.ID)
+		}
+		overlayBox = renderBacklogWithActive(entries, m.backlog.Sel, layoutWidth, m.Height, active)
 	} else if m.leverEditor != nil {
 		overlayBox = renderLeverEditor(m.leverEditor.Stages, m.leverEditor.Matrix, m.leverEditor.Sel)
 	} else if m.setup != nil && m.pager.Mode == "" {
