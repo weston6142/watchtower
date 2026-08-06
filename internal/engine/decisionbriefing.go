@@ -31,7 +31,7 @@ func buildDecisionPageBriefing(
 		Recommendation: recommendation, RecommendationWhy: why,
 		Options: decisionPageOptions(dec, target),
 		Proof:   proof, ProofMissing: missing,
-		AfterAnswer: decisionPageContinuation(ctx, target, currentStage),
+		AfterAnswer: decisionPageContinuation(dec, ctx, target, currentStage),
 	}
 	if ctx != nil {
 		result.AgentLabel = ctx.AgentLabel()
@@ -69,9 +69,13 @@ func decisionPageAction(dec *levers.Decision, target *review.Target, decisionID 
 		if len(names) > 0 {
 			artifacts = strings.Join(names, ", ")
 		}
+		choices := "approve or revise"
+		if len(dec.Options) >= 2 {
+			choices = fmt.Sprintf("%s or %s", dec.Options[0], dec.Options[1])
+		}
 		return fmt.Sprintf(
-			"Review %s, then choose approve or revise for decision %d in the TUI.",
-			artifacts, decisionID,
+			"Review %s, then choose %s for decision %d in the TUI.",
+			artifacts, choices, decisionID,
 		)
 	}
 	if dec.Kind == levers.DecisionFreeform {
@@ -159,16 +163,14 @@ func decisionPageProof(briefing *levers.Briefing) ([]decisionpage.Proof, bool) {
 }
 
 func decisionPageContinuation(
-	ctx *decision.DecisionContext, target *review.Target, currentStage string,
+	dec *levers.Decision, ctx *decision.DecisionContext, target *review.Target, currentStage string,
 ) string {
 	if target != nil {
-		if target.Stage == "" || target.NextStage == "" {
+		if target.Stage == "" {
 			return nextStageMissing
 		}
-		return fmt.Sprintf(
-			"Approve to continue to %s. Revise to repeat %s.",
-			target.NextStage, target.Stage,
-		)
+		_, continuation := artifactReviewOutcomeCopy(*target, isPlanReviewDecision(dec))
+		return continuation
 	}
 	if currentStage == "" {
 		return nextStageMissing
@@ -187,10 +189,7 @@ func artifactReviewDecision(target review.Target, plan bool) levers.Decision {
 		question = "Approve plan for execution?"
 		options[1] = "reject"
 	}
-	next := target.NextStage
-	if next == "" {
-		next = "the next configured stage"
-	}
+	consequences, _ := artifactReviewOutcomeCopy(target, plan)
 	proof := make([]levers.BriefingProof, 0, len(target.Artifacts))
 	for _, artifact := range target.Artifacts {
 		proof = append(proof, levers.BriefingProof{
@@ -207,12 +206,29 @@ func artifactReviewDecision(target review.Target, plan bool) levers.Decision {
 	return levers.Decision{
 		Kind: levers.DecisionChoice, Question: question, Options: options,
 		Recommended: 0, Importance: 1.0,
-		Why: "The reviewed artifact version must be authorized before Watchtower advances the workflow.",
-		Consequences: []string{
-			fmt.Sprintf("Authorizes this artifact version and advances to %s.", next),
-			fmt.Sprintf("Marks this artifact version for revision and repeats %s.", target.Stage),
-		},
-		Reversible: "The artifact can be revised before approval; approval authorizes this exact archived version.",
-		Briefing:   &levers.Briefing{Proof: proof},
+		Why:          "The reviewed artifact version must be authorized before Watchtower advances the workflow.",
+		Consequences: consequences,
+		Reversible:   "The artifact can be revised before approval; approval authorizes this exact archived version.",
+		Briefing:     &levers.Briefing{Proof: proof},
 	}
+}
+
+func isPlanReviewDecision(dec *levers.Decision) bool {
+	return dec != nil && len(dec.Options) >= 2 && strings.EqualFold(dec.Options[1], "reject")
+}
+
+func artifactReviewOutcomeCopy(target review.Target, plan bool) ([]string, string) {
+	approval := fmt.Sprintf("Authorizes this artifact version and advances to %s.", target.NextStage)
+	approvalContinuation := fmt.Sprintf("Approve to continue to %s.", target.NextStage)
+	if target.NextStage == "" {
+		approval = "Authorizes this artifact version and completes the workflow."
+		approvalContinuation = "Approve to complete the workflow."
+	}
+	alternative := fmt.Sprintf("Marks this artifact version for revision and repeats %s.", target.Stage)
+	alternativeContinuation := fmt.Sprintf("Revise to repeat %s.", target.Stage)
+	if plan {
+		alternative = "Rejects this plan and stops this run; retry the issue to produce and review a new plan."
+		alternativeContinuation = "Reject to stop this run; retry the issue to produce and review a new plan."
+	}
+	return []string{approval, alternative}, approvalContinuation + " " + alternativeContinuation
 }

@@ -178,6 +178,92 @@ func TestArtifactReviewPageBreakdown(t *testing.T) {
 	t.Fatalf("revision did not preserve revision_required checkpoint: %+v", checkpoints)
 }
 
+func TestPlanReviewPageExplainsRejection(t *testing.T) {
+	f := flow.Flow{Name: "plan-review-page", Stages: []flow.Stage{
+		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Gate: flow.GatePlanReview, Artifacts: []string{"plan.md"}},
+		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}}, Gate: flow.GateAuto},
+	}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"plan/planner":     {Artifacts: map[string]string{"plan.md": "proposed plan\n"}},
+		"execute/executor": {},
+	}}
+	e, _ := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	id, err := e.CreateIssue("Plan review page", "", f.Name, levers.Preset(f, flow.LeverStrict), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	pending := waitForDecisionPagePending(t, e, id, "plan")
+	pagePath := filepath.Join(e.cfg.DataDir, id, "decisions", fmt.Sprintf("%d.html", pending.ID))
+	body := waitForDecisionPageFile(t, pagePath)
+	page := string(body)
+	for _, want := range []string{
+		"choose approve or reject", "Reject to stop this run", "retry the issue",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("plan review page missing %q: %s", want, page)
+		}
+	}
+	for _, misleading := range []string{"choose approve or revise", "Revise to repeat plan"} {
+		if strings.Contains(page, misleading) {
+			t.Errorf("plan review page contains misleading %q: %s", misleading, page)
+		}
+	}
+
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "plan review rejected") {
+		t.Fatalf("plan rejection result = %v", err)
+	}
+}
+
+func TestTerminalArtifactReviewPageExplainsCompletion(t *testing.T) {
+	f := flow.Flow{Name: "terminal-review-page", Stages: []flow.Stage{{
+		Name: "publish", Agents: []flow.AgentRef{{Package: "agent"}},
+		Gate: flow.GateApproveArtifact, Artifacts: []string{"release.md"},
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"publish/agent": {Artifacts: map[string]string{"release.md": "release candidate\n"}},
+	}}
+	e, _ := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	id, err := e.CreateIssue("Terminal review page", "", f.Name, levers.Preset(f, flow.LeverStrict), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	pending := waitForDecisionPagePending(t, e, id, "publish")
+	pagePath := filepath.Join(e.cfg.DataDir, id, "decisions", fmt.Sprintf("%d.html", pending.ID))
+	body := waitForDecisionPageFile(t, pagePath)
+	page := string(body)
+	for _, want := range []string{
+		"completes the workflow", "Approve to complete the workflow", "Revise to repeat publish",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("terminal review page missing %q: %s", want, page)
+		}
+	}
+	for _, misleading := range []string{"next configured stage", nextStageMissing} {
+		if strings.Contains(page, misleading) {
+			t.Errorf("terminal review page contains misleading %q: %s", misleading, page)
+		}
+	}
+
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, e.cfg.Store, id, core.EvIssueCompleted)
+}
+
 func TestDecisionPageRefreshesAtStageBoundary(t *testing.T) {
 	f := flow.Flow{Name: "decision-page-boundary", Stages: []flow.Stage{
 		{Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Gate: flow.GateAuto, Completion: flow.CompletionAll},
@@ -230,4 +316,19 @@ func waitForDecisionPagePending(t *testing.T, e *Engine, issueID, stage string) 
 	events, _ := e.cfg.Store.EventsSince(0)
 	t.Fatalf("pending %s review never appeared; issue rows=%+v events=%+v", stage, rows, events)
 	return PendingDecision{}
+}
+
+func waitForDecisionPageFile(t *testing.T, path string) []byte {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		body, err := os.ReadFile(path)
+		if err == nil {
+			return body
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	body, err := os.ReadFile(path)
+	t.Fatalf("decision page %s was not written: %v", path, err)
+	return body
 }
