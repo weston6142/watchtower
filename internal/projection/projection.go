@@ -55,6 +55,7 @@ type DecisionView struct {
 	Recommended         int
 	RecommendedResponse string
 	AllowFreeform       bool
+	RequiresOption      bool
 	Why                 string
 	Consequences        []string
 	Reversible          string
@@ -228,8 +229,9 @@ func (s *State) Apply(ev core.Event) {
 		s.Decisions[id] = DecisionView{ID: id, IssueID: ev.IssueID, Stage: str("stage"),
 			Kind: str("kind"), Question: str("question"), Options: opts,
 			Recommended: int(num("recommended")), RecommendedResponse: str("recommended_response"),
-			AllowFreeform: p["allow_freeform"] == true,
-			Why:           str("why"), Consequences: stringsFromPayload(p["consequences"]),
+			AllowFreeform:  p["allow_freeform"] == true,
+			RequiresOption: p["requires_option"] == true,
+			Why:            str("why"), Consequences: stringsFromPayload(p["consequences"]),
 			Reversible: str("reversible"), Paths: stringsFromPayload(p["paths"]), Context: context,
 			Review: reviewTarget, ReviewPolicy: decisionPolicy, ReviewStatus: decisionReviewStatus}
 		if iv != nil {

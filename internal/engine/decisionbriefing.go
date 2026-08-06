@@ -101,6 +101,9 @@ func decisionPageAction(
 			decisionID,
 		)
 	}
+	if dec.RequiresOption {
+		return fmt.Sprintf("Choose an option for decision %d in the TUI.", decisionID)
+	}
 	return fmt.Sprintf("Choose an option or enter feedback for decision %d in the TUI.", decisionID)
 }
 
@@ -170,7 +173,7 @@ func decisionPageOptions(dec *levers.Decision, target *review.Target) []decision
 			OneLiner: outcome, Recommended: index == dec.Recommended,
 		})
 	}
-	if target == nil {
+	if target == nil && !dec.RequiresOption {
 		options = append(options, decisionpage.Option{
 			Key: "f", Label: "Add feedback",
 			OneLiner: "The requesting agent receives your instruction instead.",

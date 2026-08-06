@@ -72,6 +72,7 @@ type Decision struct {
 	Reversible         string
 	Briefing           *Briefing
 	EngineContinuation string `json:"-"`
+	RequiresOption     bool   `json:"-"`
 }
 
 type Response struct {
@@ -97,7 +98,8 @@ func (d Decision) RecommendedAnswer() Response {
 
 func (d Decision) Accepts(response Response) bool {
 	if response.Kind == DecisionFreeform {
-		return response.Text != "" && (d.Kind == "" || d.Kind == DecisionChoice || d.Kind == DecisionFreeform)
+		return !d.RequiresOption && response.Text != "" &&
+			(d.Kind == "" || d.Kind == DecisionChoice || d.Kind == DecisionFreeform)
 	}
 	if response.Kind != DecisionChoice || response.Option == nil {
 		return false

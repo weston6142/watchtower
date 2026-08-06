@@ -133,11 +133,22 @@ func (e *Engine) buildPageData(
 					continue
 				}
 				if !row.CreatedAt.IsZero() {
-					elapsed := time.Since(row.CreatedAt)
+					var elapsed time.Duration
+					showBlocked := false
+					switch {
+					case row.Status == "pending":
+						elapsed = time.Since(row.CreatedAt)
+						showBlocked = true
+					case row.Status == "answered" && !row.AnsweredAt.IsZero():
+						elapsed = row.AnsweredAt.Sub(row.CreatedAt)
+						showBlocked = true
+					}
 					if elapsed < 0 {
 						elapsed = 0
 					}
-					data.BlockedFor = fmt.Sprintf("%d min", int(elapsed.Minutes()))
+					if showBlocked {
+						data.BlockedFor = fmt.Sprintf("%d min", int(elapsed.Minutes()))
+					}
 				}
 				break
 			}

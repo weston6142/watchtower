@@ -858,6 +858,29 @@ func TestChoiceToastAddNoteOpensEmptyEditor(t *testing.T) {
 	}
 }
 
+func TestRequiredChoiceToastOffersOnlyOptions(t *testing.T) {
+	m := NewModel(nil, []string{"spec"})
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{"title": "budget", "flow": "default"}),
+		mkev(t, core.EvDecisionRequired, "GH-1", map[string]any{
+			"decision_id": float64(7), "stage": "spec", "kind": "choice",
+			"question": "Continue?", "options": []any{"continue", "abort"},
+			"recommended": float64(1), "requires_option": true,
+		}),
+	})
+	m = pressKey(t, m, "j")
+	if m.toastSel != len(m.Toast.Options)-1 {
+		t.Fatalf("selection = %d, want final option %d", m.toastSel, len(m.Toast.Options)-1)
+	}
+	if strings.Contains(ansi.Strip(m.View()), "Add note...") {
+		t.Fatalf("required-choice toast offered feedback:\n%s", ansi.Strip(m.View()))
+	}
+	m = pressKey(t, m, "enter")
+	if m.decisionEditor != nil {
+		t.Fatalf("required-choice toast opened feedback editor: %#v", m.decisionEditor)
+	}
+}
+
 func TestDecisionSurfacesFitViewportAndKeepChrome(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	for _, tc := range []struct {

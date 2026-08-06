@@ -1887,7 +1887,8 @@ func decisionRequiredPayload(id int64, stage string, d levers.Decision, context 
 		"options": d.Options, "recommended": d.Recommended, "why": d.Why,
 		"kind": d.Kind, "recommended_response": d.RecommendedResponse,
 		"allow_freeform": d.AllowFreeform, "importance": d.Importance,
-		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths,
+		"requires_option": d.RequiresOption,
+		"consequences":    d.Consequences, "reversible": d.Reversible, "paths": d.Paths,
 		"context": context,
 	}
 }
@@ -3802,6 +3803,7 @@ func (e *Engine) checkBudget(is *issueState, stage string) error {
 		},
 		Reversible:         "Aborting preserves completed stages and can be retried; continuing cannot recover tokens already spent.",
 		EngineContinuation: fmt.Sprintf("Continue to resume %s with the budget waived, or abort to stop before %s starts.", stage, stage),
+		RequiresOption:     true,
 		Briefing: &levers.Briefing{
 			Proof: []levers.BriefingProof{{
 				Claim: fmt.Sprintf("The issue has consumed %d tokens against a configured budget of %d.", spent, e.cfg.TokenBudget),

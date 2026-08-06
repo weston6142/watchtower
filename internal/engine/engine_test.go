@@ -2091,11 +2091,17 @@ func TestTokenBudgetEscalates(t *testing.T) {
 	}
 	for _, misleading := range []string{
 		legacyWhyMissing, "No recorded outcome for this historical option.",
-		"No verified progress was supplied.",
+		"No verified progress was supplied.", "Add feedback", "enter feedback",
 	} {
 		if strings.Contains(page, misleading) {
 			t.Errorf("budget decision page contains misleading %q: %s", misleading, page)
 		}
+	}
+	if err := e.Answer(pd.ID, levers.FreeformResponse("Please continue cautiously.")); err == nil {
+		t.Fatal("budget decision accepted feedback without a continue or abort choice")
+	}
+	if pending := e.PendingDecisions(); len(pending) != 1 || pending[0].ID != pd.ID {
+		t.Fatalf("invalid budget feedback consumed the decision: %+v", pending)
 	}
 	e.Answer(pd.ID, levers.ChoiceResponse(1)) // abort
 	if err := <-errC; err == nil {

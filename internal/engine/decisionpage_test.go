@@ -13,7 +13,9 @@ import (
 	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func TestDecisionPageWritten(t *testing.T) {
@@ -349,6 +351,68 @@ func TestTerminalArtifactReviewPageExplainsCompletion(t *testing.T) {
 		if strings.Contains(answered, misleading) {
 			t.Errorf("answered terminal review page contains misleading %q: %s", misleading, answered)
 		}
+	}
+}
+
+func TestResolvedDecisionPageUsesDurableBlockedDuration(t *testing.T) {
+	f := flow.Flow{Name: "resolved-duration", Stages: []flow.Stage{{Name: "execute"}}}
+	e, s := newEngineCfg(t, &runner.FakeRunner{}, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	decision := levers.Decision{
+		Kind: levers.DecisionChoice, Question: "Continue?", Options: []string{"yes", "no"}, Recommended: 0,
+	}
+	createdAt := time.Now().UTC().Add(-2 * time.Hour)
+	answeredAt := createdAt.Add(7 * time.Minute)
+	decisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: "GH-human", Stage: "execute", Kind: decision.Kind,
+		Question: decision.Question, Options: decision.Options, Recommended: decision.Recommended,
+		Status: "answered", Response: levers.ChoiceResponse(0),
+		CreatedAt: createdAt, AnsweredAt: answeredAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := e.buildPageData(
+		"GH-human", f.Name, "Human decision", "execute", &decision, nil, nil,
+		decisionID, resolvedDecisionPage(levers.ChoiceResponse(0), nil, answeredAt),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := decisionpage.Render(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(page), "Blocked 7 min") {
+		t.Fatalf("resolved human page did not freeze blocked duration at answer time: %s", page)
+	}
+
+	policyApproval := &review.ApprovalProvenance{
+		Kind: review.ApprovalPolicy, PolicyID: "team-ci", PolicyVersion: "1",
+	}
+	autoID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: "GH-auto", Stage: "execute", Kind: decision.Kind,
+		Question: decision.Question, Options: decision.Options, Recommended: decision.Recommended,
+		Status: "auto", Response: levers.ChoiceResponse(0), Approval: policyApproval,
+		CreatedAt: createdAt, AnsweredAt: answeredAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = e.buildPageData(
+		"GH-auto", f.Name, "Automatic decision", "execute", &decision, nil, nil,
+		autoID, resolvedDecisionPage(levers.ChoiceResponse(0), policyApproval, answeredAt),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err = decisionpage.Render(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(page), "Blocked ") {
+		t.Fatalf("automatically approved page reported blocked time: %s", page)
 	}
 }
 
