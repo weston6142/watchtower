@@ -679,23 +679,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.createIssue(*m.modal)
 				}
 			default:
-				// h/l cycle the priority chooser, but only while it is focused:
-				// with the title focused, typing "hello" must still insert h
-				// and l. left/right are handled here too — the arrow→vim
-				// aliasing below runs after this branch returns, so it never
-				// reaches the cycler.
-				if m.modal.Field == priorityField {
+				switch {
+				case key == "tab":
+					m.modal.Field = (m.modal.Field + 1) % modalFieldCount
+				case m.modal.Field == priorityField:
 					switch key {
 					case "h", "left":
 						m.modal.Priority = priority.Cycle(m.modal.Priority, -1)
-						return m, nil
 					case "l", "right":
 						m.modal.Priority = priority.Cycle(m.modal.Priority, 1)
-						return m, nil
 					}
+				case isModalEditableField(m.modal.Field):
+					updated := m.modal.input(key)
+					m.modal = &updated
+				default:
+					return m, nil
 				}
-				updated := m.modal.input(key)
-				m.modal = &updated
 			}
 			return m, nil
 		}
@@ -773,7 +772,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// has to live inside the backlog switch — the confirm branch above
 				// binds n as "no".
 				m.Err = ""
-				m.modal = &modalState{FlowName: "default", Preset: "regular", FromBacklog: true}
+				m.modal = newModalState(modalState{FlowName: "default", Preset: "regular", FromBacklog: true})
 				m.backlog = nil
 			case "enter":
 				if m.backlog.Sel < len(entries) {
@@ -783,10 +782,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// the named levels: renumbering an issue just because
 					// someone opened it would lose data silently. The first
 					// h/l moves it into the set.
-					m.modal = &modalState{EditID: iv.ID, Title: iv.Title, Body: iv.Body,
+					m.modal = newModalState(modalState{EditID: iv.ID, Title: iv.Title, Body: iv.Body,
 						FlowName: iv.Flow, Preset: iv.Preset, Priority: iv.Priority,
 						DependsOn: strings.Join(iv.DependsOn, ", "),
-						Attach:    strings.Join(iv.Attachments, ", "), OrigAttach: iv.Attachments}
+						Attach:    strings.Join(iv.Attachments, ", "), OrigAttach: iv.Attachments})
 					m.backlog = nil
 				}
 			case "l":
@@ -998,7 +997,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if key == "n" {
 			m.Err = ""
-			m.modal = &modalState{FlowName: "default", Preset: "regular"}
+			m.modal = newModalState(modalState{FlowName: "default", Preset: "regular"})
 			return m, nil
 		}
 		if key == "i" {

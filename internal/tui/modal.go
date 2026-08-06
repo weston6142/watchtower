@@ -103,11 +103,13 @@ func (e *modalEditor) moveVertical(runes []rune, delta int) {
 // modalState is intentionally small: the control room only needs plain rune
 // input for a title and a few optional text fields.
 type modalState struct {
-	Title    string
-	Body     string
-	Field    int
-	FlowName string
-	Preset   string
+	Title       string
+	Body        string
+	Field       int
+	FlowName    string
+	Preset      string
+	editors     [modalEditableFieldCount]modalEditor
+	editorReady [modalEditableFieldCount]bool
 	// DependsOn is comma-separated issue IDs. The command boundary trims and
 	// deduplicates them before graph validation.
 	DependsOn string
@@ -130,29 +132,48 @@ type modalState struct {
 	FromBacklog bool
 }
 
-// input handles text fields only. Priority is cycled by the key router
-// (Model.Update) instead, and has no case in setFieldValue/fieldValue, so
-// backspace and rune input physically cannot reach it.
+func newModalState(state modalState) *modalState {
+	for field := 0; field < modalEditableFieldCount; field++ {
+		state.editors[field] = newModalEditor(state.fieldValueFor(field))
+		state.editorReady[field] = true
+	}
+	return &state
+}
+
 func (m modalState) input(key string) modalState {
-	switch key {
-	case "backspace":
-		value := m.fieldValue()
-		runes := []rune(value)
-		if len(runes) > 0 {
-			m.setFieldValue(string(runes[:len(runes)-1]))
-		}
-	case "tab":
+	if key == "tab" {
 		m.Field = (m.Field + 1) % modalFieldCount
-	default:
-		if key != "" && !strings.ContainsAny(key, "\n\r\t") {
-			m.setFieldValue(m.fieldValue() + key)
-		}
+		return m
+	}
+	if editor, ok := (&m).editorForField(m.Field); ok {
+		editor.handle(key)
+		m.setFieldValueFor(m.Field, editor.Value)
 	}
 	return m
 }
 
+func isModalEditableField(field int) bool {
+	return field >= 0 && field < modalEditableFieldCount
+}
+
+func (m *modalState) editorForField(field int) (*modalEditor, bool) {
+	if !isModalEditableField(field) {
+		return nil, false
+	}
+	value := m.fieldValueFor(field)
+	if !m.editorReady[field] || m.editors[field].Value != value {
+		m.editors[field] = newModalEditor(value)
+		m.editorReady[field] = true
+	}
+	return &m.editors[field], true
+}
+
 func (m *modalState) setFieldValue(value string) {
-	switch m.Field {
+	m.setFieldValueFor(m.Field, value)
+}
+
+func (m *modalState) setFieldValueFor(field int, value string) {
+	switch field {
 	case 0:
 		m.Title = value
 	case 1:
@@ -169,7 +190,11 @@ func (m *modalState) setFieldValue(value string) {
 }
 
 func (m modalState) fieldValue() string {
-	switch m.Field {
+	return m.fieldValueFor(m.Field)
+}
+
+func (m modalState) fieldValueFor(field int) string {
+	switch field {
 	case 0:
 		return m.Title
 	case 1:
@@ -244,10 +269,11 @@ const modalFieldWidth = 44
 // Dependency and attachment values are text fields; priority is a selector,
 // not an input, and is last so tab wraps after it.
 const (
-	dependenciesField = 4
-	attachField       = 5
-	priorityField     = 6
-	modalFieldCount   = priorityField + 1
+	dependenciesField       = 4
+	attachField             = 5
+	priorityField           = 6
+	modalEditableFieldCount = priorityField
+	modalFieldCount         = priorityField + 1
 )
 
 // modalChoiceField renders a fixed-choice field as the lever editor's
