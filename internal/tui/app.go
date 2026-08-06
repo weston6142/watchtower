@@ -967,11 +967,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.answerDecision(m.Toast.Recommended)
 			case "j":
 				last := len(m.Toast.Options)
+				if m.Toast.RequiresOption {
+					last--
+				}
 				m.toastSel = min(m.toastSel+1, max(0, last))
 			case "k":
 				m.toastSel = max(m.toastSel-1, 0)
 			case "enter":
-				if m.toastSel == len(m.Toast.Options) {
+				if !m.Toast.RequiresOption && m.toastSel == len(m.Toast.Options) {
 					m.decisionEditor = &decisionEditor{DecisionID: m.Toast.ID}
 					return m, nil
 				}

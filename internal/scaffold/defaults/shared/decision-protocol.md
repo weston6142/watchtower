@@ -15,7 +15,9 @@ emit:
 {"watchtower_decision":{"kind":"choice","question":"<one plain question>","options":["<option>","<option>"],"recommended":0,"allow_freeform":true,"importance":0.8,"paths":["<affected path>"],"why":"<why this is recommended>","consequences":["<effect of option 1>","<effect of option 2>"],"reversible":"<when this becomes costly to change>"}}
 
 Set `allow_freeform` when the operator may reasonably want a different answer.
-Do not add an `Other` option; Watchtower provides the freeform path.
+Do not add an `Other` option; for agent-authored choices, Watchtower provides
+the freeform path. By contrast, engine-owned review and token-budget decisions
+require an option and do not accept freeform feedback.
 
 When review or feedback is inherently open-ended, emit:
 
@@ -35,21 +37,26 @@ decision, regular mode asks at its risk threshold, and yolo mode accepts the
 recommended choice or recommended freeform response. Importance `1.0` always
 asks in every mode. Do not invent a separate approval mechanism.
 
-Every decision includes a concrete rationale, one consequence per choice (or at
-least one for freeform), affected paths when known, and its reversibility
-boundary. Keep operator-facing language concise.
+Every decision includes a concrete rationale, one concrete consequence per option
+(or at least one for freeform), affected paths when known, and its reversibility
+boundary. A consequence must add information; never paraphrase the question or
+option label. Keep operator-facing language concise.
 
 When useful, include an optional `briefing` object in the same decision marker.
 It gives the operator a compact decision briefing without changing the decision
 contract:
 
-{"briefing":{"option_details":["<one consequence line for option 1>","<one consequence line for option 2>"],"wins":["<verified accomplishment with file or test evidence>"],"excerpts":[{"text":"<short quote from the spec or plan>","cite":"<file and section>"}],"override_note":"<one sentence explaining what overriding the recommendation means>","next_action":"<one closing line telling the operator what to do>","diagram_svg":"<optional inline svg>","diagram_caption":"<what the diagram shows>"}}
+{"briefing":{"proof":[{"claim":"<verified result>","cite":"<file, artifact, or test evidence>"}],"excerpts":[{"text":"<short supporting quote>","cite":"<file and section>"}],"override_note":"<what overriding the recommendation means>","diagram_svg":"<optional inline svg>","diagram_caption":"<what the diagram shows>"}}
 
-Keep `option_details` a parallel array with one short consequence line per
-option. List no more than five verified wins and no more than three short
-evidence excerpts; every excerpt needs a `cite` pointing to its source. Make
-`override_note` and `next_action` concise, concrete, and specific to this
-decision.
+List no more than five proof items and no more than three short evidence
+excerpts. Every proof item needs a nonblank `claim` and `cite`; every excerpt
+needs nonblank `text` and `cite`. Citations identify a concrete file, artifact,
+section, or test command. Proof is not another summary of the question.
+
+Watchtower derives the operator action from the decision kind and review target.
+Watchtower derives what happens after the answer from trusted flow and stage
+metadata. Do not provide `option_details`, `wins`, or `next_action`; those
+duplicate canonical consequences, cited proof, and engine-owned workflow state.
 
 If the choice hinges on a mechanism, `diagram_svg` may contain one inline
 `<svg>` with a numeric `viewBox`. Draw only that mechanism. Use only these

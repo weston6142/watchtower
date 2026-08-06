@@ -15,10 +15,62 @@ func TestTaskMessagePointsToCompactStageBrief(t *testing.T) {
 }
 
 func TestCoachMessageExplainsRequiredDecisionFields(t *testing.T) {
-	for _, field := range []string{"why", "consequences"} {
+	for _, field := range []string{"why", "consequences", "reversible", "proof", "claim", "cite"} {
 		if !strings.Contains(CoachMessage, field) {
 			t.Fatalf("coach message does not mention %q: %q", field, CoachMessage)
 		}
+	}
+}
+
+func TestDecisionNeedsCoaching(t *testing.T) {
+	validChoice := levers.Decision{
+		Kind: levers.DecisionChoice, Question: "Ship it?",
+		Options: []string{"Ship", "Hold"}, Recommended: 0,
+		Why:          "The verified change is ready.",
+		Consequences: []string{"The next stage starts.", "The current stage remains blocked."},
+		Reversible:   "The deployment can be rolled back.",
+		Briefing: &levers.Briefing{Proof: []levers.BriefingProof{{
+			Claim: "Focused tests pass.", Cite: "go test ./internal/decisionpage",
+		}}},
+	}
+	tests := []struct {
+		name string
+		edit func(*levers.Decision)
+		want bool
+	}{
+		{name: "complete", edit: func(*levers.Decision) {}, want: false},
+		{name: "blank why", edit: func(d *levers.Decision) { d.Why = "  " }, want: true},
+		{name: "blank reversible", edit: func(d *levers.Decision) { d.Reversible = "  " }, want: true},
+		{name: "wrong consequence count", edit: func(d *levers.Decision) { d.Consequences = d.Consequences[:1] }, want: true},
+		{name: "blank consequence", edit: func(d *levers.Decision) { d.Consequences[0] = "" }, want: true},
+		{name: "blank proof claim", edit: func(d *levers.Decision) { d.Briefing.Proof[0].Claim = "" }, want: true},
+		{name: "blank proof citation", edit: func(d *levers.Decision) { d.Briefing.Proof[0].Cite = "" }, want: true},
+		{name: "uncited excerpt", edit: func(d *levers.Decision) {
+			d.Briefing.Excerpts = []levers.BriefingExcerpt{{Text: "Approved requirement."}}
+		}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := validChoice
+			d.Options = append([]string(nil), validChoice.Options...)
+			d.Consequences = append([]string(nil), validChoice.Consequences...)
+			briefing := *validChoice.Briefing
+			briefing.Proof = append([]levers.BriefingProof(nil), validChoice.Briefing.Proof...)
+			d.Briefing = &briefing
+			tt.edit(&d)
+			if got := DecisionNeedsCoaching(d); got != tt.want {
+				t.Fatalf("DecisionNeedsCoaching() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractDecisionPreservesStructuredProof(t *testing.T) {
+	text := `{"watchtower_decision":{"kind":"choice","question":"Ship?","options":["Ship","Hold"],"recommended":0,"why":"Ready.","consequences":["Advances.","Waits."],"briefing":{"proof":[{"claim":"Tests pass.","cite":"go test ./..."}]}}}`
+	d, ok := ExtractDecision(text)
+	if !ok || d.Briefing == nil || len(d.Briefing.Proof) != 1 ||
+		d.Briefing.Proof[0].Claim != "Tests pass." || d.Briefing.Proof[0].Cite != "go test ./..." {
+		t.Fatalf("structured proof was not preserved: %#v, ok=%v", d, ok)
 	}
 }
 
@@ -57,6 +109,9 @@ func TestExtractDecisionBriefing(t *testing.T) {
 	if d.Briefing.NextAction != "Press 1." || d.Briefing.DiagramCaption != "the gate" {
 		t.Fatalf("briefing details mis-parsed: %+v", d.Briefing)
 	}
+	if len(d.Briefing.Wins) != 0 {
+		t.Fatalf("new decision preserved deprecated wins: %+v", d.Briefing)
+	}
 }
 
 func TestExtractDecisionNoBriefing(t *testing.T) {
@@ -68,13 +123,22 @@ func TestExtractDecisionNoBriefing(t *testing.T) {
 }
 
 func TestExtractDecisionBriefingClampsLists(t *testing.T) {
-	text := `{"watchtower_decision":{"kind":"choice","question":"Q","options":["a","b"],"recommended":0,"briefing":{"option_details":["only one"],"wins":["w1","w2","w3","w4","w5","w6"],"excerpts":[{"text":"1"},{"text":"2"},{"text":"3"},{"text":"4"}]}}}`
+	text := `{"watchtower_decision":{"kind":"choice","question":"Q","options":["a","b"],"recommended":0,"briefing":{"option_details":["only one"],"wins":["w1","w2","w3","w4","w5","w6"],"proof":[{"claim":"1"},{"claim":"2"},{"claim":"3"},{"claim":"4"},{"claim":"5"},{"claim":"6"}],"excerpts":[{"text":"1"},{"text":"2"},{"text":"3"},{"text":"4"}]}}}`
 	d, ok := ExtractDecision(text)
 	if !ok || d.Briefing == nil {
 		t.Fatalf("decision = %#v, ok=%v", d, ok)
 	}
-	if len(d.Briefing.OptionDetails) != 0 || len(d.Briefing.Wins) != 5 || len(d.Briefing.Excerpts) != 3 {
+	if len(d.Briefing.OptionDetails) != 0 || len(d.Briefing.Wins) != 0 ||
+		len(d.Briefing.Proof) != 5 || len(d.Briefing.Excerpts) != 3 {
 		t.Fatalf("briefing limits not applied: %+v", d.Briefing)
+	}
+}
+
+func TestExtractLegacyDecisionPreservesBriefingWins(t *testing.T) {
+	text := `{"guildhall_decision":{"kind":"choice","question":"Q","options":["a","b"],"recommended":0,"briefing":{"wins":["w1","w2","w3","w4","w5","w6"]}}}`
+	d, ok := ExtractDecision(text)
+	if !ok || d.Briefing == nil || len(d.Briefing.Wins) != levers.MaxBriefingWins {
+		t.Fatalf("legacy briefing wins = %+v, ok=%v", d.Briefing, ok)
 	}
 }
 

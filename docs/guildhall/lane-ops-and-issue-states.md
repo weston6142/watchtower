@@ -159,6 +159,15 @@ human review and never authorizes automatically. Plan review history uses
 execution boundary. Changing this configuration affects new runs only; an
 in-flight run keeps its persisted policy snapshot.
 
+Artifact and plan reviews are engine-owned choice decisions: they cite the
+exact archived artifact names, checkpoint, and SHA-256 digests, require an
+`approve` / `revise` or `approve` / `reject` option, and never accept typed
+feedback. Revision or rejection stops the run; retry creates and reviews a new
+artifact version. A policy auto-approval creates no pending `need_you` item but
+does record the policy identity and resolved decision archive. The general
+decision publication, archive, and restart-repair rules are documented in
+agent-prompt-and-model-resolution.
+
 `watchtower init` does not overwrite an existing `.watchtower/flows/default.yaml`;
 to migrate an existing repository, leave the `spec` gate as `approve_artifact`
 and change only the `plan` gate to `plan_review`, then validate and restart the

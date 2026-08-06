@@ -33,19 +33,22 @@ func checkGolden(t *testing.T, name string, got []byte) {
 
 func fixtureBriefing() *Briefing {
 	return &Briefing{
-		Question:   "Apply the schema migration now, or gate it behind a version check?",
-		AgentLabel: "⚙ builder-agent",
-		Importance: 0.8,
-		Reversible: "reversible",
+		Question:          "Apply the schema migration now, or gate it behind a version check?",
+		AgentLabel:        "⚙ builder-agent",
+		Importance:        0.8,
+		Reversible:        "reversible",
+		Action:            "Choose option 1 or 2, or enter feedback in the TUI.",
+		Recommendation:    "Gate behind version check",
+		RecommendationWhy: "It preserves compatibility with older daemons.",
 		Options: []Option{
 			{Key: "1", Label: "Gate behind version check", OneLiner: "Old daemons ignore the new column.", Recommended: true},
 			{Key: "2", Label: "Apply immediately", OneLiner: "Daemons older than 0.9 crash on restart."},
-			{Key: "f", Label: "Freeform", OneLiner: "Type your own instruction back to the agent."},
+			{Key: "f", Label: "Add feedback", OneLiner: "The requesting agent receives your instruction instead."},
 		},
-		Wins:         []string{"Migration written — migrate.go +96", "Engine reads it — tests pass (14/14)"},
+		Proof:        []Proof{{Claim: "Migration tests pass (14/14).", Cite: "go test ./internal/store"}},
+		AfterAnswer:  "Watchtower records the response and resumes builder-agent in execute.",
 		Excerpts:     []Excerpt{{Text: "Any schema change must be invisible to version N−1.", Cite: `spec.md §2.1 "Compatibility contract"`}},
 		OverrideNote: "Option 2 contradicts spec.md §2.1 — picking it overrides the spec.",
-		NextAction:   "Press 1 in the TUI to accept the gate, or 2 to override the spec.",
 		EvidenceDocs: []string{"plan.md", "spec.md", "diff.patch"},
 	}
 }
@@ -87,6 +90,55 @@ func TestRenderDecision(t *testing.T) {
 	checkGolden(t, "decision", got)
 }
 
+func TestRenderDecisionBreakdownOrder(t *testing.T) {
+	got, err := Render(fixturePage(fixtureBriefing()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(got)
+	headings := []string{
+		"Do this now", "Recommended choice and why", "What each choice changes",
+		"Already done and proven", "After you answer",
+	}
+	last := -1
+	for _, heading := range headings {
+		next := strings.Index(page, heading)
+		if next <= last {
+			t.Fatalf("heading %q missing or out of order", heading)
+		}
+		last = next
+	}
+}
+
+func TestRenderAnsweredDecisionUsesNeutralEvidenceHeading(t *testing.T) {
+	d := fixturePage(fixtureBriefing())
+	d.Answered = "option 1"
+	got, err := Render(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(got)
+	if !strings.Contains(page, "Evidence available at decision time") {
+		t.Fatalf("answered decision missing neutral evidence heading: %s", page)
+	}
+	if strings.Contains(page, "Evidence reviewed") {
+		t.Fatalf("answered decision claims evidence was reviewed: %s", page)
+	}
+}
+
+func TestRenderDecisionMissingProof(t *testing.T) {
+	briefing := fixtureBriefing()
+	briefing.Proof = nil
+	briefing.ProofMissing = true
+	got, err := Render(fixturePage(briefing))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "No verified progress was supplied.") {
+		t.Fatalf("missing proof was not explicit: %s", got)
+	}
+}
+
 func TestRenderProgressOnly(t *testing.T) {
 	d := fixturePage(nil)
 	d.BlockedFor, d.HeldSlots = "", ""
@@ -115,6 +167,8 @@ func TestEscaping(t *testing.T) {
 	b := fixtureBriefing()
 	b.Question = `<script>alert(1)</script> & "quotes"`
 	b.Options[0].Label = `<img src=x onerror=alert(1)>`
+	b.Proof[0].Claim = `<script>alert("proof")</script>`
+	b.Proof[0].Cite = `<img src=x onerror=alert(2)>`
 	got, err := Render(fixturePage(b))
 	if err != nil {
 		t.Fatal(err)

@@ -590,7 +590,9 @@ func TestCoachRepairsDecisionBeforeAsking(t *testing.T) {
 		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-coach"}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
-		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"]}}"}}'
+		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"],\"briefing\":{\"proof\":[{\"claim\":\"Tests pass.\"}]}}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"],\"reversible\":\"yes\",\"briefing\":{\"proof\":[{\"claim\":\"Tests pass.\",\"cite\":\"go test ./internal/decisionpage\"}]}}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
 		`printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
 	)
@@ -598,11 +600,12 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	r.ExtraEnv = []string{"STATE=" + state}
 	done, asks := stageRun(r, "executor", "execute")
 	ask := <-asks
-	if ask.Decision.Why != "Safe." {
+	if ask.Decision.Why != "Safe." || ask.Decision.Briefing == nil ||
+		len(ask.Decision.Briefing.Proof) != 1 || ask.Decision.Briefing.Proof[0].Cite != "go test ./internal/decisionpage" {
 		t.Fatalf("ask was not repaired: %+v", ask.Decision)
 	}
 	ask.Reply <- levers.ChoiceResponse(0)
-	if res := <-done; res.Err != nil || res.Tokens != 6 {
+	if res := <-done; res.Err != nil || res.Tokens != 8 {
 		t.Fatalf("result = %+v", res)
 	}
 	coachingCapture, err := os.ReadFile(filepath.Join(state, "args-2"))
@@ -612,7 +615,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	if !strings.Contains(string(coachingCapture), agentprotocol.CoachMessage) {
 		t.Fatalf("coaching argv does not contain the shared prompt: %q", coachingCapture)
 	}
-	if got := readCapturedArgs(t, state, 3); got[len(got)-1] != "Human decision: Yes" {
+	if got := readCapturedArgs(t, state, 4); got[len(got)-1] != "Human decision: Yes" {
 		t.Fatalf("human prompt = %q", got[len(got)-1])
 	}
 }
@@ -664,7 +667,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 func TestDependencyAfterAcceptedDecisionIsReturned(t *testing.T) {
 	bin, state := statefulStub(t,
 		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-dependency"}'
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"]}}"}}'
+	printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"],\"reversible\":\"yes\"}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
 		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_dependency\":{\"depends_on\":[\" GH-2 \",\"GH-3\",\"GH-2\"]}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
@@ -688,7 +691,7 @@ count=$((count + 1)); printf '%s' "$count" > "$STATE/count"
 for arg in "$@"; do printf '%s\n' "$arg" >> "$STATE/args-$count"; done
 if [ "$count" -eq 1 ]; then
   printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"thr-$IDENT\"}"
-  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"]}}"}}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0,\"why\":\"Safe.\",\"consequences\":[\"Runs.\",\"Stops.\"],\"reversible\":\"yes\"}}"}}'
 fi
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`)
 	type invocation struct {

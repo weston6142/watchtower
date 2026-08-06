@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,8 +41,16 @@ func (w towerOutput) Write(data []byte) (int, error) {
 
 func startTowerProcess(t *testing.T, bin, base, repo string) *towerProcess {
 	t.Helper()
-	cmd := exec.Command("script", "-qF", "/dev/stdout", "/bin/sh", "-c",
-		"stty columns 120 rows 40; exec \"$@\"", "tower-pty", bin, "tower", "--data", base, "--repo", repo, "--reduced-motion")
+	args := []string{"-qF", "/dev/stdout", "/bin/sh", "-c",
+		"stty columns 120 rows 40; exec \"$@\"", "tower-pty", bin, "tower", "--data", base, "--repo", repo, "--reduced-motion"}
+	if runtime.GOOS == "linux" {
+		command := strings.Join([]string{
+			"stty columns 120 rows 40; exec",
+			shellQuote(bin), "tower", "--data", shellQuote(base), "--repo", shellQuote(repo), "--reduced-motion",
+		}, " ")
+		args = []string{"-qefc", command, "/dev/null"}
+	}
+	cmd := exec.Command("script", args...)
 	cmd.Env = append(os.Environ(), "TERM=dumb", "COLUMNS=120", "LINES=40")
 	cmd.Dir = repo
 	stdin, err := cmd.StdinPipe()
@@ -60,6 +69,10 @@ func startTowerProcess(t *testing.T, bin, base, repo string) *towerProcess {
 	}()
 	t.Cleanup(process.close)
 	return process
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (p *towerProcess) snapshot() string {

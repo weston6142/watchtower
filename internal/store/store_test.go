@@ -14,6 +14,7 @@ import (
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
+	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -225,6 +226,49 @@ func TestLegacyIssueDefaultsToManualPlanReview(t *testing.T) {
 	}
 }
 
+func TestLegacyDecisionTableAddsPageSnapshot(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "legacy-decision.db")
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE decisions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, question TEXT, options TEXT,
+  recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
+  answered_by TEXT, blocking_cost INTEGER, created_at TEXT, answered_at TEXT,
+  briefing TEXT)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO decisions(issue_id,question,options,recommended,evidence,lever,status,answer,blocking_cost,created_at)
+VALUES(?,?,?,?,?,?,?,?,?,?)`, "GH-1", "Continue?", `[]`, 0, `{}`, "execute", "pending", "", 1, createdAt); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 || rows[0].PageSnapshot != nil {
+		t.Fatalf("legacy decisions = %#v, err = %v", rows, err)
+	}
+	snapshot := decisionpage.PageData{IssueID: "GH-1", Title: "Decision-time title"}
+	if err := s.SaveDecisionPageSnapshot(rows[0].ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.AllDecisionRows()
+	if err != nil || len(rows) != 1 || rows[0].PageSnapshot == nil || rows[0].PageSnapshot.Title != snapshot.Title {
+		t.Fatalf("migrated decisions = %#v, err = %v", rows, err)
+	}
+}
+
 func TestPlanReviewPolicyRoundTrips(t *testing.T) {
 	s, err := Open("file:plan-review-evidence?mode=memory&cache=shared")
 	if err != nil {
@@ -271,9 +315,12 @@ func TestDecisionBriefingRoundTrip(t *testing.T) {
 	defer s.Close()
 
 	want := &levers.Briefing{
-		Wins:       []string{"w1"},
-		NextAction: "press 1",
-		Excerpts:   []levers.BriefingExcerpt{{Text: "t", Cite: "spec.md §1"}},
+		Wins:       []string{"legacy win"},
+		NextAction: "legacy next action",
+		Proof: []levers.BriefingProof{{
+			Claim: "Focused tests pass.", Cite: "go test ./internal/decisionpage",
+		}},
+		Excerpts: []levers.BriefingExcerpt{{Text: "approved requirement", Cite: "spec.md §1"}},
 	}
 	id, err := s.InsertDecision(DecisionRow{
 		IssueID: "GH-1", Stage: "execute", Question: "Q", Options: []string{"a", "b"},
@@ -288,7 +335,9 @@ func TestDecisionBriefingRoundTrip(t *testing.T) {
 	}
 	for _, row := range rows {
 		if row.ID == id {
-			if row.Briefing == nil || row.Briefing.NextAction != "press 1" ||
+			if row.Briefing == nil || row.Briefing.NextAction != "legacy next action" ||
+				len(row.Briefing.Wins) != 1 || len(row.Briefing.Proof) != 1 ||
+				row.Briefing.Proof[0].Cite != "go test ./internal/decisionpage" ||
 				len(row.Briefing.Excerpts) != 1 || row.Briefing.Excerpts[0].Cite != "spec.md §1" {
 				t.Fatalf("briefing lost: %+v", row.Briefing)
 			}
@@ -668,6 +717,119 @@ func TestDecisionRoundTripsTypedFreeformResponse(t *testing.T) {
 		got.Response.Kind != levers.DecisionFreeform ||
 		got.Response.Text != response.Text {
 		t.Fatalf("decision = %#v", got)
+	}
+}
+
+func TestAnswerDecisionPersistsAnsweredAt(t *testing.T) {
+	s, err := Open("file:decision-answer-time?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	id, err := s.InsertDecision(DecisionRow{
+		IssueID: "GH-1", Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC()
+	if err := s.AnswerDecision(id, levers.ChoiceResponse(0), "answered"); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().UTC()
+
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	if rows[0].AnsweredAt.Before(before) || rows[0].AnsweredAt.After(after) {
+		t.Fatalf("answered_at = %v, want between %v and %v", rows[0].AnsweredAt, before, after)
+	}
+}
+
+func TestDecisionRequiresOptionRoundTrip(t *testing.T) {
+	s, err := Open("file:decision-requires-option?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := s.InsertDecision(DecisionRow{
+		IssueID: "GH-1", Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+		RequiresOption: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	if !rows[0].RequiresOption {
+		t.Fatalf("decision response requirement was lost: %#v", rows[0])
+	}
+}
+
+func TestDecisionRecoveryMetadataRoundTrip(t *testing.T) {
+	s, err := Open("file:decision-recovery-metadata?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	snapshot := decisionpage.PageData{
+		IssueID: "GH-1", Title: "Decision-time title", CurrentStage: "execute",
+		DecisionStage: "execute", StageIndex: 1, StageTotal: 1,
+	}
+	_, err = s.InsertDecision(DecisionRow{
+		IssueID: "GH-1", Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "abort"}, Recommended: 0,
+		EngineContinuation: "Continue to resume execute, or abort to stop before execute starts.",
+		PageSnapshot:       &snapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	if rows[0].EngineContinuation != "Continue to resume execute, or abort to stop before execute starts." {
+		t.Fatalf("engine continuation = %q", rows[0].EngineContinuation)
+	}
+	if rows[0].PageSnapshot == nil || !reflect.DeepEqual(*rows[0].PageSnapshot, snapshot) {
+		t.Fatalf("page snapshot = %#v, want %#v", rows[0].PageSnapshot, snapshot)
+	}
+}
+
+func TestDecisionPageSnapshotIsWriteOnce(t *testing.T) {
+	s, err := Open("file:decision-page-snapshot-write-once?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	id, err := s.InsertDecision(DecisionRow{IssueID: "GH-1", Question: "Continue?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := decisionpage.PageData{IssueID: "GH-1", Title: "Decision-time title"}
+	if err := s.SaveDecisionPageSnapshot(id, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveDecisionPageSnapshot(id, decisionpage.PageData{IssueID: "GH-1", Title: "Later title"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	if rows[0].PageSnapshot == nil || rows[0].PageSnapshot.Title != first.Title {
+		t.Fatalf("page snapshot = %#v, want first snapshot %#v", rows[0].PageSnapshot, first)
 	}
 }
 

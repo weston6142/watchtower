@@ -61,6 +61,13 @@ never uses `--last`. Tokens accumulate across the initial and resumed turns,
 while proposal and dependency markers continue through the shared
 `agentprotocol` parser.
 
+Only a decision marker in assistant response text is eligible; markers in tool
+calls or tool output are ignored. Both runners coach the same decision when it
+lacks a nonblank rationale or reversibility boundary, one nonblank consequence
+per choice (or any consequence for freeform), or complete citation pairs in
+supplied proof and excerpts. After two unsuccessful repair turns, the runner
+fails the stage instead of publishing an incomplete decision.
+
 New choice and freeform decisions carry an engine-owned context envelope with
 one frozen task summary plus the emitting agent's full name, explicit color
 name, and symbol. The envelope is attached after marker parsing and survives
@@ -72,10 +79,47 @@ partial, or over-limit context fails closed for new decisions. Historical
 decisions without the envelope remain readable through the headerless legacy
 path, without inferred identity.
 
-Choice decisions support both an option response and typed feedback through
-the existing freeform response path. The TUI always presents `Add note...` for
-choices, and submitting that text through `answer_decision` resolves the
-decision and resumes the agent with `Human decision: <text>`. The
-`allow_freeform` marker and storage field remain for compatibility with older
-artifacts, but are legacy metadata rather than a runtime capability gate;
-missing or false values do not prevent a valid note.
+Agent-authored choice decisions support both an option response and typed
+feedback through the existing freeform response path. The TUI presents
+`Add note...` for these choices, and submitting that text through
+`answer_decision` resolves the decision and resumes the agent with
+`Human decision: <text>`. Engine-owned artifact reviews, plan reviews, and
+token-budget gates require a listed option instead: pending-decision JSON
+exposes `requires_option: true`, the TUI omits `Add note...`, and freeform
+responses are rejected. Agents cannot set this capability in decision markers.
+The `allow_freeform` marker and storage field remain for compatibility with
+older artifacts, but are legacy metadata rather than a runtime capability gate
+for agent-authored choices; missing or false values do not prevent a valid note.
+
+Decision HTML pages keep the original question and place a fixed action
+briefing directly below it: do this now, recommended choice and rationale, one
+consequence per choice, cited proof, and the exact post-answer continuation.
+Watchtower derives the action and continuation from trusted engine state;
+agents provide rationale, consequences, and cited proof. Historical gaps are
+labeled explicitly rather than filled by paraphrasing the question. The stable
+page is `<DataDir>/<issue-id>/decision.html`; frozen archives live at
+`<DataDir>/<issue-id>/decisions/<decision-id>.html`.
+
+Pending publication is fail-closed. Watchtower records the decision, freezes a
+decision-time page snapshot, writes each per-decision and stable HTML file
+atomically, and only then exposes the decision event and includes it in
+`list_decisions` / `overview.need_you`. A page or event failure removes
+in-memory visibility and rolls back the unpublished row and pages; if cleanup
+also fails, the stage error reports both failures. Manual plan-review request
+and decision events are appended as one batch. Killing or abandoning the lane
+can cancel the same unpublished window before it becomes answerable.
+
+The frozen snapshot keeps an archived page tied to the floors, artifacts,
+evidence, and continuation that existed when the decision was raised. Answering
+rewrites that archive as resolved and refreshes the stable page to current lane
+progress; automatic recommendations and policy-approved plan reviews also get
+resolved archives with explicit provenance. On restart, Watchtower repairs a
+missing or still-pending archive for a resolved decision from its snapshot and
+does not rewrite an archive already marked resolved. Historical rows without a
+snapshot remain readable but cannot be reconstructed from current flow state.
+For a human answer, the durable resolution remains authoritative if the archive
+rewrite fails; the daemon logs the failure and restart repair can finish it.
+
+The TUI's `w` key opens the stable page by absolute path from either the focused
+lane or its decision card. Completed floors link to the frozen per-decision
+archives.

@@ -24,11 +24,19 @@ const (
 	DecisionFreeform DecisionKind = "freeform"
 )
 
-// Briefing list caps, shared by protocol normalization and page rendering.
+// Briefing list caps bound current proof and excerpt rendering plus legacy win
+// normalization.
 const (
 	MaxBriefingWins     = 5
+	MaxBriefingProof    = 5
 	MaxBriefingExcerpts = 3
 )
+
+// BriefingProof pairs one verified result with the concrete source that proves it.
+type BriefingProof struct {
+	Claim string `json:"claim"`
+	Cite  string `json:"cite"`
+}
 
 // BriefingExcerpt is a quoted passage from a stage artifact, with citation.
 type BriefingExcerpt struct {
@@ -36,11 +44,14 @@ type BriefingExcerpt struct {
 	Cite string `json:"cite"`
 }
 
-// Briefing is optional agent-authored context for the decision HTML page.
-// Every field may be empty; the page renders what it gets.
+// Briefing is optional agent-authored evidence for the decision HTML page.
+// Proof and Excerpts require complete citation pairs when present. OptionDetails,
+// Wins, and NextAction remain only for legacy markers and persisted rows; current
+// pages derive option outcomes and continuation from the decision and engine.
 type Briefing struct {
 	OptionDetails  []string          `json:"option_details"`
 	Wins           []string          `json:"wins"`
+	Proof          []BriefingProof   `json:"proof,omitempty"`
 	Excerpts       []BriefingExcerpt `json:"excerpts"`
 	OverrideNote   string            `json:"override_note"`
 	NextAction     string            `json:"next_action"`
@@ -48,6 +59,9 @@ type Briefing struct {
 	DiagramCaption string            `json:"diagram_caption"`
 }
 
+// Decision is a typed operator choice or freeform prompt. EngineContinuation
+// is trusted workflow copy excluded from agent-facing JSON, while
+// RequiresOption rejects freeform responses for engine-owned gates.
 type Decision struct {
 	Kind                DecisionKind
 	Question            string
@@ -56,13 +70,15 @@ type Decision struct {
 	RecommendedResponse string
 	// AllowFreeform is retained wire/storage compatibility metadata. It is not
 	// a current capability switch for decision responses.
-	AllowFreeform bool
-	Importance    float64
-	Paths         []string
-	Why           string
-	Consequences  []string
-	Reversible    string
-	Briefing      *Briefing
+	AllowFreeform      bool
+	Importance         float64
+	Paths              []string
+	Why                string
+	Consequences       []string
+	Reversible         string
+	Briefing           *Briefing
+	EngineContinuation string `json:"-"`
+	RequiresOption     bool   `json:"requires_option"`
 }
 
 type Response struct {
@@ -88,7 +104,8 @@ func (d Decision) RecommendedAnswer() Response {
 
 func (d Decision) Accepts(response Response) bool {
 	if response.Kind == DecisionFreeform {
-		return response.Text != "" && (d.Kind == "" || d.Kind == DecisionChoice || d.Kind == DecisionFreeform)
+		return !d.RequiresOption && response.Text != "" &&
+			(d.Kind == "" || d.Kind == DecisionChoice || d.Kind == DecisionFreeform)
 	}
 	if response.Kind != DecisionChoice || response.Option == nil {
 		return false

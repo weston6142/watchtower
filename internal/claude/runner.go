@@ -158,6 +158,9 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 		case KindInit:
 			res.SessionID = ev.SessionID
 		case KindAssistantText:
+			if res.Err != nil {
+				continue
+			}
 			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
 			if err != nil {
 				return abort(err)
@@ -165,10 +168,12 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 			pendingTools = append(pendingTools, decisions...)
 			emit(ev)
 			if d, found := agentprotocol.ExtractDecision(ev.Text); found {
-				incomplete := d.Why == "" ||
-					(d.Kind == levers.DecisionChoice && len(d.Consequences) != len(d.Options)) ||
-					(d.Kind == levers.DecisionFreeform && len(d.Consequences) == 0)
-				if incomplete && coachCount < 2 {
+				incomplete := agentprotocol.DecisionNeedsCoaching(d)
+				if incomplete {
+					if coachCount >= 2 {
+						res.Err = fmt.Errorf("claude decision remained incomplete after 2 coaching attempts")
+						continue
+					}
 					coachCount++
 					pendingReplies = append(pendingReplies, agentprotocol.CoachMessage)
 					continue
@@ -211,6 +216,9 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 				res.DependsOn = deps.Normalize(append(res.DependsOn, dependsOn...))
 			}
 		case KindToolUse:
+			if res.Err != nil {
+				continue
+			}
 			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
 			if err != nil {
 				return abort(err)
@@ -220,7 +228,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 		case KindResult:
 			res.Tokens += ev.Tokens
 			res.TokensKnown = res.TokensKnown || ev.TokensKnown
-			if ev.IsError {
+			if ev.IsError && res.Err == nil {
 				res.Err = fmt.Errorf("claude session %s ended with error", res.SessionID)
 			}
 			if len(pendingTools) > 0 {

@@ -19,6 +19,7 @@ import (
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
+	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -131,7 +132,8 @@ type PendingDecision struct {
 
 type pending struct {
 	PendingDecision
-	reply chan levers.Response
+	reply     chan levers.Response
+	published bool
 }
 
 type issueState struct {
@@ -267,6 +269,10 @@ func (e *Engine) rehydrateArtifactReview(
 	if !ok {
 		return false, false, fmt.Errorf("issue %s is missing", row.IssueID)
 	}
+	if issue.State == "done" || issue.State == "done (unmerged)" ||
+		issue.State == "merged" || issue.State == "abandoned" {
+		return false, false, nil
+	}
 	checkpoints, err := e.cfg.Store.StageCheckpoints(row.IssueID)
 	if err != nil {
 		return false, false, err
@@ -318,13 +324,7 @@ func (e *Engine) rehydrateArtifactReview(
 		planReview: issue.PlanReviewPolicy,
 	}
 	e.restoreInterruptedWorkspace(is)
-	d := levers.Decision{
-		Kind: row.Kind, Question: row.Question, Options: row.Options,
-		Recommended: row.Recommended, RecommendedResponse: row.RecommendedResponse,
-		AllowFreeform: row.AllowFreeform, Importance: row.Importance, Paths: row.Paths,
-		Why: row.Why, Consequences: row.Consequences, Reversible: row.Reversible,
-		Briefing: row.Briefing,
-	}
+	d := decisionFromRow(row)
 	e.mu.Lock()
 	e.issues[row.IssueID] = is
 	if row.Status == "pending" {
@@ -333,14 +333,66 @@ func (e *Engine) rehydrateArtifactReview(
 				ID: row.ID, IssueID: row.IssueID, Stage: row.Stage, D: d,
 				Context: row.Context, Review: row.Review, ReviewPolicy: row.ReviewPolicy,
 			},
+			published: true,
 		}
 	}
 	e.mu.Unlock()
 	if row.Status == "pending" {
-		e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, "")
+		if err := e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, row.Review, nil); err != nil {
+			return false, false, fmt.Errorf("rehydrate pending decision page: %w", err)
+		}
 	}
 	return true, (row.Status == "answered" || row.Status == "auto") &&
 		(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "succeeded"), nil
+}
+
+func decisionFromRow(row store.DecisionRow) levers.Decision {
+	return levers.Decision{
+		Kind: row.Kind, Question: row.Question, Options: row.Options,
+		Recommended: row.Recommended, RecommendedResponse: row.RecommendedResponse,
+		AllowFreeform: row.AllowFreeform, Importance: row.Importance, Paths: row.Paths,
+		Why: row.Why, Consequences: row.Consequences, Reversible: row.Reversible,
+		Briefing: row.Briefing, RequiresOption: row.RequiresOption || row.Review != nil,
+		EngineContinuation: row.EngineContinuation,
+	}
+}
+
+func (e *Engine) rebuildResolvedDecisionPages(
+	rows []store.DecisionRow, issueRows map[string]store.IssueRow,
+) (map[string]struct{}, error) {
+	affected := map[string]struct{}{}
+	ordered := append([]store.DecisionRow(nil), rows...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	for _, row := range ordered {
+		if row.Status != "answered" && row.Status != "auto" {
+			continue
+		}
+		_, ok := issueRows[row.IssueID]
+		if !ok {
+			continue
+		}
+		affected[row.IssueID] = struct{}{}
+		archivePath := filepath.Join(e.issueDir(row.IssueID), "decisions", fmt.Sprintf("%d.html", row.ID))
+		needsResolution, err := decisionArchiveNeedsResolution(archivePath)
+		if err != nil {
+			return nil, fmt.Errorf("read decision archive %d: %w", row.ID, err)
+		}
+		if !needsResolution {
+			continue
+		}
+		data, ok := resolvedDecisionPageSnapshot(row)
+		if !ok {
+			continue
+		}
+		content, renderErr := decisionpage.Render(data)
+		if renderErr != nil {
+			return nil, fmt.Errorf("render decision archive %d: %w", row.ID, renderErr)
+		}
+		if err := e.writeDecisionArchiveContent(row.IssueID, row.ID, content); err != nil {
+			return nil, fmt.Errorf("write decision archive %d: %w", row.ID, err)
+		}
+	}
+	return affected, nil
 }
 
 // Rehydrate rebuilds in-memory state from the store after a daemon restart.
@@ -349,7 +401,9 @@ func (e *Engine) rehydrateArtifactReview(
 // decisions whose stage goroutine died with the old process are closed as
 // "orphaned"; retrying the stage re-raises them. Paused and killed issues are
 // rehydrated the same way: a pause gate with no parked goroutine is
-// meaningless. Idempotent.
+// meaningless. Resolved decision archives that are missing or still marked
+// pending are repaired from their frozen page snapshots; already-resolved
+// archives are preserved. Idempotent.
 //
 // TODO: worktrees acquired by the previous daemon are never released; a
 // retried stage acquires a fresh one and the old lease leaks.
@@ -380,9 +434,23 @@ func (e *Engine) Rehydrate() error {
 	activeReviewIssues := map[string]bool{}
 	reviewCheckpointIDs := map[string]int64{}
 	var authorizedReviews []store.DecisionRow
-	reviewRows, err := e.cfg.Store.ArtifactReviewRows("")
+	decisionRows, err := e.cfg.Store.AllDecisionRows()
 	if err != nil {
 		return err
+	}
+	decisionPageIssues, err := e.rebuildResolvedDecisionPages(decisionRows, issueRows)
+	if err != nil {
+		return err
+	}
+	decisionRowsByIssue := make(map[string][]store.DecisionRow)
+	for _, row := range decisionRows {
+		decisionRowsByIssue[row.IssueID] = append(decisionRowsByIssue[row.IssueID], row)
+	}
+	var reviewRows []store.DecisionRow
+	for _, row := range decisionRows {
+		if row.Review != nil {
+			reviewRows = append(reviewRows, row)
+		}
 	}
 	for _, row := range reviewRows {
 		if row.Review == nil {
@@ -625,6 +693,11 @@ func (e *Engine) Rehydrate() error {
 		e.emit(core.EvStageFailed, row.ID, map[string]any{
 			"stage": stage, "attempt": attempt, "of": of,
 			"error": restartError, "final": true})
+	}
+	for issueID := range decisionPageIssues {
+		if row, ok := issueRows[issueID]; ok {
+			e.refreshDecisionPageFromRow(row, decisionRowsByIssue[issueID])
+		}
 	}
 	for _, row := range authorizedReviews {
 		e.scheduleArtifactContinuation(row.ID, row.IssueID, row.Stage, *row.Review, row.Response, true)
@@ -1098,18 +1171,124 @@ func (e *Engine) emit(t core.EventType, issueID string, payload any) {
 }
 
 func (e *Engine) appendEvent(t core.EventType, issueID string, payload any) (core.Event, error) {
+	ev, err := e.storeEvent(t, issueID, payload)
+	if err != nil {
+		return core.Event{}, err
+	}
+	e.notifyObservers(ev)
+	return ev, nil
+}
+
+func (e *Engine) storeEvent(t core.EventType, issueID string, payload any) (core.Event, error) {
 	ev, err := core.NewEvent(t, issueID, payload)
 	if err != nil {
 		return core.Event{}, err
 	}
-	ev, err = e.cfg.Store.Append(ev)
-	if err != nil {
-		return core.Event{}, err
-	}
+	return e.cfg.Store.Append(ev)
+}
+
+func (e *Engine) notifyObservers(ev core.Event) {
 	for _, observer := range e.cfg.Observers {
 		observer(ev)
 	}
-	return ev, nil
+}
+
+var errDecisionPublicationCanceled = errors.New("decision publication canceled")
+
+func (e *Engine) registerPendingDecision(is *issueState, p *pending) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current, ok := e.issues[p.IssueID]
+	if !ok || current.killRequested || is.killRequested {
+		return false
+	}
+	e.pend[p.ID] = p
+	return true
+}
+
+func (e *Engine) unregisterPendingDecision(p *pending) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pend[p.ID] != p {
+		return false
+	}
+	delete(e.pend, p.ID)
+	return true
+}
+
+func (e *Engine) publishPendingDecision(p *pending, payload map[string]any) error {
+	e.mu.Lock()
+	if e.pend[p.ID] != p {
+		e.mu.Unlock()
+		return errDecisionPublicationCanceled
+	}
+	ev, err := e.storeEvent(core.EvDecisionRequired, p.IssueID, payload)
+	if err != nil {
+		delete(e.pend, p.ID)
+		e.mu.Unlock()
+		return err
+	}
+	p.published = true
+	e.mu.Unlock()
+	e.notifyObservers(ev)
+	return nil
+}
+
+func (e *Engine) publishPendingPlanReview(
+	p *pending, requestedPayload, decisionPayload map[string]any,
+) error {
+	requested, err := core.NewEvent(core.EvPlanReviewRequested, p.IssueID, requestedPayload)
+	if err != nil {
+		return err
+	}
+	required, err := core.NewEvent(core.EvDecisionRequired, p.IssueID, decisionPayload)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	if e.pend[p.ID] != p {
+		e.mu.Unlock()
+		return errDecisionPublicationCanceled
+	}
+	events, err := e.cfg.Store.AppendBatch(requested, required)
+	if err != nil {
+		delete(e.pend, p.ID)
+		e.mu.Unlock()
+		return err
+	}
+	p.published = true
+	e.mu.Unlock()
+	for _, event := range events {
+		e.notifyObservers(event)
+	}
+	return nil
+}
+
+func (e *Engine) cancelPendingDecisionPublication(issueID string, decisionID int64) {
+	_ = e.cfg.Store.CloseDecision(decisionID, "killed")
+	_ = e.removePendingDecisionPublicationPages(issueID, decisionID)
+}
+
+func (e *Engine) removePendingDecisionPublicationPages(issueID string, decisionID int64) error {
+	paths := []string{
+		filepath.Join(e.issueDir(issueID), "decisions", fmt.Sprintf("%d.html", decisionID)),
+		filepath.Join(e.issueDir(issueID), decisionpage.FileName),
+	}
+	var removeErrors []error
+	for _, pagePath := range paths {
+		if err := os.Remove(pagePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			removeErrors = append(removeErrors, err)
+		}
+	}
+	e.refreshDecisionPage(issueID)
+	return errors.Join(removeErrors...)
+}
+
+func (e *Engine) rollbackPendingDecisionPublication(issueID string, decisionID int64) error {
+	if err := e.cfg.Store.DeleteDecision(decisionID); err != nil {
+		return err
+	}
+	return e.removePendingDecisionPublicationPages(issueID, decisionID)
 }
 
 // issueDir is where an issue's attachments and "none"-stage artifacts live.
@@ -1743,6 +1922,9 @@ func matrixStrings(m levers.Matrix) map[string]string {
 	return values
 }
 
+// PendingDecisions returns only decisions whose page and required event have
+// both been published; rows inside the fail-closed publication window stay
+// hidden.
 func (e *Engine) PendingDecisions() []PendingDecision {
 	rows, err := e.cfg.Store.PendingDecisionRows()
 	if err != nil {
@@ -1752,7 +1934,7 @@ func (e *Engine) PendingDecisions() []PendingDecision {
 	defer e.mu.Unlock()
 	var out []PendingDecision
 	for _, row := range rows {
-		if p, ok := e.pend[row.ID]; ok {
+		if p, ok := e.pend[row.ID]; ok && p.published {
 			out = append(out, p.PendingDecision)
 		}
 	}
@@ -1763,11 +1945,17 @@ func (e *Engine) Answer(decisionID int64, response levers.Response) error {
 	return e.AnswerAs(decisionID, response, review.DefaultActorID)
 }
 
+func reportResolvedDecisionArchiveError(decisionID int64, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: decision %d resolved but archive update failed: %v\n", decisionID, err)
+	}
+}
+
 func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor string) error {
 	actor = review.NormalizeActor(actor)
 	e.mu.Lock()
 	p, ok := e.pend[decisionID]
-	if !ok {
+	if !ok || !p.published {
 		e.mu.Unlock()
 		return fmt.Errorf("no pending decision %d", decisionID)
 	}
@@ -1775,7 +1963,6 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 		e.mu.Unlock()
 		return fmt.Errorf("invalid response for decision %d", decisionID)
 	}
-	is := e.issues[p.IssueID]
 	if p.Review != nil {
 		target := *p.Review
 		e.mu.Unlock()
@@ -1796,7 +1983,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 				return fmt.Errorf("append plan review outcome: %w", err)
 			}
 		}
-		e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, answerStamp(response))
+		archiveErr := e.writeResolvedDecisionArchive(p.ID)
 		e.mu.Lock()
 		delete(e.pend, decisionID)
 		e.mu.Unlock()
@@ -1808,6 +1995,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 		} else {
 			e.scheduleArtifactContinuation(p.ID, p.IssueID, p.Stage, target, response, false)
 		}
+		reportResolvedDecisionArchiveError(p.ID, archiveErr)
 		return nil
 	}
 	delete(e.pend, decisionID)
@@ -1815,11 +2003,12 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	if err := e.cfg.Store.AnswerDecision(decisionID, response, "answered"); err != nil {
 		return err
 	}
-	e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, answerStamp(response))
+	archiveErr := e.writeResolvedDecisionArchive(p.ID)
 	e.refreshDecisionPage(p.IssueID)
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
 		"decision_id": p.ID, "response": response})
 	p.reply <- response
+	reportResolvedDecisionArchiveError(p.ID, archiveErr)
 	return nil
 }
 
@@ -1885,7 +2074,8 @@ func decisionRequiredPayload(id int64, stage string, d levers.Decision, context 
 		"options": d.Options, "recommended": d.Recommended, "why": d.Why,
 		"kind": d.Kind, "recommended_response": d.RecommendedResponse,
 		"allow_freeform": d.AllowFreeform, "importance": d.Importance,
-		"consequences": d.Consequences, "reversible": d.Reversible, "paths": d.Paths,
+		"requires_option": d.RequiresOption,
+		"consequences":    d.Consequences, "reversible": d.Reversible, "paths": d.Paths,
 		"context": context,
 	}
 }
@@ -1945,10 +2135,7 @@ func (e *Engine) requestArtifactReview(
 	if err != nil {
 		return levers.Response{}, err
 	}
-	d := levers.Decision{
-		Question: fmt.Sprintf("Approve %s artifacts?", st.Name),
-		Options:  []string{"approve", "revise"}, Recommended: 0, Importance: 1.0,
-	}
+	d := artifactReviewDecision(target, false)
 	if err := validateDecisionEnvelope(is.id, st.Name, d, decisionContext); err != nil {
 		return levers.Response{}, err
 	}
@@ -1958,16 +2145,13 @@ func (e *Engine) requestArtifactReview(
 	rowID, err := e.cfg.Store.RequestArtifactReview(target, store.DecisionRow{
 		IssueID: is.id, Stage: st.Name, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended, Kind: d.Kind,
-		Importance: d.Importance, Context: &decisionContext,
+		Importance: d.Importance, RequiresOption: d.RequiresOption,
+		Why: d.Why, Consequences: d.Consequences,
+		Reversible: d.Reversible, Briefing: d.Briefing, Context: &decisionContext,
 		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("request artifact review: %w", err)
-	}
-	if _, err := e.appendEvent(core.EvDecisionRequired, is.id,
-		decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target)); err != nil {
-		_ = e.cfg.Store.DeleteDecision(rowID)
-		return levers.Response{}, fmt.Errorf("append artifact review event: %w", err)
 	}
 	p := &pending{
 		PendingDecision: PendingDecision{
@@ -1976,10 +2160,34 @@ func (e *Engine) requestArtifactReview(
 		},
 		reply: make(chan levers.Response, 1),
 	}
-	e.mu.Lock()
-	e.pend[rowID] = p
-	e.mu.Unlock()
-	e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, "")
+	if !e.registerPendingDecision(is, p) {
+		e.cancelPendingDecisionPublication(is.id, rowID)
+		return levers.Response{}, nil
+	}
+	if err := e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, &target, nil); err != nil {
+		if !e.unregisterPendingDecision(p) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
+		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
+		if cleanupErr != nil {
+			return levers.Response{}, fmt.Errorf("write artifact review decision page: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
+		}
+		return levers.Response{}, fmt.Errorf("write artifact review decision page: %w", err)
+	}
+	if err := e.publishPendingDecision(
+		p, decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target),
+	); err != nil {
+		if errors.Is(err, errDecisionPublicationCanceled) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
+		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
+		if cleanupErr != nil {
+			return levers.Response{}, fmt.Errorf("append artifact review event: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
+		}
+		return levers.Response{}, fmt.Errorf("append artifact review event: %w", err)
+	}
 	response, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil
@@ -2005,31 +2213,38 @@ func (e *Engine) requestPlanReview(
 	e.mu.Lock()
 	policy := is.planReview
 	e.mu.Unlock()
-	d := levers.Decision{
-		Question: "Approve plan for execution?",
-		Options:  []string{"approve", "reject"}, Recommended: 0, Importance: 1.0,
-	}
+	d := artifactReviewDecision(target, true)
 	if err := validateDecisionEnvelope(is.id, st.Name, d, decisionContext); err != nil {
 		return levers.Response{}, err
 	}
 	if err := validateDecisionWireValue("plan review target", target); err != nil {
 		return levers.Response{}, err
 	}
+	var pageSnapshot *decisionpage.PageData
+	if policy.PolicyAutoApproval {
+		pageSnapshot, err = e.decisionPageSnapshot(is, st.Name, d, &decisionContext, &target)
+		if err != nil {
+			return levers.Response{}, fmt.Errorf("build plan review page snapshot: %w", err)
+		}
+	}
 	rowID, err := e.cfg.Store.RequestArtifactReview(target, store.DecisionRow{
 		IssueID: is.id, Stage: st.Name, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended, Kind: d.Kind,
-		Importance: d.Importance, Context: &decisionContext, ReviewPolicy: &policy,
+		Importance: d.Importance, RequiresOption: d.RequiresOption,
+		Why: d.Why, Consequences: d.Consequences,
+		Reversible: d.Reversible, Briefing: d.Briefing,
+		Context: &decisionContext, ReviewPolicy: &policy, PageSnapshot: pageSnapshot,
 		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("request plan review: %w", err)
 	}
 	requested := planReviewPayload(rowID, st.Name, policy)
-	if _, err := e.appendEvent(core.EvPlanReviewRequested, is.id, requested); err != nil {
-		_ = e.cfg.Store.DeleteDecision(rowID)
-		return levers.Response{}, fmt.Errorf("append plan review request: %w", err)
-	}
 	if policy.PolicyAutoApproval {
+		if _, err := e.appendEvent(core.EvPlanReviewRequested, is.id, requested); err != nil {
+			_ = e.cfg.Store.DeleteDecision(rowID)
+			return levers.Response{}, fmt.Errorf("append plan review request: %w", err)
+		}
 		provenance := &review.ApprovalProvenance{
 			Kind: review.ApprovalPolicy, PolicyID: policy.PolicyID, PolicyVersion: policy.PolicyVersion,
 		}
@@ -2045,6 +2260,10 @@ func (e *Engine) requestPlanReview(
 		if _, err := e.appendEvent(core.EvPlanReviewPolicyApproved, is.id, payload); err != nil {
 			return levers.Response{}, fmt.Errorf("append plan policy approval: %w", err)
 		}
+		if err := e.writeResolvedDecisionArchive(rowID); err != nil {
+			return levers.Response{}, fmt.Errorf("archive policy-approved plan review: %w", err)
+		}
+		e.refreshDecisionPage(is.id)
 		return levers.ChoiceResponse(0), nil
 	}
 	if !policy.HumanRequired {
@@ -2052,10 +2271,6 @@ func (e *Engine) requestPlanReview(
 	}
 	decisionPayload := decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target)
 	decisionPayload["review_policy"] = policy
-	if _, err := e.appendEvent(core.EvDecisionRequired, is.id, decisionPayload); err != nil {
-		_ = e.cfg.Store.DeleteDecision(rowID)
-		return levers.Response{}, fmt.Errorf("append plan review decision: %w", err)
-	}
 	p := &pending{
 		PendingDecision: PendingDecision{
 			ID: rowID, IssueID: is.id, Stage: st.Name, D: d,
@@ -2063,10 +2278,32 @@ func (e *Engine) requestPlanReview(
 		},
 		reply: make(chan levers.Response, 1),
 	}
-	e.mu.Lock()
-	e.pend[rowID] = p
-	e.mu.Unlock()
-	e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, "")
+	if !e.registerPendingDecision(is, p) {
+		e.cancelPendingDecisionPublication(is.id, rowID)
+		return levers.Response{}, nil
+	}
+	if err := e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, &target, nil); err != nil {
+		if !e.unregisterPendingDecision(p) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
+		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
+		if cleanupErr != nil {
+			return levers.Response{}, fmt.Errorf("write plan review decision page: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
+		}
+		return levers.Response{}, fmt.Errorf("write plan review decision page: %w", err)
+	}
+	if err := e.publishPendingPlanReview(p, requested, decisionPayload); err != nil {
+		if errors.Is(err, errDecisionPublicationCanceled) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
+		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
+		if cleanupErr != nil {
+			return levers.Response{}, fmt.Errorf("append plan review decision: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
+		}
+		return levers.Response{}, fmt.Errorf("append plan review decision: %w", err)
+	}
 	response, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil
@@ -2393,6 +2630,12 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		reportAskError(a, err)
 		return
 	}
+	pageSnapshot, err := e.decisionPageSnapshot(is, stage, a.Decision, &decisionContext, nil)
+	if err != nil {
+		reportAskError(a, fmt.Errorf("build auto decision page snapshot: %w", err))
+		return
+	}
+	resolvedAt := time.Now().UTC()
 	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: is.id, Stage: stage, Question: a.Decision.Question,
 		Options: a.Decision.Options, Recommended: a.Decision.Recommended,
@@ -2400,9 +2643,11 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		AllowFreeform: a.Decision.AllowFreeform, Importance: a.Decision.Importance,
 		Paths: a.Decision.Paths,
 		Why:   a.Decision.Why, Consequences: a.Decision.Consequences, Reversible: a.Decision.Reversible,
-		Briefing: a.Decision.Briefing,
-		Context:  &decisionContext,
-		Status:   "auto", Response: a.Decision.RecommendedAnswer(),
+		Briefing:     a.Decision.Briefing,
+		Context:      &decisionContext,
+		PageSnapshot: pageSnapshot,
+		Status:       "auto", Response: a.Decision.RecommendedAnswer(),
+		CreatedAt: resolvedAt, AnsweredAt: resolvedAt,
 		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
@@ -2421,6 +2666,11 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		reportAskError(a, err)
 		return
 	}
+	if err := e.writeResolvedDecisionArchive(rowID); err != nil {
+		reportAskError(a, fmt.Errorf("archive auto decision: %w", err))
+		return
+	}
+	e.refreshDecisionPage(is.id)
 	a.Reply <- a.Decision.RecommendedAnswer()
 }
 
@@ -2432,30 +2682,47 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 		IssueID: is.id, Stage: stage, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended,
 		Kind: d.Kind, RecommendedResponse: d.RecommendedResponse,
-		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
+		AllowFreeform: d.AllowFreeform, RequiresOption: d.RequiresOption,
+		Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
-		Briefing:     d.Briefing,
-		Context:      &decisionContext,
-		BlockingCost: e.blockingCost(is.id),
+		EngineContinuation: d.EngineContinuation,
+		Briefing:           d.Briefing,
+		Context:            &decisionContext,
+		BlockingCost:       e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("insert decision: %w", err)
-	}
-	if _, err := e.appendEvent(core.EvDecisionRequired, is.id, decisionRequiredPayload(rowID, stage, d, decisionContext)); err != nil {
-		cleanupErr := e.cfg.Store.DeleteDecision(rowID)
-		if cleanupErr != nil {
-			return levers.Response{}, fmt.Errorf("append decision event: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
-		}
-		return levers.Response{}, fmt.Errorf("append decision event: %w", err)
 	}
 	p := &pending{
 		PendingDecision: PendingDecision{ID: rowID, IssueID: is.id, Stage: stage, D: d, Context: &decisionContext},
 		reply:           make(chan levers.Response, 1),
 	}
-	e.mu.Lock()
-	e.pend[rowID] = p
-	e.mu.Unlock()
-	e.writeDecisionPage(is, stage, rowID, d, &decisionContext, "")
+	if !e.registerPendingDecision(is, p) {
+		e.cancelPendingDecisionPublication(is.id, rowID)
+		return levers.Response{}, nil
+	}
+	if err := e.writeDecisionPage(is, stage, rowID, d, &decisionContext, nil, nil); err != nil {
+		if !e.unregisterPendingDecision(p) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
+		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
+		if cleanupErr != nil {
+			return levers.Response{}, fmt.Errorf("write decision page: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
+		}
+		return levers.Response{}, fmt.Errorf("write decision page: %w", err)
+	}
+	if err := e.publishPendingDecision(p, decisionRequiredPayload(rowID, stage, d, decisionContext)); err != nil {
+		if errors.Is(err, errDecisionPublicationCanceled) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
+		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
+		if cleanupErr != nil {
+			return levers.Response{}, fmt.Errorf("append decision event: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
+		}
+		return levers.Response{}, fmt.Errorf("append decision event: %w", err)
+	}
 	choice, ok := <-p.reply
 	if !ok {
 		return levers.Response{}, nil
@@ -3787,10 +4054,25 @@ func (e *Engine) checkBudget(is *issueState, stage string) error {
 	}
 	e.emit(core.EvBudgetExceeded, is.id, map[string]any{"spent": spent, "budget": e.cfg.TokenBudget})
 	d := levers.Decision{
+		Kind:        levers.DecisionChoice,
 		Question:    fmt.Sprintf("Issue %s exceeded its token budget (%d/%d). Continue?", is.id, spent, e.cfg.TokenBudget),
 		Options:     []string{"continue", "abort"},
 		Recommended: 1,
 		Importance:  1.0,
+		Why:         "The durable token total is above the configured limit for this issue.",
+		Consequences: []string{
+			fmt.Sprintf("Continues into %s and waives further token-budget checks for this issue until Watchtower restarts.", stage),
+			fmt.Sprintf("Stops this run before %s starts; retrying %s asks for budget authorization again.", stage, stage),
+		},
+		Reversible:         "Aborting preserves completed stages and can be retried; continuing cannot recover tokens already spent.",
+		EngineContinuation: fmt.Sprintf("Continue to resume %s with the budget waived, or abort to stop before %s starts.", stage, stage),
+		RequiresOption:     true,
+		Briefing: &levers.Briefing{
+			Proof: []levers.BriefingProof{{
+				Claim: fmt.Sprintf("The issue has consumed %d tokens against a configured budget of %d.", spent, e.cfg.TokenBudget),
+				Cite:  "durable stage-run token accounting",
+			}},
+		},
 	}
 	agentPkg, agentErr := e.decisionAgentPackage(is.flowName, stage)
 	if agentErr != nil {

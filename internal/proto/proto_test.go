@@ -57,6 +57,27 @@ func TestPendingDecisionJSONContext(t *testing.T) {
 	}
 }
 
+func TestPendingDecisionJSONExposesRequiredResponseCapability(t *testing.T) {
+	pending := engine.PendingDecision{
+		ID: 32, IssueID: "GH-32", Stage: "spec",
+		D: levers.Decision{
+			Question: "Approve spec?", Options: []string{"approve", "revise"},
+			RequiresOption: true,
+		},
+	}
+	encoded, err := json.Marshal(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded engine.PendingDecision
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.D.RequiresOption {
+		t.Fatalf("pending JSON omitted required response capability: %s", encoded)
+	}
+}
+
 func TestPlannerOverrideRoundTripsThroughCommandJSON(t *testing.T) {
 	warn, hard := int64(4), int64(5)
 	elapsedWarn, elapsedHard := 2*time.Minute, 3*time.Minute
@@ -761,6 +782,31 @@ func TestCanResetAndShutdownFlushesResponse(t *testing.T) {
 	if replacement, err := Dial(socket); err == nil {
 		replacement.Close()
 		t.Fatal("server still accepts connections")
+	}
+}
+
+func TestOverviewDoesNotExposeUnpublishedDecision(t *testing.T) {
+	fl := oneAgentFlow("agent")
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	e := engine.New(engine.Config{
+		Store: s, Runner: &runner.FakeRunner{}, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{"default": fl}, DataDir: t.TempDir(),
+	})
+	if _, err := s.InsertDecision(store.DecisionRow{
+		IssueID: "GH-1", Stage: "run", Question: "Ready?",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	overview, err := NewServer(e, s).overview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.NeedYou != 0 {
+		t.Fatalf("unpublished decision counted in overview: %+v", overview)
 	}
 }
 

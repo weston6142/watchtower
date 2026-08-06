@@ -14,9 +14,12 @@ import (
 
 // CoachMessage asks an agent to repair an incomplete decision marker without
 // changing the decision itself.
-const CoachMessage = `Your watchtower_decision is missing required fields. Re-emit the SAME decision
-as one JSON line including "why" and "consequences". Choice consequences must
-match the options; freeform decisions need at least one consequence. Nothing else.`
+const CoachMessage = `Your watchtower_decision is missing required context. Re-emit the SAME decision
+as one JSON line with a nonblank "why" and one nonblank "consequences" entry
+per choice, plus a nonblank "reversible" boundary. Freeform decisions need at
+least one consequence. Every supplied briefing proof needs nonblank "claim" and
+"cite" fields, and every excerpt needs nonblank "text" and "cite" fields.
+Nothing else.`
 
 // TaskMessage is the first user message watchtower sends an agent.
 func TaskMessage(stage, issueID string) string {
@@ -58,8 +61,10 @@ func ExtractDecision(text string) (levers.Decision, bool) {
 			continue
 		}
 		d := marker.D
+		legacy := false
 		if d.Question == "" {
 			d = marker.Legacy
+			legacy = true
 		}
 		if d.Kind == "" {
 			d.Kind = levers.DecisionChoice
@@ -85,13 +90,13 @@ func ExtractDecision(text string) (levers.Decision, bool) {
 			AllowFreeform: d.AllowFreeform, Importance: d.Importance,
 			Paths: d.Paths, Why: d.Why,
 			Consequences: d.Consequences, Reversible: d.Reversible,
-			Briefing: normalizeBriefing(d.Briefing, len(d.Options)),
+			Briefing: normalizeBriefing(d.Briefing, len(d.Options), legacy),
 		}, true
 	}
 	return levers.Decision{}, false
 }
 
-func normalizeBriefing(briefing *levers.Briefing, optionCount int) *levers.Briefing {
+func normalizeBriefing(briefing *levers.Briefing, optionCount int, legacy bool) *levers.Briefing {
 	if briefing == nil {
 		return nil
 	}
@@ -100,13 +105,54 @@ func normalizeBriefing(briefing *levers.Briefing, optionCount int) *levers.Brief
 	if len(result.OptionDetails) != 0 && len(result.OptionDetails) != optionCount {
 		result.OptionDetails = nil
 	}
-	if len(result.Wins) > levers.MaxBriefingWins {
+	if !legacy {
+		result.Wins = nil
+	} else if len(result.Wins) > levers.MaxBriefingWins {
 		result.Wins = result.Wins[:levers.MaxBriefingWins]
+	}
+	if len(result.Proof) > levers.MaxBriefingProof {
+		result.Proof = result.Proof[:levers.MaxBriefingProof]
 	}
 	if len(result.Excerpts) > levers.MaxBriefingExcerpts {
 		result.Excerpts = result.Excerpts[:levers.MaxBriefingExcerpts]
 	}
 	return &result
+}
+
+// DecisionNeedsCoaching reports whether a newly emitted decision is missing
+// the actionable context required by every operator-facing decision surface.
+func DecisionNeedsCoaching(d levers.Decision) bool {
+	if strings.TrimSpace(d.Why) == "" {
+		return true
+	}
+	if strings.TrimSpace(d.Reversible) == "" {
+		return true
+	}
+	if d.Kind == levers.DecisionChoice && len(d.Consequences) != len(d.Options) {
+		return true
+	}
+	if d.Kind == levers.DecisionFreeform && len(d.Consequences) == 0 {
+		return true
+	}
+	for _, consequence := range d.Consequences {
+		if strings.TrimSpace(consequence) == "" {
+			return true
+		}
+	}
+	if d.Briefing == nil {
+		return false
+	}
+	for _, proof := range d.Briefing.Proof {
+		if strings.TrimSpace(proof.Claim) == "" || strings.TrimSpace(proof.Cite) == "" {
+			return true
+		}
+	}
+	for _, excerpt := range d.Briefing.Excerpts {
+		if strings.TrimSpace(excerpt.Text) == "" || strings.TrimSpace(excerpt.Cite) == "" {
+			return true
+		}
+	}
+	return false
 }
 
 type proposalPayload struct {

@@ -264,9 +264,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			return res, continuation()
 		}
 		d := *decision
-		incomplete := d.Why == "" ||
-			(d.Kind == levers.DecisionChoice && len(d.Consequences) != len(d.Options)) ||
-			(d.Kind == levers.DecisionFreeform && len(d.Consequences) == 0)
+		incomplete := agentprotocol.DecisionNeedsCoaching(d)
 		if incomplete {
 			if coachCount >= 2 {
 				res.Err = fmt.Errorf("codex decision remained incomplete after 2 coaching attempts")
@@ -403,8 +401,13 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 	if scanErr := scanner.Err(); scanErr != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		result.failed = c.withStderr(fmt.Errorf("codex JSONL: %w", scanErr), stderrTail.String(), pkg.Prompt, prompt, threadID)
-		result.failureClass = runner.FailureTransport
+		if ctx.Err() != nil {
+			result.failed = c.withStderr(fmt.Errorf("codex: %w", ctx.Err()), stderrTail.String(), pkg.Prompt, prompt, threadID)
+			result.failureClass = runner.FailureCancellation
+		} else {
+			result.failed = c.withStderr(fmt.Errorf("codex JSONL: %w", scanErr), stderrTail.String(), pkg.Prompt, prompt, threadID)
+			result.failureClass = runner.FailureTransport
+		}
 		reconcile()
 		return result
 	}

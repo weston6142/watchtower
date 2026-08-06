@@ -1,9 +1,10 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"html/template"
 	"os"
 	"path"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/weston6142/watchtower/internal/evidence"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
 )
@@ -31,10 +33,103 @@ func (e *Engine) DecisionPagePath(issueID string) string {
 	return filepath.Join(root, issueID, decisionpage.FileName)
 }
 
+type decisionPageResolution struct {
+	Response  levers.Response
+	Stamp     string
+	Approval  *review.ApprovalProvenance
+	Automatic bool
+}
+
+func resolvedDecisionPage(
+	response levers.Response, approval *review.ApprovalProvenance, answeredAt time.Time,
+) *decisionPageResolution {
+	if answeredAt.IsZero() {
+		answeredAt = time.Now().UTC()
+	}
+	resolution := &decisionPageResolution{Response: response, Stamp: answerStamp(response, answeredAt)}
+	if approval == nil {
+		return resolution
+	}
+	stored := *approval
+	resolution.Approval = &stored
+	if stored.Kind == review.ApprovalPolicy {
+		resolution.Stamp = fmt.Sprintf(
+			"Automatically approved by policy %s@%s: %s · %s",
+			stored.PolicyID, stored.PolicyVersion, answerText(response),
+			answeredAt.UTC().Format("2006-01-02 15:04"),
+		)
+	}
+	return resolution
+}
+
+func resolvedStoredDecisionPage(
+	response levers.Response, approval *review.ApprovalProvenance, answeredAt time.Time, status string,
+) *decisionPageResolution {
+	if status != "auto" || approval != nil {
+		if !answeredAt.IsZero() {
+			return resolvedDecisionPage(response, approval, answeredAt)
+		}
+		resolution := &decisionPageResolution{
+			Response: response,
+			Stamp:    fmt.Sprintf("Answered: %s · timestamp unavailable", answerText(response)),
+		}
+		if approval == nil {
+			return resolution
+		}
+		stored := *approval
+		resolution.Approval = &stored
+		if stored.Kind == review.ApprovalPolicy {
+			resolution.Stamp = fmt.Sprintf(
+				"Automatically approved by policy %s@%s: %s · timestamp unavailable",
+				stored.PolicyID, stored.PolicyVersion, answerText(response),
+			)
+		}
+		return resolution
+	}
+	resolution := &decisionPageResolution{
+		Response:  response,
+		Automatic: true,
+	}
+	if answeredAt.IsZero() {
+		resolution.Stamp = fmt.Sprintf("Automatically resolved: %s · timestamp unavailable", answerText(response))
+	} else {
+		resolution.Stamp = fmt.Sprintf(
+			"Automatically resolved: %s · %s",
+			answerText(response), answeredAt.UTC().Format("2006-01-02 15:04"),
+		)
+	}
+	return resolution
+}
+
+func (r *decisionPageResolution) policyApproval() (*review.ApprovalProvenance, bool) {
+	if r == nil || r.Approval == nil || r.Approval.Kind != review.ApprovalPolicy {
+		return nil, false
+	}
+	return r.Approval, true
+}
+
 func (e *Engine) buildPageData(
 	issueID, flowName, title, currentStage string,
-	dec *levers.Decision, ctx *decision.DecisionContext, decisionID int64,
-	answered string,
+	dec *levers.Decision, ctx *decision.DecisionContext, reviewTarget *review.Target,
+	decisionID int64,
+	resolution *decisionPageResolution,
+) (decisionpage.PageData, error) {
+	decisionRows, err := e.cfg.Store.AllDecisionRows()
+	if err != nil {
+		return decisionpage.PageData{}, err
+	}
+	return e.buildPageDataWithDecisionRows(
+		issueID, flowName, title, currentStage, dec, ctx, reviewTarget,
+		decisionID, resolution, decisionRows,
+	)
+}
+
+func (e *Engine) buildPageDataWithDecisionRows(
+	issueID, flowName, title, currentStage string,
+	dec *levers.Decision, ctx *decision.DecisionContext, reviewTarget *review.Target,
+	decisionID int64,
+	resolution *decisionPageResolution,
+	decisionRows []store.DecisionRow,
 ) (decisionpage.PageData, error) {
 	fl, ok := e.cfg.Flows[flowName]
 	if !ok {
@@ -49,6 +144,10 @@ func (e *Engine) buildPageData(
 	for _, checkpoint := range checkpoints {
 		byStage[checkpoint.Stage] = checkpoint
 	}
+	decisionStage := ""
+	if dec != nil {
+		decisionStage = currentStage
+	}
 	tokensByStage := map[string]int{}
 	if runs, runErr := e.cfg.Store.StageRuns(issueID); runErr == nil {
 		for _, run := range runs {
@@ -56,18 +155,16 @@ func (e *Engine) buildPageData(
 		}
 	}
 	decisionsByStage := map[string][]decisionpage.FloorDecision{}
-	if rows, rowErr := e.cfg.Store.AllDecisionRows(); rowErr == nil {
-		for _, row := range rows {
-			if row.IssueID != issueID || row.Status == "pending" {
-				continue
-			}
-			past := decisionpage.FloorDecision{Question: row.Question, Answer: answerSummary(row)}
-			href := fmt.Sprintf("decisions/%d.html", row.ID)
-			if _, statErr := os.Stat(filepath.Join(e.issueDir(issueID), "decisions", fmt.Sprintf("%d.html", row.ID))); statErr == nil {
-				past.Href = href
-			}
-			decisionsByStage[row.Stage] = append(decisionsByStage[row.Stage], past)
+	for _, row := range decisionRows {
+		if row.IssueID != issueID || row.Status == "pending" {
+			continue
 		}
+		past := decisionpage.FloorDecision{Question: row.Question, Answer: answerSummary(row)}
+		href := fmt.Sprintf("decisions/%d.html", row.ID)
+		if _, statErr := os.Stat(filepath.Join(e.issueDir(issueID), "decisions", fmt.Sprintf("%d.html", row.ID))); statErr == nil {
+			past.Href = href
+		}
+		decisionsByStage[row.Stage] = append(decisionsByStage[row.Stage], past)
 	}
 
 	if currentStage == "" {
@@ -80,23 +177,20 @@ func (e *Engine) buildPageData(
 	}
 	data := decisionpage.PageData{
 		IssueID: issueID, Title: title, StageTotal: len(fl.Stages),
-		CurrentStage: currentStage, Answered: answered,
+		CurrentStage: currentStage, DecisionStage: decisionStage,
+	}
+	if resolution != nil {
+		data.Answered = resolution.Stamp
+		_, data.PolicyApproved = resolution.policyApproval()
+		data.AutoResolved = resolution.Automatic
 	}
 	if decisionID > 0 {
-		if rows, rowErr := e.cfg.Store.AllDecisionRows(); rowErr == nil {
-			for _, row := range rows {
-				if row.ID != decisionID {
-					continue
-				}
-				if !row.CreatedAt.IsZero() {
-					elapsed := time.Since(row.CreatedAt)
-					if elapsed < 0 {
-						elapsed = 0
-					}
-					data.BlockedFor = fmt.Sprintf("%d min", int(elapsed.Minutes()))
-				}
-				break
+		for _, row := range decisionRows {
+			if row.ID != decisionID {
+				continue
 			}
+			data.BlockedFor = decisionBlockedFor(row)
+			break
 		}
 	}
 	for _, stage := range fl.Stages {
@@ -135,9 +229,15 @@ func (e *Engine) buildPageData(
 		data.StageIndex = len(fl.Stages)
 	}
 
-	e.fillPageFiles(&data, issueID, currentStage)
+	filesStage := currentStage
+	if decisionStage != "" {
+		filesStage = decisionStage
+	}
+	e.fillPageFiles(&data, issueID, filesStage)
 	if dec != nil {
-		data.Briefing = buildDecisionPageBriefing(dec, ctx, decisionID)
+		data.Briefing = buildDecisionPageBriefing(
+			dec, ctx, reviewTarget, currentStage, decisionID, resolution,
+		)
 	}
 	return data, nil
 }
@@ -174,61 +274,6 @@ func futureStageNote(stage flow.Stage) string {
 		return "expects " + strings.Join(stage.Artifacts, ", ")
 	}
 	return "upcoming stage"
-}
-
-func buildDecisionPageBriefing(
-	dec *levers.Decision, ctx *decision.DecisionContext, decisionID int64,
-) *decisionpage.Briefing {
-	briefing := &decisionpage.Briefing{
-		Question: dec.Question, Importance: dec.Importance, Reversible: dec.Reversible,
-	}
-	if ctx != nil {
-		briefing.AgentLabel = ctx.AgentLabel()
-	}
-	for index, option := range dec.Options {
-		item := decisionpage.Option{
-			Key: fmt.Sprintf("%d", index+1), Label: option, Recommended: index == dec.Recommended,
-		}
-		if dec.Briefing != nil && index < len(dec.Briefing.OptionDetails) {
-			item.OneLiner = dec.Briefing.OptionDetails[index]
-		} else if index < len(dec.Consequences) {
-			item.OneLiner = dec.Consequences[index]
-		}
-		briefing.Options = append(briefing.Options, item)
-	}
-	if dec.Kind == levers.DecisionFreeform || dec.AllowFreeform {
-		briefing.Options = append(briefing.Options, decisionpage.Option{
-			Key: "f", Label: "Freeform", OneLiner: "Type your own instruction back to the agent.",
-		})
-	}
-	if dec.Briefing != nil {
-		briefing.Wins = append(briefing.Wins, dec.Briefing.Wins...)
-		if len(briefing.Wins) > levers.MaxBriefingWins {
-			briefing.Wins = briefing.Wins[:levers.MaxBriefingWins]
-		}
-		for _, excerpt := range dec.Briefing.Excerpts {
-			if len(briefing.Excerpts) == levers.MaxBriefingExcerpts {
-				break
-			}
-			briefing.Excerpts = append(briefing.Excerpts, decisionpage.Excerpt{
-				Text: excerpt.Text, Cite: excerpt.Cite,
-			})
-		}
-		briefing.OverrideNote = dec.Briefing.OverrideNote
-		briefing.NextAction = dec.Briefing.NextAction
-		briefing.DiagramCaption = dec.Briefing.DiagramCaption
-		if dec.Briefing.DiagramSVG != "" {
-			if err := decisionpage.ValidateSVG(dec.Briefing.DiagramSVG); err == nil {
-				briefing.DiagramSVG = template.HTML(dec.Briefing.DiagramSVG)
-			} else {
-				briefing.DiagramMissing = true
-			}
-		}
-	}
-	if briefing.NextAction == "" {
-		briefing.NextAction = fmt.Sprintf("Answer decision %d in the TUI.", decisionID)
-	}
-	return briefing
 }
 
 func (e *Engine) fillPageFiles(data *decisionpage.PageData, issueID, currentStage string) {
@@ -305,42 +350,191 @@ func matchesTouchset(file string, planned touchset.Set) bool {
 
 func (e *Engine) writeDecisionPage(
 	is *issueState, stage string, decisionID int64, d levers.Decision,
-	ctx *decision.DecisionContext, answered string,
-) {
+	ctx *decision.DecisionContext, reviewTarget *review.Target, resolution *decisionPageResolution,
+) error {
 	if is == nil {
+		return fmt.Errorf("decision issue state is unavailable")
+	}
+	data, err := e.buildPageData(
+		is.id, is.flowName, is.title, stage, &d, ctx, reviewTarget, decisionID, resolution,
+	)
+	if err != nil {
+		return fmt.Errorf("build decision page snapshot: %w", err)
+	}
+	if decisionID > 0 {
+		if err := e.cfg.Store.SaveDecisionPageSnapshot(decisionID, data); err != nil {
+			return fmt.Errorf("save decision page snapshot: %w", err)
+		}
+	}
+	if err := e.writeRenderedDecisionPage(is.id, stage, decisionID, data); err != nil {
+		return fmt.Errorf("publish decision page: %w", err)
+	}
+	return nil
+}
+
+func (e *Engine) decisionPageSnapshot(
+	is *issueState, stage string, d levers.Decision,
+	ctx *decision.DecisionContext, reviewTarget *review.Target,
+) (*decisionpage.PageData, error) {
+	if is == nil {
+		return nil, fmt.Errorf("decision issue state is unavailable")
+	}
+	data, err := e.buildPageData(
+		is.id, is.flowName, is.title, stage, &d, ctx, reviewTarget, 0, nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
+func (e *Engine) writeDecisionArchive(
+	is *issueState, stage string, decisionID int64, d levers.Decision,
+	ctx *decision.DecisionContext, reviewTarget *review.Target, resolution *decisionPageResolution,
+) {
+	if is == nil || decisionID <= 0 {
 		return
 	}
-	data, err := e.buildPageData(is.id, is.flowName, is.title, stage, &d, ctx, decisionID, answered)
+	data, err := e.buildPageData(
+		is.id, is.flowName, is.title, stage, &d, ctx, reviewTarget, decisionID, resolution,
+	)
 	if err != nil {
 		return
 	}
-	e.writeRenderedDecisionPage(is.id, stage, decisionID, data)
-}
-
-func (e *Engine) writeRenderedDecisionPage(issueID, stage string, decisionID int64, data decisionpage.PageData) {
+	if err := e.cfg.Store.SaveDecisionPageSnapshot(decisionID, data); err != nil {
+		return
+	}
 	content, err := decisionpage.Render(data)
 	if err != nil {
 		return
 	}
+	e.writeDecisionArchiveContent(is.id, decisionID, content)
+}
+
+func resolvedDecisionPageSnapshot(row store.DecisionRow) (decisionpage.PageData, bool) {
+	if row.PageSnapshot == nil {
+		return decisionpage.PageData{}, false
+	}
+	data := *row.PageSnapshot
+	resolution := resolvedStoredDecisionPage(row.Response, row.Approval, row.AnsweredAt, row.Status)
+	data.Answered = resolution.Stamp
+	_, data.PolicyApproved = resolution.policyApproval()
+	data.AutoResolved = resolution.Automatic
+	data.BlockedFor = decisionBlockedFor(row)
+	dec := decisionFromRow(row)
+	data.Briefing = buildDecisionPageBriefing(
+		&dec, row.Context, row.Review, row.Stage, row.ID, resolution,
+	)
+	return data, true
+}
+
+func (e *Engine) writeResolvedDecisionArchive(decisionID int64) error {
+	row, ok, err := e.cfg.Store.DecisionByID(decisionID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("decision %d is unavailable", decisionID)
+	}
+	data, ok := resolvedDecisionPageSnapshot(row)
+	if !ok {
+		return fmt.Errorf("decision %d page snapshot is unavailable", decisionID)
+	}
+	content, err := decisionpage.Render(data)
+	if err != nil {
+		return err
+	}
+	return e.writeDecisionArchiveContent(row.IssueID, row.ID, content)
+}
+
+func decisionArchiveNeedsResolution(archivePath string) (bool, error) {
+	content, err := os.ReadFile(archivePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if bytes.Contains(content, []byte(`<body data-decision-state="pending">`)) {
+		return true, nil
+	}
+	if bytes.Contains(content, []byte(`<body data-decision-state="resolved">`)) ||
+		bytes.Contains(content, []byte(`<span class="answered">`)) {
+		return false, nil
+	}
+	return bytes.Contains(content, []byte("Do this now")) &&
+		bytes.Contains(content, []byte("After you answer")), nil
+}
+
+func (e *Engine) writeDecisionArchiveContent(issueID string, decisionID int64, content []byte) error {
 	decisionsDir := filepath.Join(e.issueDir(issueID), "decisions")
 	if err := os.MkdirAll(decisionsDir, 0o755); err != nil {
-		return
+		return err
+	}
+	return writeFileAtomically(
+		filepath.Join(decisionsDir, fmt.Sprintf("%d.html", decisionID)), content, 0o644,
+	)
+}
+
+func writeFileAtomically(filename string, content []byte, mode os.FileMode) error {
+	temporary, err := os.CreateTemp(filepath.Dir(filename), ".decision-page-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Chmod(mode); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, filename)
+}
+
+func (e *Engine) writeRenderedDecisionPage(
+	issueID, stage string, decisionID int64, data decisionpage.PageData,
+) error {
+	content, err := decisionpage.Render(data)
+	if err != nil {
+		return err
 	}
 	if decisionID > 0 {
-		if err := os.WriteFile(filepath.Join(decisionsDir, fmt.Sprintf("%d.html", decisionID)), content, 0o644); err != nil {
-			return
+		if err := e.writeDecisionArchiveContent(issueID, decisionID, content); err != nil {
+			return err
 		}
 	}
+	if err := os.MkdirAll(e.issueDir(issueID), 0o755); err != nil {
+		return err
+	}
 	latest := filepath.Join(e.issueDir(issueID), decisionpage.FileName)
-	if err := os.WriteFile(latest, content, 0o644); err != nil {
-		return
+	if err := writeFileAtomically(latest, content, 0o644); err != nil {
+		return err
 	}
 	e.emit(core.EvArtifactProduced, issueID, map[string]any{
 		"stage": stage, "artifact": decisionpage.FileName, "path": latest, "decision_id": decisionID,
 	})
+	return nil
 }
 
 func (e *Engine) refreshDecisionPage(issueID string) {
+	decisionRows, err := e.cfg.Store.AllDecisionRows()
+	if err != nil {
+		return
+	}
+	e.refreshDecisionPageWithDecisionRows(issueID, decisionRows)
+}
+
+func (e *Engine) refreshDecisionPageWithDecisionRows(issueID string, decisionRows []store.DecisionRow) {
 	e.mu.Lock()
 	is := e.issues[issueID]
 	if is == nil {
@@ -355,10 +549,19 @@ func (e *Engine) refreshDecisionPage(issueID string) {
 		if pending.IssueID == issueID {
 			dec := pending.D
 			ctx := pending.Context
+			target := pending.Review
 			stage := pending.Stage
 			id := pending.ID
 			e.mu.Unlock()
-			e.writeDecisionPage(is, stage, id, dec, ctx, "")
+			data, err := e.buildPageDataWithDecisionRows(
+				is.id, is.flowName, is.title, stage, &dec, ctx, target, id, nil, decisionRows,
+			)
+			if err == nil {
+				if err := e.cfg.Store.SaveDecisionPageSnapshot(id, data); err != nil {
+					return
+				}
+				e.writeRenderedDecisionPage(is.id, stage, id, data)
+			}
 			return
 		}
 	}
@@ -376,9 +579,27 @@ func (e *Engine) refreshDecisionPage(issueID string) {
 			}
 		}
 	}
-	data, err := e.buildPageData(issueID, flowName, title, currentStage, nil, nil, 0, "")
+	data, err := e.buildPageDataWithDecisionRows(
+		issueID, flowName, title, currentStage, nil, nil, nil, 0, nil, decisionRows,
+	)
 	if err == nil {
 		e.writeRenderedDecisionPage(issueID, currentStage, 0, data)
+	}
+}
+
+func (e *Engine) refreshDecisionPageFromRow(row store.IssueRow, decisionRows []store.DecisionRow) {
+	e.mu.Lock()
+	is := e.issues[row.ID]
+	e.mu.Unlock()
+	if is != nil {
+		e.refreshDecisionPageWithDecisionRows(row.ID, decisionRows)
+		return
+	}
+	data, err := e.buildPageDataWithDecisionRows(
+		row.ID, row.Flow, row.Title, "", nil, nil, nil, 0, nil, decisionRows,
+	)
+	if err == nil {
+		e.writeRenderedDecisionPage(row.ID, data.CurrentStage, 0, data)
 	}
 }
 
@@ -395,8 +616,27 @@ func answerText(response levers.Response) string {
 	return answer
 }
 
-func answerStamp(response levers.Response) string {
-	return fmt.Sprintf("Answered: %s · %s", answerText(response), time.Now().UTC().Format("2006-01-02 15:04"))
+func answerStamp(response levers.Response, answeredAt time.Time) string {
+	return fmt.Sprintf("Answered: %s · %s", answerText(response), answeredAt.UTC().Format("2006-01-02 15:04"))
+}
+
+func decisionBlockedFor(row store.DecisionRow) string {
+	if row.CreatedAt.IsZero() {
+		return ""
+	}
+	var elapsed time.Duration
+	switch {
+	case row.Status == "pending":
+		elapsed = time.Since(row.CreatedAt)
+	case row.Status == "answered" && !row.AnsweredAt.IsZero():
+		elapsed = row.AnsweredAt.Sub(row.CreatedAt)
+	default:
+		return ""
+	}
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return fmt.Sprintf("%d min", int(elapsed.Minutes()))
 }
 
 // answerSummary is the short past-decision line shown inside an expanded

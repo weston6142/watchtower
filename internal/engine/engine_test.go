@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
+	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
@@ -739,6 +741,48 @@ func TestPlanReviewAuthorizationMatrix(t *testing.T) {
 		if got := len(planReviewEvents(t, s, id, core.EvExecutionStarted)); got != 1 {
 			t.Fatalf("execution_started events = %d, want 1", got)
 		}
+		rows, err := s.AllDecisionRows()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var autoReview store.DecisionRow
+		for _, row := range rows {
+			if row.IssueID == id && row.Stage == "plan" {
+				autoReview = row
+				break
+			}
+		}
+		pagePath := filepath.Join(e.issueDir(id), "decisions", fmt.Sprintf("%d.html", autoReview.ID))
+		page, err := os.ReadFile(pagePath)
+		if err != nil {
+			t.Fatalf("policy approval page missing: %v", err)
+		}
+		for _, want := range []string{
+			"Automatically approved by policy team-ci@2026-08-03", `id="decision"`, "decision · plan",
+			"Recorded outcome", "policy team-ci@2026-08-03 automatically selected approve",
+			"Recommendation at authorization time", "Configured choices",
+			"Authorization evidence", "plan.md was archived and automatically authorized by policy team-ci@2026-08-03",
+			"What happened next", "Policy approval authorized Watchtower to continue to execute",
+		} {
+			if !strings.Contains(string(page), want) {
+				t.Errorf("policy approval page missing %q: %s", want, page)
+			}
+		}
+		for _, misleading := range []string{
+			"Answered:", "Do this now", "After you answer", "ready for review",
+			"choose approve or reject", "Evidence reviewed", "was archived and reviewed",
+			"The reviewed artifact version",
+		} {
+			if strings.Contains(string(page), misleading) {
+				t.Errorf("policy approval page contains misleading %q: %s", misleading, page)
+			}
+		}
+		if strings.Contains(string(page), "decision · execute") {
+			t.Errorf("policy approval page placed plan decision under execute: %s", page)
+		}
+		if got := strings.Count(string(page), `id="decision"`); got != 1 {
+			t.Errorf("policy approval page rendered %d decision briefings, want 1: %s", got, page)
+		}
 	})
 
 	t.Run("strict overrides configured auto approval", func(t *testing.T) {
@@ -868,6 +912,66 @@ func TestPlanReviewAuditFailureBlocksExecution(t *testing.T) {
 	}
 	if got := len(planReviewEvents(t, s, id, core.EvExecutionStarted)); got != 1 {
 		t.Fatalf("execution_started events = %d, want 1", got)
+	}
+}
+
+func TestPlanReviewPageFailureDoesNotPublishRequest(t *testing.T) {
+	f := planReviewFlow()
+	e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = planReviewSettings("manual-default", "1", false)
+	})
+	id, err := e.CreateIssue("unpublished review", "", f.Name, levers.Matrix{
+		"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+	}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextDecisionPageSnapshotForTest()
+	if err := e.StartIssue(context.Background(), id); err == nil ||
+		!strings.Contains(err.Error(), "write plan review decision page") {
+		t.Fatalf("StartIssue error = %v, want plan review page failure", err)
+	}
+	if pending := e.PendingDecisions(); len(pending) != 0 {
+		t.Fatalf("pending decisions = %#v", pending)
+	}
+	if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+		t.Fatalf("pending rows = %#v, err = %v", rows, err)
+	}
+	for _, event := range mustEvents(t, s, id) {
+		if event.Type == core.EvPlanReviewRequested || event.Type == core.EvDecisionRequired {
+			t.Fatalf("unpublished plan review emitted %s", event.Type)
+		}
+	}
+}
+
+func TestPlanReviewDecisionEventFailureDoesNotPublishRequest(t *testing.T) {
+	f := planReviewFlow()
+	e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = planReviewSettings("manual-default", "1", false)
+	})
+	id, err := e.CreateIssue("unpublished decision", "", f.Name, levers.Matrix{
+		"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+	}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextAppendForTest(core.EvDecisionRequired)
+	if err := e.StartIssue(context.Background(), id); err == nil ||
+		!strings.Contains(err.Error(), "append plan review decision") {
+		t.Fatalf("StartIssue error = %v, want plan review decision event failure", err)
+	}
+	if pending := e.PendingDecisions(); len(pending) != 0 {
+		t.Fatalf("pending decisions = %#v", pending)
+	}
+	if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+		t.Fatalf("pending rows = %#v, err = %v", rows, err)
+	}
+	for _, event := range mustEvents(t, s, id) {
+		if event.Type == core.EvPlanReviewRequested || event.Type == core.EvDecisionRequired {
+			t.Fatalf("unpublished plan review emitted %s", event.Type)
+		}
 	}
 }
 
@@ -1236,6 +1340,387 @@ func TestDecisionContextFailureStopsBeforePresentation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDecisionRequiredObserverCanAnswerImmediately(t *testing.T) {
+	f := flow.Flow{Name: "observer-answer", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent"}},
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{{
+			Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+			Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+			Reversible: "The answer can be changed on retry.",
+		}}},
+	}}
+	s, err := store.Open("file:decision-observer-answer?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	answerResult := make(chan error, 1)
+	var e *Engine
+	e = New(Config{
+		Store: s, Runner: r, Pool: slots.NewPool(1), DataDir: t.TempDir(),
+		Flows: map[string]flow.Flow{f.Name: f}, DecisionIdentities: testDecisionIdentities(),
+		Observers: []func(core.Event){func(event core.Event) {
+			if event.Type != core.EvDecisionRequired {
+				return
+			}
+			var payload struct {
+				DecisionID int64 `json:"decision_id"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				answerResult <- err
+				return
+			}
+			answerResult <- e.Answer(payload.DecisionID, levers.ChoiceResponse(0))
+		}},
+	})
+	id, err := e.CreateIssue("observer answer", "", f.Name, levers.Matrix{"ask": flow.LeverStrict}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	if err := <-answerResult; err != nil {
+		if pending := e.PendingDecisions(); len(pending) == 1 {
+			_ = e.Answer(pending[0].ID, levers.ChoiceResponse(0))
+		}
+		t.Fatalf("observer answer failed: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCancellationDuringDecisionPagePublicationDoesNotPublishDecision(t *testing.T) {
+	tests := []struct {
+		name    string
+		flow    flow.Flow
+		runner  runner.Runner
+		matrix  levers.Matrix
+		adjust  func(*Config)
+		abandon bool
+	}{
+		{
+			name: "decision",
+			flow: flow.Flow{Name: "cancel-decision-publication", Stages: []flow.Stage{{
+				Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+				Agents: []flow.AgentRef{{Package: "agent"}},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"ask/agent": {Asks: []levers.Decision{{
+					Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+					Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+					Reversible: "The answer can be changed on retry.",
+				}}},
+			}},
+			matrix: levers.Matrix{"ask": flow.LeverStrict},
+		},
+		{
+			name: "abandoned decision",
+			flow: flow.Flow{Name: "abandon-decision-publication", Stages: []flow.Stage{{
+				Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+				Agents: []flow.AgentRef{{Package: "agent"}},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"ask/agent": {Asks: []levers.Decision{{
+					Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+					Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+					Reversible: "The answer can be changed on retry.",
+				}}},
+			}},
+			matrix:  levers.Matrix{"ask": flow.LeverStrict},
+			abandon: true,
+		},
+		{
+			name: "artifact review",
+			flow: flow.Flow{Name: "cancel-artifact-review-publication", Stages: []flow.Stage{{
+				Name: "review", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateApproveArtifact,
+				Agents: []flow.AgentRef{{Package: "agent"}}, Artifacts: []string{"spec.md"},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"review/agent": {Artifacts: map[string]string{"spec.md": "spec\n"}},
+			}},
+			matrix: levers.Matrix{"review": flow.LeverRegular},
+		},
+		{
+			name: "plan review",
+			flow: flow.Flow{Name: "cancel-plan-review-publication", Stages: []flow.Stage{{
+				Name: "review", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GatePlanReview,
+				Agents: []flow.AgentRef{{Package: "agent"}}, Artifacts: []string{"plan.md"},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"review/agent": {Artifacts: map[string]string{"plan.md": "plan\n"}},
+			}},
+			matrix: levers.Matrix{"review": flow.LeverRegular},
+			adjust: func(cfg *Config) {
+				cfg.PlanReview = planReviewSettings("manual-default", "1", false)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var e *Engine
+			var issueID string
+			var once sync.Once
+			killResult := make(chan error, 1)
+			e, s := newEngineCfg(t, test.runner, func(cfg *Config) {
+				cfg.Flows = map[string]flow.Flow{test.flow.Name: test.flow}
+				if test.adjust != nil {
+					test.adjust(cfg)
+				}
+				cfg.Observers = []func(core.Event){func(event core.Event) {
+					if event.Type != core.EvArtifactProduced {
+						return
+					}
+					var payload struct {
+						Artifact string `json:"artifact"`
+					}
+					if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.Artifact != decisionpage.FileName {
+						return
+					}
+					once.Do(func() {
+						if test.abandon {
+							killResult <- e.Abandon(issueID)
+							return
+						}
+						killResult <- e.KillStage(issueID)
+					})
+				}}
+			})
+			var err error
+			issueID, err = e.CreateIssue("cancel publication", "", test.flow.Name, test.matrix, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- e.StartIssue(ctx, issueID) }()
+
+			select {
+			case err := <-killResult:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("decision page was not published")
+			}
+
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("StartIssue error = %v, want context canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				cancel()
+				<-done
+				t.Fatal("canceled publication left the stage waiting on a decision")
+			}
+			if pending := e.PendingDecisions(); len(pending) != 0 {
+				t.Fatalf("pending decisions = %#v", pending)
+			}
+			if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+				t.Fatalf("pending rows = %#v, err = %v", rows, err)
+			}
+			for _, event := range mustEvents(t, s, issueID) {
+				if event.Type == core.EvDecisionRequired || event.Type == core.EvPlanReviewRequested {
+					t.Fatalf("canceled publication emitted %s", event.Type)
+				}
+			}
+			stable, err := os.ReadFile(filepath.Join(e.issueDir(issueID), decisionpage.FileName))
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(stable), "Do this now") {
+				t.Fatalf("stable page advertises the canceled decision: %s", stable)
+			}
+		})
+	}
+}
+
+func TestResolvedDecisionArchiveFailureDoesNotFailAnswer(t *testing.T) {
+	tests := []struct {
+		name   string
+		flow   flow.Flow
+		runner runner.Runner
+		matrix levers.Matrix
+	}{
+		{
+			name: "decision",
+			flow: flow.Flow{Name: "answer-without-archive", Stages: []flow.Stage{{
+				Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+				Agents: []flow.AgentRef{{Package: "agent"}},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"ask/agent": {Asks: []levers.Decision{{
+					Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+					Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+					Reversible: "The answer can be changed on retry.",
+				}}},
+			}},
+			matrix: levers.Matrix{"ask": flow.LeverStrict},
+		},
+		{
+			name: "artifact review",
+			flow: flow.Flow{Name: "review-without-archive", Stages: []flow.Stage{{
+				Name: "review", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateApproveArtifact,
+				Agents: []flow.AgentRef{{Package: "agent"}}, Artifacts: []string{"spec.md"},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"review/agent": {Artifacts: map[string]string{"spec.md": "spec\n"}},
+			}},
+			matrix: levers.Matrix{"review": flow.LeverRegular},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e, s := newEngineCfg(t, test.runner, func(cfg *Config) {
+				cfg.Flows = map[string]flow.Flow{test.flow.Name: test.flow}
+			})
+			issueID, err := e.CreateIssue("answer despite archive failure", "", test.flow.Name, test.matrix, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- e.StartIssue(context.Background(), issueID) }()
+			pending := waitForPendingStage(t, e, test.flow.Stages[0].Name)
+			decisionsDir := filepath.Join(e.issueDir(issueID), "decisions")
+			if err := os.RemoveAll(decisionsDir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(decisionsDir, []byte("block archive writes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+				t.Fatalf("Answer returned a post-commit archive failure: %v", err)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			row, ok, err := s.DecisionByID(pending.ID)
+			if err != nil || !ok || row.Status != "answered" {
+				t.Fatalf("resolved row = %+v, ok = %v, err = %v", row, ok, err)
+			}
+			if got := len(planReviewEvents(t, s, issueID, core.EvDecisionAnswered)); got != 1 {
+				t.Fatalf("decision_answered events = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestDecisionSnapshotFailureDoesNotPublishDecision(t *testing.T) {
+	f := flow.Flow{Name: "snapshot-failure", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent"}},
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{{
+			Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+			Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+			Reversible: "The answer can be changed on retry.",
+		}}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	id, err := e.CreateIssue("snapshot failure", "", f.Name, levers.Matrix{"ask": flow.LeverStrict}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextDecisionPageSnapshotForTest()
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case runErr := <-done:
+			if runErr == nil || !strings.Contains(runErr.Error(), "decision page snapshot") {
+				t.Fatalf("StartIssue error = %v, want decision page snapshot failure", runErr)
+			}
+			assertDecisionWasNotPublished(t, e, s, id, "Proceed?")
+			return
+		case <-deadline.C:
+			t.Fatal("StartIssue blocked after decision page snapshot failure")
+		default:
+			pending := e.PendingDecisions()
+			if len(pending) == 0 {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			_ = e.Answer(pending[0].ID, levers.ChoiceResponse(0))
+			t.Fatal("decision became answerable without a durable page snapshot")
+		}
+	}
+}
+
+func TestDecisionEventFailureRollsBackPublishedPages(t *testing.T) {
+	f := flow.Flow{Name: "event-failure", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent"}},
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{{
+			Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+			Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+			Reversible: "The answer can be changed on retry.",
+		}}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	id, err := e.CreateIssue("event failure", "", f.Name, levers.Matrix{"ask": flow.LeverStrict}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextAppendForTest(core.EvDecisionRequired)
+	if err := e.StartIssue(context.Background(), id); err == nil || !strings.Contains(err.Error(), "append decision event") {
+		t.Fatalf("StartIssue error = %v, want decision event failure", err)
+	}
+	assertDecisionWasNotPublished(t, e, s, id, "Proceed?")
+}
+
+func assertDecisionWasNotPublished(
+	t *testing.T, e *Engine, s *store.Store, issueID, question string,
+) {
+	t.Helper()
+	if pending := e.PendingDecisions(); len(pending) != 0 {
+		t.Fatalf("pending decisions = %#v", pending)
+	}
+	if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+		t.Fatalf("pending rows = %#v, err = %v", rows, err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == core.EvDecisionRequired {
+			t.Fatalf("decision_required event remained: %+v", event)
+		}
+	}
+	archives, err := filepath.Glob(filepath.Join(e.cfg.DataDir, issueID, "decisions", "*.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archives) != 0 {
+		t.Fatalf("decision archives remained: %v", archives)
+	}
+	stable, err := os.ReadFile(filepath.Join(e.cfg.DataDir, issueID, decisionpage.FileName))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stable), question) || strings.Contains(string(stable), "Do this now") {
+		t.Fatalf("stable page still advertises rolled-back decision: %s", stable)
 	}
 }
 
@@ -2034,9 +2519,75 @@ func TestTokenBudgetEscalates(t *testing.T) {
 	if !strings.Contains(pd.D.Question, "token budget") {
 		t.Fatalf("expected budget question, got %q", pd.D.Question)
 	}
+	pagePath := filepath.Join(e.cfg.DataDir, id, "decisions", fmt.Sprintf("%d.html", pd.ID))
+	page := string(waitForDecisionPageFile(t, pagePath))
+	for _, want := range []string{
+		"The durable token total is above the configured limit for this issue.",
+		"Continues into spec and waives further token-budget checks for this issue until Watchtower restarts.",
+		"Stops this run before spec starts; retrying spec asks for budget authorization again.",
+		"The issue has consumed 5000 tokens against a configured budget of 1000.",
+		"Continue to resume spec with the budget waived, or abort to stop before spec starts.",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("budget decision page missing %q: %s", want, page)
+		}
+	}
+	for _, misleading := range []string{
+		legacyWhyMissing, "No recorded outcome for this historical option.",
+		"No verified progress was supplied.", "Add feedback", "enter feedback",
+	} {
+		if strings.Contains(page, misleading) {
+			t.Errorf("budget decision page contains misleading %q: %s", misleading, page)
+		}
+	}
+	if err := e.Answer(pd.ID, levers.FreeformResponse("Please continue cautiously.")); err == nil {
+		t.Fatal("budget decision accepted feedback without a continue or abort choice")
+	}
+	if pending := e.PendingDecisions(); len(pending) != 1 || pending[0].ID != pd.ID {
+		t.Fatalf("invalid budget feedback consumed the decision: %+v", pending)
+	}
+	if err := os.WriteFile(filepath.Join(e.issueDir(id), "touchset.json"), []byte(`{"globs":["late/**"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lateEvidenceDir := filepath.Join(e.issueDir(id), "evidence", "spec")
+	if err := os.MkdirAll(lateEvidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lateEvidenceDir, "evidence.json"), []byte(`{"files":[{"path":"late/change.go","added":1}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	e.Answer(pd.ID, levers.ChoiceResponse(1)) // abort
 	if err := <-errC; err == nil {
 		t.Fatal("expected abort error")
+	}
+	answeredPage := string(waitForDecisionPageFile(t, pagePath))
+	for _, want := range []string{
+		"Recorded outcome", "abort was selected",
+		"Stops this run before spec starts; retrying spec asks for budget authorization again.",
+	} {
+		if !strings.Contains(answeredPage, want) {
+			t.Errorf("answered budget page missing %q: %s", want, answeredPage)
+		}
+	}
+	if strings.Contains(answeredPage, "resumed Test Agent in spec") {
+		t.Errorf("answered budget page claims the aborted stage resumed: %s", answeredPage)
+	}
+	if strings.Contains(answeredPage, "late/**") || strings.Contains(answeredPage, "late/change.go") {
+		t.Errorf("answered budget page replaced decision-time files with later state: %s", answeredPage)
+	}
+	if err := os.Remove(pagePath); err != nil {
+		t.Fatal(err)
+	}
+	e2 := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{Scripts: sc}, e.cfg.DataDir, testFlow())
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	recoveredPage := string(waitForDecisionPageFile(t, pagePath))
+	if !strings.Contains(recoveredPage, "Stops this run before spec starts; retrying spec asks for budget authorization again.") {
+		t.Errorf("recovered budget abort lost its engine continuation: %s", recoveredPage)
+	}
+	if strings.Contains(recoveredPage, "authorized Watchtower to resume") {
+		t.Errorf("recovered budget abort claims the stage resumed: %s", recoveredPage)
 	}
 	evs, _ := s.EventsSince(0)
 	found := false
@@ -2070,16 +2621,38 @@ func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	var auto, answered int
+	var autoRow store.DecisionRow
 	for _, r := range rows {
 		switch r.Status {
 		case "auto":
 			auto++
+			autoRow = r
 		case "answered":
 			answered++
 		}
 	}
 	if auto != 1 || answered != 1 {
 		t.Fatalf("auto=%d answered=%d rows=%+v", auto, answered, rows)
+	}
+	if autoRow.AnsweredAt.IsZero() {
+		t.Fatalf("auto-resolved decision has no durable resolution time: %+v", autoRow)
+	}
+	archivePath := filepath.Join(e.cfg.DataDir, id, "decisions", fmt.Sprintf("%d.html", autoRow.ID))
+	page := string(waitForDecisionPageFile(t, archivePath))
+	if !strings.Contains(page, "Automatically resolved") || strings.Contains(page, "Answered:") {
+		t.Fatalf("auto-resolved archive uses human resolution wording: %s", page)
+	}
+	if err := os.Remove(archivePath); err != nil {
+		t.Fatal(err)
+	}
+	e2 := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{Scripts: scripts()}, e.cfg.DataDir, testFlow())
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := string(waitForDecisionPageFile(t, archivePath))
+	wantStamp := "Automatically resolved: option 1 · " + autoRow.AnsweredAt.UTC().Format("2006-01-02 15:04")
+	if !strings.Contains(recovered, wantStamp) || strings.Contains(recovered, "Answered:") {
+		t.Fatalf("recovered auto archive lost automatic provenance: %s", recovered)
 	}
 }
 
@@ -3523,12 +4096,19 @@ func TestArtifactReviewSurvivesRestart(t *testing.T) {
 	}
 	go func() { _ = e1.StartIssue(context.Background(), id) }()
 	pending := waitForPendingStage(t, e1, "spec")
+	if !pending.D.RequiresOption {
+		t.Fatal("artifact review accepted freeform responses before restart")
+	}
+	if err := e1.Answer(pending.ID, levers.FreeformResponse("revise this")); err == nil {
+		t.Fatal("artifact review accepted freeform response before restart")
+	}
 	want := *pending.Review
 	e2 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
 	if err := e2.Rehydrate(); err != nil {
 		t.Fatal(err)
 	}
-	if got := e2.PendingDecisions(); len(got) != 1 || got[0].Review == nil || !got[0].Review.Matches(want) {
+	if got := e2.PendingDecisions(); len(got) != 1 || got[0].Review == nil ||
+		!got[0].Review.Matches(want) || !got[0].D.RequiresOption {
 		t.Fatalf("rehydrated review = %+v, want %+v", got, want)
 	}
 	rows, err := s.AllDecisionRows()
@@ -3563,6 +4143,36 @@ func TestArtifactReviewSurvivesRestart(t *testing.T) {
 	}
 	if err := e2.Answer(plan.ID, levers.ChoiceResponse(0)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestArtifactReviewRemainsAnswerableWhenRecoveryPageWriteFails(t *testing.T) {
+	f := artifactGateFlow()
+	s, err := store.Open(filepath.Join(t.TempDir(), "review-page-recovery.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	dataDir := t.TempDir()
+	e1 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	id, err := e1.CreateIssue("recover answer route", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	want := waitForPendingStage(t, e1, "spec")
+
+	s.FailNextDecisionPageSnapshotForTest()
+	restarted := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	pending := restarted.PendingDecisions()
+	if len(pending) != 1 || pending[0].ID != want.ID {
+		t.Fatalf("rehydrated decisions = %#v, want decision %d", pending, want.ID)
+	}
+	if err := restarted.Answer(want.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatalf("answer recovered decision: %v", err)
 	}
 }
 
@@ -3626,6 +4236,491 @@ func TestAcceptedArtifactReviewCompletesExactlyOnceAfterRestart(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("accepted review counts = answered %d, completed %d, downstream %d", answered, completed, downstream)
 		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func recoveryDecisionSnapshot(row store.DecisionRow, title string) decisionpage.PageData {
+	dec := decisionFromRow(row)
+	return decisionpage.PageData{
+		IssueID: row.IssueID, Title: title, CurrentStage: row.Stage, DecisionStage: row.Stage,
+		StageIndex: 1, StageTotal: 1,
+		Floors: []decisionpage.Floor{{Name: row.Stage, Status: decisionpage.FloorCurrent}},
+		Briefing: buildDecisionPageBriefing(
+			&dec, row.Context, row.Review, row.Stage, row.ID, nil,
+		),
+		TouchsetMissing: true, EvidenceMissing: true,
+	}
+}
+
+func TestResolvedArtifactReviewPageRebuiltAfterRestart(t *testing.T) {
+	f := artifactGateFlow()
+	s, err := store.Open(filepath.Join(t.TempDir(), "resolved-review.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	dataDir := t.TempDir()
+	e1 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	id, err := e1.CreateIssue("resolved review page", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e1, "spec")
+	if _, err := s.ResolveArtifactReview(pending.ID, *pending.Review, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resolved store.DecisionRow
+	for _, row := range rows {
+		if row.ID == pending.ID {
+			resolved = row
+			break
+		}
+	}
+	if resolved.AnsweredAt.IsZero() {
+		t.Fatal("resolved review has no durable answer time")
+	}
+
+	e2 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	pagePath := filepath.Join(dataDir, id, "decisions", fmt.Sprintf("%d.html", pending.ID))
+	page := string(waitForDecisionPageFile(t, pagePath))
+	for _, want := range []string{
+		"Answered: option 1 · " + resolved.AnsweredAt.UTC().Format("2006-01-02 15:04"),
+		"approve was selected", "spec.md was archived and available at decision time",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("rehydrated review page missing %q: %s", want, page)
+		}
+	}
+	for _, misleading := range []string{
+		"Do this now", "ready for review", "After you answer", "archived and reviewed",
+	} {
+		if strings.Contains(page, misleading) {
+			t.Errorf("rehydrated review page contains misleading %q: %s", misleading, page)
+		}
+	}
+}
+
+func TestRehydratePreservesFinalizedDecisionArchive(t *testing.T) {
+	f := flow.Flow{Name: "preserve-finalized-archive", Stages: []flow.Stage{{Name: "execute"}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "preserve-finalized-archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "current title", State: "done", Flow: f.Name,
+		Levers: map[string]string{"execute": string(flow.LeverStrict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Status: "answered", Response: levers.ChoiceResponse(0),
+		CreatedAt: time.Now().Add(-time.Minute), AnsweredAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := decisionpage.PageData{IssueID: issueID, Title: "decision-time title"}
+	if err := s.SaveDecisionPageSnapshot(decisionID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	archivePath := filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionID))
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`<!doctype html><body data-decision-state="resolved">decision-time sentinel</body>`)
+	if err := os.WriteFile(archivePath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, dataDir, f)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("finalized archive was replaced:\n%s", got)
+	}
+}
+
+func TestRehydrateReportsUnreadableDecisionArchive(t *testing.T) {
+	f := flow.Flow{Name: "unreadable-archive", Stages: []flow.Stage{{Name: "execute"}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "unreadable-archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "unreadable archive", State: "done", Flow: f.Name,
+		Levers: map[string]string{"execute": string(flow.LeverStrict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	answeredAt := time.Now().UTC()
+	row := store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Status: "answered", Response: levers.ChoiceResponse(0),
+		CreatedAt: answeredAt.Add(-time.Minute), AnsweredAt: answeredAt,
+	}
+	snapshot := recoveryDecisionSnapshot(row, "unreadable archive")
+	row.PageSnapshot = &snapshot
+	decisionID, err := s.InsertDecision(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	archivePath := filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionID))
+	if err := os.MkdirAll(archivePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, dataDir, f)
+	if err := e.Rehydrate(); err == nil || !strings.Contains(err.Error(), "decision archive") {
+		t.Fatalf("Rehydrate error = %v, want decision archive read error", err)
+	}
+}
+
+func TestRehydrateResolvesArchiveFromSnapshot(t *testing.T) {
+	f := flow.Flow{Name: "snapshot-archive", Stages: []flow.Stage{{Name: "renamed-stage"}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "snapshot-archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "current title", State: "done", Flow: f.Name,
+		Levers: map[string]string{"renamed-stage": string(flow.LeverStrict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Why: "Decision-time reason.", Consequences: []string{"Continue.", "Stop."},
+		Reversible: "Stopping preserves the current result.", Status: "answered",
+		Response: levers.ChoiceResponse(0), CreatedAt: time.Now().Add(-time.Minute), AnsweredAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := decisionpage.PageData{
+		IssueID: issueID, Title: "decision-time title", CurrentStage: "execute",
+		DecisionStage: "execute", StageIndex: 1, StageTotal: 1,
+		Floors: []decisionpage.Floor{{Name: "execute", Status: decisionpage.FloorCurrent}},
+		Briefing: &decisionpage.Briefing{
+			Question: "Continue?", Reversible: "Stopping preserves the current result.",
+			Action: "Choose an option.", Recommendation: "continue", RecommendationWhy: "Decision-time reason.",
+			Options:      []decisionpage.Option{{Key: "1", Label: "continue", OneLiner: "Continue.", Recommended: true}},
+			ProofMissing: true, AfterAnswer: "Continue or stop.",
+		},
+		TouchsetGlobs: []string{"decision-time/**"}, EvidenceMissing: true,
+	}
+	if err := s.SaveDecisionPageSnapshot(decisionID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	archivePath := filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionID))
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, []byte(`<!doctype html><body data-decision-state="pending">pending</body>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, dataDir, f)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	page := string(waitForDecisionPageFile(t, archivePath))
+	for _, want := range []string{"Recorded outcome", "continue was selected", "decision-time/**"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("resolved snapshot archive missing %q: %s", want, page)
+		}
+	}
+	if strings.Contains(page, "renamed-stage") {
+		t.Fatalf("resolved snapshot archive used current flow state: %s", page)
+	}
+}
+
+func TestResolvedOrdinaryDecisionPageRebuiltAfterRestart(t *testing.T) {
+	f := flow.Flow{Name: "ordinary-decision-recovery", Stages: []flow.Stage{{Name: "execute"}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "resolved-ordinary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "resolved ordinary decision", State: "done", Flow: f.Name,
+		Levers: map[string]string{"execute": string(flow.LeverStrict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertStageCheckpoint(store.StageCheckpoint{
+		IssueID: issueID, Stage: "execute", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	answeredAt := time.Date(2026, time.August, 6, 12, 34, 0, 0, time.UTC)
+	decisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue the rollout?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Why: "The rollout is ready.", Consequences: []string{"Continue rollout.", "Stop rollout."},
+		Reversible: "Stopping preserves completed work.", RequiresOption: true, Status: "answered",
+		Response: levers.ChoiceResponse(0), CreatedAt: answeredAt.Add(-5 * time.Minute), AnsweredAt: answeredAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDecisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Legacy answer?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Why: "Historical context.", Consequences: []string{"Continue.", "Stop."},
+		Reversible: "The choice can be revisited.", Status: "answered",
+		Response: levers.ChoiceResponse(1), CreatedAt: answeredAt.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedRows, err := s.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range storedRows {
+		if err := s.SaveDecisionPageSnapshot(row.ID, recoveryDecisionSnapshot(row, "resolved ordinary decision")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dataDir := t.TempDir()
+	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, dataDir, f)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	archive, err := os.ReadFile(filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Continue the rollout?", "Recorded outcome",
+		"Answered: option 1 · " + answeredAt.Format("2006-01-02 15:04"),
+	} {
+		if !strings.Contains(string(archive), want) {
+			t.Errorf("rebuilt ordinary decision archive missing %q: %s", want, archive)
+		}
+	}
+	if strings.Contains(string(archive), "Add feedback") {
+		t.Errorf("rebuilt option-required decision archive offers feedback: %s", archive)
+	}
+	legacyArchive, err := os.ReadFile(filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", legacyDecisionID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(legacyArchive), "Answered: option 2 · timestamp unavailable") {
+		t.Fatalf("legacy archive invented an answer timestamp: %s", legacyArchive)
+	}
+	stable, err := os.ReadFile(filepath.Join(dataDir, issueID, decisionpage.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stable), "1 stages done ✓") || strings.Contains(string(stable), "Recorded outcome") {
+		t.Fatalf("stable page does not show current progress: %s", stable)
+	}
+}
+
+func TestRehydrateRebuildsEveryResolvedArtifactReviewPage(t *testing.T) {
+	f := artifactGateFlow()
+	s, err := store.Open(filepath.Join(t.TempDir(), "all-resolved-review-pages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "all resolved review pages", State: "done", Flow: f.Name,
+		Levers: map[string]string{
+			"spec": string(flow.LeverStrict), "plan": string(flow.LeverStrict),
+			"implementation": string(flow.LeverStrict),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		stage        string
+		nextStage    string
+		artifactName string
+		blockingCost int
+	}{
+		{stage: "spec", nextStage: "plan", artifactName: "spec.md", blockingCost: 1},
+		{stage: "plan", nextStage: "implementation", artifactName: "plan.md", blockingCost: 2},
+	}
+	decisionIDs := make(map[string]int64, len(tests))
+	for index, test := range tests {
+		artifacts := []contextpack.Artifact{{
+			Name: test.artifactName, SHA256: strings.Repeat(strconv.Itoa(index+1), 64),
+		}}
+		checkpointID, err := s.InsertStageCheckpoint(store.StageCheckpoint{
+			IssueID: issueID, Stage: test.stage, Status: "awaiting_review", Artifacts: artifacts,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, err := (review.Target{
+			IssueID: issueID, Stage: test.stage, CheckpointID: checkpointID,
+			Artifacts: artifacts, NextStage: test.nextStage,
+		}).Canonical()
+		if err != nil {
+			t.Fatal(err)
+		}
+		decision := artifactReviewDecision(target, false)
+		decisionID, err := s.RequestArtifactReview(target, store.DecisionRow{
+			IssueID: issueID, Stage: test.stage, Question: decision.Question,
+			Options: decision.Options, Recommended: decision.Recommended, Kind: decision.Kind,
+			Importance: decision.Importance, Why: decision.Why, Consequences: decision.Consequences,
+			Reversible: decision.Reversible, Briefing: decision.Briefing, BlockingCost: test.blockingCost,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveDecisionPageSnapshot(decisionID, recoveryDecisionSnapshot(store.DecisionRow{
+			ID: decisionID, IssueID: issueID, Stage: test.stage, Kind: decision.Kind,
+			Question: decision.Question, Options: decision.Options, Recommended: decision.Recommended,
+			Importance: decision.Importance, Why: decision.Why, Consequences: decision.Consequences,
+			Reversible: decision.Reversible, Briefing: decision.Briefing, Review: &target,
+		}, "all resolved review pages")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ResolveArtifactReview(decisionID, target, levers.ChoiceResponse(0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CompleteArtifactReview(checkpointID, target); err != nil {
+			t.Fatal(err)
+		}
+		decisionIDs[test.stage] = decisionID
+	}
+	if _, err := s.InsertStageCheckpoint(store.StageCheckpoint{
+		IssueID: issueID, Stage: "implementation", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dataDir := t.TempDir()
+	started := make(chan string, 1)
+	r := artifactReviewRunner()
+	r.OnStart = func(_, stage, _, _ string) error {
+		started <- stage
+		return nil
+	}
+	e := newEngineOnFileWithFlow(t, s, r, dataDir, f)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case stage := <-started:
+		t.Fatalf("rehydrate restarted completed workflow at %s", stage)
+	case <-time.After(100 * time.Millisecond):
+	}
+	for _, event := range mustEvents(t, s, issueID) {
+		if event.Type == core.EvDecisionAnswered || event.Type == core.EvStageCompleted {
+			t.Fatalf("rehydrate continued completed workflow with %s", event.Type)
+		}
+	}
+	for _, test := range tests {
+		pagePath := filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionIDs[test.stage]))
+		page, err := os.ReadFile(pagePath)
+		if err != nil {
+			t.Errorf("read %s review page: %v", test.stage, err)
+			continue
+		}
+		if !strings.Contains(string(page), test.artifactName+" was archived and available at decision time") {
+			t.Errorf("%s review page has the wrong archive: %s", test.stage, page)
+		}
+	}
+	stable, err := os.ReadFile(filepath.Join(dataDir, issueID, decisionpage.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stable), "Stage <b>3 of 3</b> — implementation") ||
+		!strings.Contains(string(stable), "3 stages done ✓") ||
+		strings.Contains(string(stable), "Recorded outcome") {
+		t.Fatalf("stable page was replaced by a historical decision archive: %s", stable)
+	}
+}
+
+func TestPolicyApprovedReviewPageRebuiltAfterRestart(t *testing.T) {
+	f := planReviewFlow()
+	s, err := store.Open(filepath.Join(t.TempDir(), "policy-review.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	dataDir := t.TempDir()
+	e1 := New(Config{
+		Store: s, Runner: planReviewRunner(), Pool: slots.NewPool(2),
+		Flows: map[string]flow.Flow{f.Name: f}, DataDir: dataDir,
+		DecisionIdentities: testDecisionIdentities(),
+		PlanReview:         planReviewSettings("team-ci", "2026-08-03", true),
+	})
+	id, err := e1.CreateIssue("policy review page", "", f.Name, levers.Matrix{
+		"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+	}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e1.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resolved store.DecisionRow
+	for _, row := range rows {
+		if row.IssueID == id && row.Status == "auto" {
+			resolved = row
+			break
+		}
+	}
+	if resolved.ID == 0 || resolved.AnsweredAt.IsZero() {
+		t.Fatalf("policy review row = %+v", resolved)
+	}
+	pagePath := filepath.Join(dataDir, id, "decisions", fmt.Sprintf("%d.html", resolved.ID))
+	if err := os.Remove(pagePath); err != nil {
+		t.Fatal(err)
+	}
+
+	e2 := newEngineOnFileWithFlow(t, s, planReviewRunner(), dataDir, f)
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	page := string(waitForDecisionPageFile(t, pagePath))
+	for _, want := range []string{
+		"Automatically approved by policy team-ci@2026-08-03: option 1 · " +
+			resolved.AnsweredAt.UTC().Format("2006-01-02 15:04"),
+		"policy team-ci@2026-08-03 automatically selected approve",
+		"plan.md was archived and automatically authorized by policy team-ci@2026-08-03",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("rehydrated policy page missing %q: %s", want, page)
 		}
 	}
 }
@@ -4454,7 +5549,7 @@ func TestIssueStartFastForwardsBaseFromOrigin(t *testing.T) {
 	gitc(repo, "config", "user.name", "t")
 	gitc(repo, "commit", "-q", "--allow-empty", "-m", "base")
 	remote := t.TempDir()
-	gitc(remote, "init", "-q", "--bare")
+	gitc(remote, "init", "-q", "--bare", "-b", "main")
 	gitc(repo, "remote", "add", "origin", remote)
 	gitc(repo, "push", "-q", "origin", "main")
 	ahead := t.TempDir()
