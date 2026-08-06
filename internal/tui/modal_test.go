@@ -82,6 +82,37 @@ func TestModalEditorMovesVerticallyAndOwnsBoundaries(t *testing.T) {
 	}
 }
 
+func TestRenderModalShowsCaretAtLogicalPosition(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	m := *newModalState(modalState{Field: 0, Title: "left"})
+	m = m.input("left")
+	out := ansi.Strip(renderModal(m, 80))
+	if !strings.Contains(out, "lef▏t") {
+		t.Fatalf("caret is not between the expected runes:\n%s", out)
+	}
+}
+
+func TestRenderModalShowsMultilineBodyCaret(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	m := *newModalState(modalState{Field: 1, Body: "first\nsecond\nthird"})
+	m = m.input("up")
+	m = m.input("left")
+	m = m.input("up")
+	m = m.input("right")
+	if m.Body != "first\nsecond\nthird" {
+		t.Fatal("caret movement changed the body value")
+	}
+	out := ansi.Strip(renderModal(m, 80))
+	for _, want := range []string{"first", "second", "third", "▏"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("multiline body render missing %q:\n%s", want, out)
+		}
+	}
+	if lipgloss.Height(out) < 3 {
+		t.Fatalf("multiline body did not occupy multiple rows:\n%s", out)
+	}
+}
+
 func TestRenderBoxChrome(t *testing.T) {
 	out := ansi.Strip(renderBox("confirm", "", " n cancel ", "really?"))
 	for _, want := range []string{"confirm", "n cancel", "really?", "┌", "└"} {

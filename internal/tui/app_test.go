@@ -522,6 +522,31 @@ func TestEditModalInitializesPrefilledCaretAtEnd(t *testing.T) {
 	}
 }
 
+func TestModalBodyKeyMsgMovesCaretBetweenLines(t *testing.T) {
+	m := Model{State: projection.NewState(), modal: newModalState(modalState{
+		Field: 1, Body: "ab\nlonger\nx",
+	})}
+	for _, key := range []string{"up", "up", "down", "down", "down"} {
+		m = pressKey(t, m, key)
+	}
+	if m.modal == nil || m.modal.Field != 1 || m.modal.Body != "ab\nlonger\nx" {
+		t.Fatalf("body arrow handling changed modal state: %+v", m.modal)
+	}
+	if !strings.Contains(ansi.Strip(renderModal(*m.modal, 80)), "x▏") {
+		t.Fatalf("body caret is not visible at the final line boundary:\n%s", renderModal(*m.modal, 80))
+	}
+}
+
+func TestModalRefusalKeepsCaretPosition(t *testing.T) {
+	m := Model{State: projection.NewState(), modal: newModalState(modalState{Field: 0, Title: "abc"})}
+	m = pressKey(t, m, "left")
+	next, _ := m.Update(createIssueMsg{response: proto.Response{OK: false, Error: "refused"}})
+	m = next.(Model)
+	if m.modal == nil || !strings.Contains(ansi.Strip(renderModal(*m.modal, 80)), "ab▏c") {
+		t.Fatalf("refusal lost the editable caret/value: %+v", m.modal)
+	}
+}
+
 // An out-of-set stored priority is rendered, never renumbered on open: losing
 // the odd value takes a deliberate keypress.
 func TestModalPriorityKeepsOutOfSetOnOpen(t *testing.T) {

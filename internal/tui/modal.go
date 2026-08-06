@@ -52,6 +52,30 @@ func (e *modalEditor) handle(key string) bool {
 	return true
 }
 
+func (e modalEditor) caretText() string {
+	runes := []rune(e.Value)
+	caret := max(0, min(e.Caret, len(runes)))
+	return string(runes[:caret]) + "▏" + string(runes[caret:])
+}
+
+func (e modalEditor) styledCaretText() string {
+	runes := []rune(e.Value)
+	caret := max(0, min(e.Caret, len(runes)))
+	bright := lipgloss.NewStyle().Foreground(activeTheme.Bright)
+	accent := lipgloss.NewStyle().Foreground(activeTheme.Accent)
+	return styleModalLines(bright, string(runes[:caret])) + accent.Render("▏") + styleModalLines(bright, string(runes[caret:]))
+}
+
+func styleModalLines(style lipgloss.Style, value string) string {
+	lines := strings.Split(value, "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = style.Render(line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (e *modalEditor) lineBounds(runes []rune) (start, end int) {
 	for i := 0; i < e.Caret; i++ {
 		if runes[i] == '\n' {
@@ -238,10 +262,12 @@ func renderModal(m modalState, width int) string {
 	flowName := m.FlowName
 	if flowName == "" {
 		flowName = "default"
+		m.FlowName = flowName
 	}
 	preset := m.Preset
 	if preset == "" {
 		preset = string(flow.LeverRegular)
+		m.Preset = preset
 	}
 	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
 	submit := keyChip("enter") + dim.Render(" create  ") + keyChip("ctrl+s") + dim.Render(" backlog")
@@ -251,12 +277,12 @@ func renderModal(m modalState, width int) string {
 		boxTitle = "edit issue"
 	}
 	lines := []string{
-		modalField(m.Field == 0, "title", m.Title, true),
-		modalField(m.Field == 1, "body", m.Body, false),
-		modalField(m.Field == 2, "flow", flowName, false),
-		modalField(m.Field == 3, "preset", preset, false),
-		modalField(m.Field == dependenciesField, "depends on", m.DependsOn, false),
-		modalField(m.Field == attachField, "attach", m.Attach, false),
+		m.renderModalField(0, "title", m.Title, true),
+		m.renderModalField(1, "body", m.Body, false),
+		m.renderModalField(2, "flow", flowName, false),
+		m.renderModalField(3, "preset", preset, false),
+		m.renderModalField(dependenciesField, "depends on", m.DependsOn, false),
+		m.renderModalField(attachField, "attach", m.Attach, false),
 		modalChoiceField(m.Field == priorityField, "priority", priority.Label(m.Priority)),
 		"",
 		keyChip("tab") + dim.Render(" next field  ") + keyChip("h/l") + dim.Render(" adjust  ") + submit,
@@ -295,9 +321,17 @@ func modalChoiceField(selected bool, name, value string) string {
 	return labelLine + "\n" + field
 }
 
+func (m *modalState) renderModalField(field int, name, value string, required bool) string {
+	var editor *modalEditor
+	if m.Field == field {
+		editor, _ = m.editorForField(field)
+	}
+	return modalField(m.Field == field, name, value, required, editor)
+}
+
 // modalField renders a labelled input: dim uppercase label over a bordered
 // value box; the active field gets an accent border and a block caret.
-func modalField(selected bool, name, value string, required bool) string {
+func modalField(selected bool, name, value string, required bool, editor *modalEditor) string {
 	t := activeTheme
 	label := strings.ToUpper(name)
 	if required {
@@ -311,8 +345,19 @@ func modalField(selected bool, name, value string, required bool) string {
 	}
 	if selected {
 		border = t.Accent
-		body = lipgloss.NewStyle().Foreground(t.Bright).Render(value) +
-			lipgloss.NewStyle().Foreground(t.Accent).Render("▏")
+		if editor != nil {
+			body = editor.styledCaretText()
+		} else {
+			body = lipgloss.NewStyle().Foreground(t.Bright).Render(value) +
+				lipgloss.NewStyle().Foreground(t.Accent).Render("▏")
+		}
+	}
+	if strings.Contains(body, "\n") {
+		lines := strings.Split(body, "\n")
+		for i, line := range lines {
+			lines[i] = line + strings.Repeat(" ", max(0, modalFieldWidth-lipgloss.Width(line)))
+		}
+		body = strings.Join(lines, "\n")
 	}
 	field := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).BorderForeground(border).
