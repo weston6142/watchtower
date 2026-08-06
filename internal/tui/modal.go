@@ -8,14 +8,126 @@ import (
 	"github.com/weston6142/watchtower/internal/priority"
 )
 
-// modalState is intentionally small: the control room only needs plain rune
-// input for a title and a few optional text fields.
+type modalEditor struct {
+	Value string
+	Caret int // rune offset between 0 and len([]rune(Value))
+}
+
+func newModalEditor(value string) modalEditor {
+	return modalEditor{Value: value, Caret: len([]rune(value))}
+}
+
+func (e *modalEditor) handle(key string) bool {
+	runes := []rune(e.Value)
+	e.Caret = max(0, min(e.Caret, len(runes)))
+	switch key {
+	case "left":
+		if e.Caret > 0 {
+			e.Caret--
+		}
+	case "right":
+		if e.Caret < len(runes) {
+			e.Caret++
+		}
+	case "up":
+		e.moveVertical(runes, -1)
+	case "down":
+		e.moveVertical(runes, 1)
+	case "backspace":
+		if e.Caret > 0 {
+			runes = append(runes[:e.Caret-1], runes[e.Caret:]...)
+			e.Caret--
+			e.Value = string(runes)
+		}
+	case "tab":
+		return true
+	default:
+		if key != "" && !strings.ContainsAny(key, "\n\r\t") {
+			insert := []rune(key)
+			runes = append(runes[:e.Caret], append(insert, runes[e.Caret:]...)...)
+			e.Caret += len(insert)
+			e.Value = string(runes)
+		}
+	}
+	return true
+}
+
+func (e modalEditor) styledCaretText() string {
+	runes := []rune(e.Value)
+	caret := max(0, min(e.Caret, len(runes)))
+	bright := lipgloss.NewStyle().Foreground(activeTheme.Bright)
+	accent := lipgloss.NewStyle().Foreground(activeTheme.Accent)
+	return styleModalLines(bright, string(runes[:caret])) + accent.Render("▏") + styleModalLines(bright, string(runes[caret:]))
+}
+
+func styleModalLines(style lipgloss.Style, value string) string {
+	lines := strings.Split(value, "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = style.Render(line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (e *modalEditor) lineBounds(runes []rune) (start, end int) {
+	for i := 0; i < e.Caret; i++ {
+		if runes[i] == '\n' {
+			start = i + 1
+		}
+	}
+	end = len(runes)
+	for i := e.Caret; i < len(runes); i++ {
+		if runes[i] == '\n' {
+			end = i
+			break
+		}
+	}
+	return start, end
+}
+
+func (e *modalEditor) moveVertical(runes []rune, delta int) {
+	start, end := e.lineBounds(runes)
+	column := e.Caret - start
+	var targetStart, targetEnd int
+	if delta < 0 {
+		if start == 0 {
+			return
+		}
+		targetEnd = start - 1
+		targetStart = 0
+		for i := targetEnd - 1; i >= 0; i-- {
+			if runes[i] == '\n' {
+				targetStart = i + 1
+				break
+			}
+		}
+	} else {
+		if end == len(runes) {
+			return
+		}
+		targetStart = end + 1
+		targetEnd = len(runes)
+		for i := targetStart; i < len(runes); i++ {
+			if runes[i] == '\n' {
+				targetEnd = i
+				break
+			}
+		}
+	}
+	e.Caret = targetStart + min(column, targetEnd-targetStart)
+}
+
+// modalState holds the modal payload fields and their transient editor state.
+// Editor state stays local to the TUI and is never included in commands.
 type modalState struct {
-	Title    string
-	Body     string
-	Field    int
-	FlowName string
-	Preset   string
+	Title       string
+	Body        string
+	Field       int
+	FlowName    string
+	Preset      string
+	editors     [modalEditableFieldCount]modalEditor
+	editorReady [modalEditableFieldCount]bool
 	// DependsOn is comma-separated issue IDs. The command boundary trims and
 	// deduplicates them before graph validation.
 	DependsOn string
@@ -38,29 +150,44 @@ type modalState struct {
 	FromBacklog bool
 }
 
-// input handles text fields only. Priority is cycled by the key router
-// (Model.Update) instead, and has no case in setFieldValue/fieldValue, so
-// backspace and rune input physically cannot reach it.
+func newModalState(state modalState) *modalState {
+	for field := 0; field < modalEditableFieldCount; field++ {
+		state.editors[field] = newModalEditor(state.fieldValueFor(field))
+		state.editorReady[field] = true
+	}
+	return &state
+}
+
 func (m modalState) input(key string) modalState {
-	switch key {
-	case "backspace":
-		value := m.fieldValue()
-		runes := []rune(value)
-		if len(runes) > 0 {
-			m.setFieldValue(string(runes[:len(runes)-1]))
-		}
-	case "tab":
+	if key == "tab" {
 		m.Field = (m.Field + 1) % modalFieldCount
-	default:
-		if key != "" && !strings.ContainsAny(key, "\n\r\t") {
-			m.setFieldValue(m.fieldValue() + key)
-		}
+		return m
+	}
+	if editor, ok := (&m).editorForField(m.Field); ok {
+		editor.handle(key)
+		m.setFieldValueFor(m.Field, editor.Value)
 	}
 	return m
 }
 
-func (m *modalState) setFieldValue(value string) {
-	switch m.Field {
+func isModalEditableField(field int) bool {
+	return field >= 0 && field < modalEditableFieldCount
+}
+
+func (m *modalState) editorForField(field int) (*modalEditor, bool) {
+	if !isModalEditableField(field) {
+		return nil, false
+	}
+	value := m.fieldValueFor(field)
+	if !m.editorReady[field] || m.editors[field].Value != value {
+		m.editors[field] = newModalEditor(value)
+		m.editorReady[field] = true
+	}
+	return &m.editors[field], true
+}
+
+func (m *modalState) setFieldValueFor(field int, value string) {
+	switch field {
 	case 0:
 		m.Title = value
 	case 1:
@@ -77,7 +204,11 @@ func (m *modalState) setFieldValue(value string) {
 }
 
 func (m modalState) fieldValue() string {
-	switch m.Field {
+	return m.fieldValueFor(m.Field)
+}
+
+func (m modalState) fieldValueFor(field int) string {
+	switch field {
 	case 0:
 		return m.Title
 	case 1:
@@ -121,10 +252,12 @@ func renderModal(m modalState, width int) string {
 	flowName := m.FlowName
 	if flowName == "" {
 		flowName = "default"
+		m.FlowName = flowName
 	}
 	preset := m.Preset
 	if preset == "" {
 		preset = string(flow.LeverRegular)
+		m.Preset = preset
 	}
 	dim := lipgloss.NewStyle().Foreground(activeTheme.Dim)
 	submit := keyChip("enter") + dim.Render(" create  ") + keyChip("ctrl+s") + dim.Render(" backlog")
@@ -134,12 +267,12 @@ func renderModal(m modalState, width int) string {
 		boxTitle = "edit issue"
 	}
 	lines := []string{
-		modalField(m.Field == 0, "title", m.Title, true),
-		modalField(m.Field == 1, "body", m.Body, false),
-		modalField(m.Field == 2, "flow", flowName, false),
-		modalField(m.Field == 3, "preset", preset, false),
-		modalField(m.Field == dependenciesField, "depends on", m.DependsOn, false),
-		modalField(m.Field == attachField, "attach", m.Attach, false),
+		m.renderModalField(0, "title", m.Title, true),
+		m.renderModalField(1, "body", m.Body, false),
+		m.renderModalField(2, "flow", flowName, false),
+		m.renderModalField(3, "preset", preset, false),
+		m.renderModalField(dependenciesField, "depends on", m.DependsOn, false),
+		m.renderModalField(attachField, "attach", m.Attach, false),
 		modalChoiceField(m.Field == priorityField, "priority", priority.Label(m.Priority)),
 		"",
 		keyChip("tab") + dim.Render(" next field  ") + keyChip("h/l") + dim.Render(" adjust  ") + submit,
@@ -152,10 +285,11 @@ const modalFieldWidth = 44
 // Dependency and attachment values are text fields; priority is a selector,
 // not an input, and is last so tab wraps after it.
 const (
-	dependenciesField = 4
-	attachField       = 5
-	priorityField     = 6
-	modalFieldCount   = priorityField + 1
+	dependenciesField       = 4
+	attachField             = 5
+	priorityField           = 6
+	modalEditableFieldCount = priorityField
+	modalFieldCount         = priorityField + 1
 )
 
 // modalChoiceField renders a fixed-choice field as the lever editor's
@@ -177,9 +311,17 @@ func modalChoiceField(selected bool, name, value string) string {
 	return labelLine + "\n" + field
 }
 
+func (m *modalState) renderModalField(field int, name, value string, required bool) string {
+	var editor *modalEditor
+	if m.Field == field {
+		editor, _ = m.editorForField(field)
+	}
+	return modalField(m.Field == field, name, value, required, editor)
+}
+
 // modalField renders a labelled input: dim uppercase label over a bordered
 // value box; the active field gets an accent border and a block caret.
-func modalField(selected bool, name, value string, required bool) string {
+func modalField(selected bool, name, value string, required bool, editor *modalEditor) string {
 	t := activeTheme
 	label := strings.ToUpper(name)
 	if required {
@@ -193,8 +335,19 @@ func modalField(selected bool, name, value string, required bool) string {
 	}
 	if selected {
 		border = t.Accent
-		body = lipgloss.NewStyle().Foreground(t.Bright).Render(value) +
-			lipgloss.NewStyle().Foreground(t.Accent).Render("▏")
+		if editor != nil {
+			body = editor.styledCaretText()
+		} else {
+			body = lipgloss.NewStyle().Foreground(t.Bright).Render(value) +
+				lipgloss.NewStyle().Foreground(t.Accent).Render("▏")
+		}
+	}
+	if strings.Contains(body, "\n") {
+		lines := strings.Split(body, "\n")
+		for i, line := range lines {
+			lines[i] = line + strings.Repeat(" ", max(0, modalFieldWidth-lipgloss.Width(line)))
+		}
+		body = strings.Join(lines, "\n")
 	}
 	field := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).BorderForeground(border).

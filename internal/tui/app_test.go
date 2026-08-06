@@ -348,7 +348,7 @@ func TestModalPriorityArrowKeys(t *testing.T) {
 	}
 }
 
-// Guards the removal of priority from setFieldValue/fieldValue: text cannot
+// Guards the removal of priority from the modal field mapping: text cannot
 // land in the field at all, so a bad priority is unreachable, not just rejected.
 func TestModalPriorityIgnoresTextInput(t *testing.T) {
 	m := openPriorityField(t)
@@ -371,6 +371,179 @@ func TestModalTextFieldsStillAcceptHL(t *testing.T) {
 	}
 	if m.modal.Title != "hello" {
 		t.Fatalf("Title = %q, want hello", m.modal.Title)
+	}
+}
+
+func TestModalEditableFieldsOwnArrowKeys(t *testing.T) {
+	for field := 0; field < priorityField; field++ {
+		t.Run(fmt.Sprintf("field-%d", field), func(t *testing.T) {
+			m := Model{State: projection.NewState()}
+			m = pressKey(t, m, "n")
+			for i := 0; i < field; i++ {
+				m = pressKey(t, m, "tab")
+			}
+			for _, key := range []string{"h", "l"} {
+				m = pressKey(t, m, key)
+			}
+			before := *m.modal
+			for _, key := range []string{"left", "right", "up", "down"} {
+				m = pressKey(t, m, key)
+			}
+			if m.modal == nil || m.modal.Field != field {
+				t.Fatalf("arrow changed modal focus: %+v", m.modal)
+			}
+			if m.modal.Priority != before.Priority {
+				t.Fatalf("arrow changed priority from %d to %d", before.Priority, m.modal.Priority)
+			}
+			want := "hl"
+			switch field {
+			case 2:
+				want = "defaulthl"
+			case 3:
+				want = "regularhl"
+			}
+			if got := m.modal.fieldValue(); got != want {
+				t.Fatalf("field %d value = %q, want %q", field, got, want)
+			}
+		})
+	}
+}
+
+func TestModalTabPreservesEachCaret(t *testing.T) {
+	m := Model{State: projection.NewState()}
+	m = pressKey(t, m, "n")
+	for _, key := range []string{"a", "b", "c", "d"} {
+		m = pressKey(t, m, key)
+	}
+	m = pressKey(t, m, "left")
+	m = pressKey(t, m, "left")
+	m = pressKey(t, m, "tab")
+	for _, key := range []string{"body"} {
+		m = pressKey(t, m, key)
+	}
+	for i := 0; i < modalFieldCount-1; i++ {
+		m = pressKey(t, m, "tab")
+	}
+	m = pressKey(t, m, "X")
+	if m.modal == nil || m.modal.Title != "abXcd" || m.modal.Body != "body" {
+		t.Fatalf("Tab lost field value/caret state: %+v", m.modal)
+	}
+}
+
+func TestModalInvalidFieldConsumesInput(t *testing.T) {
+	m := Model{State: projection.NewState(), Focus: Focus{Issue: "GH-1", Floor: 1, Card: 2}}
+	m.modal = &modalState{Field: modalFieldCount + 10, Title: "keep"}
+	m = pressKey(t, m, "left")
+	if m.modal == nil || m.modal.Title != "keep" || m.modal.Field != modalFieldCount+10 {
+		t.Fatalf("invalid modal field mutated: %+v", m.modal)
+	}
+	if m.Focus != (Focus{Issue: "GH-1", Floor: 1, Card: 2}) {
+		t.Fatalf("invalid modal key leaked to panel focus: %+v", m.Focus)
+	}
+}
+
+func TestModalSubmissionUsesCaretEditedStrings(t *testing.T) {
+	session := &reconnectTestSession{responses: map[string]proto.Response{
+		"create_issue": {OK: true, IssueID: "GH-46"},
+		"start_issue":  {OK: true},
+	}}
+	m := Model{State: projection.NewState(), client: session}
+	m = pressKey(t, m, "n")
+	for _, key := range []string{"a", "b", "c"} {
+		m = pressKey(t, m, key)
+	}
+	m = pressKey(t, m, "left")
+	m = pressKey(t, m, "X")
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter did not return a create command")
+	}
+	_ = cmd()
+	if len(session.doCalls) < 1 {
+		t.Fatalf("create command made no session call: %+v", session.doCalls)
+	}
+	if session.doCalls[0].Title != "abXc" {
+		t.Fatalf("submitted title = %q, want abXc; calls = %+v", session.doCalls[0].Title, session.doCalls)
+	}
+	if next.(Model).modal == nil {
+		t.Fatal("model closed before the create response was applied")
+	}
+}
+
+func TestModalDraftAndUpdateUseCaretEditedStrings(t *testing.T) {
+	t.Run("draft", func(t *testing.T) {
+		session := &reconnectTestSession{responses: map[string]proto.Response{
+			"draft_issue": {OK: true},
+		}}
+		m := Model{State: projection.NewState(), client: session}
+		m = pressKey(t, m, "n")
+		for _, key := range []string{"d", "r", "a", "f", "t"} {
+			m = pressKey(t, m, key)
+		}
+		m = pressKey(t, m, "left")
+		m = pressKey(t, m, "X")
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+		if cmd == nil {
+			t.Fatal("Ctrl+S did not return a draft command")
+		}
+		_ = cmd()
+		if len(session.doCalls) != 1 || session.doCalls[0].Op != "draft_issue" || session.doCalls[0].Title != "drafXt" {
+			t.Fatalf("draft calls = %+v, want one draft_issue with drafXt", session.doCalls)
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		session := &reconnectTestSession{responses: map[string]proto.Response{
+			"update_issue": {OK: true},
+		}}
+		m := Model{State: backlogFixtureState(), client: session}
+		m = pressKey(t, m, "b")
+		m = pressKey(t, m, "enter")
+		m = pressKey(t, m, "left")
+		m = pressKey(t, m, "X")
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatal("Enter did not return an update command")
+		}
+		_ = cmd()
+		if len(session.doCalls) != 1 || session.doCalls[0].Op != "update_issue" || session.doCalls[0].Title != "hot fiXx" {
+			t.Fatalf("update calls = %+v, want one update_issue with hot fiXx", session.doCalls)
+		}
+	})
+}
+
+func TestEditModalInitializesPrefilledCaretAtEnd(t *testing.T) {
+	m := Model{State: backlogFixtureState()}
+	m = pressKey(t, m, "b")
+	m = pressKey(t, m, "enter")
+	m = pressKey(t, m, "X")
+	if m.modal == nil || m.modal.Title != "hot fixX" {
+		t.Fatalf("prefilled title did not start at its end: %+v", m.modal)
+	}
+}
+
+func TestModalBodyKeyMsgMovesCaretBetweenLines(t *testing.T) {
+	m := Model{State: projection.NewState(), modal: newModalState(modalState{
+		Field: 1, Body: "ab\nlonger\nx",
+	})}
+	for _, key := range []string{"up", "up", "down", "down", "down"} {
+		m = pressKey(t, m, key)
+	}
+	if m.modal == nil || m.modal.Field != 1 || m.modal.Body != "ab\nlonger\nx" {
+		t.Fatalf("body arrow handling changed modal state: %+v", m.modal)
+	}
+	if !strings.Contains(ansi.Strip(renderModal(*m.modal, 80)), "x▏") {
+		t.Fatalf("body caret is not visible at the final line boundary:\n%s", renderModal(*m.modal, 80))
+	}
+}
+
+func TestModalRefusalKeepsCaretPosition(t *testing.T) {
+	m := Model{State: projection.NewState(), modal: newModalState(modalState{Field: 0, Title: "abc"})}
+	m = pressKey(t, m, "left")
+	next, _ := m.Update(createIssueMsg{response: proto.Response{OK: false, Error: "refused"}})
+	m = next.(Model)
+	if m.modal == nil || !strings.Contains(ansi.Strip(renderModal(*m.modal, 80)), "ab▏c") {
+		t.Fatalf("refusal lost the editable caret/value: %+v", m.modal)
 	}
 }
 
