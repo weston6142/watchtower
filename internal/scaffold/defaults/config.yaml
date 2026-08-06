@@ -18,6 +18,7 @@ codex:
     feature_overrides: {}
 claude_bin: claude
 test_cmd: ""          # required when any flow uses merge_barrier, e.g. "scripts/verify"
+checks: {}             # optional named repository commands for verify_after_change
 plan_review:
   policy_id: manual-default
   policy_version: "1"

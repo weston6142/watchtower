@@ -314,6 +314,48 @@ func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 	}
 }
 
+func TestDefaultMutationStagesUseRepositoryVerification(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	generatedRoot := filepath.Join(root, ".watchtower")
+	shippedRoot := filepath.Join("..", "..", "dist")
+	for label, base := range map[string]string{"generated": generatedRoot, "shipped": shippedRoot} {
+		configBody, err := os.ReadFile(filepath.Join(base, "config.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(configBody), "checks: {}") {
+			t.Fatalf("%s config does not document named repository checks:\n%s", label, configBody)
+		}
+		defaultFlow, err := flow.Load(filepath.Join(base, "flows", "default.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := defaultFlow.ValidateChecks([]string{"scripts/verify"}, nil); err != nil {
+			t.Fatalf("%s flow verification references: %v", label, err)
+		}
+		byName := map[string]flow.Stage{}
+		for _, stage := range defaultFlow.Stages {
+			byName[stage.Name] = stage
+		}
+		for _, stageName := range []string{"execute", "correctness-review", "clean-code-review", "librarian"} {
+			stage := byName[stageName]
+			if stage.VerifyAfterChange != "test_cmd" || stage.Retries < 1 {
+				t.Fatalf("%s stage %s verification = %q retries = %d", label, stageName, stage.VerifyAfterChange, stage.Retries)
+			}
+		}
+		prompt, err := os.ReadFile(filepath.Join(base, "packages", "clean-code-reviewer", "prompt.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(prompt), "engine independently runs") {
+			t.Fatalf("%s clean-code prompt does not name the authoritative engine gate:\n%s", label, prompt)
+		}
+	}
+}
+
 func TestScaffoldDefaultIdentityMetadata(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := Init(root); err != nil {

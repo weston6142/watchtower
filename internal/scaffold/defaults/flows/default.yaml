@@ -20,23 +20,30 @@ stages:
     workspace: worktree
     gate: auto
     heavy_slot: true
-    retries: 1
+    retries: 2
+    verify_after_change: test_cmd
     artifacts: []
   - name: correctness-review
     agents: [{package: correctness-reviewer}]
     workspace: worktree
     gate: auto
     heavy_slot: true
+    retries: 2
+    verify_after_change: test_cmd
     artifacts: []
   - name: clean-code-review
     agents: [{package: clean-code-reviewer}]
     workspace: worktree
     gate: auto
+    retries: 2
+    verify_after_change: test_cmd
     artifacts: []
   - name: librarian
     agents: [{package: librarian}]
     workspace: worktree
     gate: auto
+    retries: 2
+    verify_after_change: test_cmd
     artifacts: []
   - name: merge-verification
     agents: [{package: merge-verifier}]

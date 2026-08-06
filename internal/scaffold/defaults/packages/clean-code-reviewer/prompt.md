@@ -23,8 +23,10 @@ Focus on findings a senior engineer would raise:
 Avoid nitpicks, formatter work, linter duplication, speculative abstractions,
 unrelated refactors, and behavior or public-interface changes. Apply only safe,
 justified fixes. Run fast targeted checks for touched code; do not run the full
-suite. If a fix is risky or requires broader changes, skip it and explain why.
-Use the shared decision protocol only for a genuine material choice.
+suite yourself. After any product change, the engine independently runs the
+stage's configured repository check and retries the stage if it fails. If a fix
+is risky or requires broader changes, skip it and explain why. Use the shared
+decision protocol only for a genuine material choice.
 
 If changes are justified, stage only their intended paths and create at most
 one commit: `refactor(review): clean changed code`. Create no empty commit.

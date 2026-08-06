@@ -9,6 +9,13 @@ Codex it also reports the repository model/effort pair. The load stamp makes
 stale daemon state readable rather than confusing. What the panel reports
 about agents is resolved elsewhere — see agent-prompt-and-model-resolution.
 
+Repository checks follow the same cached-config rule. `checks` in
+`.watchtower/config.yaml` names repository-owned commands, while each stage's
+`verify_after_change` in the flow selects a check or the reserved `test_cmd`.
+The flow file's stage list is also the execution order; Watchtower validates
+these references at daemon startup and does not infer commands or reorder the
+repository's workflow.
+
 ## Codex profiles and fallback
 
 New repositories use a Codex primary profile with an explicit empty feature map

@@ -132,9 +132,25 @@ Flow integration is capability-based, not tied to a stage name or stage count:
 - Integrating flows require a non-empty repository `test_cmd`. The daemon
   records that exact command and Watchtower rechecks the receipt against the
   current base, branch, and tree before merging.
+- Repository configuration may define opaque named commands under `checks`.
+  A stage opts into one with `verify_after_change: <name>`; the reserved name
+  `test_cmd` reuses the final verification command. Watchtower does not infer a
+  language, package manager, or toolchain. The repository owns each command.
+- After a successful agent run, Watchtower invokes `verify_after_change` only
+  when the product tree changed. It temporarily removes Watchtower's materialized
+  issue briefs, stage briefs, decisions, attachments, required inputs, and
+  declared artifacts from the worktree so repository-wide lint and format
+  checks see only repository content, then restores them byte-for-byte. A check
+  failure is a stage failure and uses that stage's bounded `retries` loop.
 - Stage names, the number of stages, and the agents assigned to them remain
   customizable. Runtime behavior and E2E expectations derive from the flow's
   declared capabilities instead of the bundled default flow.
+
+Stage ordering is the order of entries in `.watchtower/flows/<flow>.yaml`.
+Watchtower does not invent or reorder stages at runtime. The bundled flow puts
+`execute`, correctness review, clean-code review, librarian, and final merge
+verification in that order; repositories may replace the flow and named checks
+to match their own delivery contract.
 
 The bundled default flow requires explicit artifact review for `spec` and an
 explicit plan-review authorization for `plan`. After each producer archives its
