@@ -1335,6 +1335,114 @@ func TestDecisionRequiredObserverCanAnswerImmediately(t *testing.T) {
 	}
 }
 
+func TestDecisionSnapshotFailureDoesNotPublishDecision(t *testing.T) {
+	f := flow.Flow{Name: "snapshot-failure", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent"}},
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{{
+			Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+			Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+			Reversible: "The answer can be changed on retry.",
+		}}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	id, err := e.CreateIssue("snapshot failure", "", f.Name, levers.Matrix{"ask": flow.LeverStrict}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextDecisionPageSnapshotForTest()
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case runErr := <-done:
+			if runErr == nil || !strings.Contains(runErr.Error(), "decision page snapshot") {
+				t.Fatalf("StartIssue error = %v, want decision page snapshot failure", runErr)
+			}
+			assertDecisionWasNotPublished(t, e, s, id, "Proceed?")
+			return
+		case <-deadline.C:
+			t.Fatal("StartIssue blocked after decision page snapshot failure")
+		default:
+			pending := e.PendingDecisions()
+			if len(pending) == 0 {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			_ = e.Answer(pending[0].ID, levers.ChoiceResponse(0))
+			t.Fatal("decision became answerable without a durable page snapshot")
+		}
+	}
+}
+
+func TestDecisionEventFailureRollsBackPublishedPages(t *testing.T) {
+	f := flow.Flow{Name: "event-failure", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent"}},
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{{
+			Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+			Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+			Reversible: "The answer can be changed on retry.",
+		}}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	id, err := e.CreateIssue("event failure", "", f.Name, levers.Matrix{"ask": flow.LeverStrict}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextAppendForTest(core.EvDecisionRequired)
+	if err := e.StartIssue(context.Background(), id); err == nil || !strings.Contains(err.Error(), "append decision event") {
+		t.Fatalf("StartIssue error = %v, want decision event failure", err)
+	}
+	assertDecisionWasNotPublished(t, e, s, id, "Proceed?")
+}
+
+func assertDecisionWasNotPublished(
+	t *testing.T, e *Engine, s *store.Store, issueID, question string,
+) {
+	t.Helper()
+	if pending := e.PendingDecisions(); len(pending) != 0 {
+		t.Fatalf("pending decisions = %#v", pending)
+	}
+	if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+		t.Fatalf("pending rows = %#v, err = %v", rows, err)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == core.EvDecisionRequired {
+			t.Fatalf("decision_required event remained: %+v", event)
+		}
+	}
+	archives, err := filepath.Glob(filepath.Join(e.cfg.DataDir, issueID, "decisions", "*.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archives) != 0 {
+		t.Fatalf("decision archives remained: %v", archives)
+	}
+	stable, err := os.ReadFile(filepath.Join(e.cfg.DataDir, issueID, decisionpage.FileName))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stable), question) || strings.Contains(string(stable), "Do this now") {
+		t.Fatalf("stable page still advertises rolled-back decision: %s", stable)
+	}
+}
+
 func TestContextSurvivesAutoAndPendingRows(t *testing.T) {
 	f := flow.Flow{Name: "context", Stages: []flow.Stage{{
 		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,

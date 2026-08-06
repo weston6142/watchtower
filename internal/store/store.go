@@ -106,7 +106,9 @@ type Store struct {
 	db                               *sql.DB
 	mu                               sync.Mutex
 	seq                              int64
+	failNextAppendType               core.EventType
 	failNextArtifactReviewResolution bool
+	failNextDecisionPageSnapshot     bool
 	failNextPausePersistence         bool
 }
 
@@ -326,6 +328,10 @@ func ensureColumn(db *sql.DB, table, column, alter string) error {
 func (s *Store) Append(ev core.Event) (core.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failNextAppendType == ev.Type {
+		s.failNextAppendType = ""
+		return ev, fmt.Errorf("injected %s append failure", ev.Type)
+	}
 	s.seq++
 	ev.Seq = s.seq
 	res, err := s.db.Exec(
@@ -336,6 +342,12 @@ func (s *Store) Append(ev core.Event) (core.Event, error) {
 	}
 	ev.ID, _ = res.LastInsertId()
 	return ev, nil
+}
+
+func (s *Store) FailNextAppendForTest(eventType core.EventType) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextAppendType = eventType
 }
 
 func (s *Store) EventsSince(seq int64) ([]core.Event, error) {
@@ -945,11 +957,21 @@ func (s *Store) SaveDecisionPageSnapshot(id int64, snapshot decisionpage.PageDat
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failNextDecisionPageSnapshot {
+		s.failNextDecisionPageSnapshot = false
+		return fmt.Errorf("injected decision page snapshot failure")
+	}
 	_, err = s.db.Exec(
 		`UPDATE decisions SET page_snapshot=? WHERE id=? AND (page_snapshot IS NULL OR page_snapshot='')`,
 		string(encoded), id,
 	)
 	return err
+}
+
+func (s *Store) FailNextDecisionPageSnapshotForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextDecisionPageSnapshot = true
 }
 
 // FailNextArtifactReviewResolutionForTest injects one transactional failure

@@ -422,6 +422,40 @@ func TestResolvedDecisionPageUsesDurableBlockedDuration(t *testing.T) {
 	}
 }
 
+func TestDecisionArchiveNeedsResolutionPrefersExplicitPendingState(t *testing.T) {
+	tests := []struct {
+		name            string
+		content         string
+		needsResolution bool
+	}{
+		{
+			name:            "pending body ignores SVG class",
+			content:         `<!doctype html><body data-decision-state="pending"><svg><g class="answered"></g></svg><section>Do this now</section><section>After you answer</section></body>`,
+			needsResolution: true,
+		},
+		{
+			name:            "resolved body ignores SVG state attribute",
+			content:         `<!doctype html><body data-decision-state="resolved"><svg><g data-decision-state="pending"></g></svg></body>`,
+			needsResolution: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archivePath := filepath.Join(t.TempDir(), "decision.html")
+			if err := os.WriteFile(archivePath, []byte(test.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			needsResolution, err := decisionArchiveNeedsResolution(archivePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if needsResolution != test.needsResolution {
+				t.Fatalf("needs resolution = %v, want %v", needsResolution, test.needsResolution)
+			}
+		})
+	}
+}
+
 func TestDecisionPageRefreshesAtStageBoundary(t *testing.T) {
 	f := flow.Flow{Name: "decision-page-boundary", Stages: []flow.Stage{
 		{Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Gate: flow.GateAuto, Completion: flow.CompletionAll},

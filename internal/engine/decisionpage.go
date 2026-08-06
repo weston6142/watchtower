@@ -351,22 +351,25 @@ func matchesTouchset(file string, planned touchset.Set) bool {
 func (e *Engine) writeDecisionPage(
 	is *issueState, stage string, decisionID int64, d levers.Decision,
 	ctx *decision.DecisionContext, reviewTarget *review.Target, resolution *decisionPageResolution,
-) {
+) error {
 	if is == nil {
-		return
+		return fmt.Errorf("decision issue state is unavailable")
 	}
 	data, err := e.buildPageData(
 		is.id, is.flowName, is.title, stage, &d, ctx, reviewTarget, decisionID, resolution,
 	)
 	if err != nil {
-		return
+		return fmt.Errorf("build decision page snapshot: %w", err)
 	}
 	if decisionID > 0 {
 		if err := e.cfg.Store.SaveDecisionPageSnapshot(decisionID, data); err != nil {
-			return
+			return fmt.Errorf("save decision page snapshot: %w", err)
 		}
 	}
-	e.writeRenderedDecisionPage(is.id, stage, decisionID, data)
+	if err := e.writeRenderedDecisionPage(is.id, stage, decisionID, data); err != nil {
+		return fmt.Errorf("publish decision page: %w", err)
+	}
+	return nil
 }
 
 func (e *Engine) decisionPageSnapshot(
@@ -452,12 +455,15 @@ func decisionArchiveNeedsResolution(archivePath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if bytes.Contains(content, []byte(`data-decision-state="resolved"`)) ||
-		bytes.Contains(content, []byte(`class="answered"`)) {
+	if bytes.Contains(content, []byte(`<body data-decision-state="pending">`)) {
+		return true, nil
+	}
+	if bytes.Contains(content, []byte(`<body data-decision-state="resolved">`)) ||
+		bytes.Contains(content, []byte(`<span class="answered">`)) {
 		return false, nil
 	}
-	return bytes.Contains(content, []byte(`data-decision-state="pending"`)) ||
-		(bytes.Contains(content, []byte("Do this now")) && bytes.Contains(content, []byte("After you answer"))), nil
+	return bytes.Contains(content, []byte("Do this now")) &&
+		bytes.Contains(content, []byte("After you answer")), nil
 }
 
 func (e *Engine) writeDecisionArchiveContent(issueID string, decisionID int64, content []byte) error {
@@ -495,26 +501,29 @@ func writeFileAtomically(filename string, content []byte, mode os.FileMode) erro
 	return os.Rename(temporaryName, filename)
 }
 
-func (e *Engine) writeRenderedDecisionPage(issueID, stage string, decisionID int64, data decisionpage.PageData) {
+func (e *Engine) writeRenderedDecisionPage(
+	issueID, stage string, decisionID int64, data decisionpage.PageData,
+) error {
 	content, err := decisionpage.Render(data)
 	if err != nil {
-		return
+		return err
 	}
 	if decisionID > 0 {
 		if err := e.writeDecisionArchiveContent(issueID, decisionID, content); err != nil {
-			return
+			return err
 		}
 	}
 	if err := os.MkdirAll(e.issueDir(issueID), 0o755); err != nil {
-		return
+		return err
 	}
 	latest := filepath.Join(e.issueDir(issueID), decisionpage.FileName)
 	if err := writeFileAtomically(latest, content, 0o644); err != nil {
-		return
+		return err
 	}
 	e.emit(core.EvArtifactProduced, issueID, map[string]any{
 		"stage": stage, "artifact": decisionpage.FileName, "path": latest, "decision_id": decisionID,
 	})
+	return nil
 }
 
 func (e *Engine) refreshDecisionPage(issueID string) {
