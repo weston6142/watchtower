@@ -144,6 +144,7 @@ type DecisionRow struct {
 	Recommended         int
 	RecommendedResponse string
 	AllowFreeform       bool
+	RequiresOption      bool
 	Importance          float64
 	Paths               []string
 	Why                 string
@@ -777,6 +778,7 @@ type decisionEvidence struct {
 	Kind                levers.DecisionKind        `json:"kind,omitempty"`
 	RecommendedResponse string                     `json:"recommended_response,omitempty"`
 	AllowFreeform       bool                       `json:"allow_freeform,omitempty"`
+	RequiresOption      bool                       `json:"requires_option,omitempty"`
 	Importance          float64                    `json:"importance,omitempty"`
 	Paths               []string                   `json:"paths,omitempty"`
 	Why                 string                     `json:"why"`
@@ -866,7 +868,8 @@ func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 	}
 	evidence, err := json.Marshal(decisionEvidence{
 		Kind: kind, RecommendedResponse: d.RecommendedResponse,
-		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
+		AllowFreeform: d.AllowFreeform, RequiresOption: d.RequiresOption,
+		Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
 		Context: d.Context, Review: target, ReviewPolicy: d.ReviewPolicy, Approval: d.Approval,
 	})
@@ -1206,7 +1209,11 @@ func (s *Store) AnswerDecision(id int64, response levers.Response, status string
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE decisions SET status=?, answer=? WHERE id=?`, status, string(answer), id)
+	answeredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.Exec(
+		`UPDATE decisions SET status=?, answer=?, answered_at=? WHERE id=?`,
+		status, string(answer), answeredAt, id,
+	)
 	return err
 }
 
@@ -1260,6 +1267,7 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 			d.Kind = stored.Kind
 			d.RecommendedResponse = stored.RecommendedResponse
 			d.AllowFreeform = stored.AllowFreeform
+			d.RequiresOption = stored.RequiresOption
 			d.Importance, d.Paths = stored.Importance, stored.Paths
 			d.Why, d.Consequences, d.Reversible =
 				stored.Why, stored.Consequences, stored.Reversible

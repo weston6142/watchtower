@@ -676,6 +676,58 @@ func TestDecisionRoundTripsTypedFreeformResponse(t *testing.T) {
 	}
 }
 
+func TestAnswerDecisionPersistsAnsweredAt(t *testing.T) {
+	s, err := Open("file:decision-answer-time?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	id, err := s.InsertDecision(DecisionRow{
+		IssueID: "GH-1", Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC()
+	if err := s.AnswerDecision(id, levers.ChoiceResponse(0), "answered"); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().UTC()
+
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	if rows[0].AnsweredAt.Before(before) || rows[0].AnsweredAt.After(after) {
+		t.Fatalf("answered_at = %v, want between %v and %v", rows[0].AnsweredAt, before, after)
+	}
+}
+
+func TestDecisionRequiresOptionRoundTrip(t *testing.T) {
+	s, err := Open("file:decision-requires-option?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := s.InsertDecision(DecisionRow{
+		IssueID: "GH-1", Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+		RequiresOption: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	if !rows[0].RequiresOption {
+		t.Fatalf("decision response requirement was lost: %#v", rows[0])
+	}
+}
+
 func TestChoiceDecisionRoundTripsTypedFreeformResponse(t *testing.T) {
 	s, err := Open("file:choice-typed-decisions?mode=memory&cache=shared")
 	if err != nil {

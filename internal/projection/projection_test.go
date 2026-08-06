@@ -130,6 +130,9 @@ func TestProjectionDecisionReviewTarget(t *testing.T) {
 		got.NextStage != want.NextStage || len(got.Artifacts) != len(want.Artifacts) {
 		t.Fatalf("projected review = %#v", got)
 	}
+	if !s.Decisions[26].RequiresOption {
+		t.Fatal("legacy artifact-review event permits freeform feedback")
+	}
 	for i, artifact := range want.Artifacts {
 		if got.Artifacts[i] != artifact {
 			t.Fatalf("projected artifact %d = %#v, want %#v", i, got.Artifacts[i], artifact)

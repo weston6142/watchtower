@@ -18,6 +18,7 @@ import (
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
+	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
@@ -3774,6 +3775,83 @@ func TestResolvedArtifactReviewPageRebuiltAfterRestart(t *testing.T) {
 	}
 }
 
+func TestResolvedOrdinaryDecisionPageRebuiltAfterRestart(t *testing.T) {
+	f := flow.Flow{Name: "ordinary-decision-recovery", Stages: []flow.Stage{{Name: "execute"}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "resolved-ordinary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "resolved ordinary decision", State: "done", Flow: f.Name,
+		Levers: map[string]string{"execute": string(flow.LeverStrict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertStageCheckpoint(store.StageCheckpoint{
+		IssueID: issueID, Stage: "execute", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	answeredAt := time.Date(2026, time.August, 6, 12, 34, 0, 0, time.UTC)
+	decisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue the rollout?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Why: "The rollout is ready.", Consequences: []string{"Continue rollout.", "Stop rollout."},
+		Reversible: "Stopping preserves completed work.", RequiresOption: true, Status: "answered",
+		Response: levers.ChoiceResponse(0), CreatedAt: answeredAt.Add(-5 * time.Minute), AnsweredAt: answeredAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDecisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Legacy answer?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Why: "Historical context.", Consequences: []string{"Continue.", "Stop."},
+		Reversible: "The choice can be revisited.", Status: "answered",
+		Response: levers.ChoiceResponse(1), CreatedAt: answeredAt.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, dataDir, f)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	archive, err := os.ReadFile(filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Continue the rollout?", "Recorded outcome",
+		"Answered: option 1 · " + answeredAt.Format("2006-01-02 15:04"),
+	} {
+		if !strings.Contains(string(archive), want) {
+			t.Errorf("rebuilt ordinary decision archive missing %q: %s", want, archive)
+		}
+	}
+	if strings.Contains(string(archive), "Add feedback") {
+		t.Errorf("rebuilt option-required decision archive offers feedback: %s", archive)
+	}
+	legacyArchive, err := os.ReadFile(filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", legacyDecisionID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(legacyArchive), "Answered: option 2 · timestamp unavailable") {
+		t.Fatalf("legacy archive invented an answer timestamp: %s", legacyArchive)
+	}
+	stable, err := os.ReadFile(filepath.Join(dataDir, issueID, decisionpage.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stable), "1 stages done ✓") || strings.Contains(string(stable), "Recorded outcome") {
+		t.Fatalf("stable page does not show current progress: %s", stable)
+	}
+}
+
 func TestRehydrateRebuildsEveryResolvedArtifactReviewPage(t *testing.T) {
 	f := artifactGateFlow()
 	s, err := store.Open(filepath.Join(t.TempDir(), "all-resolved-review-pages.db"))
@@ -3783,8 +3861,11 @@ func TestRehydrateRebuildsEveryResolvedArtifactReviewPage(t *testing.T) {
 	defer s.Close()
 	const issueID = "GH-1"
 	if err := s.UpsertIssue(store.IssueRow{
-		ID: issueID, Title: "all resolved review pages", State: "failed", Flow: f.Name,
-		Levers: map[string]string{"spec": string(flow.LeverStrict), "plan": string(flow.LeverStrict)},
+		ID: issueID, Title: "all resolved review pages", State: "done", Flow: f.Name,
+		Levers: map[string]string{
+			"spec": string(flow.LeverStrict), "plan": string(flow.LeverStrict),
+			"implementation": string(flow.LeverStrict),
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3825,10 +3906,18 @@ func TestRehydrateRebuildsEveryResolvedArtifactReviewPage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.ResolveArtifactReview(decisionID, target, levers.ChoiceResponse(1)); err != nil {
+		if _, err := s.ResolveArtifactReview(decisionID, target, levers.ChoiceResponse(0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CompleteArtifactReview(checkpointID, target); err != nil {
 			t.Fatal(err)
 		}
 		decisionIDs[test.stage] = decisionID
+	}
+	if _, err := s.InsertStageCheckpoint(store.StageCheckpoint{
+		IssueID: issueID, Stage: "implementation", Status: "succeeded",
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	dataDir := t.TempDir()
@@ -3846,6 +3935,15 @@ func TestRehydrateRebuildsEveryResolvedArtifactReviewPage(t *testing.T) {
 		if !strings.Contains(string(page), test.artifactName+" was archived and available at decision time") {
 			t.Errorf("%s review page has the wrong archive: %s", test.stage, page)
 		}
+	}
+	stable, err := os.ReadFile(filepath.Join(dataDir, issueID, decisionpage.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stable), "Stage <b>3 of 3</b> — implementation") ||
+		!strings.Contains(string(stable), "3 stages done ✓") ||
+		strings.Contains(string(stable), "Recorded outcome") {
+		t.Fatalf("stable page was replaced by a historical decision archive: %s", stable)
 	}
 }
 

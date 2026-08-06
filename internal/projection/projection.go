@@ -230,7 +230,7 @@ func (s *State) Apply(ev core.Event) {
 			Kind: str("kind"), Question: str("question"), Options: opts,
 			Recommended: int(num("recommended")), RecommendedResponse: str("recommended_response"),
 			AllowFreeform:  p["allow_freeform"] == true,
-			RequiresOption: p["requires_option"] == true,
+			RequiresOption: p["requires_option"] == true || reviewTarget != nil,
 			Why:            str("why"), Consequences: stringsFromPayload(p["consequences"]),
 			Reversible: str("reversible"), Paths: stringsFromPayload(p["paths"]), Context: context,
 			Review: reviewTarget, ReviewPolicy: decisionPolicy, ReviewStatus: decisionReviewStatus}

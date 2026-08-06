@@ -318,7 +318,7 @@ func (e *Engine) rehydrateArtifactReview(
 		planReview: issue.PlanReviewPolicy,
 	}
 	e.restoreInterruptedWorkspace(is)
-	d := artifactReviewDecisionFromRow(row)
+	d := decisionFromRow(row)
 	e.mu.Lock()
 	e.issues[row.IssueID] = is
 	if row.Status == "pending" {
@@ -330,32 +330,31 @@ func (e *Engine) rehydrateArtifactReview(
 		}
 	}
 	e.mu.Unlock()
-	var resolution *decisionPageResolution
-	if row.Status == "answered" || row.Status == "auto" {
-		resolution = resolvedDecisionPage(row.Response, row.Approval, row.AnsweredAt)
+	if row.Status == "pending" {
+		e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, row.Review, nil)
 	}
-	e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, row.Review, resolution)
 	return true, (row.Status == "answered" || row.Status == "auto") &&
 		(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "succeeded"), nil
 }
 
-func artifactReviewDecisionFromRow(row store.DecisionRow) levers.Decision {
+func decisionFromRow(row store.DecisionRow) levers.Decision {
 	return levers.Decision{
 		Kind: row.Kind, Question: row.Question, Options: row.Options,
 		Recommended: row.Recommended, RecommendedResponse: row.RecommendedResponse,
 		AllowFreeform: row.AllowFreeform, Importance: row.Importance, Paths: row.Paths,
 		Why: row.Why, Consequences: row.Consequences, Reversible: row.Reversible,
-		Briefing: row.Briefing, RequiresOption: true,
+		Briefing: row.Briefing, RequiresOption: row.RequiresOption || row.Review != nil,
 	}
 }
 
-func (e *Engine) rebuildResolvedArtifactReviewPages(
+func (e *Engine) rebuildResolvedDecisionPages(
 	rows []store.DecisionRow, issueRows map[string]store.IssueRow,
-) {
+) map[string]struct{} {
+	affected := map[string]struct{}{}
 	ordered := append([]store.DecisionRow(nil), rows...)
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	for _, row := range ordered {
-		if row.Review == nil || (row.Status != "answered" && row.Status != "auto") {
+		if row.Status != "answered" && row.Status != "auto" {
 			continue
 		}
 		issue, ok := issueRows[row.IssueID]
@@ -367,11 +366,13 @@ func (e *Engine) rebuildResolvedArtifactReviewPages(
 			matrix: matrixFromStrings(issue.Levers), priority: issue.Priority,
 			dependsOn: append([]string(nil), issue.DependsOn...), planReview: issue.PlanReviewPolicy,
 		}
-		e.writeDecisionPage(
-			is, row.Stage, row.ID, artifactReviewDecisionFromRow(row), row.Context, row.Review,
-			resolvedDecisionPage(row.Response, row.Approval, row.AnsweredAt),
+		e.writeDecisionArchive(
+			is, row.Stage, row.ID, decisionFromRow(row), row.Context, row.Review,
+			resolvedStoredDecisionPage(row.Response, row.Approval, row.AnsweredAt),
 		)
+		affected[row.IssueID] = struct{}{}
 	}
+	return affected
 }
 
 // Rehydrate rebuilds in-memory state from the store after a daemon restart.
@@ -411,11 +412,15 @@ func (e *Engine) Rehydrate() error {
 	activeReviewIssues := map[string]bool{}
 	reviewCheckpointIDs := map[string]int64{}
 	var authorizedReviews []store.DecisionRow
+	decisionRows, err := e.cfg.Store.AllDecisionRows()
+	if err != nil {
+		return err
+	}
+	decisionPageIssues := e.rebuildResolvedDecisionPages(decisionRows, issueRows)
 	reviewRows, err := e.cfg.Store.ArtifactReviewRows("")
 	if err != nil {
 		return err
 	}
-	e.rebuildResolvedArtifactReviewPages(reviewRows, issueRows)
 	for _, row := range reviewRows {
 		if row.Review == nil {
 			continue
@@ -657,6 +662,11 @@ func (e *Engine) Rehydrate() error {
 		e.emit(core.EvStageFailed, row.ID, map[string]any{
 			"stage": stage, "attempt": attempt, "of": of,
 			"error": restartError, "final": true})
+	}
+	for issueID := range decisionPageIssues {
+		if row, ok := issueRows[issueID]; ok {
+			e.refreshDecisionPageFromRow(row)
+		}
 	}
 	for _, row := range authorizedReviews {
 		e.scheduleArtifactContinuation(row.ID, row.IssueID, row.Stage, *row.Review, row.Response, true)
@@ -1988,7 +1998,8 @@ func (e *Engine) requestArtifactReview(
 	rowID, err := e.cfg.Store.RequestArtifactReview(target, store.DecisionRow{
 		IssueID: is.id, Stage: st.Name, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended, Kind: d.Kind,
-		Importance: d.Importance, Why: d.Why, Consequences: d.Consequences,
+		Importance: d.Importance, RequiresOption: d.RequiresOption,
+		Why: d.Why, Consequences: d.Consequences,
 		Reversible: d.Reversible, Briefing: d.Briefing, Context: &decisionContext,
 		BlockingCost: e.blockingCost(is.id),
 	})
@@ -2046,7 +2057,8 @@ func (e *Engine) requestPlanReview(
 	rowID, err := e.cfg.Store.RequestArtifactReview(target, store.DecisionRow{
 		IssueID: is.id, Stage: st.Name, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended, Kind: d.Kind,
-		Importance: d.Importance, Why: d.Why, Consequences: d.Consequences,
+		Importance: d.Importance, RequiresOption: d.RequiresOption,
+		Why: d.Why, Consequences: d.Consequences,
 		Reversible: d.Reversible, Briefing: d.Briefing,
 		Context: &decisionContext, ReviewPolicy: &policy,
 		BlockingCost: e.blockingCost(is.id),
@@ -2466,7 +2478,8 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 		IssueID: is.id, Stage: stage, Question: d.Question,
 		Options: d.Options, Recommended: d.Recommended,
 		Kind: d.Kind, RecommendedResponse: d.RecommendedResponse,
-		AllowFreeform: d.AllowFreeform, Importance: d.Importance, Paths: d.Paths,
+		AllowFreeform: d.AllowFreeform, RequiresOption: d.RequiresOption,
+		Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
 		Briefing:     d.Briefing,
 		Context:      &decisionContext,

@@ -59,6 +59,30 @@ func resolvedDecisionPage(
 	return resolution
 }
 
+func resolvedStoredDecisionPage(
+	response levers.Response, approval *review.ApprovalProvenance, answeredAt time.Time,
+) *decisionPageResolution {
+	if !answeredAt.IsZero() {
+		return resolvedDecisionPage(response, approval, answeredAt)
+	}
+	resolution := &decisionPageResolution{
+		Response: response,
+		Stamp:    fmt.Sprintf("Answered: %s · timestamp unavailable", answerText(response)),
+	}
+	if approval == nil {
+		return resolution
+	}
+	stored := *approval
+	resolution.Approval = &stored
+	if stored.Kind == review.ApprovalPolicy {
+		resolution.Stamp = fmt.Sprintf(
+			"Automatically approved by policy %s@%s: %s · timestamp unavailable",
+			stored.PolicyID, stored.PolicyVersion, answerText(response),
+		)
+	}
+	return resolution
+}
+
 func (r *decisionPageResolution) policyApproval() (*review.ApprovalProvenance, bool) {
 	if r == nil || r.Approval == nil || r.Approval.Kind != review.ApprovalPolicy {
 		return nil, false
@@ -325,19 +349,44 @@ func (e *Engine) writeDecisionPage(
 	e.writeRenderedDecisionPage(is.id, stage, decisionID, data)
 }
 
+func (e *Engine) writeDecisionArchive(
+	is *issueState, stage string, decisionID int64, d levers.Decision,
+	ctx *decision.DecisionContext, reviewTarget *review.Target, resolution *decisionPageResolution,
+) {
+	if is == nil || decisionID <= 0 {
+		return
+	}
+	data, err := e.buildPageData(
+		is.id, is.flowName, is.title, stage, &d, ctx, reviewTarget, decisionID, resolution,
+	)
+	if err != nil {
+		return
+	}
+	content, err := decisionpage.Render(data)
+	if err != nil {
+		return
+	}
+	e.writeDecisionArchiveContent(is.id, decisionID, content)
+}
+
+func (e *Engine) writeDecisionArchiveContent(issueID string, decisionID int64, content []byte) bool {
+	decisionsDir := filepath.Join(e.issueDir(issueID), "decisions")
+	if err := os.MkdirAll(decisionsDir, 0o755); err != nil {
+		return false
+	}
+	return os.WriteFile(filepath.Join(decisionsDir, fmt.Sprintf("%d.html", decisionID)), content, 0o644) == nil
+}
+
 func (e *Engine) writeRenderedDecisionPage(issueID, stage string, decisionID int64, data decisionpage.PageData) {
 	content, err := decisionpage.Render(data)
 	if err != nil {
 		return
 	}
-	decisionsDir := filepath.Join(e.issueDir(issueID), "decisions")
-	if err := os.MkdirAll(decisionsDir, 0o755); err != nil {
+	if decisionID > 0 && !e.writeDecisionArchiveContent(issueID, decisionID, content) {
 		return
 	}
-	if decisionID > 0 {
-		if err := os.WriteFile(filepath.Join(decisionsDir, fmt.Sprintf("%d.html", decisionID)), content, 0o644); err != nil {
-			return
-		}
+	if err := os.MkdirAll(e.issueDir(issueID), 0o755); err != nil {
+		return
 	}
 	latest := filepath.Join(e.issueDir(issueID), decisionpage.FileName)
 	if err := os.WriteFile(latest, content, 0o644); err != nil {
@@ -388,6 +437,20 @@ func (e *Engine) refreshDecisionPage(issueID string) {
 	data, err := e.buildPageData(issueID, flowName, title, currentStage, nil, nil, nil, 0, nil)
 	if err == nil {
 		e.writeRenderedDecisionPage(issueID, currentStage, 0, data)
+	}
+}
+
+func (e *Engine) refreshDecisionPageFromRow(row store.IssueRow) {
+	e.mu.Lock()
+	is := e.issues[row.ID]
+	e.mu.Unlock()
+	if is != nil {
+		e.refreshDecisionPage(row.ID)
+		return
+	}
+	data, err := e.buildPageData(row.ID, row.Flow, row.Title, "", nil, nil, nil, 0, nil)
+	if err == nil {
+		e.writeRenderedDecisionPage(row.ID, data.CurrentStage, 0, data)
 	}
 }
 
