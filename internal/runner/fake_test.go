@@ -11,6 +11,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 )
 
 type scriptedGate struct {
@@ -46,6 +47,58 @@ func TestPlannerRunnerStopsAfterDeniedToolAndKeepsSynthesisResult(t *testing.T) 
 	if result.Err != nil || len(result.Artifacts) != 2 || g.Started != 1 {
 		t.Fatalf("result=%+v gate=%+v", result, g)
 	}
+}
+
+func TestFakePlannerAppliesSectionRequestsAndRetriesPendingKey(t *testing.T) {
+	dir := t.TempDir()
+	session, err := plannerartifact.Initialize(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	manifest := fakePlannerManifest()
+	requests := make([]plannerartifact.WriteRequest, 0, len(manifest.Sections))
+	for _, entry := range manifest.Sections {
+		requests = append(requests, plannerartifact.WriteRequest{Manifest: manifest, Key: entry.Key, Markdown: "section " + entry.Key, Globs: entry.Globs})
+	}
+	fr := &FakeRunner{Scripts: map[string]Script{
+		"plan/planner": {PlannerRequests: requests, PlannerFailureAt: 1, PlannerFailure: errors.New("stop at architecture")},
+	}}
+	ctx := WithPlannerArtifactEnv(context.Background(), session.Env())
+	first := <-fr.RunPlanner(ctx, "GH-40", "plan", "planner", dir, make(chan Ask), &scriptedGate{})
+	if first.Err == nil || !strings.Contains(first.Err.Error(), "stop at architecture") {
+		t.Fatalf("first result = %+v", first)
+	}
+	fr.Scripts["plan/planner"] = Script{PlannerRequests: requests}
+	second := <-fr.RunPlanner(ctx, "GH-40", "plan", "planner", dir, make(chan Ask), &scriptedGate{})
+	if second.Err != nil {
+		t.Fatal(second.Err)
+	}
+	plan, err := os.ReadFile(filepath.Join(dir, "plan.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range requests {
+		if got := strings.Count(string(plan), "<!-- watchtower-section: key="+request.Key+" -->"); got != 1 {
+			t.Fatalf("section %s count = %d", request.Key, got)
+		}
+	}
+	if len(second.Artifacts) != 2 || second.Artifacts["plan.md"] != filepath.Join(dir, "plan.md") ||
+		second.Artifacts["touchset.json"] != filepath.Join(dir, "touchset.json") {
+		t.Fatalf("result artifacts = %+v", second.Artifacts)
+	}
+}
+
+func fakePlannerManifest() plannerartifact.Manifest {
+	return plannerartifact.Manifest{Sections: []plannerartifact.ManifestEntry{
+		{Key: "goal", Globs: []string{"internal/gh40/goal/**"}},
+		{Key: "architecture", Globs: []string{"internal/gh40/architecture/**"}},
+		{Key: "technology-stack", Globs: []string{"internal/gh40/technology/**"}},
+		{Key: "execution-contract", Globs: []string{"internal/gh40/contract/**"}},
+		{Key: "file-structure", Globs: []string{"internal/gh40/files/**"}},
+		{Key: "task-0001", Globs: []string{"internal/gh40/task-0001/**"}},
+		{Key: "verification", Globs: []string{"internal/gh40/verification/**"}},
+	}}
 }
 
 func TestFakeRunnerPropagatesAskFailure(t *testing.T) {

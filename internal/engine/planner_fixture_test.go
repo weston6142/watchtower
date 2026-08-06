@@ -3,14 +3,13 @@ package engine
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -39,7 +38,6 @@ type plannerFixtureResult struct {
 
 type recordingPlannerRunner struct {
 	Tools                 []runner.ToolCall
-	Artifacts             map[string]string
 	Admitted              []string
 	UnchangedSourceReused bool
 }
@@ -77,8 +75,13 @@ func (r *recordingPlannerRunner) RunPlanner(ctx context.Context, _ string, _ str
 			}
 		}
 		r.UnchangedSourceReused = admittedIssueReads == 1
-		for name, content := range r.Artifacts {
-			if err := os.WriteFile(filepath.Join(workdir, name), []byte(content), 0o644); err != nil {
+		session, err := plannerartifact.OpenFromEnvironment(workdir, runner.PlannerArtifactEnv(ctx))
+		if err != nil {
+			done <- runner.Result{Err: err}
+			return
+		}
+		for _, request := range plannerArtifactRequests() {
+			if err := session.Apply(request); err != nil {
 				done <- runner.Result{Err: err}
 				return
 			}
@@ -101,7 +104,6 @@ func NewSmallPlannerFixture(t *testing.T) *smallPlannerFixture {
 			{Name: "read", SourceID: "internal/engine/engine.go", Fingerprint: "v1", Reservation: 50000, Priority: int(plannerbudget.DirectCode)},
 			{Name: "read", SourceID: "README.md", Fingerprint: "v1", Reservation: 1, Priority: int(plannerbudget.BroadSource)},
 		},
-		Artifacts: map[string]string{"plan.md": "bounded plan\n", "touchset.json": `{"globs":[]}`},
 	}
 	e, s := newEngineCfg(t, recording, func(cfg *Config) {
 		cfg.Flows = map[string]flow.Flow{planFlow.Name: planFlow}

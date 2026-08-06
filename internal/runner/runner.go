@@ -123,6 +123,19 @@ type AttemptReporter interface {
 
 type operationIDKey struct{}
 
+type plannerArtifactEnvKey struct{}
+
+func WithPlannerArtifactEnv(ctx context.Context, env []string) context.Context {
+	return context.WithValue(ctx, plannerArtifactEnvKey{}, append([]string(nil), env...))
+}
+
+func PlannerArtifactEnv(ctx context.Context) []string {
+	if env, ok := ctx.Value(plannerArtifactEnvKey{}).([]string); ok {
+		return append([]string(nil), env...)
+	}
+	return nil
+}
+
 func WithOperationID(ctx context.Context, operationID string) context.Context {
 	return context.WithValue(ctx, operationIDKey{}, operationID)
 }

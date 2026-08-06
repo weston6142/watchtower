@@ -8,6 +8,26 @@ decision protocol only for a genuine blocker or material ambiguity.
 
 Write only `plan.md` and `touchset.json`.
 
+The engine initializes plan.md and touchset.json before your turn. Build one
+deterministic manifest with goal, architecture, technology-stack,
+execution-contract, file-structure, one or more task-NNNN sections, and
+verification. For each section, create one JSON request containing the full
+manifest, the section key, the section Markdown, and that key's canonical glob
+delta; place the request in a private temporary request file or send it on
+standard input, then run `watchtower planner-artifact apply --request-file
+<path>`. The request body must never be a command-line argument, generated
+patch, shell-quoted whole-file payload, or one-shot replacement of either
+target. The decoded section bytes and canonical glob delta must stay within
+`MaxOperationBytes` (65,536 bytes). Wait for `section-validated <key>` before
+requesting the next key.
+
+Read existing anchors on retry. Re-send the deterministic manifest, skip
+byte-equivalent accepted keys, and regenerate only the first pending key. Never
+rewrite an accepted section, duplicate anchors, duplicate globs, or delete
+valid progress. Remove request files after use. The engine performs complete
+pair validation before archiving and plan review; `plan.md` and `touchset.json`
+are the only durable outputs; do not emit another plan-approval decision.
+
 Begin `plan.md` with the goal, architecture, technology stack, execution
 contract, and intended file structure. Then provide ordered, small
 implementation tasks. Each task must contain:

@@ -328,6 +328,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 	cmd := exec.CommandContext(ctx, profile.Bin, invocation.Argv...)
 	cmd.Dir = workdir
 	cmd.Env = append(os.Environ(), c.ExtraEnv...)
+	cmd.Env = append(cmd.Env, runner.PlannerArtifactEnv(ctx)...)
 	// If a shell wrapper leaves a child holding the JSONL pipe open after
 	// cancellation, do not let that child defeat CommandContext cancellation.
 	cmd.WaitDelay = 250 * time.Millisecond

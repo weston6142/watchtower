@@ -99,6 +99,46 @@ func TestHappyPathProducesArtifactAndTokens(t *testing.T) {
 	}
 }
 
+func TestPlannerSessionEnvironmentReachesClaudeChildWithoutArgLeak(t *testing.T) {
+	dir := t.TempDir()
+	envCapture := filepath.Join(dir, "planner-env")
+	argvCapture := filepath.Join(dir, "planner-argv")
+	sentinel := "private-planner-session-value"
+	bin := filepath.Join(dir, "claude-stub")
+	script := `#!/bin/sh
+set -eu
+printf '%s' "$WATCHTOWER_PLANNER_SESSION" > "$CAPTURE_ENV"
+: > "$CAPTURE_ARGV"
+for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE_ARGV"; done
+cat > /dev/null &
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-planner"}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"planner"}]}}'
+printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &CodeRunner{
+		Bin: bin, Packages: testPkgs(),
+		ExtraEnv: []string{"CAPTURE_ENV=" + envCapture, "CAPTURE_ARGV=" + argvCapture},
+	}
+	ctx := runner.WithPlannerArtifactEnv(context.Background(), []string{"WATCHTOWER_PLANNER_SESSION=" + sentinel})
+	res := <-r.RunPlanner(ctx, "GH-1", "plan", "spec-writer", dir, make(chan runner.Ask), nil)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if got, err := os.ReadFile(envCapture); err != nil {
+		t.Fatal(err)
+	} else if string(got) != sentinel {
+		t.Fatalf("child planner environment = %q, want %q", got, sentinel)
+	}
+	if got, err := os.ReadFile(argvCapture); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(got), sentinel) {
+		t.Fatalf("planner session leaked into child argv: %q", got)
+	}
+}
+
 func TestDecisionRoundTrip(t *testing.T) {
 	done, asks := run(t, abs(t, "testdata/asker.sh"), t.TempDir())
 	a := <-asks

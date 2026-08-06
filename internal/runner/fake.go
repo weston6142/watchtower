@@ -11,20 +11,24 @@ import (
 
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 )
 
 type Script struct {
-	Asks            []levers.Decision
-	Proposals       []Proposal
-	ProposalBatches [][]Proposal
-	DependsOn       []string
-	Lines           []string
-	Artifacts       map[string]string
-	SessionID       string
-	Tokens          int
-	TokensKnown     bool
-	Tools           []ToolCall
-	Fail            bool
+	Asks             []levers.Decision
+	Proposals        []Proposal
+	ProposalBatches  [][]Proposal
+	DependsOn        []string
+	Lines            []string
+	Artifacts        map[string]string
+	SessionID        string
+	Tokens           int
+	TokensKnown      bool
+	Tools            []ToolCall
+	Fail             bool
+	PlannerRequests  []plannerartifact.WriteRequest
+	PlannerFailureAt int
+	PlannerFailure   error
 }
 
 type FakeRunner struct {
@@ -160,6 +164,30 @@ func (f *FakeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, w
 		if sc.Fail {
 			done <- Result{SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
 				Err: fmt.Errorf("scripted failure %s/%s", stage, agentPkg)}
+			return
+		}
+		if len(sc.PlannerRequests) > 0 {
+			session, err := plannerartifact.OpenFromEnvironment(workdir, PlannerArtifactEnv(ctx))
+			if err != nil {
+				done <- Result{SessionID: sc.SessionID, Err: err}
+				return
+			}
+			for index, request := range sc.PlannerRequests {
+				if sc.PlannerFailure != nil && index == sc.PlannerFailureAt {
+					done <- Result{SessionID: sc.SessionID, Err: sc.PlannerFailure}
+					return
+				}
+				if err := session.Apply(request); err != nil {
+					done <- Result{SessionID: sc.SessionID, Err: err}
+					return
+				}
+			}
+			artifacts := map[string]string{
+				"plan.md":       filepath.Join(workdir, "plan.md"),
+				"touchset.json": filepath.Join(workdir, "touchset.json"),
+			}
+			done <- Result{Artifacts: artifacts, DependsOn: append([]string(nil), sc.DependsOn...),
+				SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown}
 			return
 		}
 		artifacts, err := writeFakeArtifacts(sc.Artifacts, workdir)
