@@ -336,9 +336,11 @@ func (e *Engine) rehydrateArtifactReview(
 		}
 	}
 	e.mu.Unlock()
-	if row.Status == "pending" {
-		e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, row.Review, nil)
+	var resolution *decisionPageResolution
+	if row.Status == "answered" || row.Status == "auto" {
+		resolution = resolvedDecisionPage(row.Response, row.Approval, row.AnsweredAt)
 	}
+	e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, row.Review, resolution)
 	return true, (row.Status == "answered" || row.Status == "auto") &&
 		(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "succeeded"), nil
 }
@@ -1796,7 +1798,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 				return fmt.Errorf("append plan review outcome: %w", err)
 			}
 		}
-		e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, resolvedDecisionPage(response, provenance))
+		e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, resolvedDecisionPage(response, provenance, time.Time{}))
 		e.mu.Lock()
 		delete(e.pend, decisionID)
 		e.mu.Unlock()
@@ -1815,7 +1817,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	if err := e.cfg.Store.AnswerDecision(decisionID, response, "answered"); err != nil {
 		return err
 	}
-	e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, resolvedDecisionPage(response, nil))
+	e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, resolvedDecisionPage(response, nil, time.Time{}))
 	e.refreshDecisionPage(p.IssueID)
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
 		"decision_id": p.ID, "response": response})
@@ -2044,7 +2046,7 @@ func (e *Engine) requestPlanReview(
 		}
 		e.writeDecisionPage(
 			is, st.Name, rowID, d, &decisionContext, &target,
-			resolvedDecisionPage(levers.ChoiceResponse(0), provenance),
+			resolvedDecisionPage(levers.ChoiceResponse(0), provenance, time.Time{}),
 		)
 		return levers.ChoiceResponse(0), nil
 	}
@@ -3788,10 +3790,24 @@ func (e *Engine) checkBudget(is *issueState, stage string) error {
 	}
 	e.emit(core.EvBudgetExceeded, is.id, map[string]any{"spent": spent, "budget": e.cfg.TokenBudget})
 	d := levers.Decision{
+		Kind:        levers.DecisionChoice,
 		Question:    fmt.Sprintf("Issue %s exceeded its token budget (%d/%d). Continue?", is.id, spent, e.cfg.TokenBudget),
 		Options:     []string{"continue", "abort"},
 		Recommended: 1,
 		Importance:  1.0,
+		Why:         "The durable token total is above the configured limit for this issue.",
+		Consequences: []string{
+			fmt.Sprintf("Continues into %s and waives further token-budget checks for this issue until Watchtower restarts.", stage),
+			fmt.Sprintf("Stops this run before %s starts; retrying %s asks for budget authorization again.", stage, stage),
+		},
+		Reversible: "Aborting preserves completed stages and can be retried; continuing cannot recover tokens already spent.",
+		Briefing: &levers.Briefing{
+			Proof: []levers.BriefingProof{{
+				Claim: fmt.Sprintf("The issue has consumed %d tokens against a configured budget of %d.", spent, e.cfg.TokenBudget),
+				Cite:  "durable stage-run token accounting",
+			}},
+			NextAction: fmt.Sprintf("Continue to resume %s with the budget waived, or abort to stop before %s starts.", stage, stage),
+		},
 	}
 	agentPkg, agentErr := e.decisionAgentPackage(is.flowName, stage)
 	if agentErr != nil {

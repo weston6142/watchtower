@@ -38,9 +38,12 @@ type decisionPageResolution struct {
 }
 
 func resolvedDecisionPage(
-	response levers.Response, approval *review.ApprovalProvenance,
+	response levers.Response, approval *review.ApprovalProvenance, answeredAt time.Time,
 ) *decisionPageResolution {
-	resolution := &decisionPageResolution{Response: response, Stamp: answerStamp(response)}
+	if answeredAt.IsZero() {
+		answeredAt = time.Now().UTC()
+	}
+	resolution := &decisionPageResolution{Response: response, Stamp: answerStamp(response, answeredAt)}
 	if approval == nil {
 		return resolution
 	}
@@ -50,7 +53,7 @@ func resolvedDecisionPage(
 		resolution.Stamp = fmt.Sprintf(
 			"Automatically approved by policy %s@%s: %s · %s",
 			stored.PolicyID, stored.PolicyVersion, answerText(response),
-			time.Now().UTC().Format("2006-01-02 15:04"),
+			answeredAt.UTC().Format("2006-01-02 15:04"),
 		)
 	}
 	return resolution
@@ -390,8 +393,8 @@ func answerText(response levers.Response) string {
 	return answer
 }
 
-func answerStamp(response levers.Response) string {
-	return fmt.Sprintf("Answered: %s · %s", answerText(response), time.Now().UTC().Format("2006-01-02 15:04"))
+func answerStamp(response levers.Response, answeredAt time.Time) string {
+	return fmt.Sprintf("Answered: %s · %s", answerText(response), answeredAt.UTC().Format("2006-01-02 15:04"))
 }
 
 // answerSummary is the short past-decision line shown inside an expanded

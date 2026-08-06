@@ -247,6 +247,9 @@ func decisionPageContinuation(
 		_, continuation := artifactReviewOutcomeCopy(*target, isPlanReviewDecision(dec))
 		return continuation
 	}
+	if dec.Briefing != nil && strings.TrimSpace(dec.Briefing.NextAction) != "" {
+		return dec.Briefing.NextAction
+	}
 	if currentStage == "" {
 		return nextStageMissing
 	}
@@ -277,6 +280,13 @@ func decisionPageResolvedContinuation(
 			return "Rejection stopped this run. Retry the issue to produce and review a new plan."
 		}
 		return fmt.Sprintf("Revision stopped this run. Retry the issue to rerun %s.", target.Stage)
+	}
+	if dec.Briefing != nil && strings.TrimSpace(dec.Briefing.NextAction) != "" {
+		if response.Option != nil && *response.Option >= 0 && *response.Option < len(dec.Consequences) &&
+			strings.TrimSpace(dec.Consequences[*response.Option]) != "" {
+			return dec.Consequences[*response.Option]
+		}
+		return dec.Briefing.NextAction
 	}
 	if currentStage == "" {
 		return "Watchtower recorded the response."
