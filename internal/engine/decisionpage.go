@@ -50,6 +50,10 @@ func (e *Engine) buildPageData(
 	for _, checkpoint := range checkpoints {
 		byStage[checkpoint.Stage] = checkpoint
 	}
+	decisionStage := ""
+	if dec != nil {
+		decisionStage = currentStage
+	}
 	tokensByStage := map[string]int{}
 	if runs, runErr := e.cfg.Store.StageRuns(issueID); runErr == nil {
 		for _, run := range runs {
@@ -81,7 +85,7 @@ func (e *Engine) buildPageData(
 	}
 	data := decisionpage.PageData{
 		IssueID: issueID, Title: title, StageTotal: len(fl.Stages),
-		CurrentStage: currentStage, Answered: answered,
+		CurrentStage: currentStage, DecisionStage: decisionStage, Answered: answered,
 	}
 	if decisionID > 0 {
 		if rows, rowErr := e.cfg.Store.AllDecisionRows(); rowErr == nil {
@@ -136,7 +140,11 @@ func (e *Engine) buildPageData(
 		data.StageIndex = len(fl.Stages)
 	}
 
-	e.fillPageFiles(&data, issueID, currentStage)
+	filesStage := currentStage
+	if decisionStage != "" {
+		filesStage = decisionStage
+	}
+	e.fillPageFiles(&data, issueID, filesStage)
 	if dec != nil {
 		data.Briefing = buildDecisionPageBriefing(dec, ctx, reviewTarget, currentStage, decisionID)
 	}

@@ -109,9 +109,21 @@
       </div>
     </div>
     {{range .Floors}}
-      {{if eq .Status "current"}}
+      {{if and $.Briefing (eq .Name $.DecisionStage)}}
         <div class="floor current" id="decision">
           {{template "briefing" $}}
+        </div>
+      {{else if and (eq .Status "current") (not $.Briefing)}}
+        <div class="floor current" id="decision">
+          {{template "briefing" $}}
+        </div>
+      {{else if eq .Status "current"}}
+        <div class="floor">
+          <div class="floor-row">
+            <span class="name">{{.Name}}</span>
+            <span class="pill {{.Status}}">{{.Status}}</span>
+            {{if .Note}}<span class="note">{{.Note}}</span>{{end}}
+          </div>
         </div>
       {{else if .Expandable}}
         <details class="floor">
@@ -153,7 +165,7 @@
 
 {{define "briefing"}}
   {{if .Briefing}}
-    <span class="pill dec">decision · {{.CurrentStage}}</span>
+    <span class="pill dec">decision · {{.DecisionStage}}</span>
     <span class="agent">{{.Briefing.AgentLabel}} · {{.Briefing.Reversible}} · importance {{printf "%.1f" .Briefing.Importance}}</span>
     <h2>{{.Briefing.Question}}</h2>
     <div class="breakdown">

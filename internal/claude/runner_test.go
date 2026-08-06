@@ -40,6 +40,28 @@ func runLines(t *testing.T, bin, dir string) ([]string, runner.Result) {
 	return lines, res
 }
 
+type recordingGate struct {
+	completed int
+	actual    *int64
+	failed    error
+}
+
+func (g *recordingGate) Admit(context.Context, runner.ToolCall) (runner.ToolDecision, error) {
+	return runner.ToolDecision{Allowed: true, LeaseID: "lease-1"}, nil
+}
+
+func (g *recordingGate) Complete(
+	_ context.Context, _ runner.ToolDecision, actual *int64, operationErr error,
+) error {
+	g.completed++
+	if actual != nil {
+		value := *actual
+		g.actual = &value
+	}
+	g.failed = operationErr
+	return nil
+}
+
 // The operator watching a tool-heavy stage needs to see the tools. A tool-only
 // message used to fall through as empty assistant text, writing a blank line —
 // so the door filled with nothing while the agent worked.
@@ -123,10 +145,20 @@ func TestRunnerCoachesIncompleteDecision(t *testing.T) {
 }
 
 func TestRunnerStopsAfterTwoIncompleteRetries(t *testing.T) {
-	done, _ := run(t, abs(t, "testdata/coaching-exhausted.sh"), t.TempDir())
-	res := <-done
+	gate := &recordingGate{}
+	c := &CodeRunner{Bin: abs(t, "testdata/coaching-exhausted.sh"), Packages: testPkgs()}
+	res := <-c.RunPlanner(
+		context.Background(), "GH-1", "spec", "spec-writer", t.TempDir(), make(chan runner.Ask, 1), gate,
+	)
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "claude decision remained incomplete after 2 coaching attempts") {
 		t.Fatalf("result: %+v", res)
+	}
+	if res.Tokens != 6 || !res.TokensKnown {
+		t.Fatalf("tokens: %d known:%v, want 6 known", res.Tokens, res.TokensKnown)
+	}
+	if gate.completed != 1 || gate.actual == nil || *gate.actual != 2 || gate.failed == nil ||
+		!strings.Contains(gate.failed.Error(), "claude decision remained incomplete after 2 coaching attempts") {
+		t.Fatalf("gate completion = completed:%d actual:%v err:%v", gate.completed, gate.actual, gate.failed)
 	}
 }
 

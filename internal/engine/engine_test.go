@@ -755,10 +755,19 @@ func TestPlanReviewAuthorizationMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("policy approval page missing: %v", err)
 		}
-		for _, want := range []string{"Answered:", "Do this now", "After you answer", "advances to execute"} {
+		for _, want := range []string{
+			"Answered:", `id="decision"`, "decision · plan",
+			"Do this now", "After you answer", "advances to execute",
+		} {
 			if !strings.Contains(string(page), want) {
 				t.Errorf("policy approval page missing %q: %s", want, page)
 			}
+		}
+		if strings.Contains(string(page), "decision · execute") {
+			t.Errorf("policy approval page placed plan decision under execute: %s", page)
+		}
+		if got := strings.Count(string(page), `id="decision"`); got != 1 {
+			t.Errorf("policy approval page rendered %d decision briefings, want 1: %s", got, page)
 		}
 	})
 

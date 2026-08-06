@@ -262,6 +262,12 @@ func TestTerminalArtifactReviewPageExplainsCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForEvent(t, e.cfg.Store, id, core.EvIssueCompleted)
+	answered := string(waitForDecisionPageFile(t, pagePath))
+	for _, want := range []string{`id="decision"`, "decision · publish", "Answered:"} {
+		if !strings.Contains(answered, want) {
+			t.Errorf("answered terminal review page missing %q: %s", want, answered)
+		}
+	}
 }
 
 func TestDecisionPageRefreshesAtStageBoundary(t *testing.T) {

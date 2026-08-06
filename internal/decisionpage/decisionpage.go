@@ -101,6 +101,7 @@ type PageData struct {
 	StageIndex      int
 	StageTotal      int
 	CurrentStage    string
+	DecisionStage   string
 	DoneCount       int
 	BlockedFor      string
 	HeldSlots       string
@@ -119,6 +120,9 @@ var tmplFS embed.FS
 var page = template.Must(template.ParseFS(tmplFS, "page.tmpl.html"))
 
 func Render(d PageData) ([]byte, error) {
+	if d.Briefing != nil && d.DecisionStage == "" {
+		d.DecisionStage = d.CurrentStage
+	}
 	var buf bytes.Buffer
 	if err := page.Execute(&buf, d); err != nil {
 		return nil, err
