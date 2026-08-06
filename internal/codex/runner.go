@@ -401,8 +401,13 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 	if scanErr := scanner.Err(); scanErr != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		result.failed = c.withStderr(fmt.Errorf("codex JSONL: %w", scanErr), stderrTail.String(), pkg.Prompt, prompt, threadID)
-		result.failureClass = runner.FailureTransport
+		if ctx.Err() != nil {
+			result.failed = c.withStderr(fmt.Errorf("codex: %w", ctx.Err()), stderrTail.String(), pkg.Prompt, prompt, threadID)
+			result.failureClass = runner.FailureCancellation
+		} else {
+			result.failed = c.withStderr(fmt.Errorf("codex JSONL: %w", scanErr), stderrTail.String(), pkg.Prompt, prompt, threadID)
+			result.failureClass = runner.FailureTransport
+		}
 		reconcile()
 		return result
 	}

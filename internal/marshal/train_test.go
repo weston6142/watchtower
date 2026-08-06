@@ -149,7 +149,7 @@ func TestDeleteBranchRefusesUnmergedBranch(t *testing.T) {
 func remoteFor(t *testing.T, repo string) string {
 	t.Helper()
 	remote := t.TempDir()
-	git(t, remote, "init", "-q", "--bare")
+	git(t, remote, "init", "-q", "--bare", "-b", "main")
 	git(t, repo, "remote", "add", "origin", remote)
 	git(t, repo, "push", "-q", "origin", "main")
 	return remote

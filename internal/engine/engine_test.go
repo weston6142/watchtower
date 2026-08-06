@@ -5549,7 +5549,7 @@ func TestIssueStartFastForwardsBaseFromOrigin(t *testing.T) {
 	gitc(repo, "config", "user.name", "t")
 	gitc(repo, "commit", "-q", "--allow-empty", "-m", "base")
 	remote := t.TempDir()
-	gitc(remote, "init", "-q", "--bare")
+	gitc(remote, "init", "-q", "--bare", "-b", "main")
 	gitc(repo, "remote", "add", "origin", remote)
 	gitc(repo, "push", "-q", "origin", "main")
 	ahead := t.TempDir()

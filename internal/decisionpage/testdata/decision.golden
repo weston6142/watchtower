@@ -219,7 +219,7 @@
       <section class="brief-block">
         <div class="hd">Already done and proven</div>
 
-          <p class="proof">Migration tests pass (14/14).<span class="cite">— go test ./internal/store</span></p>
+<p class="proof">Migration tests pass (14/14).<span class="cite">— go test ./internal/store</span></p>
 
       </section>
       <section class="brief-block">
