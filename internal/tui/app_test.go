@@ -80,9 +80,14 @@ func decisionPageFocusedModel(t *testing.T, client Session) Model {
 	})
 }
 
-func TestDecisionPageKeyPrefersToastIssueAndPreservesFocus(t *testing.T) {
+func preserveEventSequence(t *testing.T) {
+	t.Helper()
 	savedSeq := seq
 	t.Cleanup(func() { seq = savedSeq })
+}
+
+func TestDecisionPageKeyPrefersToastIssueAndPreservesFocus(t *testing.T) {
+	preserveEventSequence(t)
 	session := &reconnectTestSession{
 		responses: map[string]proto.Response{
 			"issue_detail": {
@@ -91,12 +96,8 @@ func TestDecisionPageKeyPrefersToastIssueAndPreservesFocus(t *testing.T) {
 			},
 		},
 	}
-	m := NewModel(session, []string{"spec"})
+	m := decisionPageFocusedModel(t, session)
 	m = m.applyEvents([]core.Event{
-		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{
-			"title": "focused lane", "flow": "default",
-		}),
-		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
 		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{
 			"title": "decision lane", "flow": "default",
 		}),
@@ -137,8 +138,7 @@ func TestDecisionPageKeyPrefersToastIssueAndPreservesFocus(t *testing.T) {
 }
 
 func TestDecisionPageKeyFallsBackToFocusedIssueWithoutToast(t *testing.T) {
-	savedSeq := seq
-	t.Cleanup(func() { seq = savedSeq })
+	preserveEventSequence(t)
 	session := &reconnectTestSession{
 		responses: map[string]proto.Response{
 			"issue_detail": {OK: true, Detail: &proto.IssueDetail{}},
@@ -161,8 +161,7 @@ func TestDecisionPageKeyFallsBackToFocusedIssueWithoutToast(t *testing.T) {
 }
 
 func TestDecisionPageKeyRejectsEmptyToastIssueWithoutFallback(t *testing.T) {
-	savedSeq := seq
-	t.Cleanup(func() { seq = savedSeq })
+	preserveEventSequence(t)
 	session := &reconnectTestSession{}
 	m := decisionPageFocusedModel(t, session)
 	m.Toast = &projection.DecisionView{}
@@ -183,8 +182,7 @@ func TestDecisionPageKeyRejectsEmptyToastIssueWithoutFallback(t *testing.T) {
 }
 
 func TestDecisionPageKeyPreservesDetailErrors(t *testing.T) {
-	savedSeq := seq
-	t.Cleanup(func() { seq = savedSeq })
+	preserveEventSequence(t)
 	for _, tc := range []struct {
 		name   string
 		detail *proto.IssueDetail
