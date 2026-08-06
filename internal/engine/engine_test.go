@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1392,6 +1393,226 @@ func TestDecisionRequiredObserverCanAnswerImmediately(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCancellationDuringDecisionPagePublicationDoesNotPublishDecision(t *testing.T) {
+	tests := []struct {
+		name    string
+		flow    flow.Flow
+		runner  runner.Runner
+		matrix  levers.Matrix
+		adjust  func(*Config)
+		abandon bool
+	}{
+		{
+			name: "decision",
+			flow: flow.Flow{Name: "cancel-decision-publication", Stages: []flow.Stage{{
+				Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+				Agents: []flow.AgentRef{{Package: "agent"}},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"ask/agent": {Asks: []levers.Decision{{
+					Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+					Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+					Reversible: "The answer can be changed on retry.",
+				}}},
+			}},
+			matrix: levers.Matrix{"ask": flow.LeverStrict},
+		},
+		{
+			name: "abandoned decision",
+			flow: flow.Flow{Name: "abandon-decision-publication", Stages: []flow.Stage{{
+				Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+				Agents: []flow.AgentRef{{Package: "agent"}},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"ask/agent": {Asks: []levers.Decision{{
+					Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+					Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+					Reversible: "The answer can be changed on retry.",
+				}}},
+			}},
+			matrix:  levers.Matrix{"ask": flow.LeverStrict},
+			abandon: true,
+		},
+		{
+			name: "artifact review",
+			flow: flow.Flow{Name: "cancel-artifact-review-publication", Stages: []flow.Stage{{
+				Name: "review", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateApproveArtifact,
+				Agents: []flow.AgentRef{{Package: "agent"}}, Artifacts: []string{"spec.md"},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"review/agent": {Artifacts: map[string]string{"spec.md": "spec\n"}},
+			}},
+			matrix: levers.Matrix{"review": flow.LeverRegular},
+		},
+		{
+			name: "plan review",
+			flow: flow.Flow{Name: "cancel-plan-review-publication", Stages: []flow.Stage{{
+				Name: "review", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GatePlanReview,
+				Agents: []flow.AgentRef{{Package: "agent"}}, Artifacts: []string{"plan.md"},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"review/agent": {Artifacts: map[string]string{"plan.md": "plan\n"}},
+			}},
+			matrix: levers.Matrix{"review": flow.LeverRegular},
+			adjust: func(cfg *Config) {
+				cfg.PlanReview = planReviewSettings("manual-default", "1", false)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var e *Engine
+			var issueID string
+			var once sync.Once
+			killResult := make(chan error, 1)
+			e, s := newEngineCfg(t, test.runner, func(cfg *Config) {
+				cfg.Flows = map[string]flow.Flow{test.flow.Name: test.flow}
+				if test.adjust != nil {
+					test.adjust(cfg)
+				}
+				cfg.Observers = []func(core.Event){func(event core.Event) {
+					if event.Type != core.EvArtifactProduced {
+						return
+					}
+					var payload struct {
+						Artifact string `json:"artifact"`
+					}
+					if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.Artifact != decisionpage.FileName {
+						return
+					}
+					once.Do(func() {
+						if test.abandon {
+							killResult <- e.Abandon(issueID)
+							return
+						}
+						killResult <- e.KillStage(issueID)
+					})
+				}}
+			})
+			var err error
+			issueID, err = e.CreateIssue("cancel publication", "", test.flow.Name, test.matrix, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- e.StartIssue(ctx, issueID) }()
+
+			select {
+			case err := <-killResult:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("decision page was not published")
+			}
+
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("StartIssue error = %v, want context canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				cancel()
+				<-done
+				t.Fatal("canceled publication left the stage waiting on a decision")
+			}
+			if pending := e.PendingDecisions(); len(pending) != 0 {
+				t.Fatalf("pending decisions = %#v", pending)
+			}
+			if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+				t.Fatalf("pending rows = %#v, err = %v", rows, err)
+			}
+			for _, event := range mustEvents(t, s, issueID) {
+				if event.Type == core.EvDecisionRequired || event.Type == core.EvPlanReviewRequested {
+					t.Fatalf("canceled publication emitted %s", event.Type)
+				}
+			}
+			stable, err := os.ReadFile(filepath.Join(e.issueDir(issueID), decisionpage.FileName))
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(stable), "Do this now") {
+				t.Fatalf("stable page advertises the canceled decision: %s", stable)
+			}
+		})
+	}
+}
+
+func TestResolvedDecisionArchiveFailureDoesNotFailAnswer(t *testing.T) {
+	tests := []struct {
+		name   string
+		flow   flow.Flow
+		runner runner.Runner
+		matrix levers.Matrix
+	}{
+		{
+			name: "decision",
+			flow: flow.Flow{Name: "answer-without-archive", Stages: []flow.Stage{{
+				Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+				Agents: []flow.AgentRef{{Package: "agent"}},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"ask/agent": {Asks: []levers.Decision{{
+					Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+					Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+					Reversible: "The answer can be changed on retry.",
+				}}},
+			}},
+			matrix: levers.Matrix{"ask": flow.LeverStrict},
+		},
+		{
+			name: "artifact review",
+			flow: flow.Flow{Name: "review-without-archive", Stages: []flow.Stage{{
+				Name: "review", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateApproveArtifact,
+				Agents: []flow.AgentRef{{Package: "agent"}}, Artifacts: []string{"spec.md"},
+			}}},
+			runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"review/agent": {Artifacts: map[string]string{"spec.md": "spec\n"}},
+			}},
+			matrix: levers.Matrix{"review": flow.LeverRegular},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e, s := newEngineCfg(t, test.runner, func(cfg *Config) {
+				cfg.Flows = map[string]flow.Flow{test.flow.Name: test.flow}
+			})
+			issueID, err := e.CreateIssue("answer despite archive failure", "", test.flow.Name, test.matrix, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- e.StartIssue(context.Background(), issueID) }()
+			pending := waitForPendingStage(t, e, test.flow.Stages[0].Name)
+			decisionsDir := filepath.Join(e.issueDir(issueID), "decisions")
+			if err := os.RemoveAll(decisionsDir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(decisionsDir, []byte("block archive writes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+				t.Fatalf("Answer returned a post-commit archive failure: %v", err)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			row, ok, err := s.DecisionByID(pending.ID)
+			if err != nil || !ok || row.Status != "answered" {
+				t.Fatalf("resolved row = %+v, ok = %v, err = %v", row, ok, err)
+			}
+			if got := len(planReviewEvents(t, s, issueID, core.EvDecisionAnswered)); got != 1 {
+				t.Fatalf("decision_answered events = %d, want 1", got)
+			}
+		})
 	}
 }
 

@@ -132,7 +132,8 @@ type PendingDecision struct {
 
 type pending struct {
 	PendingDecision
-	reply chan levers.Response
+	reply     chan levers.Response
+	published bool
 }
 
 type issueState struct {
@@ -328,6 +329,7 @@ func (e *Engine) rehydrateArtifactReview(
 				ID: row.ID, IssueID: row.IssueID, Stage: row.Stage, D: d,
 				Context: row.Context, Review: row.Review, ReviewPolicy: row.ReviewPolicy,
 			},
+			published: true,
 		}
 	}
 	e.mu.Unlock()
@@ -1185,15 +1187,42 @@ func (e *Engine) notifyObservers(ev core.Event) {
 	}
 }
 
+var errDecisionPublicationCanceled = errors.New("decision publication canceled")
+
+func (e *Engine) registerPendingDecision(is *issueState, p *pending) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current, ok := e.issues[p.IssueID]
+	if !ok || current.killRequested || is.killRequested {
+		return false
+	}
+	e.pend[p.ID] = p
+	return true
+}
+
+func (e *Engine) unregisterPendingDecision(p *pending) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pend[p.ID] != p {
+		return false
+	}
+	delete(e.pend, p.ID)
+	return true
+}
+
 func (e *Engine) publishPendingDecision(p *pending, payload map[string]any) error {
 	e.mu.Lock()
-	e.pend[p.ID] = p
+	if e.pend[p.ID] != p {
+		e.mu.Unlock()
+		return errDecisionPublicationCanceled
+	}
 	ev, err := e.storeEvent(core.EvDecisionRequired, p.IssueID, payload)
 	if err != nil {
 		delete(e.pend, p.ID)
 		e.mu.Unlock()
 		return err
 	}
+	p.published = true
 	e.mu.Unlock()
 	e.notifyObservers(ev)
 	return nil
@@ -1211,13 +1240,17 @@ func (e *Engine) publishPendingPlanReview(
 		return err
 	}
 	e.mu.Lock()
-	e.pend[p.ID] = p
+	if e.pend[p.ID] != p {
+		e.mu.Unlock()
+		return errDecisionPublicationCanceled
+	}
 	events, err := e.cfg.Store.AppendBatch(requested, required)
 	if err != nil {
 		delete(e.pend, p.ID)
 		e.mu.Unlock()
 		return err
 	}
+	p.published = true
 	e.mu.Unlock()
 	for _, event := range events {
 		e.notifyObservers(event)
@@ -1225,17 +1258,31 @@ func (e *Engine) publishPendingPlanReview(
 	return nil
 }
 
+func (e *Engine) cancelPendingDecisionPublication(issueID string, decisionID int64) {
+	_ = e.cfg.Store.CloseDecision(decisionID, "killed")
+	_ = e.removePendingDecisionPublicationPages(issueID, decisionID)
+}
+
+func (e *Engine) removePendingDecisionPublicationPages(issueID string, decisionID int64) error {
+	paths := []string{
+		filepath.Join(e.issueDir(issueID), "decisions", fmt.Sprintf("%d.html", decisionID)),
+		filepath.Join(e.issueDir(issueID), decisionpage.FileName),
+	}
+	var removeErrors []error
+	for _, pagePath := range paths {
+		if err := os.Remove(pagePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			removeErrors = append(removeErrors, err)
+		}
+	}
+	e.refreshDecisionPage(issueID)
+	return errors.Join(removeErrors...)
+}
+
 func (e *Engine) rollbackPendingDecisionPublication(issueID string, decisionID int64) error {
 	if err := e.cfg.Store.DeleteDecision(decisionID); err != nil {
 		return err
 	}
-	archivePath := filepath.Join(e.issueDir(issueID), "decisions", fmt.Sprintf("%d.html", decisionID))
-	removeErr := os.Remove(archivePath)
-	if errors.Is(removeErr, os.ErrNotExist) {
-		removeErr = nil
-	}
-	e.refreshDecisionPage(issueID)
-	return removeErr
+	return e.removePendingDecisionPublicationPages(issueID, decisionID)
 }
 
 // issueDir is where an issue's attachments and "none"-stage artifacts live.
@@ -1878,7 +1925,7 @@ func (e *Engine) PendingDecisions() []PendingDecision {
 	defer e.mu.Unlock()
 	var out []PendingDecision
 	for _, row := range rows {
-		if p, ok := e.pend[row.ID]; ok {
+		if p, ok := e.pend[row.ID]; ok && p.published {
 			out = append(out, p.PendingDecision)
 		}
 	}
@@ -1889,11 +1936,17 @@ func (e *Engine) Answer(decisionID int64, response levers.Response) error {
 	return e.AnswerAs(decisionID, response, review.DefaultActorID)
 }
 
+func reportResolvedDecisionArchiveError(decisionID int64, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: decision %d resolved but archive update failed: %v\n", decisionID, err)
+	}
+}
+
 func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor string) error {
 	actor = review.NormalizeActor(actor)
 	e.mu.Lock()
 	p, ok := e.pend[decisionID]
-	if !ok {
+	if !ok || !p.published {
 		e.mu.Unlock()
 		return fmt.Errorf("no pending decision %d", decisionID)
 	}
@@ -1933,9 +1986,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 		} else {
 			e.scheduleArtifactContinuation(p.ID, p.IssueID, p.Stage, target, response, false)
 		}
-		if archiveErr != nil {
-			return fmt.Errorf("decision %d resolved but archive update failed: %w", p.ID, archiveErr)
-		}
+		reportResolvedDecisionArchiveError(p.ID, archiveErr)
 		return nil
 	}
 	delete(e.pend, decisionID)
@@ -1948,9 +1999,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
 		"decision_id": p.ID, "response": response})
 	p.reply <- response
-	if archiveErr != nil {
-		return fmt.Errorf("decision %d resolved but archive update failed: %w", p.ID, archiveErr)
-	}
+	reportResolvedDecisionArchiveError(p.ID, archiveErr)
 	return nil
 }
 
@@ -2102,7 +2151,15 @@ func (e *Engine) requestArtifactReview(
 		},
 		reply: make(chan levers.Response, 1),
 	}
+	if !e.registerPendingDecision(is, p) {
+		e.cancelPendingDecisionPublication(is.id, rowID)
+		return levers.Response{}, nil
+	}
 	if err := e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, &target, nil); err != nil {
+		if !e.unregisterPendingDecision(p) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
 		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
 		if cleanupErr != nil {
 			return levers.Response{}, fmt.Errorf("write artifact review decision page: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
@@ -2112,6 +2169,10 @@ func (e *Engine) requestArtifactReview(
 	if err := e.publishPendingDecision(
 		p, decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target),
 	); err != nil {
+		if errors.Is(err, errDecisionPublicationCanceled) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
 		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
 		if cleanupErr != nil {
 			return levers.Response{}, fmt.Errorf("append artifact review event: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
@@ -2208,7 +2269,15 @@ func (e *Engine) requestPlanReview(
 		},
 		reply: make(chan levers.Response, 1),
 	}
+	if !e.registerPendingDecision(is, p) {
+		e.cancelPendingDecisionPublication(is.id, rowID)
+		return levers.Response{}, nil
+	}
 	if err := e.writeDecisionPage(is, st.Name, rowID, d, &decisionContext, &target, nil); err != nil {
+		if !e.unregisterPendingDecision(p) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
 		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
 		if cleanupErr != nil {
 			return levers.Response{}, fmt.Errorf("write plan review decision page: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
@@ -2216,6 +2285,10 @@ func (e *Engine) requestPlanReview(
 		return levers.Response{}, fmt.Errorf("write plan review decision page: %w", err)
 	}
 	if err := e.publishPendingPlanReview(p, requested, decisionPayload); err != nil {
+		if errors.Is(err, errDecisionPublicationCanceled) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
 		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
 		if cleanupErr != nil {
 			return levers.Response{}, fmt.Errorf("append plan review decision: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
@@ -2615,7 +2688,15 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 		PendingDecision: PendingDecision{ID: rowID, IssueID: is.id, Stage: stage, D: d, Context: &decisionContext},
 		reply:           make(chan levers.Response, 1),
 	}
+	if !e.registerPendingDecision(is, p) {
+		e.cancelPendingDecisionPublication(is.id, rowID)
+		return levers.Response{}, nil
+	}
 	if err := e.writeDecisionPage(is, stage, rowID, d, &decisionContext, nil, nil); err != nil {
+		if !e.unregisterPendingDecision(p) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
 		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
 		if cleanupErr != nil {
 			return levers.Response{}, fmt.Errorf("write decision page: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
@@ -2623,6 +2704,10 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 		return levers.Response{}, fmt.Errorf("write decision page: %w", err)
 	}
 	if err := e.publishPendingDecision(p, decisionRequiredPayload(rowID, stage, d, decisionContext)); err != nil {
+		if errors.Is(err, errDecisionPublicationCanceled) {
+			e.cancelPendingDecisionPublication(is.id, rowID)
+			return levers.Response{}, nil
+		}
 		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
 		if cleanupErr != nil {
 			return levers.Response{}, fmt.Errorf("append decision event: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
