@@ -333,9 +333,6 @@ func (e *Engine) rehydrateArtifactReview(
 	e.mu.Unlock()
 	if row.Status == "pending" {
 		if err := e.writeDecisionPage(is, row.Stage, row.ID, d, row.Context, row.Review, nil); err != nil {
-			e.mu.Lock()
-			delete(e.pend, row.ID)
-			e.mu.Unlock()
 			return false, false, fmt.Errorf("rehydrate pending decision page: %w", err)
 		}
 	}
@@ -1199,6 +1196,32 @@ func (e *Engine) publishPendingDecision(p *pending, payload map[string]any) erro
 	}
 	e.mu.Unlock()
 	e.notifyObservers(ev)
+	return nil
+}
+
+func (e *Engine) publishPendingPlanReview(
+	p *pending, requestedPayload, decisionPayload map[string]any,
+) error {
+	requested, err := core.NewEvent(core.EvPlanReviewRequested, p.IssueID, requestedPayload)
+	if err != nil {
+		return err
+	}
+	required, err := core.NewEvent(core.EvDecisionRequired, p.IssueID, decisionPayload)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.pend[p.ID] = p
+	events, err := e.cfg.Store.AppendBatch(requested, required)
+	if err != nil {
+		delete(e.pend, p.ID)
+		e.mu.Unlock()
+		return err
+	}
+	e.mu.Unlock()
+	for _, event := range events {
+		e.notifyObservers(event)
+	}
 	return nil
 }
 
@@ -2147,11 +2170,11 @@ func (e *Engine) requestPlanReview(
 		return levers.Response{}, fmt.Errorf("request plan review: %w", err)
 	}
 	requested := planReviewPayload(rowID, st.Name, policy)
-	if _, err := e.appendEvent(core.EvPlanReviewRequested, is.id, requested); err != nil {
-		_ = e.cfg.Store.DeleteDecision(rowID)
-		return levers.Response{}, fmt.Errorf("append plan review request: %w", err)
-	}
 	if policy.PolicyAutoApproval {
+		if _, err := e.appendEvent(core.EvPlanReviewRequested, is.id, requested); err != nil {
+			_ = e.cfg.Store.DeleteDecision(rowID)
+			return levers.Response{}, fmt.Errorf("append plan review request: %w", err)
+		}
 		provenance := &review.ApprovalProvenance{
 			Kind: review.ApprovalPolicy, PolicyID: policy.PolicyID, PolicyVersion: policy.PolicyVersion,
 		}
@@ -2192,7 +2215,7 @@ func (e *Engine) requestPlanReview(
 		}
 		return levers.Response{}, fmt.Errorf("write plan review decision page: %w", err)
 	}
-	if err := e.publishPendingDecision(p, decisionPayload); err != nil {
+	if err := e.publishPendingPlanReview(p, requested, decisionPayload); err != nil {
 		cleanupErr := e.rollbackPendingDecisionPublication(is.id, rowID)
 		if cleanupErr != nil {
 			return levers.Response{}, fmt.Errorf("append plan review decision: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)

@@ -344,6 +344,41 @@ func (s *Store) Append(ev core.Event) (core.Event, error) {
 	return ev, nil
 }
 
+func (s *Store) AppendBatch(events ...core.Event) ([]core.Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, event := range events {
+		if s.failNextAppendType == event.Type {
+			s.failNextAppendType = ""
+			return nil, fmt.Errorf("injected %s append failure", event.Type)
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	nextSeq := s.seq
+	appended := append([]core.Event(nil), events...)
+	for i := range appended {
+		nextSeq++
+		appended[i].Seq = nextSeq
+		res, err := tx.Exec(
+			`INSERT INTO events(seq,type,issue_id,payload,at) VALUES(?,?,?,?,?)`,
+			appended[i].Seq, string(appended[i].Type), appended[i].IssueID,
+			string(appended[i].Payload), appended[i].At.Format(time.RFC3339Nano))
+		if err != nil {
+			return nil, err
+		}
+		appended[i].ID, _ = res.LastInsertId()
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.seq = nextSeq
+	return appended, nil
+}
+
 func (s *Store) FailNextAppendForTest(eventType core.EventType) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

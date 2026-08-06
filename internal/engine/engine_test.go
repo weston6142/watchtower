@@ -914,6 +914,66 @@ func TestPlanReviewAuditFailureBlocksExecution(t *testing.T) {
 	}
 }
 
+func TestPlanReviewPageFailureDoesNotPublishRequest(t *testing.T) {
+	f := planReviewFlow()
+	e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = planReviewSettings("manual-default", "1", false)
+	})
+	id, err := e.CreateIssue("unpublished review", "", f.Name, levers.Matrix{
+		"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+	}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextDecisionPageSnapshotForTest()
+	if err := e.StartIssue(context.Background(), id); err == nil ||
+		!strings.Contains(err.Error(), "write plan review decision page") {
+		t.Fatalf("StartIssue error = %v, want plan review page failure", err)
+	}
+	if pending := e.PendingDecisions(); len(pending) != 0 {
+		t.Fatalf("pending decisions = %#v", pending)
+	}
+	if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+		t.Fatalf("pending rows = %#v, err = %v", rows, err)
+	}
+	for _, event := range mustEvents(t, s, id) {
+		if event.Type == core.EvPlanReviewRequested || event.Type == core.EvDecisionRequired {
+			t.Fatalf("unpublished plan review emitted %s", event.Type)
+		}
+	}
+}
+
+func TestPlanReviewDecisionEventFailureDoesNotPublishRequest(t *testing.T) {
+	f := planReviewFlow()
+	e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = planReviewSettings("manual-default", "1", false)
+	})
+	id, err := e.CreateIssue("unpublished decision", "", f.Name, levers.Matrix{
+		"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+	}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextAppendForTest(core.EvDecisionRequired)
+	if err := e.StartIssue(context.Background(), id); err == nil ||
+		!strings.Contains(err.Error(), "append plan review decision") {
+		t.Fatalf("StartIssue error = %v, want plan review decision event failure", err)
+	}
+	if pending := e.PendingDecisions(); len(pending) != 0 {
+		t.Fatalf("pending decisions = %#v", pending)
+	}
+	if rows, err := s.PendingDecisionRows(); err != nil || len(rows) != 0 {
+		t.Fatalf("pending rows = %#v, err = %v", rows, err)
+	}
+	for _, event := range mustEvents(t, s, id) {
+		if event.Type == core.EvPlanReviewRequested || event.Type == core.EvDecisionRequired {
+			t.Fatalf("unpublished plan review emitted %s", event.Type)
+		}
+	}
+}
+
 func eventStage(t *testing.T, event core.Event) string {
 	t.Helper()
 	var payload struct {
@@ -3862,6 +3922,36 @@ func TestArtifactReviewSurvivesRestart(t *testing.T) {
 	}
 	if err := e2.Answer(plan.ID, levers.ChoiceResponse(0)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestArtifactReviewRemainsAnswerableWhenRecoveryPageWriteFails(t *testing.T) {
+	f := artifactGateFlow()
+	s, err := store.Open(filepath.Join(t.TempDir(), "review-page-recovery.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	dataDir := t.TempDir()
+	e1 := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	id, err := e1.CreateIssue("recover answer route", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = e1.StartIssue(context.Background(), id) }()
+	want := waitForPendingStage(t, e1, "spec")
+
+	s.FailNextDecisionPageSnapshotForTest()
+	restarted := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	pending := restarted.PendingDecisions()
+	if len(pending) != 1 || pending[0].ID != want.ID {
+		t.Fatalf("rehydrated decisions = %#v, want decision %d", pending, want.ID)
+	}
+	if err := restarted.Answer(want.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatalf("answer recovered decision: %v", err)
 	}
 }
 
