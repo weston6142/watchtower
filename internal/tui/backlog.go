@@ -62,7 +62,7 @@ func renderBacklog(entries []*projection.IssueView, sel, width, height int) stri
 
 // renderBacklogWithActive uses projected blockers for the detail pane while
 // retaining the raw dependency list for callers that do not have projection
-// state, such as static fixtures and edit prefill.
+// state, such as static fixtures.
 func renderBacklogWithActive(entries []*projection.IssueView, sel, width, height int, active map[string][]string) string {
 	keys := backlogKeys()
 	// The key hints are the one line that is the same at every size, and cutting

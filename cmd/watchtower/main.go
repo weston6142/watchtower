@@ -370,15 +370,14 @@ func main() {
 		fs.Parse(args)
 		c := mustDial(*data, *repoF)
 		defer c.Close()
+		r := mustDo(c, proto.Command{Op: "list_backlog"})
 		if *jsonOut {
-			r := mustDo(c, proto.Command{Op: "list_backlog"})
 			printJSON(struct {
 				Backlog []proto.BacklogItem `json:"backlog"`
 				Claims  []engine.Claim      `json:"claims"`
 			}{Backlog: r.Backlog, Claims: r.Claims})
 			break
 		}
-		r := mustDo(c, proto.Command{Op: "list_backlog"})
 		for _, item := range r.Backlog {
 			dependencySuffix := ""
 			if len(item.BlockedBy) > 0 {

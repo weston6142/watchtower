@@ -801,22 +801,19 @@ func TestListBacklogReportsActiveBlockersAndRawDependencies(t *testing.T) {
 	}
 	assertBacklog([]string{parentIDs[2], parentIDs[3], parentIDs[4]}, false)
 
-	for _, state := range []struct {
+	for _, transition := range []struct {
 		index int
-		value string
-	}{{2, store.IntegrationMerged}, {3, store.IntegrationMerged}, {4, store.IntegrationMerged}} {
-		if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parentIDs[state.index], State: state.value}); err != nil {
+		state string
+		want  []string
+	}{
+		{2, store.IntegrationMerged, []string{parentIDs[3], parentIDs[4]}},
+		{3, store.IntegrationMerged, []string{parentIDs[4]}},
+		{4, store.IntegrationMerged, nil},
+	} {
+		if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parentIDs[transition.index], State: transition.state}); err != nil {
 			t.Fatal(err)
 		}
-		want := append([]string(nil), parentIDs[state.index+1:]...)
-		if state.index == 2 {
-			want = []string{parentIDs[3], parentIDs[4]}
-		} else if state.index == 3 {
-			want = []string{parentIDs[4]}
-		} else {
-			want = nil
-		}
-		assertBacklog(want, len(want) == 0)
+		assertBacklog(transition.want, len(transition.want) == 0)
 	}
 	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parentIDs[2], State: store.IntegrationPreserved}); err != nil {
 		t.Fatal(err)
