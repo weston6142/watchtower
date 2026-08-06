@@ -151,6 +151,43 @@ func TestLoadReadsFileAndFillsGaps(t *testing.T) {
 	}
 }
 
+func TestLoadNamedChecks(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".watchtower")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`test_cmd: ./scripts/verify-all
+checks:
+  quick: './scripts/verify --changed'
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.CheckArgv["quick"], []string{"./scripts/verify", "--changed"}) {
+		t.Fatalf("quick check argv = %#v", cfg.CheckArgv["quick"])
+	}
+}
+
+func TestLoadRejectsMalformedNamedCheck(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".watchtower")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`checks:
+  quick: 'scripts/verify "unterminated'
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root); err == nil || !strings.Contains(err.Error(), "checks.quick") {
+		t.Fatalf("Load error = %v, want checks.quick context", err)
+	}
+}
+
 func TestLoadPreservesExplicitClaudeAndCodexOverrides(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".watchtower")

@@ -33,16 +33,17 @@ type AgentRef struct {
 }
 
 type Stage struct {
-	Name         string     `yaml:"name"`
-	Agents       []AgentRef `yaml:"agents"`
-	Parallel     bool       `yaml:"parallel"`
-	Completion   string     `yaml:"completion"`
-	Workspace    string     `yaml:"workspace"`
-	Gate         Gate       `yaml:"gate"`
-	Artifacts    []string   `yaml:"artifacts"`
-	Retries      int        `yaml:"retries"`
-	HeavySlot    bool       `yaml:"heavy_slot"`
-	MergeBarrier bool       `yaml:"merge_barrier"`
+	Name              string     `yaml:"name"`
+	Agents            []AgentRef `yaml:"agents"`
+	Parallel          bool       `yaml:"parallel"`
+	Completion        string     `yaml:"completion"`
+	Workspace         string     `yaml:"workspace"`
+	Gate              Gate       `yaml:"gate"`
+	Artifacts         []string   `yaml:"artifacts"`
+	Retries           int        `yaml:"retries"`
+	HeavySlot         bool       `yaml:"heavy_slot"`
+	MergeBarrier      bool       `yaml:"merge_barrier"`
+	VerifyAfterChange string     `yaml:"verify_after_change"`
 }
 
 type Flow struct {
@@ -77,6 +78,27 @@ func (f Flow) IntegrationStage() (Stage, int, bool) {
 func (f Flow) ValidateIntegration(testArgv []string) error {
 	if _, _, ok := f.IntegrationStage(); ok && len(testArgv) == 0 {
 		return fmt.Errorf("flow %q requires test_cmd because it has a merge barrier", f.Name)
+	}
+	return nil
+}
+
+func (f Flow) ValidateChecks(testArgv []string, checks map[string][]string) error {
+	for _, stage := range f.Stages {
+		name := stage.VerifyAfterChange
+		if name == "" {
+			continue
+		}
+		if name == "test_cmd" {
+			if len(testArgv) == 0 {
+				return fmt.Errorf(
+					"flow %q stage %q references missing test_cmd", f.Name, stage.Name)
+			}
+			continue
+		}
+		if len(checks[name]) == 0 {
+			return fmt.Errorf(
+				"flow %q stage %q references missing check %q", f.Name, stage.Name, name)
+		}
 	}
 	return nil
 }

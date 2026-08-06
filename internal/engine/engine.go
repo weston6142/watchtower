@@ -55,6 +55,7 @@ type Config struct {
 	Workspace          workspace.Provider
 	TokenBudget        int
 	PlannerBudget      plannerbudget.Profile
+	Checks             map[string][]string
 	OnLine             func(issueID, stage, line string)
 }
 

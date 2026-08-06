@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -31,6 +32,8 @@ type Config struct {
 	Codex         CodexConfig           `yaml:"codex"`
 	TestCmd       string                `yaml:"test_cmd"`
 	TestArgv      []string              `yaml:"-"`
+	Checks        map[string]string     `yaml:"checks"`
+	CheckArgv     map[string][]string   `yaml:"-"`
 	Theme         string                `yaml:"theme"`
 	Pull          bool                  `yaml:"pull"`
 	Push          bool                  `yaml:"push"`
@@ -174,6 +177,28 @@ func Load(repoRoot string) (Config, error) {
 	cfg.TestArgv, err = ParseCommand(cfg.TestCmd)
 	if err != nil {
 		return Config{}, fmt.Errorf("%s test_cmd: %w", ConfigPath(repoRoot), err)
+	}
+	cfg.CheckArgv = make(map[string][]string, len(cfg.Checks))
+	names := make([]string, 0, len(cfg.Checks))
+	for name := range cfg.Checks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			return Config{}, fmt.Errorf("%s checks: check names must not be blank", ConfigPath(repoRoot))
+		}
+		if name == "test_cmd" {
+			return Config{}, fmt.Errorf("%s checks.test_cmd: name is reserved", ConfigPath(repoRoot))
+		}
+		argv, parseErr := ParseCommand(cfg.Checks[name])
+		if parseErr != nil {
+			return Config{}, fmt.Errorf("%s checks.%s: %w", ConfigPath(repoRoot), name, parseErr)
+		}
+		if len(argv) == 0 {
+			return Config{}, fmt.Errorf("%s checks.%s: command is required", ConfigPath(repoRoot), name)
+		}
+		cfg.CheckArgv[name] = argv
 	}
 	return cfg, nil
 }

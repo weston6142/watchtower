@@ -774,6 +774,9 @@ func runDaemon(args []string) {
 		if err := configuredFlow.ValidateIntegration(testArgv); err != nil {
 			fatal(err)
 		}
+		if err := configuredFlow.ValidateChecks(testArgv, cfg.CheckArgv); err != nil {
+			fatal(err)
+		}
 	}
 	if os.Getenv("WATCHTOWER_FAKE") == "1" {
 		*runnerKind = "fake"
@@ -854,6 +857,7 @@ func runDaemon(args []string) {
 		Flows: flows, DataDir: filepath.Join(data, "issues"),
 		Workspace: ws, TokenBudget: *budget,
 		PlannerBudget:      cfg.PlannerBudget,
+		Checks:             cfg.CheckArgv,
 		PlanReview:         cfg.PlanReviewSettings(),
 		DecisionIdentities: decisionIdentities,
 		Marshal:            seq, Train: train,

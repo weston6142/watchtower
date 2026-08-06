@@ -163,6 +163,52 @@ stages:
 	}
 }
 
+func TestLoadStageVerificationReference(t *testing.T) {
+	f, err := loadBytes([]byte(`name: checks
+stages:
+  - name: review
+    agents: [{package: reviewer}]
+    gate: auto
+    verify_after_change: quick
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Stages[0].VerifyAfterChange; got != "quick" {
+		t.Fatalf("verify_after_change = %q, want quick", got)
+	}
+}
+
+func TestValidateChecks(t *testing.T) {
+	f, err := loadBytes([]byte(`name: checks
+stages:
+  - name: review
+    agents: [{package: reviewer}]
+    gate: auto
+    verify_after_change: quick
+  - name: final-review
+    agents: [{package: reviewer}]
+    gate: auto
+    verify_after_change: test_cmd
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ValidateChecks([]string{"scripts/verify"}, map[string][]string{
+		"quick": {"scripts/verify", "--changed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ValidateChecks([]string{"scripts/verify"}, nil); err == nil ||
+		!strings.Contains(err.Error(), `stage "review" references missing check "quick"`) {
+		t.Fatalf("missing named check error = %v", err)
+	}
+	if err := f.ValidateChecks(nil, map[string][]string{"quick": {"scripts/verify"}}); err == nil ||
+		!strings.Contains(err.Error(), `stage "final-review" references missing test_cmd`) {
+		t.Fatalf("missing test_cmd error = %v", err)
+	}
+}
+
 func TestShippedDefaultFlowSatisfiesIntegrationContract(t *testing.T) {
 	f, err := Load("../scaffold/defaults/flows/default.yaml")
 	if err != nil {
