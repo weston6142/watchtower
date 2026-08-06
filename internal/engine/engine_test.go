@@ -207,6 +207,7 @@ func TestRehydrateKeepsPausedRunPausedAndIdempotent(t *testing.T) {
 	if starts.Load() != 1 {
 		t.Fatalf("resume starts = %d, want 1", starts.Load())
 	}
+	waitForEvent(t, s, "GH-36", core.EvIssueCompleted)
 }
 
 func TestRehydrateActiveWorkerLossRemainsRetryableFailure(t *testing.T) {
@@ -2606,12 +2607,9 @@ func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
 	id, _ := e.CreateIssue("a", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()
-	for {
-		if ds := e.PendingDecisions(); len(ds) == 1 {
-			e.Answer(ds[0].ID, levers.ChoiceResponse(0))
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	pending := waitForPendingStage(t, e, "spec")
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
 	}
 	if err := <-errC; err != nil {
 		t.Fatal(err)
