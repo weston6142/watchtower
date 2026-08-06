@@ -348,7 +348,7 @@ func TestModalPriorityArrowKeys(t *testing.T) {
 	}
 }
 
-// Guards the removal of priority from setFieldValue/fieldValue: text cannot
+// Guards the removal of priority from the modal field mapping: text cannot
 // land in the field at all, so a bad priority is unreachable, not just rejected.
 func TestModalPriorityIgnoresTextInput(t *testing.T) {
 	m := openPriorityField(t)

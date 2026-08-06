@@ -52,12 +52,6 @@ func (e *modalEditor) handle(key string) bool {
 	return true
 }
 
-func (e modalEditor) caretText() string {
-	runes := []rune(e.Value)
-	caret := max(0, min(e.Caret, len(runes)))
-	return string(runes[:caret]) + "▏" + string(runes[caret:])
-}
-
 func (e modalEditor) styledCaretText() string {
 	runes := []rune(e.Value)
 	caret := max(0, min(e.Caret, len(runes)))
@@ -124,8 +118,8 @@ func (e *modalEditor) moveVertical(runes []rune, delta int) {
 	e.Caret = targetStart + min(column, targetEnd-targetStart)
 }
 
-// modalState is intentionally small: the control room only needs plain rune
-// input for a title and a few optional text fields.
+// modalState holds the modal payload fields and their transient editor state.
+// Editor state stays local to the TUI and is never included in commands.
 type modalState struct {
 	Title       string
 	Body        string
@@ -190,10 +184,6 @@ func (m *modalState) editorForField(field int) (*modalEditor, bool) {
 		m.editorReady[field] = true
 	}
 	return &m.editors[field], true
-}
-
-func (m *modalState) setFieldValue(value string) {
-	m.setFieldValueFor(m.Field, value)
 }
 
 func (m *modalState) setFieldValueFor(field int, value string) {
