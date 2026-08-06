@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -410,6 +411,60 @@ func TestClaimIssueRequiresDurablyMergedDependencies(t *testing.T) {
 	if _, err := e.ClaimIssue(child); err != nil {
 		t.Fatalf("claim after durable merge: %v", err)
 	}
+}
+
+func TestClaimBlockersTracksCurrentIntegrationStates(t *testing.T) {
+	e, st, _, _ := newClaimTestEngine(t)
+	child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	parents := make([]string, 0, 5)
+	for _, title := range []string{"merged", "cleanup", "preserved", "unknown", "missing"} {
+		parent, err := e.DraftIssue(title, "", "default", "regular", levers.Matrix{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parents = append(parents, parent)
+	}
+	if err := e.SetDependencies(child, parents); err != nil {
+		t.Fatal(err)
+	}
+	for id, state := range map[string]string{
+		parents[0]: store.IntegrationMerged,
+		parents[1]: store.IntegrationCleanupNeeded,
+		parents[2]: store.IntegrationPreserved,
+		parents[3]: "mystery",
+	} {
+		if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: id, State: state}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertBlockers := func(want ...string) {
+		t.Helper()
+		got, err := e.ClaimBlockers(child)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(want) || (len(want) > 0 && !reflect.DeepEqual(got, want)) {
+			t.Fatalf("ClaimBlockers = %v, want %v", got, want)
+		}
+	}
+	assertBlockers(parents[2], parents[3], parents[4])
+
+	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parents[2], State: store.IntegrationMerged}); err != nil {
+		t.Fatal(err)
+	}
+	assertBlockers(parents[3], parents[4])
+	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parents[3], State: store.IntegrationMerged}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parents[4], State: store.IntegrationMerged}); err != nil {
+		t.Fatal(err)
+	}
+	assertBlockers()
+
+	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parents[0], State: store.IntegrationPreserved}); err != nil {
+		t.Fatal(err)
+	}
+	assertBlockers(parents[0])
 }
 
 type failingClaimWorkspace struct{}

@@ -22,6 +22,23 @@ func Normalize(ids []string) []string {
 	return out
 }
 
+// ActiveBlockers keeps dependency IDs whose resolver cannot prove completion.
+// It preserves the caller's order and returns lookup errors unchanged so a
+// caller never turns incomplete evidence into an unblocked result.
+func ActiveBlockers(ids []string, satisfied func(string) (bool, error)) ([]string, error) {
+	active := make([]string, 0, len(ids))
+	for _, id := range ids {
+		complete, err := satisfied(id)
+		if err != nil {
+			return nil, err
+		}
+		if !complete {
+			active = append(active, id)
+		}
+	}
+	return active, nil
+}
+
 // Graph maps each known issue to the issues that must merge before it starts.
 type Graph map[string][]string
 

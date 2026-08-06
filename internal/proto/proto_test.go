@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -736,6 +737,91 @@ func TestClaimProtocolReturnsStructuredReadyBlockedAndResumableTasks(t *testing.
 	if !released.OK {
 		t.Fatalf("release_claim = %+v", released)
 	}
+}
+
+func TestListBacklogReportsActiveBlockersAndRawDependencies(t *testing.T) {
+	st, err := store.Open("file:list-backlog-active-blockers?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	fl := flow.Flow{Name: "default", Stages: []flow.Stage{{Name: "merge-verification"}}}
+	eng := engine.New(engine.Config{
+		Store: st, Runner: &runner.FakeRunner{}, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{"default": fl}, DecisionIdentities: protoDecisionIdentities(fl), DataDir: t.TempDir(),
+	})
+	parentIDs := make([]string, 0, 5)
+	for _, title := range []string{"merged", "cleanup", "preserved", "unknown", "missing"} {
+		parent, err := eng.DraftIssue(title, "", "default", "regular", levers.Matrix{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parentIDs = append(parentIDs, parent)
+	}
+	child, err := eng.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.SetDependencies(child, parentIDs); err != nil {
+		t.Fatal(err)
+	}
+	for id, state := range map[string]string{
+		parentIDs[0]: store.IntegrationMerged,
+		parentIDs[1]: store.IntegrationCleanupNeeded,
+		parentIDs[2]: store.IntegrationPreserved,
+		parentIDs[3]: "mystery",
+	} {
+		if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: id, State: state}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := NewServer(eng, st)
+	assertBacklog := func(wantBlockers []string, wantClaimable bool) {
+		t.Helper()
+		response := srv.exec(Command{Op: "list_backlog"})
+		if !response.OK {
+			t.Fatalf("list_backlog = %+v", response)
+		}
+		var item *BacklogItem
+		for i := range response.Backlog {
+			if response.Backlog[i].Issue.ID == child {
+				item = &response.Backlog[i]
+				break
+			}
+		}
+		if item == nil {
+			t.Fatalf("child %s missing from backlog: %+v", child, response.Backlog)
+		}
+		if len(item.BlockedBy) != len(wantBlockers) || (len(wantBlockers) > 0 && !reflect.DeepEqual(item.BlockedBy, wantBlockers)) || item.Claimable != wantClaimable {
+			t.Fatalf("child backlog item = %+v, want blockers %v claimable %v", *item, wantBlockers, wantClaimable)
+		}
+		if !reflect.DeepEqual(item.Issue.DependsOn, parentIDs) {
+			t.Fatalf("raw dependencies = %v, want %v", item.Issue.DependsOn, parentIDs)
+		}
+	}
+	assertBacklog([]string{parentIDs[2], parentIDs[3], parentIDs[4]}, false)
+
+	for _, state := range []struct {
+		index int
+		value string
+	}{{2, store.IntegrationMerged}, {3, store.IntegrationMerged}, {4, store.IntegrationMerged}} {
+		if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parentIDs[state.index], State: state.value}); err != nil {
+			t.Fatal(err)
+		}
+		want := append([]string(nil), parentIDs[state.index+1:]...)
+		if state.index == 2 {
+			want = []string{parentIDs[3], parentIDs[4]}
+		} else if state.index == 3 {
+			want = []string{parentIDs[4]}
+		} else {
+			want = nil
+		}
+		assertBacklog(want, len(want) == 0)
+	}
+	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parentIDs[2], State: store.IntegrationPreserved}); err != nil {
+		t.Fatal(err)
+	}
+	assertBacklog([]string{parentIDs[2]}, false)
 }
 
 func TestCanResetAndShutdownFlushesResponse(t *testing.T) {
