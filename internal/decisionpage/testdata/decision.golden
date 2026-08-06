@@ -198,29 +198,29 @@
       <section class="brief-block">
         <div class="hd">What each choice changes</div>
         <div class="answers">
-          
+
             <div class="ans rec">
               <span class="key">1</span>
               <div><span class="label">Gate behind version check</span><br><span class="oneliner">Old daemons ignore the new column.</span></div>
             </div>
-          
+
             <div class="ans">
               <span class="key">2</span>
               <div><span class="label">Apply immediately</span><br><span class="oneliner">Daemons older than 0.9 crash on restart.</span></div>
             </div>
-          
+
             <div class="ans">
               <span class="key">f</span>
               <div><span class="label">Add feedback</span><br><span class="oneliner">The requesting agent receives your instruction instead.</span></div>
             </div>
-          
+
         </div>
       </section>
       <section class="brief-block">
         <div class="hd">Already done and proven</div>
-        
+
           <p class="proof">Migration tests pass (14/14).<span class="cite">— go test ./internal/store</span></p>
-        
+
       </section>
       <section class="brief-block">
         <div class="hd">After you answer</div>
@@ -242,10 +242,10 @@
       <div class="files"><span class="ok">✓</span> internal/engine/engine.go <span class="add">+142</span> <span class="del">−18</span><br><span class="ok">✓</span> internal/store/migrate.go <span class="add">+96</span><br></div></div>
   </div></div>
 
-    
+
       <div class="sect"><div class="hd">Full documents</div>
       <span class="doc">plan.md</span> <span class="doc">spec.md</span> <span class="doc">diff.patch</span> </div>
-    
+
   
 
         </div>
