@@ -43,12 +43,30 @@ func TestDecisionPageWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = e.StartIssue(context.Background(), id) }()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = e.StartIssue(context.Background(), id)
+	}()
 
 	p := waitForDecisionPagePending(t, e, id, "execute")
 	dir := filepath.Join(e.cfg.DataDir, id)
 	perDecision := filepath.Join(dir, "decisions", fmt.Sprintf("%d.html", p.ID))
 	latest := filepath.Join(dir, "decision.html")
+	pageDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(pageDeadline) {
+		ready := true
+		for _, file := range []string{perDecision, latest} {
+			if _, err := os.Stat(file); err != nil {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	for _, file := range []string{perDecision, latest} {
 		var body []byte
 		var readErr error
@@ -101,6 +119,7 @@ func TestDecisionPageWritten(t *testing.T) {
 				t.Errorf("answered page claims continuation already happened: %s", page)
 			}
 			waitForEvent(t, e.cfg.Store, id, core.EvIssueCompleted)
+			<-done
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
