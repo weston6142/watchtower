@@ -401,7 +401,9 @@ func (e *Engine) rebuildResolvedDecisionPages(
 // decisions whose stage goroutine died with the old process are closed as
 // "orphaned"; retrying the stage re-raises them. Paused and killed issues are
 // rehydrated the same way: a pause gate with no parked goroutine is
-// meaningless. Idempotent.
+// meaningless. Resolved decision archives that are missing or still marked
+// pending are repaired from their frozen page snapshots; already-resolved
+// archives are preserved. Idempotent.
 //
 // TODO: worktrees acquired by the previous daemon are never released; a
 // retried stage acquires a fresh one and the old lease leaks.
@@ -1920,6 +1922,9 @@ func matrixStrings(m levers.Matrix) map[string]string {
 	return values
 }
 
+// PendingDecisions returns only decisions whose page and required event have
+// both been published; rows inside the fail-closed publication window stay
+// hidden.
 func (e *Engine) PendingDecisions() []PendingDecision {
 	rows, err := e.cfg.Store.PendingDecisionRows()
 	if err != nil {

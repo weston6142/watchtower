@@ -24,7 +24,8 @@ const (
 	DecisionFreeform DecisionKind = "freeform"
 )
 
-// Briefing list caps, shared by protocol normalization and page rendering.
+// Briefing list caps bound current proof and excerpt rendering plus legacy win
+// normalization.
 const (
 	MaxBriefingWins     = 5
 	MaxBriefingProof    = 5
@@ -43,8 +44,10 @@ type BriefingExcerpt struct {
 	Cite string `json:"cite"`
 }
 
-// Briefing is optional agent-authored context for the decision HTML page.
-// Every field may be empty; the page renders what it gets.
+// Briefing is optional agent-authored evidence for the decision HTML page.
+// Proof and Excerpts require complete citation pairs when present. OptionDetails,
+// Wins, and NextAction remain only for legacy markers and persisted rows; current
+// pages derive option outcomes and continuation from the decision and engine.
 type Briefing struct {
 	OptionDetails  []string          `json:"option_details"`
 	Wins           []string          `json:"wins"`
@@ -56,6 +59,9 @@ type Briefing struct {
 	DiagramCaption string            `json:"diagram_caption"`
 }
 
+// Decision is a typed operator choice or freeform prompt. EngineContinuation
+// is trusted workflow copy excluded from agent-facing JSON, while
+// RequiresOption rejects freeform responses for engine-owned gates.
 type Decision struct {
 	Kind                DecisionKind
 	Question            string

@@ -1,5 +1,6 @@
-// Package decisionpage renders a self-contained HTML briefing for a pending
-// watchtower decision, or a progress-only view when no decision is pending.
+// Package decisionpage renders a self-contained HTML briefing for a pending or
+// resolved watchtower decision, or a progress-only view when no decision is
+// selected.
 package decisionpage
 
 import (
@@ -75,6 +76,9 @@ type FileRow struct {
 	InBounds bool
 }
 
+// Briefing is the normalized actionable breakdown rendered for one decision.
+// Missing proof or a rejected diagram is represented explicitly instead of
+// being inferred from other prose.
 type Briefing struct {
 	Question          string
 	AgentLabel        string
@@ -95,6 +99,9 @@ type Briefing struct {
 	EvidenceDocs      []string
 }
 
+// PageData is the complete decision-page render model. DecisionStage pins an
+// archived briefing to the floor that raised it even after CurrentStage moves;
+// PolicyApproved and AutoResolved distinguish resolved outcomes.
 type PageData struct {
 	IssueID         string
 	Title           string
@@ -121,6 +128,8 @@ var tmplFS embed.FS
 
 var page = template.Must(template.ParseFS(tmplFS, "page.tmpl.html"))
 
+// Render executes the embedded page template. A briefing without an explicit
+// decision stage is placed on the current stage for legacy snapshots.
 func Render(d PageData) ([]byte, error) {
 	if d.Briefing != nil && d.DecisionStage == "" {
 		d.DecisionStage = d.CurrentStage

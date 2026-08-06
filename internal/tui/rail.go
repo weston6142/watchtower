@@ -401,8 +401,8 @@ func orderedLeverStages(levers map[string]string) []string {
 
 // renderToast draws the raised decision as a self-contained card: banded
 // header (tag, title, reversibility verdict), question + why, bordered
-// selectable choice rows and a note row, with the ★ recommendation, and a
-// chip keybar. sel is the choice or note row the j/k cursor is on.
+// selectable choice rows, an optional note row, the ★ recommendation, and a
+// chip keybar. sel is the choice or optional note row the j/k cursor is on.
 func renderToast(d projection.DecisionView, id Identity, sel, streak, width int) string {
 	inner := max(20, width-8)
 	t := activeTheme

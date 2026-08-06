@@ -45,6 +45,8 @@ type IssueView struct {
 	PlannerOutcome string
 }
 
+// DecisionView is the projected operator-facing decision. RequiresOption
+// suppresses freeform response affordances for engine-owned decisions.
 type DecisionView struct {
 	ID                  int64
 	IssueID             string

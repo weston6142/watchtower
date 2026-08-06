@@ -136,6 +136,9 @@ type StageCheckpoint struct {
 	CreatedAt   time.Time
 }
 
+// DecisionRow is the durable decision record. RequiresOption and
+// EngineContinuation are trusted engine metadata; PageSnapshot freezes the
+// decision-time HTML inputs used to finalize or repair its archive.
 type DecisionRow struct {
 	ID                  int64
 	IssueID             string
@@ -344,6 +347,8 @@ func (s *Store) Append(ev core.Event) (core.Event, error) {
 	return ev, nil
 }
 
+// AppendBatch assigns consecutive sequence numbers and appends all events in
+// one transaction, advancing the in-memory sequence only after commit.
 func (s *Store) AppendBatch(events ...core.Event) ([]core.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -379,6 +384,7 @@ func (s *Store) AppendBatch(events ...core.Event) ([]core.Event, error) {
 	return appended, nil
 }
 
+// FailNextAppendForTest injects one append failure for the selected event type.
 func (s *Store) FailNextAppendForTest(eventType core.EventType) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -985,6 +991,8 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	return insertDecision(s.db, d)
 }
 
+// SaveDecisionPageSnapshot freezes the first page snapshot stored for a
+// decision; later calls leave that decision-time snapshot unchanged.
 func (s *Store) SaveDecisionPageSnapshot(id int64, snapshot decisionpage.PageData) error {
 	encoded, err := json.Marshal(snapshot)
 	if err != nil {
@@ -1003,6 +1011,7 @@ func (s *Store) SaveDecisionPageSnapshot(id int64, snapshot decisionpage.PageDat
 	return err
 }
 
+// FailNextDecisionPageSnapshotForTest injects one snapshot persistence failure.
 func (s *Store) FailNextDecisionPageSnapshotForTest() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1289,6 +1298,7 @@ func (s *Store) ArtifactReviewRows(issueID string) ([]DecisionRow, error) {
 	return filtered, nil
 }
 
+// AnswerDecision records a typed response, status, and current UTC answer time.
 func (s *Store) AnswerDecision(id int64, response levers.Response, status string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1438,6 +1448,7 @@ func (s *Store) AllDecisionRows() ([]DecisionRow, error) {
 	return s.decisionRows(``)
 }
 
+// DecisionByID returns one decision row and reports whether it exists.
 func (s *Store) DecisionByID(id int64) (DecisionRow, bool, error) {
 	rows, err := s.decisionRows(`WHERE id=?`, id)
 	if err != nil {
