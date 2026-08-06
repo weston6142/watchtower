@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, question TEXT, options TEXT,
   recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
   answered_by TEXT, blocking_cost INTEGER, created_at TEXT, answered_at TEXT,
-  briefing TEXT);
+  briefing TEXT, page_snapshot TEXT);
 CREATE TABLE IF NOT EXISTS proposals(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, title TEXT, body TEXT,
   status TEXT, depends_on TEXT NOT NULL DEFAULT '[]',
@@ -150,7 +150,9 @@ type DecisionRow struct {
 	Why                 string
 	Consequences        []string
 	Reversible          string
+	EngineContinuation  string
 	Briefing            *levers.Briefing
+	PageSnapshot        *decisionpage.PageData
 	Context             *decision.DecisionContext
 	Review              *review.Target
 	ReviewPolicy        *review.ResolvedPolicy
@@ -275,6 +277,10 @@ func Open(path string) (*Store, error) {
 	}
 	if err := ensureColumn(db, "decisions", "briefing",
 		`ALTER TABLE decisions ADD COLUMN briefing TEXT`); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(db, "decisions", "page_snapshot",
+		`ALTER TABLE decisions ADD COLUMN page_snapshot TEXT`); err != nil {
 		return nil, err
 	}
 	if err := ensureColumn(db, "issues", "plan_review_policy",
@@ -784,6 +790,7 @@ type decisionEvidence struct {
 	Why                 string                     `json:"why"`
 	Consequences        []string                   `json:"consequences"`
 	Reversible          string                     `json:"reversible"`
+	EngineContinuation  string                     `json:"engine_continuation,omitempty"`
 	Context             *decision.DecisionContext  `json:"context,omitempty"`
 	Review              *review.Target             `json:"review,omitempty"`
 	ReviewPolicy        *review.ResolvedPolicy     `json:"review_policy,omitempty"`
@@ -871,7 +878,8 @@ func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 		AllowFreeform: d.AllowFreeform, RequiresOption: d.RequiresOption,
 		Importance: d.Importance, Paths: d.Paths,
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
-		Context: d.Context, Review: target, ReviewPolicy: d.ReviewPolicy, Approval: d.Approval,
+		EngineContinuation: d.EngineContinuation,
+		Context:            d.Context, Review: target, ReviewPolicy: d.ReviewPolicy, Approval: d.Approval,
 	})
 	if err != nil {
 		return 0, err
@@ -905,11 +913,19 @@ func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 		}
 		briefing = string(encoded)
 	}
+	pageSnapshot := ""
+	if d.PageSnapshot != nil {
+		encoded, err := json.Marshal(d.PageSnapshot)
+		if err != nil {
+			return 0, err
+		}
+		pageSnapshot = string(encoded)
+	}
 	res, err := exec.Exec(
-		`INSERT INTO decisions(issue_id,question,options,recommended,lever,status,answer,answered_by,blocking_cost,created_at,evidence,answered_at,briefing)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO decisions(issue_id,question,options,recommended,lever,status,answer,answered_by,blocking_cost,created_at,evidence,answered_at,briefing,page_snapshot)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		d.IssueID, d.Question, string(opts), d.Recommended, d.Stage, d.Status,
-		answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), string(evidence), answeredAt, briefing)
+		answer, "", d.BlockingCost, d.CreatedAt.Format(time.RFC3339Nano), string(evidence), answeredAt, briefing, pageSnapshot)
 	if err != nil {
 		return 0, err
 	}
@@ -920,6 +936,20 @@ func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return insertDecision(s.db, d)
+}
+
+func (s *Store) SaveDecisionPageSnapshot(id int64, snapshot decisionpage.PageData) error {
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err = s.db.Exec(
+		`UPDATE decisions SET page_snapshot=? WHERE id=? AND (page_snapshot IS NULL OR page_snapshot='')`,
+		string(encoded), id,
+	)
+	return err
 }
 
 // FailNextArtifactReviewResolutionForTest injects one transactional failure
@@ -1231,12 +1261,12 @@ func (s *Store) CloseDecision(id int64, status string) error {
 	return err
 }
 
-func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
+func (s *Store) decisionRows(where string, args ...any) ([]DecisionRow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(
-		`SELECT id,issue_id,lever,question,options,recommended,evidence,status,answer,blocking_cost,created_at,answered_at,briefing
-		 FROM decisions ` + where + ` ORDER BY blocking_cost DESC, created_at ASC`)
+		`SELECT id,issue_id,lever,question,options,recommended,evidence,status,answer,blocking_cost,created_at,answered_at,briefing,page_snapshot
+		 FROM decisions `+where+` ORDER BY blocking_cost DESC, created_at ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1245,11 +1275,11 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 	for rows.Next() {
 		var d DecisionRow
 		var opts, evidence, answer, created string
-		var answeredAt, briefing sql.NullString
+		var answeredAt, briefing, pageSnapshot sql.NullString
 		// The legacy Plan 1 schema calls the stage column "lever"; keep using
 		// it as the persisted stage name without a migration.
 		if err := rows.Scan(&d.ID, &d.IssueID, &d.Stage, &d.Question, &opts,
-			&d.Recommended, &evidence, &d.Status, &answer, &d.BlockingCost, &created, &answeredAt, &briefing); err != nil {
+			&d.Recommended, &evidence, &d.Status, &answer, &d.BlockingCost, &created, &answeredAt, &briefing, &pageSnapshot); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(opts), &d.Options); err != nil {
@@ -1271,6 +1301,7 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 			d.Importance, d.Paths = stored.Importance, stored.Paths
 			d.Why, d.Consequences, d.Reversible =
 				stored.Why, stored.Consequences, stored.Reversible
+			d.EngineContinuation = stored.EngineContinuation
 			if stored.Review != nil {
 				canonical, err := stored.Review.Canonical()
 				if err != nil {
@@ -1308,6 +1339,13 @@ func (s *Store) decisionRows(where string) ([]DecisionRow, error) {
 			}
 			d.Briefing = &stored
 		}
+		if pageSnapshot.Valid && pageSnapshot.String != "" && pageSnapshot.String != "null" {
+			var stored decisionpage.PageData
+			if err := json.Unmarshal([]byte(pageSnapshot.String), &stored); err != nil {
+				return nil, fmt.Errorf("decode decision page snapshot: %w", err)
+			}
+			d.PageSnapshot = &stored
+		}
 		if d.Kind == "" {
 			d.Kind = levers.DecisionChoice
 		}
@@ -1341,6 +1379,17 @@ func (s *Store) PendingDecisionRows() ([]DecisionRow, error) {
 
 func (s *Store) AllDecisionRows() ([]DecisionRow, error) {
 	return s.decisionRows(``)
+}
+
+func (s *Store) DecisionByID(id int64) (DecisionRow, bool, error) {
+	rows, err := s.decisionRows(`WHERE id=?`, id)
+	if err != nil {
+		return DecisionRow{}, false, err
+	}
+	if len(rows) == 0 {
+		return DecisionRow{}, false, nil
+	}
+	return rows[0], true, nil
 }
 
 func (s *Store) InsertProposal(issueID, title, body string, dependsOn []string) (int64, error) {

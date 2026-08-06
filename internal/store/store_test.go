@@ -14,6 +14,7 @@ import (
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
+	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -222,6 +223,49 @@ func TestLegacyIssueDefaultsToManualPlanReview(t *testing.T) {
 	if policy.Mode != "regular" || !policy.HumanRequired || policy.PolicyAutoApproval ||
 		policy.PolicyID == "" || policy.PolicyVersion == "" {
 		t.Fatalf("legacy plan review policy = %+v", policy)
+	}
+}
+
+func TestLegacyDecisionTableAddsPageSnapshot(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "legacy-decision.db")
+	db, err := sql.Open("sqlite", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE decisions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, question TEXT, options TEXT,
+  recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
+  answered_by TEXT, blocking_cost INTEGER, created_at TEXT, answered_at TEXT,
+  briefing TEXT)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO decisions(issue_id,question,options,recommended,evidence,lever,status,answer,blocking_cost,created_at)
+VALUES(?,?,?,?,?,?,?,?,?,?)`, "GH-1", "Continue?", `[]`, 0, `{}`, "execute", "pending", "", 1, createdAt); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 || rows[0].PageSnapshot != nil {
+		t.Fatalf("legacy decisions = %#v, err = %v", rows, err)
+	}
+	snapshot := decisionpage.PageData{IssueID: "GH-1", Title: "Decision-time title"}
+	if err := s.SaveDecisionPageSnapshot(rows[0].ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.AllDecisionRows()
+	if err != nil || len(rows) != 1 || rows[0].PageSnapshot == nil || rows[0].PageSnapshot.Title != snapshot.Title {
+		t.Fatalf("migrated decisions = %#v, err = %v", rows, err)
 	}
 }
 
@@ -725,6 +769,67 @@ func TestDecisionRequiresOptionRoundTrip(t *testing.T) {
 	}
 	if !rows[0].RequiresOption {
 		t.Fatalf("decision response requirement was lost: %#v", rows[0])
+	}
+}
+
+func TestDecisionRecoveryMetadataRoundTrip(t *testing.T) {
+	s, err := Open("file:decision-recovery-metadata?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	snapshot := decisionpage.PageData{
+		IssueID: "GH-1", Title: "Decision-time title", CurrentStage: "execute",
+		DecisionStage: "execute", StageIndex: 1, StageTotal: 1,
+	}
+	_, err = s.InsertDecision(DecisionRow{
+		IssueID: "GH-1", Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "abort"}, Recommended: 0,
+		EngineContinuation: "Continue to resume execute, or abort to stop before execute starts.",
+		PageSnapshot:       &snapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	if rows[0].EngineContinuation != "Continue to resume execute, or abort to stop before execute starts." {
+		t.Fatalf("engine continuation = %q", rows[0].EngineContinuation)
+	}
+	if rows[0].PageSnapshot == nil || !reflect.DeepEqual(*rows[0].PageSnapshot, snapshot) {
+		t.Fatalf("page snapshot = %#v, want %#v", rows[0].PageSnapshot, snapshot)
+	}
+}
+
+func TestDecisionPageSnapshotIsWriteOnce(t *testing.T) {
+	s, err := Open("file:decision-page-snapshot-write-once?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	id, err := s.InsertDecision(DecisionRow{IssueID: "GH-1", Question: "Continue?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := decisionpage.PageData{IssueID: "GH-1", Title: "Decision-time title"}
+	if err := s.SaveDecisionPageSnapshot(id, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveDecisionPageSnapshot(id, decisionpage.PageData{IssueID: "GH-1", Title: "Later title"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.AllDecisionRows()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %#v, err = %v", rows, err)
+	}
+	if rows[0].PageSnapshot == nil || rows[0].PageSnapshot.Title != first.Title {
+		t.Fatalf("page snapshot = %#v, want first snapshot %#v", rows[0].PageSnapshot, first)
 	}
 }
 

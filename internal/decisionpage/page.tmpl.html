@@ -97,7 +97,7 @@
     }
   </style>
 </head>
-<body>
+<body data-decision-state="{{if .Answered}}resolved{{else}}pending{{end}}">
   <div class="wrap">
     <div class="lane-head">
       <h1>{{.IssueID}} · {{.Title}}</h1>
@@ -170,15 +170,15 @@
     <h2>{{.Briefing.Question}}</h2>
     <div class="breakdown">
       <section class="brief-block">
-        <div class="hd">{{if .Answered}}Recorded outcome{{else}}Do this now{{end}}</div>
+        <div class="hd">{{if .AutoResolved}}Automatic outcome{{else if .Answered}}Recorded outcome{{else}}Do this now{{end}}</div>
         <p>{{.Briefing.Action}}</p>
       </section>
       <section class="brief-block recommended">
-        <div class="hd">{{if .PolicyApproved}}Recommendation at authorization time{{else if .Answered}}Recommendation at decision time{{else}}Recommended choice and why{{end}}</div>
+        <div class="hd">{{if .PolicyApproved}}Recommendation at authorization time{{else if .AutoResolved}}Recommendation at automatic resolution{{else if .Answered}}Recommendation at decision time{{else}}Recommended choice and why{{end}}</div>
         <p><strong>{{.Briefing.Recommendation}}</strong> — {{.Briefing.RecommendationWhy}}</p>
       </section>
       <section class="brief-block">
-        <div class="hd">{{if .PolicyApproved}}Configured choices{{else if .Answered}}Choices considered{{else}}What each choice changes{{end}}</div>
+        <div class="hd">{{if .PolicyApproved}}Configured choices{{else if .AutoResolved}}Automatically considered choices{{else if .Answered}}Choices considered{{else}}What each choice changes{{end}}</div>
         <div class="answers">
           {{range .Briefing.Options}}
             <div class="ans{{if .Recommended}} rec{{end}}">
@@ -189,7 +189,7 @@
         </div>
       </section>
       <section class="brief-block">
-        <div class="hd">{{if .PolicyApproved}}Authorization evidence{{else if .Answered}}Evidence available at decision time{{else}}Already done and proven{{end}}</div>
+        <div class="hd">{{if .PolicyApproved}}Authorization evidence{{else if .AutoResolved}}Evidence available at automatic resolution{{else if .Answered}}Evidence available at decision time{{else}}Already done and proven{{end}}</div>
         {{if .Briefing.Proof}}
           {{range .Briefing.Proof}}<p class="proof">{{.Claim}}<span class="cite">— {{.Cite}}</span></p>{{end}}
         {{else if .Briefing.ProofMissing}}
@@ -197,7 +197,7 @@
         {{end}}
       </section>
       <section class="brief-block">
-        <div class="hd">{{if .Answered}}What happened next{{else}}After you answer{{end}}</div>
+        <div class="hd">{{if .AutoResolved}}Automatic continuation{{else if .Answered}}What happened next{{else}}After you answer{{end}}</div>
         <p>{{.Briefing.AfterAnswer}}</p>
       </section>
     </div>

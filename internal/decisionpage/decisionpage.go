@@ -113,6 +113,7 @@ type PageData struct {
 	EvidenceMissing bool
 	Answered        string
 	PolicyApproved  bool
+	AutoResolved    bool
 }
 
 //go:embed page.tmpl.html

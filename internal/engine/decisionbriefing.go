@@ -72,6 +72,12 @@ func decisionPageAction(
 				decisionPageResponseLabel(dec, resolution.Response), decisionID,
 			)
 		}
+		if resolution.Automatic {
+			return fmt.Sprintf(
+				"Recorded outcome: Watchtower automatically selected %s for decision %d.",
+				decisionPageResponseLabel(dec, resolution.Response), decisionID,
+			)
+		}
 		return fmt.Sprintf(
 			"Recorded outcome: %s was selected for decision %d.",
 			decisionPageResponseLabel(dec, resolution.Response), decisionID,
@@ -297,6 +303,9 @@ func decisionPageResolvedContinuation(
 	agent := "the requesting agent"
 	if ctx != nil && strings.TrimSpace(ctx.AgentName) != "" {
 		agent = ctx.AgentName
+	}
+	if resolution.Automatic {
+		return fmt.Sprintf("The automatic response authorized Watchtower to resume %s in %s.", agent, currentStage)
 	}
 	return fmt.Sprintf("The recorded response authorized Watchtower to resume %s in %s.", agent, currentStage)
 }

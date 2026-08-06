@@ -97,7 +97,7 @@
     }
   </style>
 </head>
-<body>
+<body data-decision-state="pending">
   <div class="wrap">
     <div class="lane-head">
       <h1>GH-42 · Live config migration</h1>

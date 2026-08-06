@@ -1282,6 +1282,59 @@ func TestDecisionContextFailureStopsBeforePresentation(t *testing.T) {
 	}
 }
 
+func TestDecisionRequiredObserverCanAnswerImmediately(t *testing.T) {
+	f := flow.Flow{Name: "observer-answer", Stages: []flow.Stage{{
+		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
+		Agents: []flow.AgentRef{{Package: "agent"}},
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"ask/agent": {Asks: []levers.Decision{{
+			Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0, Importance: 1.0,
+			Why: "The stage needs authorization.", Consequences: []string{"Continue.", "Stop."},
+			Reversible: "The answer can be changed on retry.",
+		}}},
+	}}
+	s, err := store.Open("file:decision-observer-answer?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	answerResult := make(chan error, 1)
+	var e *Engine
+	e = New(Config{
+		Store: s, Runner: r, Pool: slots.NewPool(1), DataDir: t.TempDir(),
+		Flows: map[string]flow.Flow{f.Name: f}, DecisionIdentities: testDecisionIdentities(),
+		Observers: []func(core.Event){func(event core.Event) {
+			if event.Type != core.EvDecisionRequired {
+				return
+			}
+			var payload struct {
+				DecisionID int64 `json:"decision_id"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				answerResult <- err
+				return
+			}
+			answerResult <- e.Answer(payload.DecisionID, levers.ChoiceResponse(0))
+		}},
+	})
+	id, err := e.CreateIssue("observer answer", "", f.Name, levers.Matrix{"ask": flow.LeverStrict}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	if err := <-answerResult; err != nil {
+		if pending := e.PendingDecisions(); len(pending) == 1 {
+			_ = e.Answer(pending[0].ID, levers.ChoiceResponse(0))
+		}
+		t.Fatalf("observer answer failed: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestContextSurvivesAutoAndPendingRows(t *testing.T) {
 	f := flow.Flow{Name: "context", Stages: []flow.Stage{{
 		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
@@ -2104,6 +2157,16 @@ func TestTokenBudgetEscalates(t *testing.T) {
 	if pending := e.PendingDecisions(); len(pending) != 1 || pending[0].ID != pd.ID {
 		t.Fatalf("invalid budget feedback consumed the decision: %+v", pending)
 	}
+	if err := os.WriteFile(filepath.Join(e.issueDir(id), "touchset.json"), []byte(`{"globs":["late/**"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lateEvidenceDir := filepath.Join(e.issueDir(id), "evidence", "spec")
+	if err := os.MkdirAll(lateEvidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lateEvidenceDir, "evidence.json"), []byte(`{"files":[{"path":"late/change.go","added":1}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	e.Answer(pd.ID, levers.ChoiceResponse(1)) // abort
 	if err := <-errC; err == nil {
 		t.Fatal("expected abort error")
@@ -2119,6 +2182,23 @@ func TestTokenBudgetEscalates(t *testing.T) {
 	}
 	if strings.Contains(answeredPage, "resumed Test Agent in spec") {
 		t.Errorf("answered budget page claims the aborted stage resumed: %s", answeredPage)
+	}
+	if strings.Contains(answeredPage, "late/**") || strings.Contains(answeredPage, "late/change.go") {
+		t.Errorf("answered budget page replaced decision-time files with later state: %s", answeredPage)
+	}
+	if err := os.Remove(pagePath); err != nil {
+		t.Fatal(err)
+	}
+	e2 := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{Scripts: sc}, e.cfg.DataDir, testFlow())
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	recoveredPage := string(waitForDecisionPageFile(t, pagePath))
+	if !strings.Contains(recoveredPage, "Stops this run before spec starts; retrying spec asks for budget authorization again.") {
+		t.Errorf("recovered budget abort lost its engine continuation: %s", recoveredPage)
+	}
+	if strings.Contains(recoveredPage, "authorized Watchtower to resume") {
+		t.Errorf("recovered budget abort claims the stage resumed: %s", recoveredPage)
 	}
 	evs, _ := s.EventsSince(0)
 	found := false
@@ -2152,16 +2232,38 @@ func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	var auto, answered int
+	var autoRow store.DecisionRow
 	for _, r := range rows {
 		switch r.Status {
 		case "auto":
 			auto++
+			autoRow = r
 		case "answered":
 			answered++
 		}
 	}
 	if auto != 1 || answered != 1 {
 		t.Fatalf("auto=%d answered=%d rows=%+v", auto, answered, rows)
+	}
+	if autoRow.AnsweredAt.IsZero() {
+		t.Fatalf("auto-resolved decision has no durable resolution time: %+v", autoRow)
+	}
+	archivePath := filepath.Join(e.cfg.DataDir, id, "decisions", fmt.Sprintf("%d.html", autoRow.ID))
+	page := string(waitForDecisionPageFile(t, archivePath))
+	if !strings.Contains(page, "Automatically resolved") || strings.Contains(page, "Answered:") {
+		t.Fatalf("auto-resolved archive uses human resolution wording: %s", page)
+	}
+	if err := os.Remove(archivePath); err != nil {
+		t.Fatal(err)
+	}
+	e2 := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{Scripts: scripts()}, e.cfg.DataDir, testFlow())
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := string(waitForDecisionPageFile(t, archivePath))
+	wantStamp := "Automatically resolved: option 1 · " + autoRow.AnsweredAt.UTC().Format("2006-01-02 15:04")
+	if !strings.Contains(recovered, wantStamp) || strings.Contains(recovered, "Answered:") {
+		t.Fatalf("recovered auto archive lost automatic provenance: %s", recovered)
 	}
 }
 
@@ -3719,6 +3821,19 @@ func TestAcceptedArtifactReviewCompletesExactlyOnceAfterRestart(t *testing.T) {
 	}
 }
 
+func recoveryDecisionSnapshot(row store.DecisionRow, title string) decisionpage.PageData {
+	dec := decisionFromRow(row)
+	return decisionpage.PageData{
+		IssueID: row.IssueID, Title: title, CurrentStage: row.Stage, DecisionStage: row.Stage,
+		StageIndex: 1, StageTotal: 1,
+		Floors: []decisionpage.Floor{{Name: row.Stage, Status: decisionpage.FloorCurrent}},
+		Briefing: buildDecisionPageBriefing(
+			&dec, row.Context, row.Review, row.Stage, row.ID, nil,
+		),
+		TouchsetMissing: true, EvidenceMissing: true,
+	}
+}
+
 func TestResolvedArtifactReviewPageRebuiltAfterRestart(t *testing.T) {
 	f := artifactGateFlow()
 	s, err := store.Open(filepath.Join(t.TempDir(), "resolved-review.db"))
@@ -3775,6 +3890,158 @@ func TestResolvedArtifactReviewPageRebuiltAfterRestart(t *testing.T) {
 	}
 }
 
+func TestRehydratePreservesFinalizedDecisionArchive(t *testing.T) {
+	f := flow.Flow{Name: "preserve-finalized-archive", Stages: []flow.Stage{{Name: "execute"}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "preserve-finalized-archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "current title", State: "done", Flow: f.Name,
+		Levers: map[string]string{"execute": string(flow.LeverStrict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Status: "answered", Response: levers.ChoiceResponse(0),
+		CreatedAt: time.Now().Add(-time.Minute), AnsweredAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := decisionpage.PageData{IssueID: issueID, Title: "decision-time title"}
+	if err := s.SaveDecisionPageSnapshot(decisionID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	archivePath := filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionID))
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`<!doctype html><body data-decision-state="resolved">decision-time sentinel</body>`)
+	if err := os.WriteFile(archivePath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, dataDir, f)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("finalized archive was replaced:\n%s", got)
+	}
+}
+
+func TestRehydrateReportsUnreadableDecisionArchive(t *testing.T) {
+	f := flow.Flow{Name: "unreadable-archive", Stages: []flow.Stage{{Name: "execute"}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "unreadable-archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "unreadable archive", State: "done", Flow: f.Name,
+		Levers: map[string]string{"execute": string(flow.LeverStrict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	answeredAt := time.Now().UTC()
+	row := store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Status: "answered", Response: levers.ChoiceResponse(0),
+		CreatedAt: answeredAt.Add(-time.Minute), AnsweredAt: answeredAt,
+	}
+	snapshot := recoveryDecisionSnapshot(row, "unreadable archive")
+	row.PageSnapshot = &snapshot
+	decisionID, err := s.InsertDecision(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	archivePath := filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionID))
+	if err := os.MkdirAll(archivePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, dataDir, f)
+	if err := e.Rehydrate(); err == nil || !strings.Contains(err.Error(), "decision archive") {
+		t.Fatalf("Rehydrate error = %v, want decision archive read error", err)
+	}
+}
+
+func TestRehydrateResolvesArchiveFromSnapshot(t *testing.T) {
+	f := flow.Flow{Name: "snapshot-archive", Stages: []flow.Stage{{Name: "renamed-stage"}}}
+	s, err := store.Open(filepath.Join(t.TempDir(), "snapshot-archive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const issueID = "GH-1"
+	if err := s.UpsertIssue(store.IssueRow{
+		ID: issueID, Title: "current title", State: "done", Flow: f.Name,
+		Levers: map[string]string{"renamed-stage": string(flow.LeverStrict)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: issueID, Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"continue", "stop"}, Recommended: 0,
+		Why: "Decision-time reason.", Consequences: []string{"Continue.", "Stop."},
+		Reversible: "Stopping preserves the current result.", Status: "answered",
+		Response: levers.ChoiceResponse(0), CreatedAt: time.Now().Add(-time.Minute), AnsweredAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := decisionpage.PageData{
+		IssueID: issueID, Title: "decision-time title", CurrentStage: "execute",
+		DecisionStage: "execute", StageIndex: 1, StageTotal: 1,
+		Floors: []decisionpage.Floor{{Name: "execute", Status: decisionpage.FloorCurrent}},
+		Briefing: &decisionpage.Briefing{
+			Question: "Continue?", Reversible: "Stopping preserves the current result.",
+			Action: "Choose an option.", Recommendation: "continue", RecommendationWhy: "Decision-time reason.",
+			Options:      []decisionpage.Option{{Key: "1", Label: "continue", OneLiner: "Continue.", Recommended: true}},
+			ProofMissing: true, AfterAnswer: "Continue or stop.",
+		},
+		TouchsetGlobs: []string{"decision-time/**"}, EvidenceMissing: true,
+	}
+	if err := s.SaveDecisionPageSnapshot(decisionID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	archivePath := filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionID))
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, []byte(`<!doctype html><body data-decision-state="pending">pending</body>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, dataDir, f)
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	page := string(waitForDecisionPageFile(t, archivePath))
+	for _, want := range []string{"Recorded outcome", "continue was selected", "decision-time/**"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("resolved snapshot archive missing %q: %s", want, page)
+		}
+	}
+	if strings.Contains(page, "renamed-stage") {
+		t.Fatalf("resolved snapshot archive used current flow state: %s", page)
+	}
+}
+
 func TestResolvedOrdinaryDecisionPageRebuiltAfterRestart(t *testing.T) {
 	f := flow.Flow{Name: "ordinary-decision-recovery", Stages: []flow.Stage{{Name: "execute"}}}
 	s, err := store.Open(filepath.Join(t.TempDir(), "resolved-ordinary.db"))
@@ -3814,6 +4081,15 @@ func TestResolvedOrdinaryDecisionPageRebuiltAfterRestart(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	storedRows, err := s.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range storedRows {
+		if err := s.SaveDecisionPageSnapshot(row.ID, recoveryDecisionSnapshot(row, "resolved ordinary decision")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	dataDir := t.TempDir()
 	e := newEngineOnFileWithFlow(t, s, &runner.FakeRunner{}, dataDir, f)
@@ -3904,6 +4180,14 @@ func TestRehydrateRebuildsEveryResolvedArtifactReviewPage(t *testing.T) {
 			Reversible: decision.Reversible, Briefing: decision.Briefing, BlockingCost: test.blockingCost,
 		})
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveDecisionPageSnapshot(decisionID, recoveryDecisionSnapshot(store.DecisionRow{
+			ID: decisionID, IssueID: issueID, Stage: test.stage, Kind: decision.Kind,
+			Question: decision.Question, Options: decision.Options, Recommended: decision.Recommended,
+			Importance: decision.Importance, Why: decision.Why, Consequences: decision.Consequences,
+			Reversible: decision.Reversible, Briefing: decision.Briefing, Review: &target,
+		}, "all resolved review pages")); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.ResolveArtifactReview(decisionID, target, levers.ChoiceResponse(0)); err != nil {
