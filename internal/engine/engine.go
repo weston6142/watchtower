@@ -2803,8 +2803,20 @@ func (e *Engine) runStageOnce(
 	if st.Completion == flow.CompletionAny && succeeded == 0 {
 		return firstErr
 	}
+	endCommit, _, endDirty := repositoryState(workdir, contextPaths)
+	if st.VerifyAfterChange != "" && (endCommit != startCommit || dirty || endDirty) {
+		commands, err := e.stageVerificationCommands(st)
+		if err != nil {
+			return err
+		}
+		workflowInputs := append([]string{"ISSUE.md", "STAGE.md", "decisions.md", "attachments"}, contextPaths...)
+		if err := replayWithoutWorkflowInputs(ctx, workdir, commands, workflowInputs); err != nil {
+			return fmt.Errorf("stage %s check %s: %w", st.Name, st.VerifyAfterChange, err)
+		}
+	}
 	if st.MergeBarrier {
-		if err := e.writeVerificationReceipt(ctx, is, workdir); err != nil {
+		workflowInputs := append([]string{"ISSUE.md", "STAGE.md", "decisions.md", "attachments"}, contextPaths...)
+		if err := e.writeVerificationReceipt(ctx, is, workdir, workflowInputs); err != nil {
 			return err
 		}
 	}
@@ -2870,6 +2882,20 @@ func (e *Engine) runStageOnce(
 		}
 	}
 	return nil
+}
+
+func (e *Engine) stageVerificationCommands(st flow.Stage) ([][]string, error) {
+	if st.VerifyAfterChange == "test_cmd" {
+		if e.cfg.Train == nil || len(e.cfg.Train.TestCmd) == 0 {
+			return nil, fmt.Errorf("stage %s check test_cmd is not configured", st.Name)
+		}
+		return [][]string{e.cfg.Train.TestCmd}, nil
+	}
+	command := e.cfg.Checks[st.VerifyAfterChange]
+	if len(command) == 0 {
+		return nil, fmt.Errorf("stage %s check %s is not configured", st.Name, st.VerifyAfterChange)
+	}
+	return [][]string{command}, nil
 }
 
 func (e *Engine) stageWorkdir(is *issueState, st flow.Stage) string {

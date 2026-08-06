@@ -15,13 +15,17 @@ import (
 // depends on an agent-authored verification.json. Without a configured
 // test_cmd the agent's receipt (or the fake runner's) remains authoritative.
 func (e *Engine) writeVerificationReceipt(
-	ctx context.Context, is *issueState, workdir string,
+	ctx context.Context, is *issueState, workdir string, workflowInputs ...[]string,
 ) error {
 	if e.cfg.Train == nil || len(e.cfg.Train.TestCmd) == 0 {
 		return nil
 	}
 	commands := [][]string{e.cfg.Train.TestCmd}
-	if err := marshal.Replay(ctx, workdir, commands); err != nil {
+	var hidden []string
+	if len(workflowInputs) > 0 {
+		hidden = workflowInputs[0]
+	}
+	if err := replayWithoutWorkflowInputs(ctx, workdir, commands, hidden); err != nil {
 		return fmt.Errorf("verification: %w", err)
 	}
 	branchSHA, err := gitRevision(workdir, "HEAD")
