@@ -112,6 +112,7 @@ type PageData struct {
 	TouchsetMissing bool
 	EvidenceMissing bool
 	Answered        string
+	PolicyApproved  bool
 }
 
 //go:embed page.tmpl.html

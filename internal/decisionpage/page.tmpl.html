@@ -174,11 +174,11 @@
         <p>{{.Briefing.Action}}</p>
       </section>
       <section class="brief-block recommended">
-        <div class="hd">{{if .Answered}}Recommendation at decision time{{else}}Recommended choice and why{{end}}</div>
+        <div class="hd">{{if .PolicyApproved}}Recommendation at authorization time{{else if .Answered}}Recommendation at decision time{{else}}Recommended choice and why{{end}}</div>
         <p><strong>{{.Briefing.Recommendation}}</strong> — {{.Briefing.RecommendationWhy}}</p>
       </section>
       <section class="brief-block">
-        <div class="hd">{{if .Answered}}Choices considered{{else}}What each choice changes{{end}}</div>
+        <div class="hd">{{if .PolicyApproved}}Configured choices{{else if .Answered}}Choices considered{{else}}What each choice changes{{end}}</div>
         <div class="answers">
           {{range .Briefing.Options}}
             <div class="ans{{if .Recommended}} rec{{end}}">
@@ -189,7 +189,7 @@
         </div>
       </section>
       <section class="brief-block">
-        <div class="hd">{{if .Answered}}Evidence reviewed{{else}}Already done and proven{{end}}</div>
+        <div class="hd">{{if .PolicyApproved}}Authorization evidence{{else if .Answered}}Evidence reviewed{{else}}Already done and proven{{end}}</div>
         {{if .Briefing.Proof}}
           {{range .Briefing.Proof}}<p class="proof">{{.Claim}}<span class="cite">— {{.Cite}}</span></p>{{end}}
         {{else if .Briefing.ProofMissing}}

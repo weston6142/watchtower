@@ -756,17 +756,20 @@ func TestPlanReviewAuthorizationMatrix(t *testing.T) {
 			t.Fatalf("policy approval page missing: %v", err)
 		}
 		for _, want := range []string{
-			"Answered:", `id="decision"`, "decision · plan",
-			"Recorded outcome", "approve was selected", "Recommendation at decision time",
-			"Choices considered", "plan.md was archived and reviewed",
-			"What happened next", "Approval authorized Watchtower to continue to execute",
+			"Automatically approved by policy team-ci@2026-08-03", `id="decision"`, "decision · plan",
+			"Recorded outcome", "policy team-ci@2026-08-03 automatically selected approve",
+			"Recommendation at authorization time", "Configured choices",
+			"Authorization evidence", "plan.md was archived and automatically authorized by policy team-ci@2026-08-03",
+			"What happened next", "Policy approval authorized Watchtower to continue to execute",
 		} {
 			if !strings.Contains(string(page), want) {
 				t.Errorf("policy approval page missing %q: %s", want, page)
 			}
 		}
 		for _, misleading := range []string{
-			"Do this now", "After you answer", "ready for review", "choose approve or reject",
+			"Answered:", "Do this now", "After you answer", "ready for review",
+			"choose approve or reject", "Evidence reviewed", "was archived and reviewed",
+			"The reviewed artifact version",
 		} {
 			if strings.Contains(string(page), misleading) {
 				t.Errorf("policy approval page contains misleading %q: %s", misleading, page)

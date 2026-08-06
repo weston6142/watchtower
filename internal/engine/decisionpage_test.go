@@ -126,6 +126,46 @@ func TestDecisionPageHistoricalGapsAreExplicit(t *testing.T) {
 	}
 }
 
+func TestDecisionPageCapsPersistedProof(t *testing.T) {
+	tests := map[string]func() *levers.Briefing{
+		"proof": func() *levers.Briefing {
+			items := make([]levers.BriefingProof, levers.MaxBriefingProof+2)
+			for i := range items {
+				items[i] = levers.BriefingProof{Claim: fmt.Sprintf("proof %d", i), Cite: "test"}
+			}
+			return &levers.Briefing{Proof: items}
+		},
+		"legacy wins": func() *levers.Briefing {
+			items := make([]string, levers.MaxBriefingProof+2)
+			for i := range items {
+				items[i] = fmt.Sprintf("win %d", i)
+			}
+			return &levers.Briefing{Wins: items}
+		},
+	}
+	for name, briefing := range tests {
+		t.Run(name, func(t *testing.T) {
+			result := buildDecisionPageBriefing(
+				&levers.Decision{
+					Question: "Review evidence?", Options: []string{"yes", "no"}, Briefing: briefing(),
+				},
+				nil, nil, "review", 1, nil,
+			)
+			body, err := decisionpage.Render(decisionpage.PageData{
+				IssueID: "GH-proof", CurrentStage: "review", StageTotal: 1,
+				Floors:   []decisionpage.Floor{{Name: "review", Status: decisionpage.FloorCurrent}},
+				Briefing: result,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Count(string(body), `class="proof"`); got != levers.MaxBriefingProof {
+				t.Fatalf("rendered proof items = %d, want %d: %s", got, levers.MaxBriefingProof, body)
+			}
+		})
+	}
+}
+
 func TestArtifactReviewPageBreakdown(t *testing.T) {
 	f := flow.Flow{Name: "artifact-review-page", Stages: []flow.Stage{
 		{Name: "spec", Agents: []flow.AgentRef{{Package: "agent"}}, Gate: flow.GateApproveArtifact, Artifacts: []string{"spec.md"}},

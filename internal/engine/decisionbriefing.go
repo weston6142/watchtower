@@ -25,7 +25,7 @@ func buildDecisionPageBriefing(
 	resolution *decisionPageResolution,
 ) *decisionpage.Briefing {
 	recommendation, why := decisionPageRecommendation(dec)
-	proof, missing := decisionPageProof(dec.Briefing, target, resolution != nil)
+	proof, missing := decisionPageProof(dec.Briefing, target, resolution)
 	result := &decisionpage.Briefing{
 		Question: dec.Question, Importance: dec.Importance,
 		Reversible:     decisionPageReversible(dec, target, resolution),
@@ -65,6 +65,13 @@ func decisionPageAction(
 	dec *levers.Decision, target *review.Target, decisionID int64, resolution *decisionPageResolution,
 ) string {
 	if resolution != nil {
+		if approval, ok := resolution.policyApproval(); ok {
+			return fmt.Sprintf(
+				"Recorded outcome: policy %s@%s automatically selected %s for decision %d.",
+				approval.PolicyID, approval.PolicyVersion,
+				decisionPageResponseLabel(dec, resolution.Response), decisionID,
+			)
+		}
 		return fmt.Sprintf(
 			"Recorded outcome: %s was selected for decision %d.",
 			decisionPageResponseLabel(dec, resolution.Response), decisionID,
@@ -173,13 +180,20 @@ func decisionPageOptions(dec *levers.Decision, target *review.Target) []decision
 }
 
 func decisionPageProof(
-	briefing *levers.Briefing, target *review.Target, resolved bool,
+	briefing *levers.Briefing, target *review.Target, resolution *decisionPageResolution,
 ) ([]decisionpage.Proof, bool) {
-	if target != nil && resolved {
+	if target != nil && resolution != nil {
 		proof := make([]decisionpage.Proof, 0, len(target.Artifacts))
 		for _, artifact := range target.Artifacts {
+			claim := fmt.Sprintf("%s was archived and reviewed.", artifact.Name)
+			if approval, ok := resolution.policyApproval(); ok {
+				claim = fmt.Sprintf(
+					"%s was archived and automatically authorized by policy %s@%s.",
+					artifact.Name, approval.PolicyID, approval.PolicyVersion,
+				)
+			}
 			proof = append(proof, decisionpage.Proof{
-				Claim: fmt.Sprintf("%s was archived and reviewed.", artifact.Name),
+				Claim: claim,
 				Cite: fmt.Sprintf(
 					"checkpoint %d · %s · sha256 %s",
 					target.CheckpointID, artifact.Name, artifact.SHA256,
@@ -195,15 +209,21 @@ func decisionPageProof(
 		return nil, true
 	}
 	if len(briefing.Proof) > 0 {
-		proof := make([]decisionpage.Proof, 0, len(briefing.Proof))
+		proof := make([]decisionpage.Proof, 0, min(len(briefing.Proof), levers.MaxBriefingProof))
 		for _, item := range briefing.Proof {
+			if len(proof) == levers.MaxBriefingProof {
+				break
+			}
 			proof = append(proof, decisionpage.Proof{Claim: item.Claim, Cite: item.Cite})
 		}
 		return proof, false
 	}
 	if len(briefing.Wins) > 0 {
-		proof := make([]decisionpage.Proof, 0, len(briefing.Wins))
+		proof := make([]decisionpage.Proof, 0, min(len(briefing.Wins), levers.MaxBriefingProof))
 		for _, win := range briefing.Wins {
+			if len(proof) == levers.MaxBriefingProof {
+				break
+			}
 			proof = append(proof, decisionpage.Proof{
 				Claim: win, Cite: "Source not recorded in this historical decision.",
 			})
@@ -218,7 +238,7 @@ func decisionPageContinuation(
 	resolution *decisionPageResolution,
 ) string {
 	if resolution != nil {
-		return decisionPageResolvedContinuation(dec, ctx, target, currentStage, resolution.Response)
+		return decisionPageResolvedContinuation(dec, ctx, target, currentStage, resolution)
 	}
 	if target != nil {
 		if target.Stage == "" {
@@ -239,14 +259,19 @@ func decisionPageContinuation(
 
 func decisionPageResolvedContinuation(
 	dec *levers.Decision, ctx *decision.DecisionContext, target *review.Target, currentStage string,
-	response levers.Response,
+	resolution *decisionPageResolution,
 ) string {
+	response := resolution.Response
 	if target != nil && response.Option != nil {
 		if *response.Option == 0 {
-			if target.NextStage == "" {
-				return "Approval authorized workflow completion."
+			prefix := "Approval"
+			if _, ok := resolution.policyApproval(); ok {
+				prefix = "Policy approval"
 			}
-			return fmt.Sprintf("Approval authorized Watchtower to continue to %s.", target.NextStage)
+			if target.NextStage == "" {
+				return prefix + " authorized workflow completion."
+			}
+			return fmt.Sprintf("%s authorized Watchtower to continue to %s.", prefix, target.NextStage)
 		}
 		if isPlanReviewDecision(dec) {
 			return "Rejection stopped this run. Retry the issue to produce and review a new plan."
@@ -287,7 +312,7 @@ func artifactReviewDecision(target review.Target, plan bool) levers.Decision {
 	return levers.Decision{
 		Kind: levers.DecisionChoice, Question: question, Options: options,
 		Recommended: 0, Importance: 1.0,
-		Why:          "The reviewed artifact version must be authorized before Watchtower advances the workflow.",
+		Why:          "The archived artifact version must be authorized before Watchtower advances the workflow.",
 		Consequences: consequences,
 		Reversible:   "The artifact can be revised before approval; approval authorizes this exact archived version.",
 		Briefing:     &levers.Briefing{Proof: proof},

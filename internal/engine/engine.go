@@ -1796,7 +1796,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 				return fmt.Errorf("append plan review outcome: %w", err)
 			}
 		}
-		e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, resolvedDecisionPage(response))
+		e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, resolvedDecisionPage(response, provenance))
 		e.mu.Lock()
 		delete(e.pend, decisionID)
 		e.mu.Unlock()
@@ -1815,7 +1815,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	if err := e.cfg.Store.AnswerDecision(decisionID, response, "answered"); err != nil {
 		return err
 	}
-	e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, resolvedDecisionPage(response))
+	e.writeDecisionPage(is, p.Stage, p.ID, p.D, p.Context, p.Review, resolvedDecisionPage(response, nil))
 	e.refreshDecisionPage(p.IssueID)
 	e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
 		"decision_id": p.ID, "response": response})
@@ -2044,7 +2044,7 @@ func (e *Engine) requestPlanReview(
 		}
 		e.writeDecisionPage(
 			is, st.Name, rowID, d, &decisionContext, &target,
-			resolvedDecisionPage(levers.ChoiceResponse(0)),
+			resolvedDecisionPage(levers.ChoiceResponse(0), provenance),
 		)
 		return levers.ChoiceResponse(0), nil
 	}

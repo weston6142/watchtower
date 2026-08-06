@@ -34,10 +34,33 @@ func (e *Engine) DecisionPagePath(issueID string) string {
 type decisionPageResolution struct {
 	Response levers.Response
 	Stamp    string
+	Approval *review.ApprovalProvenance
 }
 
-func resolvedDecisionPage(response levers.Response) *decisionPageResolution {
-	return &decisionPageResolution{Response: response, Stamp: answerStamp(response)}
+func resolvedDecisionPage(
+	response levers.Response, approval *review.ApprovalProvenance,
+) *decisionPageResolution {
+	resolution := &decisionPageResolution{Response: response, Stamp: answerStamp(response)}
+	if approval == nil {
+		return resolution
+	}
+	stored := *approval
+	resolution.Approval = &stored
+	if stored.Kind == review.ApprovalPolicy {
+		resolution.Stamp = fmt.Sprintf(
+			"Automatically approved by policy %s@%s: %s · %s",
+			stored.PolicyID, stored.PolicyVersion, answerText(response),
+			time.Now().UTC().Format("2006-01-02 15:04"),
+		)
+	}
+	return resolution
+}
+
+func (r *decisionPageResolution) policyApproval() (*review.ApprovalProvenance, bool) {
+	if r == nil || r.Approval == nil || r.Approval.Kind != review.ApprovalPolicy {
+		return nil, false
+	}
+	return r.Approval, true
 }
 
 func (e *Engine) buildPageData(
@@ -98,6 +121,7 @@ func (e *Engine) buildPageData(
 	}
 	if resolution != nil {
 		data.Answered = resolution.Stamp
+		_, data.PolicyApproved = resolution.policyApproval()
 	}
 	if decisionID > 0 {
 		if rows, rowErr := e.cfg.Store.AllDecisionRows(); rowErr == nil {
