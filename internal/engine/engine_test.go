@@ -4624,9 +4624,25 @@ func TestRehydrateRebuildsEveryResolvedArtifactReviewPage(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	e := newEngineOnFileWithFlow(t, s, artifactReviewRunner(), dataDir, f)
+	started := make(chan string, 1)
+	r := artifactReviewRunner()
+	r.OnStart = func(_, stage, _, _ string) error {
+		started <- stage
+		return nil
+	}
+	e := newEngineOnFileWithFlow(t, s, r, dataDir, f)
 	if err := e.Rehydrate(); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case stage := <-started:
+		t.Fatalf("rehydrate restarted completed workflow at %s", stage)
+	case <-time.After(100 * time.Millisecond):
+	}
+	for _, event := range mustEvents(t, s, issueID) {
+		if event.Type == core.EvDecisionAnswered || event.Type == core.EvStageCompleted {
+			t.Fatalf("rehydrate continued completed workflow with %s", event.Type)
+		}
 	}
 	for _, test := range tests {
 		pagePath := filepath.Join(dataDir, issueID, "decisions", fmt.Sprintf("%d.html", decisionIDs[test.stage]))

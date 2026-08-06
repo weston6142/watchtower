@@ -451,9 +451,15 @@ func (sv *Server) overview() (Overview, error) {
 	if err != nil {
 		return Overview{}, err
 	}
-	pending, err := sv.st.PendingDecisionRows()
-	if err != nil {
-		return Overview{}, err
+	needYou := 0
+	if sv.eng != nil {
+		needYou = len(sv.eng.PendingDecisions())
+	} else {
+		pending, err := sv.st.PendingDecisionRows()
+		if err != nil {
+			return Overview{}, err
+		}
+		needYou = len(pending)
 	}
 	allEvents, err := sv.st.EventsSince(0)
 	if err != nil {
@@ -464,7 +470,7 @@ func (sv *Server) overview() (Overview, error) {
 		latest[ev.IssueID] = ev
 	}
 	var out Overview
-	out.NeedYou = len(pending)
+	out.NeedYou = needYou
 	for _, issue := range issues {
 		state := issue.State
 		if state == "done" || state == "done (unmerged)" || state == "merged" || state == "abandoned" {

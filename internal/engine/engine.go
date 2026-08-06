@@ -269,6 +269,10 @@ func (e *Engine) rehydrateArtifactReview(
 	if !ok {
 		return false, false, fmt.Errorf("issue %s is missing", row.IssueID)
 	}
+	if issue.State == "done" || issue.State == "done (unmerged)" ||
+		issue.State == "merged" || issue.State == "abandoned" {
+		return false, false, nil
+	}
 	checkpoints, err := e.cfg.Store.StageCheckpoints(row.IssueID)
 	if err != nil {
 		return false, false, err

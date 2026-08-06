@@ -785,6 +785,31 @@ func TestCanResetAndShutdownFlushesResponse(t *testing.T) {
 	}
 }
 
+func TestOverviewDoesNotExposeUnpublishedDecision(t *testing.T) {
+	fl := oneAgentFlow("agent")
+	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	e := engine.New(engine.Config{
+		Store: s, Runner: &runner.FakeRunner{}, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{"default": fl}, DataDir: t.TempDir(),
+	})
+	if _, err := s.InsertDecision(store.DecisionRow{
+		IssueID: "GH-1", Stage: "run", Question: "Ready?",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	overview, err := NewServer(e, s).overview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.NeedYou != 0 {
+		t.Fatalf("unpublished decision counted in overview: %+v", overview)
+	}
+}
+
 func TestDraftNotCountedInOverview(t *testing.T) {
 	c := newTestClient(t)
 	if r, err := c.Do(Command{Op: "draft_issue", Title: "t", Flow: "default", Preset: "regular"}); err != nil || !r.OK {
