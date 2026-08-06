@@ -353,6 +353,15 @@ func TestDefaultMutationStagesUseRepositoryVerification(t *testing.T) {
 		if !strings.Contains(string(prompt), "engine independently runs") {
 			t.Fatalf("%s clean-code prompt does not name the authoritative engine gate:\n%s", label, prompt)
 		}
+		mergePrompt, err := os.ReadFile(filepath.Join(base, "packages", "merge-verifier", "prompt.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mergeText := string(mergePrompt)
+		if !strings.Contains(mergeText, "sole owner of the repository-wide gate") ||
+			strings.Contains(mergeText, "Run the required repository-wide gate once") {
+			t.Fatalf("%s merge-verifier prompt duplicates the daemon gate:\n%s", label, mergeText)
+		}
 	}
 }
 
