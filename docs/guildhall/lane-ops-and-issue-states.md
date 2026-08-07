@@ -78,6 +78,16 @@ Externally worked tasks have a deliberately small lifecycle:
 backlog -> claimed -> verifying -> integrating -> merged -> done
 ```
 
+Backlog dependency visibility is a read-time projection, not relationship
+cleanup. Stored dependency relationships remain available in the raw issue
+data, while backlog CLI, structured, and TUI views render `depends on` and
+claimability from active blockers. A referenced issue in
+`IntegrationMerged` or `IntegrationCleanupNeeded` satisfies its dependency
+and is omitted from active blockers; preserved or unmerged work, missing
+integration evidence, and unknown states remain visible so the system fails
+closed. A later status change is reflected on the next backlog read without
+recreating the relationship.
+
 `watchtower claim <issue-id>` atomically reserves a ready backlog item and
 returns its durable issue branch, base commit, and isolated worktree. Repeating
 the command resumes the same valid claim; it does not create another workspace.

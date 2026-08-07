@@ -14,7 +14,18 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/review"
+	"github.com/weston6142/watchtower/internal/store"
 )
+
+func TestProposalDoorRetainsDependencies(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	out := ansi.Strip(renderProposalsDoor([]store.ProposalRow{{
+		Title: "proposal", Body: "body", DependsOn: []string{"GH-1", "GH-2"},
+	}}, 0, 80))
+	if !strings.Contains(out, "depends on GH-1, GH-2") {
+		t.Fatalf("proposal dependencies missing:\n%s", out)
+	}
+}
 
 func TestDecisionsDoorSelectable(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)

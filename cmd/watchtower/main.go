@@ -375,25 +375,22 @@ func main() {
 		fs.Parse(args)
 		c := mustDial(*data, *repoF)
 		defer c.Close()
+		r := mustDo(c, proto.Command{Op: "list_backlog"})
 		if *jsonOut {
-			r := mustDo(c, proto.Command{Op: "list_backlog"})
 			printJSON(struct {
 				Backlog []proto.BacklogItem `json:"backlog"`
 				Claims  []engine.Claim      `json:"claims"`
 			}{Backlog: r.Backlog, Claims: r.Claims})
 			break
 		}
-		r := mustDo(c, proto.Command{Op: "list_issues"})
-		for _, issue := range r.Issues {
-			if issue.State != "backlog" {
-				continue
-			}
+		for _, item := range r.Backlog {
 			dependencySuffix := ""
-			if len(issue.DependsOn) > 0 {
-				dependencySuffix = "  depends on " + strings.Join(issue.DependsOn, ", ")
+			if len(item.BlockedBy) > 0 {
+				dependencySuffix = "  depends on " + strings.Join(item.BlockedBy, ", ")
 			}
 			fmt.Printf("%s  %-7s  %s  %s%s\n",
-				issue.ID, priority.Label(issue.Priority), issue.Flow, issue.Title, dependencySuffix)
+				item.Issue.ID, priority.Label(item.Issue.Priority), item.Issue.Flow,
+				item.Issue.Title, dependencySuffix)
 		}
 	case "claim", "release":
 		filtered, jsonOut := removeFlag(args, "--json")

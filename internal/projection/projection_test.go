@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/contextpack"
@@ -9,6 +10,40 @@ import (
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/stageusage"
 )
+
+func TestActiveBlockersUsesProjectedStatusAndRestoresOnReversion(t *testing.T) {
+	s := NewState()
+	merged := "GH-1"
+	cleanup := "GH-2"
+	preserved := "GH-3"
+	unknown := "GH-404"
+	child := "GH-5"
+	s.Apply(ev(t, core.EvIssueCreated, merged, map[string]any{"title": "merged"}))
+	s.Apply(ev(t, core.EvIssueCompleted, merged, nil))
+	s.Apply(ev(t, core.EvIssueCreated, cleanup, map[string]any{"title": "cleanup"}))
+	s.Apply(ev(t, core.EvCleanupNeeded, cleanup, map[string]any{"error": "cleanup"}))
+	s.Apply(ev(t, core.EvIssueCompleted, preserved, map[string]any{"merge": "left-unmerged"}))
+	s.Apply(ev(t, core.EvIssueDrafted, child, map[string]any{
+		"title": "child", "flow": "default", "preset": "regular", "priority": 1,
+		"depends_on": []string{merged, cleanup, preserved, unknown},
+	}))
+
+	issue := s.Issues[child]
+	if got, want := s.ActiveBlockers(child), []string{preserved, unknown}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("active blockers = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(issue.DependsOn, []string{merged, cleanup, preserved, unknown}) {
+		t.Fatalf("raw dependencies = %v", issue.DependsOn)
+	}
+
+	s.Apply(ev(t, core.EvIssueCompleted, merged, map[string]any{"merge": "left-unmerged"}))
+	if got, want := s.ActiveBlockers(child), []string{merged, preserved, unknown}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("reverted active blockers = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(issue.DependsOn, []string{merged, cleanup, preserved, unknown}) {
+		t.Fatalf("raw dependencies changed after status reversion = %v", issue.DependsOn)
+	}
+}
 
 func ev(t *testing.T, typ core.EventType, issue string, payload any) core.Event {
 	t.Helper()

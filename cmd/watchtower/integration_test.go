@@ -1273,6 +1273,76 @@ func TestNewDraftWithDependenciesAppearsInBacklog(t *testing.T) {
 	}
 }
 
+func TestBacklogHidesSatisfiedDependenciesButRetainsRawEdge(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	bin := buildBinary(t)
+	base, err := os.MkdirTemp("/tmp", "wt-gh45-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopDaemons(base)
+		_ = os.RemoveAll(base)
+	})
+	repo := initRepo(t, bin, base)
+	parent := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "parent")))
+	child := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "child", "--depends-on", parent)))
+	if child == "" {
+		t.Fatal("child draft returned no id")
+	}
+	if out := run(t, bin, repo, "backlog", "--data", base); !strings.Contains(out, "depends on "+parent) {
+		t.Fatalf("active dependency missing from backlog:\n%s", out)
+	}
+
+	setIntegration := func(state string) {
+		t.Helper()
+		st, err := store.Open(filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parent, State: state}); err != nil {
+			st.Close()
+			t.Fatal(err)
+		}
+		if err := st.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setIntegration(store.IntegrationMerged)
+	if out := run(t, bin, repo, "backlog", "--data", base); !strings.Contains(out, child) || strings.Contains(out, "depends on "+parent) {
+		t.Fatalf("satisfied dependency still rendered:\n%s", out)
+	}
+
+	var listed struct {
+		Backlog []proto.BacklogItem `json:"backlog"`
+		Claims  []engine.Claim      `json:"claims"`
+	}
+	if err := json.Unmarshal([]byte(run(t, bin, repo, "backlog", "--data", base, "--json")), &listed); err != nil {
+		t.Fatalf("backlog --json: %v", err)
+	}
+	var item *proto.BacklogItem
+	for i := range listed.Backlog {
+		if listed.Backlog[i].Issue.ID == child {
+			item = &listed.Backlog[i]
+			break
+		}
+	}
+	if item == nil {
+		t.Fatalf("child %s missing from backlog JSON: %+v", child, listed.Backlog)
+	}
+	if len(item.Issue.DependsOn) != 1 || item.Issue.DependsOn[0] != parent ||
+		len(item.BlockedBy) != 0 || !item.Claimable {
+		t.Fatalf("backlog JSON item = %+v", *item)
+	}
+
+	setIntegration(store.IntegrationPreserved)
+	if out := run(t, bin, repo, "backlog", "--data", base); !strings.Contains(out, "depends on "+parent) {
+		t.Fatalf("unresolved dependency did not reappear:\n%s", out)
+	}
+}
+
 func TestResetReplacesWatchtowerTreeAndRestartsDaemon(t *testing.T) {
 	bin, base, repo := newRepo(t)
 	extra := filepath.Join(repo, ".watchtower", "extra.txt")

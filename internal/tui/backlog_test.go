@@ -149,6 +149,43 @@ func TestBacklogShowsSelectedDetail(t *testing.T) {
 	}
 }
 
+func TestBacklogDetailFiltersCompletedDependenciesButEditPrefillsRawEdges(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	state := projection.NewState()
+	doneParent := "GH-1"
+	activeParent := "GH-2"
+	child := "GH-3"
+	state.Apply(mkev(t, core.EvIssueCreated, doneParent, map[string]any{"title": "done"}))
+	state.Apply(mkev(t, core.EvIssueCompleted, doneParent, nil))
+	state.Apply(mkev(t, core.EvIssueCreated, activeParent, map[string]any{"title": "active"}))
+	state.Apply(mkev(t, core.EvIssueDrafted, child, map[string]any{
+		"title": "child", "flow": "default", "preset": "regular", "priority": 1,
+		"depends_on": []string{doneParent, activeParent},
+	}))
+	entries := []*projection.IssueView{state.Issues[child]}
+	active := map[string][]string{child: state.ActiveBlockers(child)}
+	out := ansi.Strip(renderBacklogWithActive(entries, 0, 140, 40, active))
+	if !strings.Contains(out, activeParent) || strings.Contains(out, doneParent) {
+		t.Fatalf("backlog detail blockers =\n%s", out)
+	}
+
+	state.Apply(mkev(t, core.EvIssueCompleted, activeParent, nil))
+	active[child] = state.ActiveBlockers(child)
+	out = ansi.Strip(renderBacklogWithActive(entries, 0, 140, 40, active))
+	if strings.Contains(out, "DEPENDS") {
+		t.Fatalf("all-satisfied backlog detail retained dependency metadata:\n%s", out)
+	}
+
+	state.Backlog = []string{child}
+	m := NewModel(nil, []string{"spec"})
+	m.State = state
+	m.backlog = &backlogState{}
+	m = pressKey(t, m, "enter")
+	if m.modal == nil || m.modal.DependsOn != doneParent+", "+activeParent {
+		t.Fatalf("edit modal dependencies = %#v, want raw stored edges", m.modal)
+	}
+}
+
 // Too narrow for two panes: the list survives, the detail pane yields.
 func TestBacklogNarrowTerminalDropsDetailPane(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)

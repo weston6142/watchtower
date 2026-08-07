@@ -1694,18 +1694,14 @@ func (e *Engine) unmetMergedDependencies(issueID string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var unmet []string
-	for _, parent := range parents {
+	return deps.ActiveBlockers(parents, func(parent string) (bool, error) {
 		integration, ok, err := e.cfg.Store.IssueIntegration(parent)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
-		if !ok || (integration.State != store.IntegrationMerged &&
-			integration.State != store.IntegrationCleanupNeeded) {
-			unmet = append(unmet, parent)
-		}
-	}
-	return unmet, nil
+		return ok && (integration.State == store.IntegrationMerged ||
+			integration.State == store.IntegrationCleanupNeeded), nil
+	})
 }
 
 func (e *Engine) ClaimBlockers(issueID string) ([]string, error) {

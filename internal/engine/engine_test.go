@@ -2368,6 +2368,9 @@ func TestResumeRestartsKilledLane(t *testing.T) {
 			}
 		}
 		if starts >= 2 {
+			if err := e.KillStage(id); err == nil {
+				waitForEvent(t, s, id, core.EvStageKilled)
+			}
 			return
 		}
 		select {
@@ -2647,10 +2650,33 @@ func TestAutoResolvedDecisionsAreAudited(t *testing.T) {
 	if err := e2.Rehydrate(); err != nil {
 		t.Fatal(err)
 	}
+	e2.mu.Lock()
+	continuationScheduled := len(e2.reviewContinuations) > 0
+	e2.mu.Unlock()
 	recovered := string(waitForDecisionPageFile(t, archivePath))
 	wantStamp := "Automatically resolved: option 1 · " + autoRow.AnsweredAt.UTC().Format("2006-01-02 15:04")
 	if !strings.Contains(recovered, wantStamp) || strings.Contains(recovered, "Answered:") {
 		t.Fatalf("recovered auto archive lost automatic provenance: %s", recovered)
+	}
+	if continuationScheduled {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			e2.mu.Lock()
+			is := e2.issues[id]
+			idle := is != nil && !is.running && !is.terminal
+			e2.mu.Unlock()
+			if idle {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		e2.mu.Lock()
+		is := e2.issues[id]
+		idle := is != nil && !is.running && !is.terminal
+		e2.mu.Unlock()
+		if !idle {
+			t.Fatal("rehydrated artifact continuation did not settle")
+		}
 	}
 }
 
