@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/weston6142/watchtower/internal/verificationcache"
 )
 
 // maxTestOutputBytes caps failing test output embedded in a Land error.
@@ -15,6 +17,9 @@ const maxTestOutputBytes = 2000
 type Train struct {
 	Repo    string
 	TestCmd []string
+	// CacheRoot enables the repository-neutral lease runtime for post-merge
+	// verification. An empty root preserves the existing replay behavior.
+	CacheRoot string
 	// Pull enables SyncBase fast-forwarding the default branch from origin
 	// before an issue starts; Push publishes the default branch after a land.
 	Pull bool
@@ -23,10 +28,11 @@ type Train struct {
 }
 
 type LandResult struct {
-	BaseBranch string
-	PreSHA     string
-	LandedSHA  string
-	Published  bool
+	BaseBranch    string
+	PreSHA        string
+	LandedSHA     string
+	Published     bool
+	CacheEvidence *CacheEvidence
 }
 
 type PublishPendingError struct {
@@ -159,9 +165,11 @@ func (tr *Train) LandVerified(
 			commands = [][]string{tr.TestCmd}
 		}
 		if len(commands) > 0 && !verification.AppliesTo(tree) {
-			if err := Replay(ctx, tr.Repo, commands); err != nil {
+			evidence, err := tr.replayCombinedVerification(ctx, verification, tree, commands)
+			if err != nil {
 				return tr.rollback(pre, fmt.Errorf("combined verification failed: %w", err))
 			}
+			result.CacheEvidence = evidence
 		}
 		result.LandedSHA = landed
 		return nil
@@ -179,6 +187,63 @@ func (tr *Train) LandVerified(
 	}
 	result.Published = true
 	return result, nil
+}
+
+func (tr *Train) replayCombinedVerification(
+	ctx context.Context,
+	verification Verification,
+	tree string,
+	commands [][]string,
+) (*CacheEvidence, error) {
+	if tr.CacheRoot == "" {
+		return nil, Replay(ctx, tr.Repo, commands)
+	}
+	argv := tr.TestCmd
+	if len(argv) == 0 {
+		argv = commands[0]
+	}
+	runtime, err := verificationcache.New(verificationcache.Config{
+		CacheRoot: tr.CacheRoot,
+		RepoDir:   tr.Repo,
+	})
+	if err != nil {
+		return nil, err
+	}
+	lease, err := runtime.Acquire(ctx, verificationcache.Config{
+		RepoDir:   tr.Repo,
+		BaseSHA:   verification.BaseSHA,
+		BranchSHA: verification.BranchSHA,
+		TreeSHA:   tree,
+		Argv:      append([]string(nil), argv...),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer lease.Close()
+	if err := ReplayWithEnvironment(ctx, tr.Repo, commands, lease.ManagedEnvironment()); err != nil {
+		_ = lease.Quarantine("combined verification failed: " + err.Error())
+		return nil, err
+	}
+	if err := lease.Seal(); err != nil {
+		_ = lease.Quarantine("cache sealing failed: " + err.Error())
+		return nil, err
+	}
+	evidence, err := lease.Evidence()
+	if err != nil {
+		return nil, err
+	}
+	return &CacheEvidence{
+		LeaseID:       evidence.LeaseID,
+		State:         string(evidence.State),
+		Repository:    evidence.Repository,
+		ManagedScope:  evidence.ManagedScope,
+		BaseSHA:       evidence.BaseSHA,
+		BranchSHA:     evidence.BranchSHA,
+		TreeSHA:       evidence.TreeSHA,
+		CommandDigest: evidence.CommandDigest,
+		SeedLeaseID:   evidence.SeedLeaseID,
+		Quarantines:   append([]verificationcache.QuarantineDisposition(nil), evidence.Quarantines...),
+	}, nil
 }
 
 func (tr *Train) rollback(pre string, cause error) error {

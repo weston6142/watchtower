@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/weston6142/watchtower/internal/verificationcache"
 )
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -346,6 +348,80 @@ func TestFailedCombinedVerificationRestoresBase(t *testing.T) {
 	}
 	if status := git(t, repo, "status", "--porcelain"); status != "" {
 		t.Fatalf("base checkout dirty after rollback: %q", status)
+	}
+}
+
+func TestVerificationCacheTrainReplaysWithFreshLeaseWhenCompleteSnapshotExists(t *testing.T) {
+	repo, branch := repoWithBranch(t, false)
+	recorded := filepath.Join(t.TempDir(), "replayed")
+	command := filepath.Join(t.TempDir(), "record.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$GOCACHE\" > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{command, recorded}
+	baseSHA := strings.TrimSpace(git(t, repo, "merge-base", "main", branch))
+	branchSHA := strings.TrimSpace(git(t, repo, "rev-parse", branch))
+	treeSHA := strings.TrimSpace(git(t, repo, "rev-parse", branch+"^{tree}"))
+	cacheRoot := filepath.Join(t.TempDir(), "verification-cache")
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: cacheRoot, RepoDir: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := runtime.Acquire(context.Background(), verificationcache.Config{
+		RepoDir: repo, BaseSHA: baseSHA, BranchSHA: branchSHA, TreeSHA: treeSHA, Argv: argv,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed.ActiveRoot(), "seed.txt"), []byte("known-good"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	receipt := verificationFor(t, repo, branch, [][]string{argv})
+	receipt.TreeSHA = "force-replay"
+	tr := &Train{Repo: repo, CacheRoot: cacheRoot}
+	result, err := tr.LandVerified(context.Background(), "GH-1", branch, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CacheEvidence == nil {
+		t.Fatal("cache-managed replay did not return complete evidence")
+	}
+	if result.CacheEvidence.LeaseID == seed.ID() || result.CacheEvidence.State != "complete" {
+		t.Fatalf("result cache evidence = %+v, want a fresh complete lease", result.CacheEvidence)
+	}
+	if got, err := os.ReadFile(recorded); err != nil {
+		t.Fatalf("configured command was not replayed: %v", err)
+	} else if strings.TrimSpace(string(got)) == "" {
+		t.Fatal("configured command did not observe a managed cache")
+	}
+	if got, err := os.ReadFile(filepath.Join(seed.CompleteRoot(), "seed.txt")); err != nil || string(got) != "known-good" {
+		t.Fatalf("known-good complete snapshot changed: %q, %v", got, err)
+	}
+}
+
+func TestVerificationCacheTrainFailureQuarantinesAndRollsBack(t *testing.T) {
+	repo, branch := repoWithBranch(t, false)
+	cacheRoot := filepath.Join(t.TempDir(), "verification-cache")
+	pre := strings.TrimSpace(git(t, repo, "rev-parse", "main"))
+	receipt := verificationFor(t, repo, branch, [][]string{{"false"}})
+	receipt.TreeSHA = "force-replay"
+	tr := &Train{Repo: repo, CacheRoot: cacheRoot}
+	if _, err := tr.LandVerified(context.Background(), "GH-1", branch, receipt); err == nil {
+		t.Fatal("cache-managed combined verification unexpectedly passed")
+	}
+	if post := strings.TrimSpace(git(t, repo, "rev-parse", "main")); post != pre {
+		t.Fatalf("main moved despite failing cache-managed verification: %s -> %s", pre, post)
+	}
+	entries, err := os.ReadDir(filepath.Join(cacheRoot, "verification-cache"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("cache runtime did not retain failure state: %v", err)
 	}
 }
 
