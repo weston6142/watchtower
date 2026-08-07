@@ -16,16 +16,12 @@ import (
 // depends on an agent-authored verification.json. Without a configured
 // test_cmd the agent's receipt (or the fake runner's) remains authoritative.
 func (e *Engine) writeVerificationReceipt(
-	ctx context.Context, is *issueState, workdir string, leases ...*verificationcache.Lease,
+	ctx context.Context, is *issueState, workdir string, lease *verificationcache.Lease,
 ) error {
 	if e.cfg.Train == nil || len(e.cfg.Train.TestCmd) == 0 {
 		return nil
 	}
 	commands := [][]string{e.cfg.Train.TestCmd}
-	var lease *verificationcache.Lease
-	if len(leases) > 0 {
-		lease = leases[0]
-	}
 	var replayErr error
 	if lease != nil {
 		replayErr = marshal.ReplayWithEnvironment(ctx, workdir, commands, lease.ManagedEnvironment())
@@ -55,13 +51,7 @@ func (e *Engine) writeVerificationReceipt(
 		if err != nil {
 			return fmt.Errorf("read verification cache evidence: %w", err)
 		}
-		receipt.CacheEvidence = &marshal.CacheEvidence{
-			LeaseID: evidence.LeaseID, State: string(evidence.State), Repository: evidence.Repository,
-			ManagedScope: evidence.ManagedScope, BaseSHA: evidence.BaseSHA, BranchSHA: evidence.BranchSHA,
-			TreeSHA: evidence.TreeSHA, CommandDigest: evidence.CommandDigest,
-			SeedLeaseID: evidence.SeedLeaseID,
-			Quarantines: append([]verificationcache.QuarantineDisposition(nil), evidence.Quarantines...),
-		}
+		receipt.CacheEvidence = marshal.NewCacheEvidence(evidence)
 	}
 	document, err := json.Marshal(receipt)
 	if err != nil {

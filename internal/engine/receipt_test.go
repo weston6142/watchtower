@@ -24,7 +24,7 @@ func TestWriteVerificationReceipt(t *testing.T) {
 	dir, head := initReceiptRepo(t)
 	e := &Engine{cfg: Config{Train: &marshal.Train{Repo: dir, TestCmd: []string{"true"}}}}
 	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
-	if err := e.writeVerificationReceipt(context.Background(), is, dir); err != nil {
+	if err := e.writeVerificationReceipt(context.Background(), is, dir, nil); err != nil {
 		t.Fatalf("writeVerificationReceipt: %v", err)
 	}
 	receipt, err := marshal.LoadVerification(filepath.Join(dir, "verification.json"))
@@ -189,7 +189,7 @@ func TestWriteVerificationReceiptFailingCommand(t *testing.T) {
 	dir, head := initReceiptRepo(t)
 	e := &Engine{cfg: Config{Train: &marshal.Train{Repo: dir, TestCmd: []string{"false"}}}}
 	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
-	if err := e.writeVerificationReceipt(context.Background(), is, dir); err == nil {
+	if err := e.writeVerificationReceipt(context.Background(), is, dir, nil); err == nil {
 		t.Fatal("expected error from failing test_cmd")
 	}
 }
@@ -198,7 +198,7 @@ func TestWriteVerificationReceiptNoTestCmd(t *testing.T) {
 	dir, head := initReceiptRepo(t)
 	e := &Engine{cfg: Config{}}
 	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
-	if err := e.writeVerificationReceipt(context.Background(), is, dir); err != nil {
+	if err := e.writeVerificationReceipt(context.Background(), is, dir, nil); err != nil {
 		t.Fatalf("expected nil for missing test_cmd, got %v", err)
 	}
 	if _, err := marshal.LoadVerification(filepath.Join(dir, "verification.json")); err == nil {
@@ -229,7 +229,7 @@ func TestWriteVerificationReceiptOverwritesAgentReceipt(t *testing.T) {
 	}
 	e := &Engine{cfg: Config{Train: &marshal.Train{Repo: dir, TestCmd: []string{"true"}}}}
 	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
-	if err := e.writeVerificationReceipt(context.Background(), is, dir); err != nil {
+	if err := e.writeVerificationReceipt(context.Background(), is, dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	receipt, err := marshal.LoadVerification(filepath.Join(dir, "verification.json"))

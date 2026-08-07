@@ -115,15 +115,7 @@ func (e *Engine) validateFinalIdentity(
 		if err != nil {
 			return fmt.Errorf("initialize verification cache validation: %w", err)
 		}
-		evidence := verificationcache.Evidence{
-			Version: 1, LeaseID: receipt.CacheEvidence.LeaseID,
-			State: verificationcache.State(receipt.CacheEvidence.State), Repository: receipt.CacheEvidence.Repository,
-			BaseSHA: receipt.CacheEvidence.BaseSHA, BranchSHA: receipt.CacheEvidence.BranchSHA,
-			TreeSHA: receipt.CacheEvidence.TreeSHA, CommandDigest: receipt.CacheEvidence.CommandDigest,
-			ManagedScope: receipt.CacheEvidence.ManagedScope, SeedLeaseID: receipt.CacheEvidence.SeedLeaseID,
-			Quarantines: append([]verificationcache.QuarantineDisposition(nil), receipt.CacheEvidence.Quarantines...),
-		}
-		if err := runtime.ValidateEvidence(evidence); err != nil {
+		if err := runtime.ValidateEvidence(receipt.CacheEvidence.RuntimeEvidence()); err != nil {
 			return fmt.Errorf("validate durable verification cache evidence: %w", err)
 		}
 	}

@@ -27,7 +27,15 @@ const (
 	formatVersion       = 1
 	managedScopeVersion = "verification-cache-v1"
 	manifestName        = "manifest.json"
+	goBuildCacheEnv     = "GOCACHE"
+	goModuleCacheEnv    = "GOMODCACHE"
+	goPathEnv           = "GOPATH"
 )
+
+// FormatVersion identifies the durable verification-cache evidence schema.
+const FormatVersion = formatVersion
+
+var managedVariables = [...]string{goBuildCacheEnv, goModuleCacheEnv, goPathEnv}
 
 // State is the durable state of a cache lease.
 type State string
@@ -98,7 +106,7 @@ type QuarantineDisposition struct {
 
 // ManagedVariables returns the cache variables controlled by every lease.
 func ManagedVariables() []string {
-	return []string{"GOCACHE", "GOMODCACHE", "GOPATH"}
+	return append([]string(nil), managedVariables[:]...)
 }
 
 // CommandDigest hashes the canonical JSON representation of exact argv.
@@ -454,9 +462,9 @@ func (l *Lease) Quarantines() []QuarantineDisposition {
 // ManagedEnvironment returns the replacement overlay for child processes.
 func (l *Lease) ManagedEnvironment() []string {
 	return []string{
-		"GOCACHE=" + filepath.Join(l.activeRoot, "gocache"),
-		"GOMODCACHE=" + filepath.Join(l.activeRoot, "gomodcache"),
-		"GOPATH=" + filepath.Join(l.activeRoot, "gopath"),
+		goBuildCacheEnv + "=" + filepath.Join(l.activeRoot, "gocache"),
+		goModuleCacheEnv + "=" + filepath.Join(l.activeRoot, "gomodcache"),
+		goPathEnv + "=" + filepath.Join(l.activeRoot, "gopath"),
 	}
 }
 

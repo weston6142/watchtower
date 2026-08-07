@@ -49,6 +49,28 @@ type CacheIdentity struct {
 	CommandDigest string
 }
 
+// NewCacheEvidence converts durable runtime evidence into receipt evidence.
+func NewCacheEvidence(evidence verificationcache.Evidence) *CacheEvidence {
+	return &CacheEvidence{
+		LeaseID: evidence.LeaseID, State: string(evidence.State), Repository: evidence.Repository,
+		ManagedScope: evidence.ManagedScope, BaseSHA: evidence.BaseSHA, BranchSHA: evidence.BranchSHA,
+		TreeSHA: evidence.TreeSHA, CommandDigest: evidence.CommandDigest, SeedLeaseID: evidence.SeedLeaseID,
+		Quarantines: append([]verificationcache.QuarantineDisposition(nil), evidence.Quarantines...),
+	}
+}
+
+// RuntimeEvidence converts receipt evidence back into the strict runtime form.
+func (e CacheEvidence) RuntimeEvidence() verificationcache.Evidence {
+	return verificationcache.Evidence{
+		Version: verificationcache.FormatVersion, LeaseID: e.LeaseID,
+		State: verificationcache.State(e.State), Repository: e.Repository,
+		BaseSHA: e.BaseSHA, BranchSHA: e.BranchSHA, TreeSHA: e.TreeSHA,
+		CommandDigest: e.CommandDigest, ManagedScope: e.ManagedScope,
+		SeedLeaseID: e.SeedLeaseID,
+		Quarantines: append([]verificationcache.QuarantineDisposition(nil), e.Quarantines...),
+	}
+}
+
 func (e CacheEvidence) Validate() error {
 	if strings.TrimSpace(e.LeaseID) == "" || strings.TrimSpace(e.Repository) == "" ||
 		strings.TrimSpace(e.ManagedScope) == "" || strings.TrimSpace(e.BaseSHA) == "" ||

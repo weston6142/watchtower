@@ -232,18 +232,7 @@ func (tr *Train) replayCombinedVerification(
 	if err != nil {
 		return nil, err
 	}
-	return &CacheEvidence{
-		LeaseID:       evidence.LeaseID,
-		State:         string(evidence.State),
-		Repository:    evidence.Repository,
-		ManagedScope:  evidence.ManagedScope,
-		BaseSHA:       evidence.BaseSHA,
-		BranchSHA:     evidence.BranchSHA,
-		TreeSHA:       evidence.TreeSHA,
-		CommandDigest: evidence.CommandDigest,
-		SeedLeaseID:   evidence.SeedLeaseID,
-		Quarantines:   append([]verificationcache.QuarantineDisposition(nil), evidence.Quarantines...),
-	}, nil
+	return NewCacheEvidence(evidence), nil
 }
 
 func (tr *Train) rollback(pre string, cause error) error {
