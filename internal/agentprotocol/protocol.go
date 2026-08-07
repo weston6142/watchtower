@@ -21,6 +21,14 @@ least one consequence. Every supplied briefing proof needs nonblank "claim" and
 "cite" fields, and every excerpt needs nonblank "text" and "cite" fields.
 Nothing else.`
 
+// UnstructuredDecisionCoachMessage repairs an agent turn that asks the
+// operator to manufacture the runner's private Human decision reply instead
+// of emitting the public decision marker.
+const UnstructuredDecisionCoachMessage = `You requested a Human decision reply in prose, so Watchtower cannot present
+the decision to the operator. Re-emit that SAME decision as one valid
+watchtower_decision JSON marker on its own line, following the shared decision
+protocol. Nothing else.`
+
 // TaskMessage is the first user message watchtower sends an agent.
 func TaskMessage(stage, issueID string) string {
 	return fmt.Sprintf("Task: run the %s stage for issue %s. Read ISSUE.md and STAGE.md in the current directory, then use only the materialized artifacts and decisions.md named there. Work in the current directory.", stage, issueID)
@@ -94,6 +102,21 @@ func ExtractDecision(text string) (levers.Decision, bool) {
 		}, true
 	}
 	return levers.Decision{}, false
+}
+
+// UnstructuredDecisionRequestNeedsCoaching recognizes the explicit private
+// reply syntax agents sometimes ask operators to type when they should emit a
+// structured decision marker instead. It intentionally requires request
+// language so accepted Human decision replies are not mistaken for new asks.
+func UnstructuredDecisionRequestNeedsCoaching(text string) bool {
+	if _, ok := ExtractDecision(text); ok {
+		return false
+	}
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "human decision:") {
+		return false
+	}
+	return strings.Contains(lower, "reply with") || strings.Contains(lower, "respond with")
 }
 
 func normalizeBriefing(briefing *levers.Briefing, optionCount int, legacy bool) *levers.Briefing {

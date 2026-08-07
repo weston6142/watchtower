@@ -230,6 +230,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 		}
 
 		var decision *levers.Decision
+		unstructuredDecision := false
 		for _, event := range turn.events {
 			switch event.Kind {
 			case KindText:
@@ -237,6 +238,8 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 				if decision == nil {
 					if parsed, found := agentprotocol.ExtractDecision(event.Text); found {
 						decision = &parsed
+					} else if agentprotocol.UnstructuredDecisionRequestNeedsCoaching(event.Text) {
+						unstructuredDecision = true
 					}
 				}
 				if proposal, found := agentprotocol.ExtractProposal(event.Text); found && c.OnProposal != nil {
@@ -260,6 +263,16 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			}
 		}
 
+		if decision == nil && unstructuredDecision {
+			if coachCount >= 2 {
+				res.Err = fmt.Errorf("codex decision remained unstructured after 2 coaching attempts")
+				res.FailureClass = runner.FailureProtocol
+				return res, continuation()
+			}
+			coachCount++
+			prompt = agentprotocol.UnstructuredDecisionCoachMessage
+			continue
+		}
 		if decision == nil {
 			return res, continuation()
 		}

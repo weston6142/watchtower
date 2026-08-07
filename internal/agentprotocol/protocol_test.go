@@ -22,6 +22,19 @@ func TestCoachMessageExplainsRequiredDecisionFields(t *testing.T) {
 	}
 }
 
+func TestUnstructuredDecisionRequestNeedsCoaching(t *testing.T) {
+	text := "I found an architecture mismatch. Reply with `Human decision: choose one`, and I'll continue."
+	if !UnstructuredDecisionRequestNeedsCoaching(text) {
+		t.Fatalf("unstructured decision request was not detected: %q", text)
+	}
+	if UnstructuredDecisionRequestNeedsCoaching("The accepted Human decision: keep the existing behavior.") {
+		t.Fatal("an accepted decision reply was mistaken for a new decision request")
+	}
+	if UnstructuredDecisionRequestNeedsCoaching(`{"watchtower_decision":{"kind":"choice","question":"Choose?","options":["A","B"],"recommended":0}}`) {
+		t.Fatal("a structured decision marker was mistaken for an unstructured request")
+	}
+}
+
 func TestDecisionNeedsCoaching(t *testing.T) {
 	validChoice := levers.Decision{
 		Kind: levers.DecisionChoice, Question: "Ship it?",

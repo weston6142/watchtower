@@ -667,6 +667,38 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	}
 }
 
+func TestCoachConvertsUnstructuredDecisionRequestBeforeEndingStage(t *testing.T) {
+	bin, state := statefulStub(t,
+		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-unstructured"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"I found an architecture mismatch. Reply with Human decision: choose one, and I will continue."}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+		`printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"kind\":\"choice\",\"question\":\"Which architecture?\",\"options\":[\"Keep the current model\",\"Expand the model\"],\"recommended\":0,\"why\":\"It preserves scope.\",\"consequences\":[\"The plan stays narrow.\",\"The plan expands state.\"],\"reversible\":\"Before implementation.\"}}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+		`printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`,
+	)
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	select {
+	case ask := <-asks:
+		if ask.Decision.Question != "Which architecture?" {
+			t.Fatalf("ask = %+v", ask.Decision)
+		}
+		ask.Reply <- levers.ChoiceResponse(0)
+	case res := <-done:
+		t.Fatalf("runner ended instead of coaching the decision request: %+v", res)
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner neither coached nor completed")
+	}
+	if res := <-done; res.Err != nil {
+		t.Fatalf("result = %+v", res)
+	}
+	coaching := strings.Join(readCapturedArgs(t, state, 2), "\n")
+	if !strings.Contains(coaching, "watchtower_decision") || !strings.Contains(coaching, "Nothing else") {
+		t.Fatalf("unstructured-decision coaching prompt = %q", coaching)
+	}
+}
+
 func TestCoachStopsAfterTwoIncompleteRetries(t *testing.T) {
 	incomplete := `printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_decision\":{\"question\":\"Proceed?\",\"options\":[\"Yes\",\"No\"],\"recommended\":0}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`
