@@ -12,6 +12,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/verificationcache"
 	"github.com/weston6142/watchtower/internal/workspace"
 )
 
@@ -72,6 +73,45 @@ func (e *Engine) validateFinalIdentity(
 		return fmt.Errorf(
 			"verification receipt does not include configured verification command %q",
 			e.cfg.Train.TestCmd)
+	}
+	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 {
+		if receipt.CacheEvidence == nil {
+			return fmt.Errorf("cache-managed verification receipt is missing cache evidence")
+		}
+		repository, err := verificationcache.CanonicalRepositoryIdentity(e.cfg.Train.Repo)
+		if err != nil {
+			return fmt.Errorf("resolve verification cache repository: %w", err)
+		}
+		current := marshal.CacheIdentity{
+			LeaseID: receipt.CacheEvidence.LeaseID, Repository: repository,
+			ManagedScope: receipt.CacheEvidence.ManagedScope, BaseSHA: is.baseRef,
+			BranchSHA: branchSHA, TreeSHA: treeSHA,
+			CommandDigest: verificationcache.CommandDigest(e.cfg.Train.TestCmd),
+		}
+		if err := receipt.CacheEvidence.ValidateAgainst(current); err != nil {
+			return fmt.Errorf("validate verification cache identity: %w", err)
+		}
+		cacheRoot := e.cfg.CacheRoot
+		if cacheRoot == "" {
+			cacheRoot = e.cfg.DataDir
+		}
+		runtime, err := verificationcache.New(verificationcache.Config{
+			CacheRoot: cacheRoot, RepoDir: e.cfg.Train.Repo,
+		})
+		if err != nil {
+			return fmt.Errorf("initialize verification cache validation: %w", err)
+		}
+		evidence := verificationcache.Evidence{
+			Version: 1, LeaseID: receipt.CacheEvidence.LeaseID,
+			State: verificationcache.State(receipt.CacheEvidence.State), Repository: receipt.CacheEvidence.Repository,
+			BaseSHA: receipt.CacheEvidence.BaseSHA, BranchSHA: receipt.CacheEvidence.BranchSHA,
+			TreeSHA: receipt.CacheEvidence.TreeSHA, CommandDigest: receipt.CacheEvidence.CommandDigest,
+			ManagedScope: receipt.CacheEvidence.ManagedScope, SeedLeaseID: receipt.CacheEvidence.SeedLeaseID,
+			Quarantines: append([]verificationcache.QuarantineDisposition(nil), receipt.CacheEvidence.Quarantines...),
+		}
+		if err := runtime.ValidateEvidence(evidence); err != nil {
+			return fmt.Errorf("validate durable verification cache evidence: %w", err)
+		}
 	}
 	return nil
 }

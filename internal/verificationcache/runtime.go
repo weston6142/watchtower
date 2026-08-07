@@ -382,7 +382,7 @@ func (r *Runtime) validateCandidate(path string, manifest leaseManifest, config 
 	if manifest.CommandDigest != CommandDigest(config.Argv) || manifest.ManagedScopeVersion != managedScopeVersion {
 		return fmt.Errorf("command or managed scope mismatch")
 	}
-	if manifest.LeaseID == "" || manifest.Files == nil {
+	if manifest.LeaseID == "" {
 		return fmt.Errorf("complete candidate is incomplete")
 	}
 	return verifyFiles(filepath.Join(path, "cache"), manifest.Files)
@@ -549,6 +549,33 @@ func (l *Lease) Evidence() (Evidence, error) {
 		TreeSHA: l.TreeSHA(), CommandDigest: l.CommandDigest(), ManagedScope: l.ManagedScope(),
 		SeedLeaseID: l.seedLeaseID, Quarantines: append([]QuarantineDisposition(nil), l.quarantines...),
 	}, nil
+}
+
+// ValidateEvidence proves that strict evidence names a retained complete
+// lease published by this runtime, including its immutable scope and content.
+func (r *Runtime) ValidateEvidence(evidence Evidence) error {
+	if evidence.Version != formatVersion || evidence.State != StateComplete || evidence.LeaseID == "" {
+		return ErrLeaseInvalid
+	}
+	completeDir := filepath.Join(r.CompleteRoot(), evidence.LeaseID)
+	manifest, err := readManifest(filepath.Join(completeDir, manifestName))
+	if err != nil {
+		return fmt.Errorf("read complete verification evidence: %w", err)
+	}
+	if manifest.State != StateComplete || manifest.LeaseID != evidence.LeaseID ||
+		manifest.Repository != evidence.Repository || manifest.BaseSHA != evidence.BaseSHA ||
+		manifest.BranchSHA != evidence.BranchSHA || manifest.TreeSHA != evidence.TreeSHA ||
+		manifest.CommandDigest != evidence.CommandDigest || manifest.ManagedScope != evidence.ManagedScope ||
+		manifest.SeedLeaseID != evidence.SeedLeaseID {
+		return fmt.Errorf("complete verification evidence does not match lease manifest")
+	}
+	if manifest.ManagedScopeVersion != managedScopeVersion {
+		return fmt.Errorf("complete verification evidence is incomplete")
+	}
+	if err := verifyFiles(filepath.Join(completeDir, "cache"), manifest.Files); err != nil {
+		return fmt.Errorf("complete verification evidence integrity: %w", err)
+	}
+	return nil
 }
 
 // Close releases ownership. An unfinished lease remains active and is

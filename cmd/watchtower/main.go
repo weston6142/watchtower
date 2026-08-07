@@ -844,7 +844,7 @@ func runDaemon(args []string) {
 	var train *marshal.Train
 	var lib *librarian.Librarian
 	if ws != nil {
-		train = &marshal.Train{Repo: repo, TestCmd: testArgv,
+		train = &marshal.Train{Repo: repo, TestCmd: testArgv, CacheRoot: data,
 			Pull: cfg.Pull, Push: cfg.Push}
 	}
 	if *runnerKind != "fake" {
@@ -853,7 +853,7 @@ func runDaemon(args []string) {
 	transcriptBuffer := transcript.NewBuffer(500)
 	eng := engine.New(engine.Config{
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
-		Flows: flows, DataDir: filepath.Join(data, "issues"),
+		Flows: flows, DataDir: filepath.Join(data, "issues"), CacheRoot: data,
 		Workspace: ws, TokenBudget: *budget,
 		PlannerBudget:      cfg.PlannerBudget,
 		PlanReview:         cfg.PlanReviewSettings(),
