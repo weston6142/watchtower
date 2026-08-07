@@ -3193,7 +3193,7 @@ func (e *Engine) runStageOnce(
 		return errDependenciesDiscovered
 	}
 	if st.MergeBarrier {
-		prepared, err := e.prepareFinalization(is)
+		prepared, err := e.prepareFinalization(is, verificationLease)
 		if err != nil {
 			return err
 		}
@@ -3638,7 +3638,7 @@ func (e *Engine) completeWithoutIntegration(is *issueState) (bool, error) {
 func (e *Engine) finalVerificationDecision(
 	is *issueState,
 ) (string, marshal.Verification, error) {
-	prepared, err := e.prepareFinalization(is)
+	prepared, err := e.prepareFinalization(is, nil)
 	if err != nil {
 		return "", marshal.Verification{}, err
 	}

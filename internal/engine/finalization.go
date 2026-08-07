@@ -21,7 +21,9 @@ type preparedFinalization struct {
 	Verification marshal.Verification
 }
 
-func (e *Engine) prepareFinalization(is *issueState) (preparedFinalization, error) {
+func (e *Engine) prepareFinalization(
+	is *issueState, verificationLease *verificationcache.Lease,
+) (preparedFinalization, error) {
 	artifactDir := filepath.Join(e.issueDir(is.id), "artifacts")
 	decision, err := marshal.LoadMergeDecision(filepath.Join(artifactDir, "merge-decision.json"))
 	if err != nil {
@@ -31,7 +33,7 @@ func (e *Engine) prepareFinalization(is *issueState) (preparedFinalization, erro
 	if err != nil {
 		return preparedFinalization{}, fmt.Errorf("load verification receipt: %w", err)
 	}
-	if err := e.validateFinalIdentity(is, decision, verification); err != nil {
+	if err := e.validateFinalIdentity(is, decision, verification, verificationLease); err != nil {
 		return preparedFinalization{}, err
 	}
 	return preparedFinalization{Decision: decision, Verification: verification}, nil
@@ -39,6 +41,7 @@ func (e *Engine) prepareFinalization(is *issueState) (preparedFinalization, erro
 
 func (e *Engine) validateFinalIdentity(
 	is *issueState, decision marshal.MergeDecision, receipt marshal.Verification,
+	verificationLease *verificationcache.Lease,
 ) error {
 	branchSHA, err := gitRevision(is.wsPath, "HEAD")
 	if err != nil {
@@ -87,6 +90,17 @@ func (e *Engine) validateFinalIdentity(
 			ManagedScope: receipt.CacheEvidence.ManagedScope, BaseSHA: is.baseRef,
 			BranchSHA: branchSHA, TreeSHA: treeSHA,
 			CommandDigest: verificationcache.CommandDigest(e.cfg.Train.TestCmd),
+		}
+		if verificationLease != nil {
+			if verificationLease.State() != verificationcache.StateComplete {
+				return fmt.Errorf("current verification cache lease is not complete")
+			}
+			current = marshal.CacheIdentity{
+				LeaseID: verificationLease.ID(), Repository: repository,
+				ManagedScope: verificationLease.ManagedScope(), BaseSHA: verificationLease.BaseSHA(),
+				BranchSHA: verificationLease.BranchSHA(), TreeSHA: verificationLease.TreeSHA(),
+				CommandDigest: verificationLease.CommandDigest(),
+			}
 		}
 		if err := receipt.CacheEvidence.ValidateAgainst(current); err != nil {
 			return fmt.Errorf("validate verification cache identity: %w", err)
@@ -328,7 +342,7 @@ func (e *Engine) retryVerifiedFinalization(
 	if err := e.restoreVerifiedWorkspace(is, integration); err != nil {
 		return e.recordFinalizationFailure(is, err)
 	}
-	prepared, err := e.prepareFinalization(is)
+	prepared, err := e.prepareFinalization(is, nil)
 	if err != nil {
 		verification, recovered, recoveryErr := e.resolvedConflictVerification(is)
 		if recoveryErr != nil {

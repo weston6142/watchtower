@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -134,6 +135,182 @@ func TestLeaseRefusesToStealLiveOwner(t *testing.T) {
 	_, err = runtime.Acquire(context.Background(), config)
 	if !errors.Is(err, ErrLeaseBusy) {
 		t.Fatalf("second acquire error = %v, want ErrLeaseBusy", err)
+	}
+}
+
+func TestReleasedLeaseWithReusedOwnerPIDIsReconciled(t *testing.T) {
+	repo := initRepository(t)
+	runtime := newTestRuntime(t, repo)
+	config := Config{RepoDir: repo, BaseSHA: "base", BranchSHA: "branch", TreeSHA: "tree", Argv: []string{"go", "test"}}
+
+	interrupted, err := runtime.Acquire(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := interrupted.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	owner := exec.Command("sleep", "60")
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = owner.Process.Kill()
+		_ = owner.Wait()
+	}()
+	manifestPath := filepath.Join(interrupted.activeDir, manifestName)
+	manifest, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.State = StateActive
+	manifest.OwnerPID = owner.Process.Pid
+	if err := writeJSONAtomic(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	retry, err := runtime.Acquire(context.Background(), config)
+	if err != nil {
+		t.Fatalf("stale owner PID blocked recovery: %v", err)
+	}
+	defer retry.Close()
+	if len(retry.Quarantines()) != 1 || retry.Quarantines()[0].LeaseID != interrupted.ID() {
+		t.Fatalf("recovery quarantine = %+v, want lease %q", retry.Quarantines(), interrupted.ID())
+	}
+}
+
+func TestVerificationCacheHelperProcess(t *testing.T) {
+	if os.Getenv("GH48_HELPER") != "1" {
+		return
+	}
+	ready := os.NewFile(uintptr(3), "ready")
+	release := os.NewFile(uintptr(4), "release")
+	defer ready.Close()
+	defer release.Close()
+	runtime, err := New(Config{
+		CacheRoot: os.Getenv("GH48_CACHE_ROOT"),
+		RepoDir:   os.Getenv("GH48_REPO"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := runtime.Acquire(context.Background(), Config{
+		RepoDir: os.Getenv("GH48_REPO"), BaseSHA: "base", BranchSHA: "branch", TreeSHA: "tree",
+		Argv: []string{"go", "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lease.ActiveRoot(), "partial.txt"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ready.Write([]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(release, []byte{0}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInterruptedHelperProcessIsQuarantinedBeforeRetry(t *testing.T) {
+	repo := initRepository(t)
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	readyReader, readyWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseReader, releaseWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readyReader.Close()
+	defer readyWriter.Close()
+	defer releaseReader.Close()
+	defer releaseWriter.Close()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestVerificationCacheHelperProcess$", "-test.v")
+	cmd.Env = append(os.Environ(), "GH48_HELPER=1", "GH48_CACHE_ROOT="+cacheRoot, "GH48_REPO="+repo)
+	cmd.ExtraFiles = []*os.File{readyWriter, releaseReader}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(readyReader, []byte{0}); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("helper did not publish partial state: %v", err)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("interrupted helper exited successfully")
+	}
+
+	runtime, err := New(Config{CacheRoot: cacheRoot, RepoDir: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := runtime.Acquire(context.Background(), Config{
+		RepoDir: repo, BaseSHA: "base", BranchSHA: "branch", TreeSHA: "tree", Argv: []string{"go", "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retry.Close()
+	if len(retry.Quarantines()) != 1 || retry.Quarantines()[0].Reason != "interrupted active lease" {
+		t.Fatalf("helper interruption quarantine = %+v", retry.Quarantines())
+	}
+	if _, err := os.Stat(filepath.Join(runtime.ActiveRoot(), retry.Quarantines()[0].LeaseID, "cache", "partial.txt")); err != nil {
+		t.Fatalf("interrupted partial state was not retained: %v", err)
+	}
+	activeEntries, err := os.ReadDir(runtime.ActiveRoot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activeEntries) == 0 {
+		t.Fatal("interrupted active state was not retained for diagnosis")
+	}
+}
+
+func TestCompleteCandidateWithMismatchedManagedScopeIsIneligible(t *testing.T) {
+	repo := initRepository(t)
+	runtime := newTestRuntime(t, repo)
+	config := Config{RepoDir: repo, BaseSHA: "base", BranchSHA: "branch", TreeSHA: "tree", Argv: []string{"go", "test"}}
+
+	complete, err := runtime.Acquire(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(complete.ActiveRoot(), "seed.txt"), []byte("known-good"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := complete.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := complete.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(filepath.Dir(complete.CompleteRoot()), manifestName)
+	manifest, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.ManagedScope = filepath.Join(runtime.repoRoot, "other-scope")
+	if err := writeJSONAtomic(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	retry, err := runtime.Acquire(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retry.Close()
+	if retry.SeedLeaseID() != "no-seed" {
+		t.Fatalf("mismatched managed scope was selected: %q", retry.SeedLeaseID())
+	}
+	if len(retry.Quarantines()) != 1 || !strings.Contains(retry.Quarantines()[0].Reason, "scope") {
+		t.Fatalf("scope quarantine = %+v", retry.Quarantines())
 	}
 }
 

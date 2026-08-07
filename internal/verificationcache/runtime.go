@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -314,9 +315,10 @@ func (r *Runtime) reconcileActive(config Config) ([]QuarantineDisposition, error
 		if manifest.State != StateActive {
 			continue
 		}
-		if manifest.OwnerPID != 0 && manifest.OwnerPID != os.Getpid() && ownerAlive(manifest.OwnerPID) {
-			return nil, ErrLeaseBusy
-		}
+		// The repository lock is held for this entire reconciliation pass. If
+		// another process still owns an active lease, its flock would have
+		// prevented Acquire from reaching this point. A persisted PID is only
+		// diagnostic: treating a reused PID as ownership would strand recovery.
 		record := r.newDisposition(config, manifest.LeaseID, "interrupted active lease", manifest.OwnerPID)
 		if writeErr := r.writeDisposition(record); writeErr != nil {
 			return nil, writeErr
@@ -382,8 +384,16 @@ func (r *Runtime) validateCandidate(path string, manifest leaseManifest, config 
 	if manifest.CommandDigest != CommandDigest(config.Argv) || manifest.ManagedScopeVersion != managedScopeVersion {
 		return fmt.Errorf("command or managed scope mismatch")
 	}
+	if !slices.Equal(manifest.Argv, config.Argv) ||
+		manifest.CommandDigest != CommandDigest(manifest.Argv) {
+		return fmt.Errorf("exact command argv mismatch")
+	}
 	if manifest.LeaseID == "" {
 		return fmt.Errorf("complete candidate is incomplete")
+	}
+	expectedScope := filepath.Join(r.ActiveRoot(), manifest.LeaseID, "cache")
+	if filepath.Clean(manifest.ManagedScope) != filepath.Clean(expectedScope) {
+		return fmt.Errorf("managed cache scope mismatch")
 	}
 	return verifyFiles(filepath.Join(path, "cache"), manifest.Files)
 }
@@ -571,6 +581,13 @@ func (r *Runtime) ValidateEvidence(evidence Evidence) error {
 	}
 	if manifest.ManagedScopeVersion != managedScopeVersion {
 		return fmt.Errorf("complete verification evidence is incomplete")
+	}
+	if manifest.CommandDigest != CommandDigest(manifest.Argv) {
+		return fmt.Errorf("complete verification evidence command argv mismatch")
+	}
+	expectedScope := filepath.Join(r.ActiveRoot(), manifest.LeaseID, "cache")
+	if filepath.Clean(manifest.ManagedScope) != filepath.Clean(expectedScope) {
+		return fmt.Errorf("complete verification evidence managed scope mismatch")
 	}
 	if err := verifyFiles(filepath.Join(completeDir, "cache"), manifest.Files); err != nil {
 		return fmt.Errorf("complete verification evidence integrity: %w", err)
@@ -778,18 +795,6 @@ func seedLeaseID(seed string) string {
 		return "no-seed"
 	}
 	return filepath.Base(filepath.Dir(seed))
-}
-
-func ownerAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = process.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func unlock(file *os.File) error {

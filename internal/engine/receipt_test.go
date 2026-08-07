@@ -111,7 +111,7 @@ func TestVerificationCacheFinalizationRejectsAlteredLeaseAndScopeEvidence(t *tes
 	}}
 	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
 	decision := marshal.MergeDecision{Decision: "merge", BranchCommit: head, BaseCommit: head}
-	if err := e.validateFinalIdentity(is, decision, receipt); err != nil {
+	if err := e.validateFinalIdentity(is, decision, receipt, lease); err != nil {
 		t.Fatalf("matching cache evidence rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*marshal.CacheEvidence){
@@ -123,10 +123,65 @@ func TestVerificationCacheFinalizationRejectsAlteredLeaseAndScopeEvidence(t *tes
 			copyEvidence := *receipt.CacheEvidence
 			mutate(&copyEvidence)
 			candidate.CacheEvidence = &copyEvidence
-			if err := e.validateFinalIdentity(is, decision, candidate); err == nil {
+			if err := e.validateFinalIdentity(is, decision, candidate, lease); err == nil {
 				t.Fatal("altered cache evidence accepted")
 			}
 		})
+	}
+}
+
+func TestVerificationCacheFinalizationRejectsEvidenceFromAnotherLease(t *testing.T) {
+	dir, head := initReceiptRepo(t)
+	tree := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^{tree}"))
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: cacheRoot, RepoDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := verificationcache.Config{
+		RepoDir: dir, BaseSHA: head, BranchSHA: head, TreeSHA: tree, Argv: []string{"true"},
+	}
+	currentLease, err := runtime.Acquire(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := currentLease.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := currentLease.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	otherLease, err := runtime.Acquire(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := otherLease.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	otherEvidence, err := otherLease.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := otherLease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	receipt := marshal.Verification{
+		BaseSHA: head, BranchSHA: head, TreeSHA: tree, Passed: true,
+		Commands: [][]string{{"true"}}, CacheEvidence: &marshal.CacheEvidence{
+			LeaseID: otherEvidence.LeaseID, State: string(otherEvidence.State), Repository: otherEvidence.Repository,
+			ManagedScope: otherEvidence.ManagedScope, BaseSHA: otherEvidence.BaseSHA, BranchSHA: otherEvidence.BranchSHA,
+			TreeSHA: otherEvidence.TreeSHA, CommandDigest: otherEvidence.CommandDigest, SeedLeaseID: otherEvidence.SeedLeaseID,
+		},
+	}
+	e := &Engine{cfg: Config{
+		CacheRoot: cacheRoot,
+		Train:     &marshal.Train{Repo: dir, CacheRoot: cacheRoot, TestCmd: []string{"true"}},
+	}}
+	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
+	decision := marshal.MergeDecision{Decision: "merge", BranchCommit: head, BaseCommit: head}
+	if err := e.validateFinalIdentity(is, decision, receipt, currentLease); err == nil {
+		t.Fatal("valid evidence from a different lease was accepted")
 	}
 }
 
