@@ -223,6 +223,11 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}
+	case "requeue_issue":
+		if err := sv.eng.RequeueIssue(cmd.IssueID); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, IssueID: cmd.IssueID}
 	case "claim_issue":
 		claim, err := sv.eng.ClaimIssue(cmd.IssueID)
 		if err != nil {

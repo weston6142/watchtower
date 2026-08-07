@@ -113,7 +113,7 @@ func main() {
 		fatal(err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|stop|init|reset|repos|tower|new|backlog|claim|release|finish|launch|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail|planner-artifact> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|stop|init|reset|repos|tower|new|backlog|claim|release|finish|launch|requeue|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail|planner-artifact> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -480,7 +480,7 @@ func main() {
 			break
 		}
 		fmt.Println(statusSentence(r.Overview))
-	case "pause", "resume", "kill", "retry", "abandon", "launch":
+	case "pause", "resume", "kill", "retry", "abandon", "launch", "requeue":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		data := fs.String("data", defaultData(), "data dir")
 		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
@@ -499,6 +499,7 @@ func main() {
 			"pause": "pause_issue", "resume": "resume_issue",
 			"kill": "kill_stage", "retry": "retry_stage",
 			"abandon": "abandon_issue", "launch": "launch_issue",
+			"requeue": "requeue_issue",
 		}
 		var plannerOverride *plannerbudget.Override
 		if plannerFlags != nil {

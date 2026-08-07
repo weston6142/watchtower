@@ -732,6 +732,31 @@ func TestBacklogOps(t *testing.T) {
 	}
 }
 
+func TestRequeueAbandonedIssueProtocol(t *testing.T) {
+	c := newTestClient(t)
+	draft, err := c.Do(Command{Op: "draft_issue", Title: "t", Body: "b", Flow: "default", Preset: "regular", Priority: 2})
+	if err != nil || !draft.OK {
+		t.Fatalf("draft_issue: %v %+v", err, draft)
+	}
+	if response, err := c.Do(Command{Op: "abandon_issue", IssueID: draft.IssueID}); err != nil || !response.OK {
+		t.Fatalf("abandon_issue: %v %+v", err, response)
+	}
+	response, err := c.Do(Command{Op: "requeue_issue", IssueID: draft.IssueID})
+	if err != nil || !response.OK || response.IssueID != draft.IssueID {
+		t.Fatalf("requeue_issue: %v %+v", err, response)
+	}
+	listed, _ := c.Do(Command{Op: "list_backlog"})
+	found := false
+	for _, item := range listed.Backlog {
+		if item.Issue.ID == draft.IssueID && item.Issue.State == "backlog" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("requeued issue missing from backlog: %+v", listed.Backlog)
+	}
+}
+
 func TestClaimProtocolReturnsStructuredReadyBlockedAndResumableTasks(t *testing.T) {
 	repo := t.TempDir()
 	git := func(args ...string) {

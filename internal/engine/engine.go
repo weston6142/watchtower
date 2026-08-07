@@ -1167,6 +1167,62 @@ func (e *Engine) Abandon(issueID string) error {
 	return nil
 }
 
+// RequeueIssue returns an abandoned issue to the backlog under the same ID.
+// The abandoned work stays discarded; a later launch starts the flow again
+// from its first stage in a fresh workspace.
+func (e *Engine) RequeueIssue(issueID string) error {
+	rows, err := e.cfg.Store.Issues()
+	if err != nil {
+		return err
+	}
+	var row *store.IssueRow
+	for i := range rows {
+		if rows[i].ID == issueID {
+			row = &rows[i]
+			break
+		}
+	}
+	if row == nil {
+		return fmt.Errorf("unknown issue %s", issueID)
+	}
+	if row.State != "abandoned" {
+		return fmt.Errorf("issue %s is not abandoned", issueID)
+	}
+	if _, ok := e.cfg.Flows[row.Flow]; !ok {
+		return fmt.Errorf("unknown flow %q", row.Flow)
+	}
+
+	is := &issueState{
+		id: issueID, title: row.Title, body: row.Body, flowName: row.Flow,
+		matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+		dependsOn: append([]string(nil), row.DependsOn...), draft: true,
+		planReview: row.PlanReviewPolicy,
+	}
+	e.mu.Lock()
+	if current, ok := e.issues[issueID]; ok && current.running {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s is still running", issueID)
+	}
+	e.issues[issueID] = is
+	e.mu.Unlock()
+
+	row.State = "backlog"
+	if err := e.cfg.Store.UpsertIssue(*row); err != nil {
+		e.mu.Lock()
+		if e.issues[issueID] == is {
+			delete(e.issues, issueID)
+		}
+		e.mu.Unlock()
+		return err
+	}
+	e.emit(core.EvIssueDrafted, issueID, map[string]any{
+		"title": row.Title, "body": row.Body, "flow": row.Flow,
+		"priority": row.Priority, "levers": row.Levers,
+		"depends_on": row.DependsOn, "requeued": true,
+	})
+	return nil
+}
+
 func (e *Engine) wasKilled(is *issueState) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()

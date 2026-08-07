@@ -323,6 +323,30 @@ func TestAbandonDraft(t *testing.T) {
 	}
 }
 
+func TestRequeueAbandonedIssueReturnsSameIssueToBacklog(t *testing.T) {
+	e, st := newTestEngine(t)
+	parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+	id, _ := e.DraftIssueWithDependencies(
+		"t", "b", "default", "regular", levers.Matrix{"impl": "strict"}, 2, nil, []string{parent})
+	if err := e.Abandon(id); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.RequeueIssue(id); err != nil {
+		t.Fatal(err)
+	}
+	row := issueRow(t, st, id)
+	if row.State != "backlog" || row.Title != "t" || row.Body != "b" || row.Priority != 2 {
+		t.Fatalf("requeued row = %+v", row)
+	}
+	if len(row.DependsOn) != 1 || row.DependsOn[0] != parent {
+		t.Fatalf("requeued dependencies = %v", row.DependsOn)
+	}
+	if err := e.RequeueIssue(id); err == nil {
+		t.Fatal("second requeue succeeded")
+	}
+}
+
 func TestRehydrateKeepsDraftsInert(t *testing.T) {
 	e, st := newTestEngine(t)
 	id, _ := e.DraftIssue("t", "b", "default", "regular", levers.Matrix{"impl": "yolo"}, 3, nil)
