@@ -45,7 +45,9 @@ Final verification has three artifacts with deliberately separate ownership:
   daemon-authored when `test_cmd` is configured; repositories without a
   `test_cmd` retain the agent-authored receipt path. Both are strict machine
   contracts: their fields are exact, and prose or extra keys belong in the
-  report.
+  report. Cache-managed verification adds strict `cache_evidence` to the
+  daemon-authored receipt; it binds the receipt to the complete lease and
+  exact verification identity.
 - The engine injects the canonical contract into `STAGE.md`, validates the
   archived receipts, and persists `verification_ready` before it declares the
   stage complete. Transcript completion is never lifecycle authority.

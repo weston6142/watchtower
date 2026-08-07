@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/verificationcache"
 )
 
 // writeVerificationReceipt runs the configured verification command in the
@@ -15,14 +16,20 @@ import (
 // depends on an agent-authored verification.json. Without a configured
 // test_cmd the agent's receipt (or the fake runner's) remains authoritative.
 func (e *Engine) writeVerificationReceipt(
-	ctx context.Context, is *issueState, workdir string,
+	ctx context.Context, is *issueState, workdir string, lease *verificationcache.Lease,
 ) error {
 	if e.cfg.Train == nil || len(e.cfg.Train.TestCmd) == 0 {
 		return nil
 	}
 	commands := [][]string{e.cfg.Train.TestCmd}
-	if err := marshal.Replay(ctx, workdir, commands); err != nil {
-		return fmt.Errorf("verification: %w", err)
+	var replayErr error
+	if lease != nil {
+		replayErr = marshal.ReplayWithEnvironment(ctx, workdir, commands, lease.ManagedEnvironment())
+	} else {
+		replayErr = marshal.Replay(ctx, workdir, commands)
+	}
+	if replayErr != nil {
+		return fmt.Errorf("verification: %w", replayErr)
 	}
 	branchSHA, err := gitRevision(workdir, "HEAD")
 	if err != nil {
@@ -35,6 +42,16 @@ func (e *Engine) writeVerificationReceipt(
 	receipt := marshal.Verification{
 		BaseSHA: is.baseRef, BranchSHA: branchSHA, TreeSHA: treeSHA,
 		Passed: true, Commands: commands,
+	}
+	if lease != nil {
+		if err := lease.Seal(); err != nil {
+			return fmt.Errorf("seal verification cache: %w", err)
+		}
+		evidence, err := lease.Evidence()
+		if err != nil {
+			return fmt.Errorf("read verification cache evidence: %w", err)
+		}
+		receipt.CacheEvidence = marshal.NewCacheEvidence(evidence)
 	}
 	document, err := json.Marshal(receipt)
 	if err != nil {

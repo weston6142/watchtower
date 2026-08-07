@@ -459,6 +459,45 @@ func TestBacklogClaimReleaseJSON(t *testing.T) {
 	run(t, bin, repo, "release", "--data", base, id, "--json")
 }
 
+func TestVerificationCacheDaemonUsesRepositoryDataRoot(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
+	bin, base, repo := newRepo(t)
+	run(t, "git", repo, "init", "-q", "-b", "develop")
+	run(t, "git", repo, "config", "user.email", "test@example.com")
+	run(t, "git", repo, "config", "user.name", "Test")
+	run(t, "git", repo, "add", "-A")
+	run(t, "git", repo, "commit", "-qm", "base")
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "config.yaml"), []byte(
+		"runner: fake\ntest_cmd: true\npull: false\npush: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flowBody := `name: default
+stages:
+  - name: merge-verification
+    agents: [{package: merge-verifier}]
+    workspace: worktree
+    gate: auto
+    completion: all
+    merge_barrier: true
+    artifacts: [merge-report.md, merge-decision.json, verification.json]
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base, "--title", "cache data root")))
+	waitForIssueEvent(t, bin, base, repo, id, core.EvVerificationReady)
+	dataDir := repocfg.RepoDataDir(base, repo)
+	complete, err := filepath.Glob(filepath.Join(dataDir, "verification-cache", "*", "complete", "*", "manifest.json"))
+	if err != nil || len(complete) == 0 {
+		t.Fatalf("complete verification leases under repository data root = %v, err=%v", complete, err)
+	}
+	for _, path := range complete {
+		if !strings.HasPrefix(path, dataDir+string(os.PathSeparator)) {
+			t.Fatalf("cache evidence escaped repository data root: %s", path)
+		}
+	}
+}
+
 func TestFinishClaimMergesPushesMarksDoneAndCleansWorkspace(t *testing.T) {
 	t.Setenv("TMPDIR", "/tmp")
 	bin := buildBinary(t)

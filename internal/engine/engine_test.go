@@ -32,6 +32,7 @@ import (
 	"github.com/weston6142/watchtower/internal/steward"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
+	"github.com/weston6142/watchtower/internal/verificationcache"
 	"github.com/weston6142/watchtower/internal/workspace"
 )
 
@@ -3084,6 +3085,58 @@ func verificationEngineForFlow(
 		DecisionIdentities: testDecisionIdentities(),
 	})
 	return e, s, repo
+}
+
+func TestVerificationCacheAgentAndDaemonReplayShareLeaseEnvironment(t *testing.T) {
+	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	cacheRoot := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "daemon-cache")
+	command := filepath.Join(t.TempDir(), "verify.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$GOCACHE\" > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.cfg.CacheRoot = cacheRoot
+	e.cfg.Train.CacheRoot = cacheRoot
+	e.cfg.Train.TestCmd = []string{command, capture}
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	var agentEnvironment []string
+	fake.OnEnvironment = func(_, _, _, _ string, env []string) {
+		agentEnvironment = append([]string(nil), env...)
+	}
+	id, err := e.CreateIssue("cache parity", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatalf("cache-managed merge barrier failed: %v", err)
+	}
+	if len(agentEnvironment) == 0 {
+		t.Fatal("agent did not observe a managed lease environment")
+	}
+	observed, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("daemon replay did not observe the managed environment: %v", err)
+	}
+	agentValues := make(map[string]string)
+	for _, entry := range agentEnvironment {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			agentValues[key] = value
+		}
+	}
+	if got, want := strings.TrimSpace(string(observed)), agentValues["GOCACHE"]; got != want {
+		t.Fatalf("daemon GOCACHE = %q, agent GOCACHE = %q", got, want)
+	}
+	archived, err := marshal.LoadVerification(filepath.Join(e.issueDir(id), "artifacts", "verification.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.CacheEvidence == nil || archived.CacheEvidence.State != string(verificationcache.StateComplete) {
+		t.Fatalf("archived cache evidence = %+v, want complete", archived.CacheEvidence)
+	}
+	if !hasEvent(t, s, id, core.EvVerificationReady) {
+		t.Fatal("matching replay and receipt did not create verification_ready")
+	}
 }
 
 func renamedVerificationFlow() flow.Flow {

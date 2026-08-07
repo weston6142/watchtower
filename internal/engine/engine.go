@@ -35,6 +35,7 @@ import (
 	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
+	"github.com/weston6142/watchtower/internal/verificationcache"
 	"github.com/weston6142/watchtower/internal/workspace"
 )
 
@@ -54,6 +55,7 @@ type Config struct {
 	PlanReview         review.PolicySettings
 	DecisionIdentities map[string]decision.AgentIdentity
 	DataDir            string
+	CacheRoot          string
 	Workspace          workspace.Provider
 	TokenBudget        int
 	PlannerBudget      plannerbudget.Profile
@@ -223,6 +225,12 @@ type Engine struct {
 func New(cfg Config) *Engine {
 	if cfg.PlannerBudget == (plannerbudget.Profile{}) {
 		cfg.PlannerBudget = plannerbudget.DefaultProfile()
+	}
+	if cfg.Train != nil && cfg.Train.CacheRoot == "" {
+		cfg.Train.CacheRoot = cfg.CacheRoot
+		if cfg.Train.CacheRoot == "" {
+			cfg.Train.CacheRoot = cfg.DataDir
+		}
 	}
 	e := &Engine{
 		cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{},
@@ -2974,6 +2982,49 @@ func (e *Engine) runStageOnce(
 		emitPlannerSnapshot(plannerbudget.OutcomeNormal, plannerController.Snapshot())
 	}
 
+	var verificationLease *verificationcache.Lease
+	verificationLeaseSealed := false
+	if st.MergeBarrier && e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 {
+		branchSHA, err := gitRevision(workdir, "HEAD")
+		if err != nil {
+			return fmt.Errorf("verification branch identity: %w", err)
+		}
+		treeSHA, err := gitRevision(workdir, "HEAD^{tree}")
+		if err != nil {
+			return fmt.Errorf("verification tree identity: %w", err)
+		}
+		cacheRoot := e.cfg.CacheRoot
+		if cacheRoot == "" {
+			cacheRoot = e.cfg.DataDir
+		}
+		runtime, err := verificationcache.New(verificationcache.Config{
+			CacheRoot: cacheRoot, RepoDir: e.cfg.Train.Repo,
+		})
+		if err != nil {
+			return fmt.Errorf("initialize verification cache: %w", err)
+		}
+		verificationLease, err = runtime.Acquire(ctx, verificationcache.Config{
+			RepoDir: e.cfg.Train.Repo, BaseSHA: is.baseRef, BranchSHA: branchSHA,
+			TreeSHA: treeSHA, Argv: append([]string(nil), e.cfg.Train.TestCmd...),
+		})
+		if err != nil {
+			return fmt.Errorf("acquire verification cache lease: %w", err)
+		}
+	}
+	defer func() {
+		if verificationLease == nil {
+			return
+		}
+		if !verificationLeaseSealed {
+			reason := "verification stage did not complete"
+			if runErr != nil {
+				reason = runErr.Error()
+			}
+			_ = verificationLease.Quarantine(reason)
+		}
+		_ = verificationLease.Close()
+	}()
+
 	type agentDone struct {
 		pkg string
 		res runner.Result
@@ -2990,6 +3041,9 @@ func (e *Engine) runStageOnce(
 			return
 		}
 		agentCtx := runner.WithOperationID(ctx, strconv.FormatInt(runID, 10))
+		if verificationLease != nil {
+			agentCtx = runner.WithManagedEnvironment(agentCtx, verificationLease.ManagedEnvironment())
+		}
 		if artifactSession != nil {
 			agentCtx = runner.WithPlannerArtifactEnv(agentCtx, artifactSession.Env())
 		}
@@ -3083,9 +3137,10 @@ func (e *Engine) runStageOnce(
 		}
 	}
 	if st.MergeBarrier {
-		if err := e.writeVerificationReceipt(ctx, is, workdir); err != nil {
+		if err := e.writeVerificationReceipt(ctx, is, workdir, verificationLease); err != nil {
 			return err
 		}
+		verificationLeaseSealed = verificationLease != nil
 	}
 	// validate artifacts
 	for _, name := range st.Artifacts {
@@ -3138,7 +3193,7 @@ func (e *Engine) runStageOnce(
 		return errDependenciesDiscovered
 	}
 	if st.MergeBarrier {
-		prepared, err := e.prepareFinalization(is)
+		prepared, err := e.prepareFinalization(is, verificationLease)
 		if err != nil {
 			return err
 		}
@@ -3583,7 +3638,7 @@ func (e *Engine) completeWithoutIntegration(is *issueState) (bool, error) {
 func (e *Engine) finalVerificationDecision(
 	is *issueState,
 ) (string, marshal.Verification, error) {
-	prepared, err := e.prepareFinalization(is)
+	prepared, err := e.prepareFinalization(is, nil)
 	if err != nil {
 		return "", marshal.Verification{}, err
 	}

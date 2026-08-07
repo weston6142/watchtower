@@ -12,6 +12,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/verificationcache"
 	"github.com/weston6142/watchtower/internal/workspace"
 )
 
@@ -20,7 +21,9 @@ type preparedFinalization struct {
 	Verification marshal.Verification
 }
 
-func (e *Engine) prepareFinalization(is *issueState) (preparedFinalization, error) {
+func (e *Engine) prepareFinalization(
+	is *issueState, verificationLease *verificationcache.Lease,
+) (preparedFinalization, error) {
 	artifactDir := filepath.Join(e.issueDir(is.id), "artifacts")
 	decision, err := marshal.LoadMergeDecision(filepath.Join(artifactDir, "merge-decision.json"))
 	if err != nil {
@@ -30,7 +33,7 @@ func (e *Engine) prepareFinalization(is *issueState) (preparedFinalization, erro
 	if err != nil {
 		return preparedFinalization{}, fmt.Errorf("load verification receipt: %w", err)
 	}
-	if err := e.validateFinalIdentity(is, decision, verification); err != nil {
+	if err := e.validateFinalIdentity(is, decision, verification, verificationLease); err != nil {
 		return preparedFinalization{}, err
 	}
 	return preparedFinalization{Decision: decision, Verification: verification}, nil
@@ -38,6 +41,7 @@ func (e *Engine) prepareFinalization(is *issueState) (preparedFinalization, erro
 
 func (e *Engine) validateFinalIdentity(
 	is *issueState, decision marshal.MergeDecision, receipt marshal.Verification,
+	verificationLease *verificationcache.Lease,
 ) error {
 	branchSHA, err := gitRevision(is.wsPath, "HEAD")
 	if err != nil {
@@ -72,6 +76,48 @@ func (e *Engine) validateFinalIdentity(
 		return fmt.Errorf(
 			"verification receipt does not include configured verification command %q",
 			e.cfg.Train.TestCmd)
+	}
+	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 {
+		if receipt.CacheEvidence == nil {
+			return fmt.Errorf("cache-managed verification receipt is missing cache evidence")
+		}
+		repository, err := verificationcache.CanonicalRepositoryIdentity(e.cfg.Train.Repo)
+		if err != nil {
+			return fmt.Errorf("resolve verification cache repository: %w", err)
+		}
+		current := marshal.CacheIdentity{
+			LeaseID: receipt.CacheEvidence.LeaseID, Repository: repository,
+			ManagedScope: receipt.CacheEvidence.ManagedScope, BaseSHA: is.baseRef,
+			BranchSHA: branchSHA, TreeSHA: treeSHA,
+			CommandDigest: verificationcache.CommandDigest(e.cfg.Train.TestCmd),
+		}
+		if verificationLease != nil {
+			if verificationLease.State() != verificationcache.StateComplete {
+				return fmt.Errorf("current verification cache lease is not complete")
+			}
+			current = marshal.CacheIdentity{
+				LeaseID: verificationLease.ID(), Repository: repository,
+				ManagedScope: verificationLease.ManagedScope(), BaseSHA: verificationLease.BaseSHA(),
+				BranchSHA: verificationLease.BranchSHA(), TreeSHA: verificationLease.TreeSHA(),
+				CommandDigest: verificationLease.CommandDigest(),
+			}
+		}
+		if err := receipt.CacheEvidence.ValidateAgainst(current); err != nil {
+			return fmt.Errorf("validate verification cache identity: %w", err)
+		}
+		cacheRoot := e.cfg.CacheRoot
+		if cacheRoot == "" {
+			cacheRoot = e.cfg.DataDir
+		}
+		runtime, err := verificationcache.New(verificationcache.Config{
+			CacheRoot: cacheRoot, RepoDir: e.cfg.Train.Repo,
+		})
+		if err != nil {
+			return fmt.Errorf("initialize verification cache validation: %w", err)
+		}
+		if err := runtime.ValidateEvidence(receipt.CacheEvidence.RuntimeEvidence()); err != nil {
+			return fmt.Errorf("validate durable verification cache evidence: %w", err)
+		}
 	}
 	return nil
 }
@@ -288,7 +334,7 @@ func (e *Engine) retryVerifiedFinalization(
 	if err := e.restoreVerifiedWorkspace(is, integration); err != nil {
 		return e.recordFinalizationFailure(is, err)
 	}
-	prepared, err := e.prepareFinalization(is)
+	prepared, err := e.prepareFinalization(is, nil)
 	if err != nil {
 		verification, recovered, recoveryErr := e.resolvedConflictVerification(is)
 		if recoveryErr != nil {

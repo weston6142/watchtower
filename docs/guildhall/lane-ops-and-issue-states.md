@@ -119,6 +119,11 @@ Finalization has a durable boundary that is independent of an agent transcript:
   merge identity are rejected. When `test_cmd` is configured,
   `verification.json` is authored by the daemon; only repositories without a
   `test_cmd` retain the agent-authored receipt path.
+- Cache-managed verification carries strict `cache_evidence` in
+  `verification.json`: one lease spans the merge-verifier agent and daemon
+  replay, and only a passing replay with matching complete lease evidence can
+  create `verification_ready`. A cache hit never replaces the configured
+  command.
 - The engine validates both receipts against the current branch, base, tree,
   and configured verification command, then persists `verification_ready`
   before emitting final-stage completion.
