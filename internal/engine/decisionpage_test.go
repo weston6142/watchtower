@@ -474,7 +474,11 @@ func TestDecisionPageRefreshesAtStageBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = e.StartIssue(context.Background(), id) }()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = e.StartIssue(context.Background(), id)
+	}()
 	p := waitForDecisionPagePending(t, e, id, "execute")
 	if err := e.Answer(p.ID, levers.ChoiceResponse(0)); err != nil {
 		t.Fatal(err)
@@ -485,6 +489,7 @@ func TestDecisionPageRefreshesAtStageBoundary(t *testing.T) {
 		body, readErr := os.ReadFile(filepath.Join(e.cfg.DataDir, id, "decision.html"))
 		if readErr == nil && strings.Contains(string(body), `class="pill done"`) &&
 			strings.Contains(string(body), "Stage <b>2 of 2</b> — verify") {
+			<-done
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
