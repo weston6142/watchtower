@@ -328,6 +328,7 @@ func newTestClient(t *testing.T) *Client {
 }
 
 func TestTailReplaysHistoryLargerThanOneFrame(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
 	s, err := store.Open(filepath.Join(t.TempDir(), "watchtower.db"))
 	if err != nil {
 		t.Fatal(err)
