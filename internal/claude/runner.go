@@ -94,11 +94,12 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 
 	cmd := exec.CommandContext(ctx, c.Bin, args...)
 	cmd.Dir = workdir
-	cmd.Env = append(os.Environ(), c.ExtraEnv...)
-	cmd.Env = append(cmd.Env, runner.PlannerArtifactEnv(ctx)...)
+	extraEnv := append([]string(nil), c.ExtraEnv...)
+	extraEnv = append(extraEnv, runner.PlannerArtifactEnv(ctx)...)
 	if env := EffortEnv(pkg.Effort); env != "" {
-		cmd.Env = append(cmd.Env, env)
+		extraEnv = append(extraEnv, env)
 	}
+	cmd.Env = runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx))
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return runner.Result{Err: err}

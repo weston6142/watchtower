@@ -144,6 +144,26 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE_ARGV"; done`))
 	}
 }
 
+func TestManagedEnvironmentOverlayReachesCodexChild(t *testing.T) {
+	capture := filepath.Join(t.TempDir(), "environment")
+	bin := writeStub(t, successfulStub(`
+printf '%s\n' "$GOCACHE" "$GOMODCACHE" "$GOPATH" "$SENTINEL" > "$CAPTURE"`))
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"GOCACHE=extra-cache", "GOMODCACHE=extra-mod", "GOPATH=extra-path", "SENTINEL=keep", "CAPTURE=" + capture}
+	ctx := runner.WithManagedEnvironment(context.Background(), []string{
+		"GOCACHE=lease-cache", "GOMODCACHE=lease-mod", "GOPATH=lease-path",
+	})
+	res := <-r.Run(ctx, "GH-48", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if got, err := os.ReadFile(capture); err != nil {
+		t.Fatal(err)
+	} else if want := "lease-cache\nlease-mod\nlease-path\nkeep\n"; string(got) != want {
+		t.Fatalf("Codex child environment = %q, want %q", got, want)
+	}
+}
+
 func TestInitialAndResumedTurnsUseTheConfiguredFeatureOverride(t *testing.T) {
 	bin, state := statefulStub(t,
 		`printf '%s\n' '{"type":"thread.started","thread_id":"thr-feature"}'

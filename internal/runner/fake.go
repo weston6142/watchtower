@@ -37,6 +37,7 @@ type FakeRunner struct {
 	OnProposalBatch func(string, []Proposal)
 	OnResponse      func(issueID, stage string, response levers.Response)
 	OnStart         func(issueID, stage, agentPkg, workdir string) error
+	OnEnvironment   func(issueID, stage, agentPkg, workdir string, env []string)
 	OnLine          func(issueID, stage, line string)
 }
 
@@ -48,6 +49,9 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		if !ok {
 			done <- Result{Err: fmt.Errorf("no script for %s/%s", stage, agentPkg)}
 			return
+		}
+		if f.OnEnvironment != nil {
+			f.OnEnvironment(issueID, stage, agentPkg, workdir, ManagedEnvironment(ctx))
 		}
 		if f.OnStart != nil {
 			if err := f.OnStart(issueID, stage, agentPkg, workdir); err != nil {
@@ -135,6 +139,9 @@ func (f *FakeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, w
 		if !ok {
 			done <- Result{Err: fmt.Errorf("no script for %s/%s", stage, agentPkg)}
 			return
+		}
+		if f.OnEnvironment != nil {
+			f.OnEnvironment(issueID, stage, agentPkg, workdir, ManagedEnvironment(ctx))
 		}
 		if f.OnStart != nil {
 			if err := f.OnStart(issueID, stage, agentPkg, workdir); err != nil {

@@ -49,6 +49,23 @@ func TestPlannerRunnerStopsAfterDeniedToolAndKeepsSynthesisResult(t *testing.T) 
 	}
 }
 
+func TestManagedEnvironmentOverlayReachesFakeRunner(t *testing.T) {
+	var observed []string
+	fr := &FakeRunner{
+		Scripts: map[string]Script{"run/agent": {}},
+		OnEnvironment: func(_, _, _, _ string, env []string) {
+			observed = append([]string(nil), env...)
+		},
+	}
+	ctx := WithManagedEnvironment(context.Background(), []string{"GOCACHE=lease-cache", "GOMODCACHE=lease-mod"})
+	if result := <-fr.Run(ctx, "GH-48", "run", "agent", t.TempDir(), make(chan Ask)); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if strings.Join(observed, "|") != "GOCACHE=lease-cache|GOMODCACHE=lease-mod" {
+		t.Fatalf("fake runner observed %v, want lease overlay", observed)
+	}
+}
+
 func TestFakePlannerAppliesSectionRequestsAndRetriesPendingKey(t *testing.T) {
 	dir := t.TempDir()
 	session, err := plannerartifact.Initialize(dir)

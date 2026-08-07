@@ -139,6 +139,40 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 	}
 }
 
+func TestManagedEnvironmentOverlayReachesClaudeChild(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "environment")
+	bin := filepath.Join(dir, "claude-stub")
+	script := `#!/bin/sh
+set -eu
+printf '%s\n' "$GOCACHE" "$GOMODCACHE" "$GOPATH" "$SENTINEL" > "$CAPTURE"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-managed"}'
+printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOCACHE", "inherited-cache")
+	t.Setenv("GOMODCACHE", "inherited-mod")
+	t.Setenv("GOPATH", "inherited-path")
+	r := &CodeRunner{
+		Bin: bin, Packages: testPkgs(),
+		ExtraEnv: []string{"GOCACHE=extra-cache", "GOMODCACHE=extra-mod", "GOPATH=extra-path", "SENTINEL=keep", "CAPTURE=" + capture},
+	}
+	ctx := runner.WithManagedEnvironment(context.Background(), []string{
+		"GOCACHE=lease-cache", "GOMODCACHE=lease-mod", "GOPATH=lease-path",
+	})
+	res := <-r.Run(ctx, "GH-48", "execute", "spec-writer", dir, make(chan runner.Ask))
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if got, err := os.ReadFile(capture); err != nil {
+		t.Fatal(err)
+	} else if want := "lease-cache\nlease-mod\nlease-path\nkeep\n"; string(got) != want {
+		t.Fatalf("Claude child environment = %q, want %q", got, want)
+	}
+}
+
 func TestDecisionRoundTrip(t *testing.T) {
 	done, asks := run(t, abs(t, "testdata/asker.sh"), t.TempDir())
 	a := <-asks

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"strings"
 
 	"github.com/weston6142/watchtower/internal/levers"
 )
@@ -125,6 +126,8 @@ type operationIDKey struct{}
 
 type plannerArtifactEnvKey struct{}
 
+type managedEnvironmentKey struct{}
+
 func WithPlannerArtifactEnv(ctx context.Context, env []string) context.Context {
 	return context.WithValue(ctx, plannerArtifactEnvKey{}, append([]string(nil), env...))
 }
@@ -134,6 +137,55 @@ func PlannerArtifactEnv(ctx context.Context) []string {
 		return append([]string(nil), env...)
 	}
 	return nil
+}
+
+// WithManagedEnvironment carries an immutable child-process environment
+// overlay selected by the verification lifecycle.
+func WithManagedEnvironment(ctx context.Context, env []string) context.Context {
+	return context.WithValue(ctx, managedEnvironmentKey{}, append([]string(nil), env...))
+}
+
+// ManagedEnvironment returns a copy of the lifecycle-provided overlay.
+func ManagedEnvironment(ctx context.Context) []string {
+	if env, ok := ctx.Value(managedEnvironmentKey{}).([]string); ok {
+		return append([]string(nil), env...)
+	}
+	return nil
+}
+
+// MergeEnvironment preserves inherited and extra variables while replacing
+// every key present in the managed overlay exactly once.
+func MergeEnvironment(inherited, extra, managed []string) []string {
+	replacements := make(map[string]string, len(managed))
+	order := make([]string, 0, len(managed))
+	for _, entry := range managed {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
+		}
+		if _, seen := replacements[key]; !seen {
+			order = append(order, key)
+		}
+		replacements[key] = value
+	}
+	result := make([]string, 0, len(inherited)+len(extra)+len(order))
+	appendUnmanaged := func(entries []string) {
+		for _, entry := range entries {
+			key, _, ok := strings.Cut(entry, "=")
+			if ok {
+				if _, replace := replacements[key]; replace {
+					continue
+				}
+			}
+			result = append(result, entry)
+		}
+	}
+	appendUnmanaged(inherited)
+	appendUnmanaged(extra)
+	for _, key := range order {
+		result = append(result, key+"="+replacements[key])
+	}
+	return result
 }
 
 func WithOperationID(ctx context.Context, operationID string) context.Context {
