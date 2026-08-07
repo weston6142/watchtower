@@ -36,6 +36,7 @@ type Command struct {
 	ProposalID    int64                   `json:"proposal_id,omitempty"`
 	Accept        bool                    `json:"accept,omitempty"`
 	SinceSeq      int64                   `json:"since_seq,omitempty"`
+	ThroughSeq    int64                   `json:"through_seq,omitempty"`
 	Repo          string                  `json:"repo,omitempty"`
 	Stage         string                  `json:"stage,omitempty"`
 	Lever         string                  `json:"lever,omitempty"`
@@ -55,6 +56,7 @@ type Response struct {
 	Claims     []engine.Claim           `json:"claims,omitempty"`
 	Claim      *engine.Claim            `json:"claim,omitempty"`
 	Events     []core.Event             `json:"events,omitempty"`
+	ThroughSeq int64                    `json:"through_seq,omitempty"`
 	Lines      []string                 `json:"lines,omitempty"`
 	Overview   *Overview                `json:"overview,omitempty"`
 	Detail     *IssueDetail             `json:"detail,omitempty"`

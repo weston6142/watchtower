@@ -415,6 +415,40 @@ func (s *Store) EventsSince(seq int64) ([]core.Event, error) {
 	return out, rows.Err()
 }
 
+// LatestEventSeq returns the current durable event-log boundary.
+func (s *Store) LatestEventSeq() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.seq
+}
+
+// EventsBetweenLimit returns the next ordered page after seq, capped at the
+// point-in-time boundary throughSeq.
+func (s *Store) EventsBetweenLimit(seq, throughSeq int64, limit int) ([]core.Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(
+		`SELECT id,seq,type,issue_id,payload,at FROM events
+		 WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?`, seq, throughSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.Event
+	for rows.Next() {
+		var ev core.Event
+		var typ, payload, at string
+		if err := rows.Scan(&ev.ID, &ev.Seq, &typ, &ev.IssueID, &payload, &at); err != nil {
+			return nil, err
+		}
+		ev.Type = core.EventType(typ)
+		ev.Payload = json.RawMessage(payload)
+		ev.At, _ = time.Parse(time.RFC3339Nano, at)
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
 // LatestPlannerSnapshot returns the most recent planner usage metadata for an
 // issue. Planner events intentionally contain usage metadata only; source
 // contents and tool payloads are never part of this durable record.

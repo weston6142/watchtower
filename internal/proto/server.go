@@ -43,6 +43,8 @@ type Server struct {
 	plannerBudget plannerbudget.Profile
 }
 
+const tailPageEventLimit = 256
+
 func NewServer(e *engine.Engine, s *store.Store) *Server {
 	return &Server{eng: e, st: s, plannerBudget: plannerbudget.DefaultProfile()}
 }
@@ -409,11 +411,15 @@ func (sv *Server) exec(cmd Command) Response {
 		}
 		return Response{OK: true, IssueID: issueID}
 	case "tail":
-		evs, err := sv.st.EventsSince(cmd.SinceSeq)
+		throughSeq := cmd.ThroughSeq
+		if throughSeq == 0 {
+			throughSeq = sv.st.LatestEventSeq()
+		}
+		evs, err := sv.st.EventsBetweenLimit(cmd.SinceSeq, throughSeq, tailPageEventLimit)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
-		return Response{OK: true, Events: evs}
+		return boundedTailResponse(evs, throughSeq)
 	case "transcript_tail":
 		n := cmd.N
 		if n <= 0 {
@@ -444,6 +450,28 @@ func (sv *Server) exec(cmd Command) Response {
 	default:
 		return Response{Error: "unknown op " + cmd.Op}
 	}
+}
+
+func boundedTailResponse(events []core.Event, throughSeq int64) Response {
+	response := Response{OK: true, ThroughSeq: throughSeq}
+	for _, event := range events {
+		response.Events = append(response.Events, event)
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		// Scanner's token excludes the newline, but keeping one byte of room
+		// avoids depending on its exact maximum-token boundary behavior.
+		if len(encoded) < maxMessageBytes {
+			continue
+		}
+		response.Events = response.Events[:len(response.Events)-1]
+		if len(response.Events) == 0 {
+			return Response{Error: fmt.Sprintf("event sequence %d exceeds the protocol frame limit", event.Seq)}
+		}
+		return response
+	}
+	return response
 }
 
 func (sv *Server) overview() (Overview, error) {

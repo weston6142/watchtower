@@ -327,6 +327,71 @@ func newTestClient(t *testing.T) *Client {
 	return c
 }
 
+func TestTailReplaysHistoryLargerThanOneFrame(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "watchtower.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	const eventCount = 80
+	largeError := strings.Repeat("<oversized-history>", 2_048)
+	for i := 0; i < eventCount; i++ {
+		event, err := core.NewEvent(core.EvStageFailed, fmt.Sprintf("GH-%d", i+1), map[string]string{
+			"error": largeError,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpaged, err := json.Marshal(Response{OK: true, Events: history})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unpaged) <= maxMessageBytes {
+		t.Fatalf("test history is only %d bytes; want more than one %d-byte frame", len(unpaged), maxMessageBytes)
+	}
+
+	socket := filepath.Join(t.TempDir(), "watchtower.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(nil, s)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = listener.Close() })
+
+	client, err := Dial(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	response, err := client.Do(Command{Op: "tail", SinceSeq: 0})
+	if err != nil {
+		t.Fatalf("tail could not replay the durable history: %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("tail response: %+v", response)
+	}
+	if len(response.Events) != eventCount {
+		t.Fatalf("tail returned %d events, want %d", len(response.Events), eventCount)
+	}
+	for i, event := range response.Events {
+		wantSeq := int64(i + 1)
+		if event.Seq != wantSeq {
+			t.Fatalf("event %d has sequence %d, want %d", i, event.Seq, wantSeq)
+		}
+	}
+}
+
 func TestCreateAnswerAndTailOverSocket(t *testing.T) {
 	f, err := flow.Load("../flow/testdata/default.yaml")
 	if err != nil {
