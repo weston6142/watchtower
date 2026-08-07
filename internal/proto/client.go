@@ -3,6 +3,7 @@ package proto
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"sync"
 )
@@ -30,6 +31,13 @@ func Dial(sockPath string) (*Client, error) {
 func (c *Client) Do(cmd Command) (Response, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if cmd.Op == "tail" {
+		return c.doTailLocked(cmd)
+	}
+	return c.doLocked(cmd)
+}
+
+func (c *Client) doLocked(cmd Command) (Response, error) {
 	if err := c.enc.Encode(cmd); err != nil {
 		return Response{}, err
 	}
@@ -41,6 +49,43 @@ func (c *Client) Do(cmd Command) (Response, error) {
 		return Response{}, err
 	}
 	return r, nil
+}
+
+func (c *Client) doTailLocked(cmd Command) (Response, error) {
+	combined := Response{OK: true, ThroughSeq: cmd.ThroughSeq}
+	for {
+		page, err := c.doLocked(cmd)
+		if err != nil {
+			return Response{}, err
+		}
+		if !page.OK {
+			return page, nil
+		}
+		if cmd.ThroughSeq == 0 {
+			cmd.ThroughSeq = page.ThroughSeq
+			combined.ThroughSeq = page.ThroughSeq
+		} else if page.ThroughSeq != cmd.ThroughSeq {
+			return Response{}, fmt.Errorf("tail replay boundary changed from %d to %d", cmd.ThroughSeq, page.ThroughSeq)
+		}
+		combined.Events = append(combined.Events, page.Events...)
+		if cmd.ThroughSeq == 0 || cmd.SinceSeq >= cmd.ThroughSeq {
+			return combined, nil
+		}
+		if len(page.Events) == 0 {
+			return Response{}, fmt.Errorf("tail replay stopped at %d before boundary %d", cmd.SinceSeq, cmd.ThroughSeq)
+		}
+		nextSeq := page.Events[len(page.Events)-1].Seq
+		if nextSeq <= cmd.SinceSeq {
+			return Response{}, fmt.Errorf("tail replay did not advance after sequence %d", cmd.SinceSeq)
+		}
+		if nextSeq > cmd.ThroughSeq {
+			return Response{}, fmt.Errorf("tail replay advanced past boundary %d to %d", cmd.ThroughSeq, nextSeq)
+		}
+		cmd.SinceSeq = nextSeq
+		if cmd.SinceSeq == cmd.ThroughSeq {
+			return combined, nil
+		}
+	}
 }
 
 func (c *Client) Close() error { return c.conn.Close() }
