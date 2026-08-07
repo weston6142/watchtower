@@ -310,6 +310,7 @@ func newTestClient(t *testing.T) *Client {
 		Flows:              map[string]flow.Flow{"default": f},
 		DecisionIdentities: protoDecisionIdentities(f),
 		DataDir:            t.TempDir(),
+		Observers:          []func(core.Event){(&steward.Steward{Store: s}).Observe},
 	})
 	sock := filepath.Join(t.TempDir(), "g.sock")
 	l, err := net.Listen("unix", sock)
