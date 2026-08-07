@@ -60,9 +60,158 @@ func TestInvestigateKeyOpensPicker(t *testing.T) {
 
 func TestDecisionPageKeyRequiresFocus(t *testing.T) {
 	m := NewModel(nil, []string{"spec"})
-	m = pressKey(t, m, "w")
-	if m.Err != msgNoLaneFocused {
-		t.Fatalf("w without focus error = %q, want %q", m.Err, msgNoLaneFocused)
+	result, cmd := pressKeyCmd(t, m, "w")
+	if result.Err != msgNoLaneFocused {
+		t.Fatalf("w without focus error = %q, want %q", result.Err, msgNoLaneFocused)
+	}
+	if cmd != nil {
+		t.Fatal("w without focus returned a command")
+	}
+}
+
+func decisionPageFocusedModel(t *testing.T, client Session) Model {
+	t.Helper()
+	m := NewModel(client, []string{"spec"})
+	return m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-1", map[string]any{
+			"title": "focused lane", "flow": "default",
+		}),
+		mkev(t, core.EvStageStarted, "GH-1", map[string]any{"stage": "spec"}),
+	})
+}
+
+func preserveEventSequence(t *testing.T) {
+	t.Helper()
+	savedSeq := seq
+	t.Cleanup(func() { seq = savedSeq })
+}
+
+func TestDecisionPageKeyPrefersToastIssueAndPreservesFocus(t *testing.T) {
+	preserveEventSequence(t)
+	session := &reconnectTestSession{
+		responses: map[string]proto.Response{
+			"issue_detail": {
+				OK:     true,
+				Detail: &proto.IssueDetail{DecisionPage: "/tmp/GH-2.html"},
+			},
+		},
+	}
+	m := decisionPageFocusedModel(t, session)
+	m = m.applyEvents([]core.Event{
+		mkev(t, core.EvIssueCreated, "GH-2", map[string]any{
+			"title": "decision lane", "flow": "default",
+		}),
+		mkev(t, core.EvStageStarted, "GH-2", map[string]any{"stage": "spec"}),
+		mkev(t, core.EvDecisionRequired, "GH-2", map[string]any{
+			"decision_id": float64(47), "stage": "spec", "question": "Approve?",
+			"options": []any{"approve"}, "recommended": float64(0),
+		}),
+	})
+	if m.Focus.Issue != "GH-1" {
+		t.Fatalf("initial focus = %q, want GH-1", m.Focus.Issue)
+	}
+	if m.Toast == nil || m.Toast.IssueID != "GH-2" {
+		t.Fatalf("toast = %+v, want GH-2", m.Toast)
+	}
+
+	next, cmd := pressKeyCmd(t, m, "w")
+	if cmd == nil {
+		t.Fatal("w with a visible decision toast returned no command")
+	}
+	msg := cmd()
+	if len(session.doCalls) != 1 {
+		t.Fatalf("session calls = %v, want one issue_detail call", session.doCalls)
+	}
+	request := session.doCalls[0]
+	if request.Op != "issue_detail" || request.IssueID != "GH-2" {
+		t.Fatalf("request = %+v, want issue_detail for GH-2", request)
+	}
+
+	updated, browserCmd := next.Update(msg)
+	result := updated.(Model)
+	if result.Focus.Issue != "GH-1" {
+		t.Fatalf("focus after page response = %q, want GH-1", result.Focus.Issue)
+	}
+	if browserCmd == nil {
+		t.Fatal("non-empty decision page did not reach the browser-opening path")
+	}
+}
+
+func TestDecisionPageKeyFallsBackToFocusedIssueWithoutToast(t *testing.T) {
+	preserveEventSequence(t)
+	session := &reconnectTestSession{
+		responses: map[string]proto.Response{
+			"issue_detail": {OK: true, Detail: &proto.IssueDetail{}},
+		},
+	}
+	m := decisionPageFocusedModel(t, session)
+
+	_, cmd := pressKeyCmd(t, m, "w")
+	if cmd == nil {
+		t.Fatal("w with a focused lane returned no command")
+	}
+	_ = cmd()
+	if len(session.doCalls) != 1 {
+		t.Fatalf("session calls = %v, want one issue_detail call", session.doCalls)
+	}
+	request := session.doCalls[0]
+	if request.Op != "issue_detail" || request.IssueID != "GH-1" {
+		t.Fatalf("request = %+v, want issue_detail for GH-1", request)
+	}
+}
+
+func TestDecisionPageKeyRejectsEmptyToastIssueWithoutFallback(t *testing.T) {
+	preserveEventSequence(t)
+	session := &reconnectTestSession{}
+	m := decisionPageFocusedModel(t, session)
+	m.Toast = &projection.DecisionView{}
+
+	result, cmd := pressKeyCmd(t, m, "w")
+	if result.Err != msgNoLaneFocused {
+		t.Fatalf("empty-toast w error = %q, want %q", result.Err, msgNoLaneFocused)
+	}
+	if cmd != nil {
+		t.Fatal("empty toast issue returned a command instead of the no-target guard")
+	}
+	if len(session.doCalls) != 0 {
+		t.Fatalf("session calls = %v, want none", session.doCalls)
+	}
+	if result.Focus.Issue != "GH-1" {
+		t.Fatalf("focus after empty-toast guard = %q, want GH-1", result.Focus.Issue)
+	}
+}
+
+func TestDecisionPageKeyPreservesDetailErrors(t *testing.T) {
+	preserveEventSequence(t)
+	for _, tc := range []struct {
+		name   string
+		detail *proto.IssueDetail
+		want   string
+	}{
+		{name: "nil detail", want: "issue detail unavailable"},
+		{
+			name:   "empty decision page",
+			detail: &proto.IssueDetail{},
+			want:   "no decision page yet for this lane",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := &reconnectTestSession{
+				responses: map[string]proto.Response{
+					"issue_detail": {OK: true, Detail: tc.detail},
+				},
+			}
+			m := decisionPageFocusedModel(t, session)
+			_, cmd := pressKeyCmd(t, m, "w")
+			if cmd == nil {
+				t.Fatal("w returned no issue_detail command")
+			}
+			next, _ := m.Update(cmd())
+			result := next.(Model)
+			if result.Err != tc.want {
+				t.Fatalf("Err = %q, want %q", result.Err, tc.want)
+			}
+		})
 	}
 }
 
