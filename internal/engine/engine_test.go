@@ -2142,6 +2142,36 @@ func (f *fakeWS) Acquire(issueID string) (string, func() error, error) {
 
 func (f *fakeWS) Name() string { return "fake" }
 
+type discardTrackingWS struct {
+	fakeWS
+	discarded []string
+}
+
+func (w *discardTrackingWS) DiscardIssue(issueID string) error {
+	w.discarded = append(w.discarded, issueID)
+	return nil
+}
+
+func TestRequeueDiscardsAbandonedIssueWorkspaceHistory(t *testing.T) {
+	ws := &discardTrackingWS{}
+	e, _ := newTestEngine(t)
+	e.cfg.Workspace = ws
+	id, err := e.DraftIssue("retry cleanly", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Abandon(id); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.RequeueIssue(id); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ws.discarded, []string{id}) {
+		t.Fatalf("discarded issues = %v, want [%s]", ws.discarded, id)
+	}
+}
+
 type existingBranchWS struct {
 	repo string
 	root string

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func initRepo(t *testing.T) string {
@@ -45,6 +46,51 @@ func TestGitWorktreeAcquireRelease(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("worktree not removed")
+	}
+}
+
+func TestGitWorktreeDiscardIssueDeletesReleasedBranch(t *testing.T) {
+	repo := initRepo(t)
+	p := GitWorktree{Repo: repo}
+	path, release, err := p.Acquire("GH-9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", path, "commit", "--allow-empty", "-q", "-m", "abandoned work").CombinedOutput(); err != nil {
+		t.Fatalf("commit abandoned work: %v %s", err, out)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DiscardIssue("GH-9"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/issue/GH-9").Run(); err == nil {
+		t.Fatal("abandoned issue branch still exists")
+	}
+}
+
+func TestGitWorktreeDiscardIssueWaitsForAbandonRelease(t *testing.T) {
+	repo := initRepo(t)
+	p := GitWorktree{Repo: repo}
+	path, release, err := p.Acquire("GH-9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		released <- release()
+	}()
+
+	if err := p.DiscardIssue("GH-9"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-released; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("abandoned worktree still exists: %v", err)
 	}
 }
 

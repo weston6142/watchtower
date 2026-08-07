@@ -1191,6 +1191,11 @@ func (e *Engine) RequeueIssue(issueID string) error {
 	if _, ok := e.cfg.Flows[row.Flow]; !ok {
 		return fmt.Errorf("unknown flow %q", row.Flow)
 	}
+	if discarder, ok := e.cfg.Workspace.(workspace.IssueDiscarder); ok {
+		if err := discarder.DiscardIssue(issueID); err != nil {
+			return fmt.Errorf("discard abandoned issue workspace: %w", err)
+		}
+	}
 
 	is := &issueState{
 		id: issueID, title: row.Title, body: row.Body, flowName: row.Flow,

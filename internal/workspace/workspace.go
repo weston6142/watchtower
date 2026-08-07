@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Provider hands out isolated working copies of a repo, one per issue.
@@ -23,6 +24,12 @@ type Provider interface {
 // restart. Engine integration state persists the exact path to pass back.
 type Releaser interface {
 	ReleasePath(path string) error
+}
+
+// IssueDiscarder removes durable branch state for an explicitly abandoned
+// issue before that issue is requeued as a fresh run.
+type IssueDiscarder interface {
+	DiscardIssue(issueID string) error
 }
 
 // GitWorktree provisions workspaces with `git worktree` under .worktrees/,
@@ -43,6 +50,10 @@ func (g GitWorktree) Acquire(issueID string) (string, func() error, error) {
 }
 
 func (g GitWorktree) Name() string { return "git worktree" }
+
+func (g GitWorktree) DiscardIssue(issueID string) error {
+	return discardIssueBranch(g.Repo, issueID)
+}
 
 func (g GitWorktree) ReleasePath(path string) error {
 	out, err := exec.Command("git", "-C", g.Repo, "worktree", "remove", "--force", path).CombinedOutput()
@@ -102,6 +113,10 @@ func (t Treehouse) Acquire(issueID string) (string, func() error, error) {
 
 func (t Treehouse) Name() string { return "treehouse" }
 
+func (t Treehouse) DiscardIssue(issueID string) error {
+	return discardIssueBranch(t.Repo, issueID)
+}
+
 func (t Treehouse) ReleasePath(path string) error {
 	cmd := exec.Command("treehouse", "return", "--force", path)
 	cmd.Dir = t.Repo
@@ -110,6 +125,31 @@ func (t Treehouse) ReleasePath(path string) error {
 		return fmt.Errorf("treehouse return: %v: %s", err, out)
 	}
 	return nil
+}
+
+func discardIssueBranch(repo, issueID string) error {
+	branch := "issue/" + issueID
+	ref := "refs/heads/" + branch
+	deadline := time.Now().Add(5 * time.Second)
+	var lastOutput []byte
+	var lastErr error
+	for {
+		check := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", ref)
+		if err := check.Run(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				return nil
+			}
+			return fmt.Errorf("detect abandoned issue branch: %w", err)
+		}
+		lastOutput, lastErr = exec.Command("git", "-C", repo, "branch", "-D", branch).CombinedOutput()
+		if lastErr == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("delete abandoned issue branch: %v: %s", lastErr, lastOutput)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 // Detect prefers treehouse when its binary is on PATH, falling back to
