@@ -2370,7 +2370,27 @@ func TestResumeRestartsKilledLane(t *testing.T) {
 		}
 		if starts >= 2 {
 			if err := e.KillStage(id); err == nil {
-				waitForEvent(t, s, id, core.EvStageKilled)
+				killDeadline := time.After(5 * time.Second)
+				for {
+					events, eventErr := s.EventsSince(0)
+					if eventErr != nil {
+						t.Fatal(eventErr)
+					}
+					kills := 0
+					for _, event := range events {
+						if event.IssueID == id && event.Type == core.EvStageKilled {
+							kills++
+						}
+					}
+					if kills >= 2 {
+						break
+					}
+					select {
+					case <-killDeadline:
+						t.Fatal("resumed stage did not stop after kill")
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
 			}
 			return
 		}
