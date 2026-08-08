@@ -578,6 +578,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = msg.Width, msg.Height
 		return m, nil
+	case tea.MouseMsg:
+		cmd := m.updateMouse(msg)
+		return m, cmd
 	case tea.KeyMsg:
 		key := msg.String()
 		if key == "ctrl+c" {
@@ -1501,6 +1504,80 @@ func (m *Model) updatePagerKey(key string) tea.Cmd {
 		}
 	case m.pager.Mode == "pager":
 		m.pager = m.pager.scroll(key, max(1, m.pagerBodyHeight()-2))
+	}
+	return nil
+}
+
+func (m *Model) updateMouse(msg tea.MouseMsg) tea.Cmd {
+	if m.connection == connectionReconnecting || m.shuttingDown || m.help {
+		return nil
+	}
+	if m.modal != nil || m.investigate != nil || m.backlog != nil || m.confirm != nil ||
+		m.decisionEditor != nil || m.leverEditor != nil || m.Evidence != nil ||
+		m.evidenceDecision != nil || m.Toast != nil {
+		return nil
+	}
+
+	if m.currentMode() == "transcript" {
+		if msg.Action != tea.MouseActionPress ||
+			(msg.Button != tea.MouseButtonWheelUp && msg.Button != tea.MouseButtonWheelDown) {
+			return nil
+		}
+		if !m.interactionGeometry().Transcript.contains(msg.X, msg.Y) {
+			return nil
+		}
+		key := "k"
+		if msg.Button == tea.MouseButtonWheelDown {
+			key = "j"
+		}
+		before := m.stream.Follow
+		total := len(streamBody(m.doorLines, streamInner(m.layoutWidth())))
+		m.stream = m.stream.scroll(key, streamRows(m.Height), total)
+		if !before && m.stream.Follow {
+			return m.fetchTranscript()
+		}
+		return nil
+	}
+
+	if m.currentMode() != "" {
+		return nil
+	}
+	if m.pager.Mode == "pager" {
+		if msg.Action != tea.MouseActionPress ||
+			(msg.Button != tea.MouseButtonWheelUp && msg.Button != tea.MouseButtonWheelDown) {
+			return nil
+		}
+		if !m.interactionGeometry().Pager.contains(msg.X, msg.Y) {
+			return nil
+		}
+		key := "k"
+		if msg.Button == tea.MouseButtonWheelDown {
+			key = "j"
+		}
+		m.pager = m.pager.scroll(key, max(1, m.pagerBodyHeight()-2))
+		return nil
+	}
+	if m.pager.Mode != "" || m.rows || m.setup != nil || m.archMode != "" {
+		return nil
+	}
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return nil
+	}
+	target, ok := m.interactionGeometry().laneAt(msg.X, msg.Y)
+	if !ok {
+		return nil
+	}
+	moved := requestFocus(m.Focus, m.State, m.stages, target.IssueID, m.retired)
+	if moved == m.Focus {
+		return nil
+	}
+	m.Err = ""
+	m.Focus = moved
+	m.warExpanded = false
+	m.Detail = nil
+	m.openArtifacts = false
+	if m.Focus.Issue != "" {
+		return m.fetchDetail(m.Focus.Issue)
 	}
 	return nil
 }

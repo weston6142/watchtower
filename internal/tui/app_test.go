@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -2127,5 +2128,285 @@ func TestStaleShippedDoesNotResurfaceAsParked(t *testing.T) {
 	m.dayStart = core.StartOfDay(shelfMerged.Add(24 * time.Hour))
 	if got := m.shelfItems(); len(got) != 0 {
 		t.Fatalf("stale shipped lane resurfaced on the shelf: %+v", got)
+	}
+}
+
+func sendMouse(t *testing.T, m Model, x, y int, button tea.MouseButton, action tea.MouseAction) (Model, tea.Cmd) {
+	t.Helper()
+	next, cmd := m.Update(tea.MouseMsg{X: x, Y: y, Button: button, Action: action})
+	got, ok := next.(Model)
+	if !ok {
+		t.Fatalf("mouse update returned %T, want tui.Model", next)
+	}
+	return got, cmd
+}
+
+func renderedLanePoint(t *testing.T, m Model, issue string, rowDelta int) (int, int, bool) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(ansi.Strip(m.View()), "\n"), "\n")
+	for y, line := range lines {
+		x := strings.Index(line, issue)
+		if x < 0 || y+1 >= len(lines) || !strings.Contains(lines[y+1], "BRAINSTORM") {
+			continue
+		}
+		targetY := y + rowDelta
+		if targetY < 0 || targetY >= len(lines) {
+			continue
+		}
+		return x + 1, targetY, true
+	}
+	return 0, 0, false
+}
+
+func renderedTextPoint(t *testing.T, m Model, needle string) (int, int) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(ansi.Strip(m.View()), "\n"), "\n")
+	for y, line := range lines {
+		if x := strings.Index(line, needle); x >= 0 {
+			return x + 1, y
+		}
+	}
+	t.Fatalf("rendered screen does not contain %q:\n%s", needle, strings.Join(lines, "\n"))
+	return 0, 0
+}
+
+type mouseStateSnapshot struct {
+	Focus  Focus
+	Modes  []string
+	Pager  pagerState
+	Stream streamState
+	Err    string
+	Toast  *projection.DecisionView
+}
+
+func snapshotMouseState(m Model) mouseStateSnapshot {
+	return mouseStateSnapshot{
+		Focus:  m.Focus,
+		Modes:  append([]string(nil), m.modes...),
+		Pager:  m.pager,
+		Stream: m.stream,
+		Err:    m.Err,
+		Toast:  m.Toast,
+	}
+}
+
+func assertMouseStateUnchanged(t *testing.T, before mouseStateSnapshot, after Model) {
+	t.Helper()
+	if got := snapshotMouseState(after); !reflect.DeepEqual(got, before) {
+		t.Fatalf("mouse changed state:\n before: %+v\n after:  %+v", before, got)
+	}
+}
+
+func TestMouseClickFocusesVisibleLaneTitleAndBody(t *testing.T) {
+	for _, width := range []int{60, 100, 200} {
+		for index, issue := range []string{"ca-repo", "gh-importer", "fx-e2e", "fx-dark"} {
+			for _, rowDelta := range []int{-2, 1} {
+				name := fmt.Sprintf("%dx title/body %s", width, issue)
+				t.Run(name, func(t *testing.T) {
+					m := FixtureModel("floor", width, 40)
+					x, y, ok := renderedLanePoint(t, m, issue, rowDelta)
+					if !ok {
+						t.Skipf("%s is not visible at width %d", issue, width)
+					}
+					got, cmd := sendMouse(t, m, x, y, tea.MouseButtonLeft, tea.MouseActionPress)
+					if cmd != nil {
+						t.Fatal("mouse click returned a command without a client")
+					}
+					want := pressKey(t, FixtureModel("floor", width, 40), fmt.Sprintf("%d", index+1)).Focus
+					if got.Focus != want {
+						t.Fatalf("focus after click = %+v, want keyboard focus %+v", got.Focus, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestMouseClickTracksResizeAndFocusedCompaction(t *testing.T) {
+	m := FixtureModel("floor", 60, 40)
+	for _, width := range []int{60, 100, 200} {
+		m.Width = width
+		x, y, ok := renderedLanePoint(t, m, "ca-repo", -2)
+		if !ok {
+			t.Fatalf("ca-repo has no rendered click target at width %d", width)
+		}
+		got, _ := sendMouse(t, m, x, y, tea.MouseButtonLeft, tea.MouseActionPress)
+		if got.Focus.Issue != "ca-repo" {
+			t.Fatalf("click at width %d focused %+v, want ca-repo", width, got.Focus)
+		}
+	}
+
+	m = FixtureModel("floor", 60, 40)
+	if _, _, ok := renderedLanePoint(t, m, "fx-dark", -2); ok {
+		t.Fatal("hidden fx-dark lane rendered a click target before compaction change")
+	}
+	m.Focus = requestFocus(m.Focus, m.State, m.stages, "fx-dark", m.retired)
+	x, y, ok := renderedLanePoint(t, m, "fx-dark", 1)
+	if !ok {
+		t.Fatal("focused fx-dark lane has no rendered click target")
+	}
+	got, _ := sendMouse(t, m, x, y, tea.MouseButtonLeft, tea.MouseActionPress)
+	if got.Focus.Issue != "fx-dark" {
+		t.Fatalf("focused-compaction click focused %+v, want fx-dark", got.Focus)
+	}
+
+	grid := FixtureModel("floor", 60, 40)
+	gutterX, gutterY, ok := renderedTextPointIfPresent(grid, "‹1›")
+	if ok {
+		before := snapshotMouseState(grid)
+		after, cmd := sendMouse(t, grid, gutterX, gutterY, tea.MouseButtonLeft, tea.MouseActionPress)
+		if cmd != nil {
+			t.Fatal("gutter click returned a command")
+		}
+		assertMouseStateUnchanged(t, before, after)
+	}
+}
+
+func renderedTextPointIfPresent(m Model, needle string) (int, int, bool) {
+	lines := strings.Split(strings.TrimRight(ansi.Strip(m.View()), "\n"), "\n")
+	for y, line := range lines {
+		if x := strings.Index(line, needle); x >= 0 {
+			return x + 1, y, true
+		}
+	}
+	return 0, 0, false
+}
+
+func TestMousePagerWheelMovesOneLineClampsAndPreservesFocus(t *testing.T) {
+	m := FixtureModel("pager", 100, 40)
+	m.pager.Lines = mklines(100)
+	m.pager.Top = 10
+	x, y := renderedTextPoint(t, m, "line-10")
+	wantFocus := m.Focus
+	got, cmd := sendMouse(t, m, x, y, tea.MouseButtonWheelDown, tea.MouseActionPress)
+	if cmd != nil || got.pager.Top != 11 {
+		t.Fatalf("wheel-down pager result = top %d, cmd %v; want top 11 and no command", got.pager.Top, cmd)
+	}
+	if got.Focus != wantFocus {
+		t.Fatalf("wheel-down changed focus to %+v, want %+v", got.Focus, wantFocus)
+	}
+	x, y = renderedTextPoint(t, got, "line-11")
+	got, cmd = sendMouse(t, got, x, y, tea.MouseButtonWheelUp, tea.MouseActionPress)
+	if cmd != nil || got.pager.Top != 10 {
+		t.Fatalf("wheel-up pager result = top %d, cmd %v; want top 10 and no command", got.pager.Top, cmd)
+	}
+
+	got.pager.Top = 0
+	x, y = renderedTextPoint(t, got, "line-0")
+	got, _ = sendMouse(t, got, x, y, tea.MouseButtonWheelUp, tea.MouseActionPress)
+	if got.pager.Top != 0 {
+		t.Fatalf("pager oldest bound moved to %d", got.pager.Top)
+	}
+	maxTop := max(0, len(got.pager.Lines)-max(1, got.pagerBodyHeight()-2))
+	got.pager.Top = maxTop
+	x, y = renderedTextPoint(t, got, fmt.Sprintf("line-%d", maxTop))
+	got, _ = sendMouse(t, got, x, y, tea.MouseButtonWheelDown, tea.MouseActionPress)
+	if got.pager.Top != maxTop {
+		t.Fatalf("pager newest bound moved to %d, want %d", got.pager.Top, maxTop)
+	}
+}
+
+func TestMouseTranscriptWheelDetachesAndReattaches(t *testing.T) {
+	m := FixtureModel("stream-long", 100, 40)
+	x, y := renderedTextPoint(t, m, "Returning to the bottom")
+	wantFocus := m.Focus
+	total := len(streamBody(m.doorLines, streamInner(m.layoutWidth())))
+	maxTop := max(0, total-streamRows(m.Height))
+	got, cmd := sendMouse(t, m, x, y, tea.MouseButtonWheelUp, tea.MouseActionPress)
+	if cmd != nil {
+		t.Fatal("transcript wheel-up returned a command without a client")
+	}
+	if got.stream.Top != maxTop-1 || got.stream.Follow {
+		t.Fatalf("wheel-up transcript state = %+v, want top %d and detached", got.stream, maxTop-1)
+	}
+	if got.Focus != wantFocus || got.Err != m.Err {
+		t.Fatalf("wheel-up changed focus/error: focus %+v, err %q", got.Focus, got.Err)
+	}
+	got, cmd = sendMouse(t, got, x, y, tea.MouseButtonWheelDown, tea.MouseActionPress)
+	if cmd != nil || got.stream.Top != maxTop || !got.stream.Follow {
+		t.Fatalf("wheel-down transcript state = %+v, cmd %v; want newest following state", got.stream, cmd)
+	}
+}
+
+func TestMouseInvalidInputIsSilentNoOp(t *testing.T) {
+	m := FixtureModel("floor", 60, 40)
+	_, laneY, ok := renderedLanePoint(t, m, "ca-repo", 1)
+	if !ok {
+		t.Fatal("fixture lane is not rendered")
+	}
+	events := []tea.MouseMsg{
+		{X: -1, Y: -1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress},
+		{X: 1, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress},
+		{X: 1, Y: laneY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress},
+		{X: 2, Y: laneY, Button: tea.MouseButtonMiddle, Action: tea.MouseActionPress},
+		{X: 2, Y: laneY, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease},
+		{X: 2, Y: laneY, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion},
+		{X: 2, Y: laneY, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress},
+	}
+	for _, msg := range events {
+		before := snapshotMouseState(m)
+		got, cmd := sendMouse(t, m, msg.X, msg.Y, msg.Button, msg.Action)
+		if cmd != nil {
+			t.Fatalf("invalid mouse event %+v returned a command", msg)
+		}
+		assertMouseStateUnchanged(t, before, got)
+	}
+
+	for _, flowName := range []string{"pager", "stream-long"} {
+		m := FixtureModel(flowName, 100, 40)
+		before := snapshotMouseState(m)
+		got, cmd := sendMouse(t, m, 1, 0, tea.MouseButtonWheelDown, tea.MouseActionPress)
+		if cmd != nil {
+			t.Fatalf("outside %s wheel returned a command", flowName)
+		}
+		assertMouseStateUnchanged(t, before, got)
+	}
+}
+
+func TestMouseHonorsExistingOwnership(t *testing.T) {
+	base := FixtureModel("floor", 100, 40)
+	x, y, ok := renderedLanePoint(t, base, "gh-importer", -2)
+	if !ok {
+		t.Fatal("fixture lane is not rendered")
+	}
+	setups := map[string]func(*Model){
+		"help":            func(m *Model) { m.help = true },
+		"modal":           func(m *Model) { m.modal = &modalState{} },
+		"investigate":     func(m *Model) { m.investigate = &investigateState{} },
+		"confirm":         func(m *Model) { m.confirm = &confirmState{} },
+		"backlog":         func(m *Model) { m.backlog = &backlogState{} },
+		"decision editor": func(m *Model) { m.decisionEditor = &decisionEditor{} },
+		"lever editor":    func(m *Model) { m.leverEditor = &leverEditorState{} },
+		"setup":           func(m *Model) { m.setup = &setupState{} },
+		"decisions door":  func(m *Model) { m.modes = []string{"decisions"} },
+		"tray door":       func(m *Model) { m.modes = []string{"tray"} },
+		"reconnecting":    func(m *Model) { m.connection = connectionReconnecting },
+	}
+	for name, setup := range setups {
+		t.Run(name, func(t *testing.T) {
+			m := base
+			setup(&m)
+			before := snapshotMouseState(m)
+			got, cmd := sendMouse(t, m, x, y, tea.MouseButtonLeft, tea.MouseActionPress)
+			if cmd != nil {
+				t.Fatal("owned mouse input returned a command")
+			}
+			assertMouseStateUnchanged(t, before, got)
+		})
+	}
+
+	for _, flowName := range []string{"decisions-door", "tray", "stream-long"} {
+		t.Run(flowName+" wheel", func(t *testing.T) {
+			m := FixtureModel(flowName, 100, 40)
+			if flowName == "stream-long" {
+				m.modes = []string{"timeline"}
+			}
+			before := snapshotMouseState(m)
+			got, cmd := sendMouse(t, m, 2, 2, tea.MouseButtonWheelDown, tea.MouseActionPress)
+			if cmd != nil {
+				t.Fatal("non-reading door wheel returned a command")
+			}
+			assertMouseStateUnchanged(t, before, got)
+		})
 	}
 }
