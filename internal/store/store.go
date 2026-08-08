@@ -1746,6 +1746,31 @@ func (s *Store) LoadRunState(issueID string) (RunState, bool, error) {
 	return run, true, nil
 }
 
+// DiscardIssueRun removes the resumable state for an abandoned attempt while
+// retaining its event, stage-run, checkpoint, and decision history for audit.
+// Old checkpoints are made ineligible as context for the next run.
+func (s *Store) DiscardIssueRun(issueID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
+		`UPDATE stage_checkpoints SET status='discarded' WHERE issue_id=?`, issueID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_run_state WHERE issue_id=?`, issueID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM issue_integration WHERE issue_id=?`, issueID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func updateIssueState(tx *sql.Tx, issueID, state string) error {
 	result, err := tx.Exec(`UPDATE issues SET state=? WHERE id=?`, state, issueID)
 	if err != nil {

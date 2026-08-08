@@ -2154,10 +2154,33 @@ func (w *discardTrackingWS) DiscardIssue(issueID string) error {
 
 func TestRequeueDiscardsAbandonedIssueWorkspaceHistory(t *testing.T) {
 	ws := &discardTrackingWS{}
-	e, _ := newTestEngine(t)
+	e, st := newTestEngine(t)
 	e.cfg.Workspace = ws
 	id, err := e.DraftIssue("retry cleanly", "", "default", "regular", levers.Matrix{}, 0, nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := contextpack.Artifact{Name: "plan.md", SHA256: "old-run"}
+	artifactPath := filepath.Join(e.issueDir(id), "artifacts", "plan.md")
+	for _, path := range []string{artifactPath, filepath.Join(e.issueDir(id), "evidence", "plan", "evidence.json")} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("old run\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.InsertStageCheckpoint(store.StageCheckpoint{
+		IssueID: id, Stage: "plan", Status: "succeeded", Artifacts: []contextpack.Artifact{artifact},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PersistActiveRun(store.RunState{
+		IssueID: id, Stage: "plan", Boundary: "in_stage", Artifacts: []string{artifactPath},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: id, State: store.IntegrationVerificationReady}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Abandon(id); err != nil {
@@ -2169,6 +2192,24 @@ func TestRequeueDiscardsAbandonedIssueWorkspaceHistory(t *testing.T) {
 	}
 	if !reflect.DeepEqual(ws.discarded, []string{id}) {
 		t.Fatalf("discarded issues = %v, want [%s]", ws.discarded, id)
+	}
+	inputs, lastSuccessful, err := e.stageContext(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 0 || lastSuccessful != "" {
+		t.Fatalf("requeued stage context = %v, %q; want a fresh run", inputs, lastSuccessful)
+	}
+	if _, ok, err := st.LoadRunState(id); err != nil || ok {
+		t.Fatalf("requeued run state still exists: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := st.IssueIntegration(id); err != nil || ok {
+		t.Fatalf("requeued integration state still exists: ok=%v err=%v", ok, err)
+	}
+	for _, path := range []string{filepath.Join(e.issueDir(id), "artifacts"), filepath.Join(e.issueDir(id), "evidence")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("discarded run path %s still exists: %v", path, err)
+		}
 	}
 }
 

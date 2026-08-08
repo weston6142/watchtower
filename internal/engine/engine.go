@@ -1196,6 +1196,14 @@ func (e *Engine) RequeueIssue(issueID string) error {
 			return fmt.Errorf("discard abandoned issue workspace: %w", err)
 		}
 	}
+	for _, name := range []string{"artifacts", "evidence"} {
+		if err := os.RemoveAll(filepath.Join(e.issueDir(issueID), name)); err != nil {
+			return fmt.Errorf("discard abandoned issue %s: %w", name, err)
+		}
+	}
+	if err := e.cfg.Store.DiscardIssueRun(issueID); err != nil {
+		return fmt.Errorf("discard abandoned issue run state: %w", err)
+	}
 
 	is := &issueState{
 		id: issueID, title: row.Title, body: row.Body, flowName: row.Flow,
