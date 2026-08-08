@@ -2144,9 +2144,13 @@ func sendMouse(t *testing.T, m Model, x, y int, button tea.MouseButton, action t
 func renderedLanePoint(t *testing.T, m Model, issue string, rowDelta int) (int, int, bool) {
 	t.Helper()
 	lines := strings.Split(strings.TrimRight(ansi.Strip(m.View()), "\n"), "\n")
+	firstStage := ""
+	if len(m.stages) > 0 {
+		firstStage = strings.ToUpper(stageName(m.aliases, m.stages[0]))
+	}
 	for y, line := range lines {
 		x := strings.Index(line, issue)
-		if x < 0 || y+1 >= len(lines) || !strings.Contains(lines[y+1], "BRAINSTORM") {
+		if x < 0 || firstStage == "" || y+1 >= len(lines) || !strings.Contains(lines[y+1], firstStage) {
 			continue
 		}
 		targetY := y + rowDelta
@@ -2201,7 +2205,11 @@ func TestMouseClickFocusesVisibleLaneTitleAndBody(t *testing.T) {
 	for _, width := range []int{60, 100, 200} {
 		for index, issue := range []string{"ca-repo", "gh-importer", "fx-e2e", "fx-dark"} {
 			for _, rowDelta := range []int{-2, 1} {
-				name := fmt.Sprintf("%dx title/body %s", width, issue)
+				rowName := "title"
+				if rowDelta == 1 {
+					rowName = "first stage body"
+				}
+				name := fmt.Sprintf("%dx %s %s", width, issue, rowName)
 				t.Run(name, func(t *testing.T) {
 					m := FixtureModel("floor", width, 40)
 					x, y, ok := renderedLanePoint(t, m, issue, rowDelta)
@@ -2265,17 +2273,11 @@ func TestMouseClickTracksResizeAndFocusedCompaction(t *testing.T) {
 func TestMouseClickCoversCompactedLaneEdges(t *testing.T) {
 	m := FixtureModel("floor", 60, 40)
 	m.Focus = requestFocus(m.Focus, m.State, m.stages, "fx-dark", m.retired)
-	lines := strings.Split(strings.TrimRight(ansi.Strip(m.View()), "\n"), "\n")
-	var x, y int
-	for row, line := range lines {
-		if column := strings.Index(line, "gh-importer"); column >= 0 && row+1 < len(lines) && strings.Contains(lines[row+1], "BRAINSTORM") {
-			x, y = column, row
-			break
-		}
-	}
-	if x == 0 && y == 0 {
+	x, y, ok := renderedLanePoint(t, m, "gh-importer", 0)
+	if !ok {
 		t.Fatal("gh-importer has no rendered lane edge")
 	}
+	x--
 
 	got, cmd := sendMouse(t, m, x, y, tea.MouseButtonLeft, tea.MouseActionPress)
 	if cmd != nil {
@@ -2393,23 +2395,26 @@ func TestMouseHonorsExistingOwnership(t *testing.T) {
 	if !ok {
 		t.Fatal("fixture lane is not rendered")
 	}
-	setups := map[string]func(*Model){
-		"help":            func(m *Model) { m.help = true },
-		"modal":           func(m *Model) { m.modal = &modalState{} },
-		"investigate":     func(m *Model) { m.investigate = &investigateState{} },
-		"confirm":         func(m *Model) { m.confirm = &confirmState{} },
-		"backlog":         func(m *Model) { m.backlog = &backlogState{} },
-		"decision editor": func(m *Model) { m.decisionEditor = &decisionEditor{} },
-		"lever editor":    func(m *Model) { m.leverEditor = &leverEditorState{} },
-		"setup":           func(m *Model) { m.setup = &setupState{} },
-		"decisions door":  func(m *Model) { m.modes = []string{"decisions"} },
-		"tray door":       func(m *Model) { m.modes = []string{"tray"} },
-		"reconnecting":    func(m *Model) { m.connection = connectionReconnecting },
+	setups := []struct {
+		name  string
+		setup func(*Model)
+	}{
+		{name: "help", setup: func(m *Model) { m.help = true }},
+		{name: "modal", setup: func(m *Model) { m.modal = &modalState{} }},
+		{name: "investigate", setup: func(m *Model) { m.investigate = &investigateState{} }},
+		{name: "confirm", setup: func(m *Model) { m.confirm = &confirmState{} }},
+		{name: "backlog", setup: func(m *Model) { m.backlog = &backlogState{} }},
+		{name: "decision editor", setup: func(m *Model) { m.decisionEditor = &decisionEditor{} }},
+		{name: "lever editor", setup: func(m *Model) { m.leverEditor = &leverEditorState{} }},
+		{name: "setup", setup: func(m *Model) { m.setup = &setupState{} }},
+		{name: "decisions door", setup: func(m *Model) { m.modes = []string{"decisions"} }},
+		{name: "tray door", setup: func(m *Model) { m.modes = []string{"tray"} }},
+		{name: "reconnecting", setup: func(m *Model) { m.connection = connectionReconnecting }},
 	}
-	for name, setup := range setups {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range setups {
+		t.Run(tc.name, func(t *testing.T) {
 			m := base
-			setup(&m)
+			tc.setup(&m)
 			before := snapshotMouseState(m)
 			got, cmd := sendMouse(t, m, x, y, tea.MouseButtonLeft, tea.MouseActionPress)
 			if cmd != nil {

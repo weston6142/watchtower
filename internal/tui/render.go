@@ -234,12 +234,9 @@ func (m Model) interactionGeometry() interactionGeometry {
 	}
 
 	if m.currentMode() == "transcript" {
-		bindings := [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "oldest/newest"}, {"esc", "back"}, {"q", "quit"}}
+		bindings := transcriptModeBindings()
 		footerRows := lipgloss.Height(renderKeybar(m.layoutWidth(), bindings, errText(m.Err)))
-		streamHeight := m.Height
-		if streamHeight > 0 {
-			streamHeight = max(1, streamHeight-max(0, footerRows-1))
-		}
+		streamHeight := streamDoorHeight(m.Height, footerRows)
 		rendered := renderStreamDoor(m.streamSubtitle(), m.doorLines, m.stream, m.layoutWidth(), streamHeight)
 		geometry.Transcript = interactionRect{
 			X: 0, Y: towerHeaderRows, Width: m.layoutWidth(),

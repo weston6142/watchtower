@@ -2129,6 +2129,17 @@ func pagerModeBindings(mode string) [][2]string {
 	}
 }
 
+func transcriptModeBindings() [][2]string {
+	return [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "oldest/newest"}, {"esc", "back"}, {"q", "quit"}}
+}
+
+func streamDoorHeight(height, footerRows int) int {
+	if height > 0 {
+		return max(1, height-max(0, footerRows-1))
+	}
+	return height
+}
+
 func (m Model) pagerBodyHeight() int {
 	footerRows := lipgloss.Height(renderKeybar(m.layoutWidth(), pagerModeBindings(m.pager.Mode), errText(m.Err)))
 	height := m.Height
@@ -2176,7 +2187,7 @@ func (m Model) View() string {
 		case "tray":
 			bindings = [][2]string{{"j/k", "select"}, {"enter", "accept → new issue"}, {"r", "reject"}, {"esc", "back"}, {"q", "quit"}}
 		case "transcript":
-			bindings = [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "oldest/newest"}, {"esc", "back"}, {"q", "quit"}}
+			bindings = transcriptModeBindings()
 		}
 		right = errText(m.Err)
 	}
@@ -2208,10 +2219,7 @@ func (m Model) View() string {
 	case "timeline":
 		tower = renderTextDoor("TIMELINE", m.doorLines, layoutWidth)
 	case "transcript":
-		streamHeight := m.Height
-		if streamHeight > 0 {
-			streamHeight = max(1, streamHeight-max(0, footerRows-1))
-		}
+		streamHeight := streamDoorHeight(m.Height, footerRows)
 		tower = renderStreamDoor(m.streamSubtitle(), m.doorLines, m.stream, layoutWidth, streamHeight)
 	case "shelf":
 		tower = renderShelf(m.shelfItems(), m.Ids, layoutWidth)
