@@ -578,6 +578,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width, m.Height = msg.Width, msg.Height
 		return m, nil
+	case tea.MouseMsg:
+		cmd := m.updateMouse(msg)
+		return m, cmd
 	case tea.KeyMsg:
 		key := msg.String()
 		if key == "ctrl+c" {
@@ -1505,6 +1508,80 @@ func (m *Model) updatePagerKey(key string) tea.Cmd {
 	return nil
 }
 
+func (m *Model) updateMouse(msg tea.MouseMsg) tea.Cmd {
+	if m.connection == connectionReconnecting || m.shuttingDown || m.help {
+		return nil
+	}
+	if m.modal != nil || m.investigate != nil || m.backlog != nil || m.confirm != nil ||
+		m.decisionEditor != nil || m.leverEditor != nil || m.Evidence != nil ||
+		m.evidenceDecision != nil || m.Toast != nil {
+		return nil
+	}
+
+	if m.currentMode() == "transcript" {
+		if msg.Action != tea.MouseActionPress ||
+			(msg.Button != tea.MouseButtonWheelUp && msg.Button != tea.MouseButtonWheelDown) {
+			return nil
+		}
+		if !m.interactionGeometry().Transcript.contains(msg.X, msg.Y) {
+			return nil
+		}
+		key := "k"
+		if msg.Button == tea.MouseButtonWheelDown {
+			key = "j"
+		}
+		before := m.stream.Follow
+		total := len(streamBody(m.doorLines, streamInner(m.layoutWidth())))
+		m.stream = m.stream.scroll(key, streamRows(m.Height), total)
+		if !before && m.stream.Follow {
+			return m.fetchTranscript()
+		}
+		return nil
+	}
+
+	if m.currentMode() != "" {
+		return nil
+	}
+	if m.pager.Mode == "pager" {
+		if msg.Action != tea.MouseActionPress ||
+			(msg.Button != tea.MouseButtonWheelUp && msg.Button != tea.MouseButtonWheelDown) {
+			return nil
+		}
+		if !m.interactionGeometry().Pager.contains(msg.X, msg.Y) {
+			return nil
+		}
+		key := "k"
+		if msg.Button == tea.MouseButtonWheelDown {
+			key = "j"
+		}
+		m.pager = m.pager.scroll(key, max(1, m.pagerBodyHeight()-2))
+		return nil
+	}
+	if m.pager.Mode != "" || m.rows || m.setup != nil || m.archMode != "" {
+		return nil
+	}
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return nil
+	}
+	target, ok := m.interactionGeometry().laneAt(msg.X, msg.Y)
+	if !ok {
+		return nil
+	}
+	moved := requestFocus(m.Focus, m.State, m.stages, target.IssueID, m.retired)
+	if moved == m.Focus {
+		return nil
+	}
+	m.Err = ""
+	m.Focus = moved
+	m.warExpanded = false
+	m.Detail = nil
+	m.openArtifacts = false
+	if m.Focus.Issue != "" {
+		return m.fetchDetail(m.Focus.Issue)
+	}
+	return nil
+}
+
 func (m Model) answerDecision(option int) tea.Cmd {
 	if m.Toast == nil || m.client == nil {
 		return nil
@@ -2052,6 +2129,17 @@ func pagerModeBindings(mode string) [][2]string {
 	}
 }
 
+func transcriptModeBindings() [][2]string {
+	return [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "oldest/newest"}, {"esc", "back"}, {"q", "quit"}}
+}
+
+func streamDoorHeight(height, footerRows int) int {
+	if height > 0 {
+		return max(1, height-max(0, footerRows-1))
+	}
+	return height
+}
+
 func (m Model) pagerBodyHeight() int {
 	footerRows := lipgloss.Height(renderKeybar(m.layoutWidth(), pagerModeBindings(m.pager.Mode), errText(m.Err)))
 	height := m.Height
@@ -2099,7 +2187,7 @@ func (m Model) View() string {
 		case "tray":
 			bindings = [][2]string{{"j/k", "select"}, {"enter", "accept → new issue"}, {"r", "reject"}, {"esc", "back"}, {"q", "quit"}}
 		case "transcript":
-			bindings = [][2]string{{"j/k", "scroll"}, {"d/u", "page"}, {"g/G", "oldest/newest"}, {"esc", "back"}, {"q", "quit"}}
+			bindings = transcriptModeBindings()
 		}
 		right = errText(m.Err)
 	}
@@ -2131,10 +2219,7 @@ func (m Model) View() string {
 	case "timeline":
 		tower = renderTextDoor("TIMELINE", m.doorLines, layoutWidth)
 	case "transcript":
-		streamHeight := m.Height
-		if streamHeight > 0 {
-			streamHeight = max(1, streamHeight-max(0, footerRows-1))
-		}
+		streamHeight := streamDoorHeight(m.Height, footerRows)
 		tower = renderStreamDoor(m.streamSubtitle(), m.doorLines, m.stream, layoutWidth, streamHeight)
 	case "shelf":
 		tower = renderShelf(m.shelfItems(), m.Ids, layoutWidth)

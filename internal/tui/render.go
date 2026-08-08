@@ -185,6 +185,101 @@ const (
 	stageGutterWidth = 12
 )
 
+type interactionRect struct {
+	X, Y          int
+	Width, Height int
+}
+
+func (r interactionRect) contains(x, y int) bool {
+	return x >= 0 && y >= 0 && x >= r.X && y >= r.Y && x < r.X+r.Width && y < r.Y+r.Height
+}
+
+type mouseLaneTarget struct {
+	IssueID string
+	Bounds  interactionRect
+}
+
+type interactionGeometry struct {
+	Lanes      []mouseLaneTarget
+	Pager      interactionRect
+	Transcript interactionRect
+}
+
+func (g interactionGeometry) laneAt(x, y int) (mouseLaneTarget, bool) {
+	for _, target := range g.Lanes {
+		if target.Bounds.contains(x, y) {
+			return target, true
+		}
+	}
+	return mouseLaneTarget{}, false
+}
+
+// interactionGeometry is derived from the same final screen that View renders.
+// Mouse coordinates therefore follow vertical centering, rail stacking, and
+// any layout truncation instead of repeating the tower's coordinate formula.
+func (m Model) interactionGeometry() interactionGeometry {
+	screen := ansi.Strip(m.View())
+	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
+	geometry := interactionGeometry{}
+
+	if m.pager.Mode == "pager" {
+		towerWidth, _, _ := mainColumnWidths(m.layoutWidth())
+		pagerHeight := lipgloss.Height(renderPager(m.pager, towerWidth, m.pagerBodyHeight()))
+		for y, line := range lines {
+			if m.pager.Title != "" && strings.Contains(line, m.pager.Title) {
+				geometry.Pager = interactionRect{X: 0, Y: y, Width: towerWidth, Height: min(pagerHeight, len(lines)-y)}
+				break
+			}
+		}
+	}
+
+	if m.currentMode() == "transcript" {
+		bindings := transcriptModeBindings()
+		footerRows := lipgloss.Height(renderKeybar(m.layoutWidth(), bindings, errText(m.Err)))
+		streamHeight := streamDoorHeight(m.Height, footerRows)
+		rendered := renderStreamDoor(m.streamSubtitle(), m.doorLines, m.stream, m.layoutWidth(), streamHeight)
+		geometry.Transcript = interactionRect{
+			X: 0, Y: towerHeaderRows, Width: m.layoutWidth(),
+			Height: min(lipgloss.Height(rendered), max(0, len(lines)-towerHeaderRows)),
+		}
+	}
+
+	if m.rows || m.currentMode() != "" || m.pager.Mode != "" {
+		return geometry
+	}
+	towerWidth, _, _ := mainColumnWidths(m.layoutWidth())
+	tower := renderTowerLayout(m.State, m.stages, m.Ids, m.Focus, m.aliases, m.reducedMotion, m.ticks, towerWidth, m.warExpanded, m.retired)
+	if len(tower.Lanes) == 0 || len(m.stages) == 0 {
+		return geometry
+	}
+	firstStage := strings.ToUpper(stageName(m.aliases, m.stages[0]))
+	for _, localTarget := range tower.Lanes {
+		for y, line := range lines {
+			if y+1 >= len(lines) || !strings.Contains(lines[y+1], firstStage) {
+				continue
+			}
+			byteX := strings.Index(line, localTarget.IssueID)
+			if byteX < 0 || lipgloss.Width(line[:byteX]) != localTarget.Bounds.X {
+				continue
+			}
+			width := min(localTarget.Bounds.Width, max(0, lipgloss.Width(line)-localTarget.Bounds.X))
+			if width == 0 {
+				continue
+			}
+			startY := max(0, y-3)
+			geometry.Lanes = append(geometry.Lanes, mouseLaneTarget{
+				IssueID: localTarget.IssueID,
+				Bounds: interactionRect{
+					X: localTarget.Bounds.X, Y: startY, Width: width,
+					Height: min(localTarget.Bounds.Height, max(0, len(lines)-startY)),
+				},
+			})
+			break
+		}
+	}
+	return geometry
+}
+
 func padCell(s string, width int) string {
 	s = truncate(s, width)
 	return s + strings.Repeat(" ", max(0, width-lipgloss.Width(s)))
@@ -343,11 +438,20 @@ func withEdgeGutters(content string, left, right []string) string {
 	return edgeGutter(left) + " " + content + " " + edgeGutter(right)
 }
 
+type towerRenderLayout struct {
+	Content string
+	Lanes   []mouseLaneTarget
+}
+
 func renderTower(st *projection.State, stages []string, ids map[string]Identity, focus Focus, tick, width int) string {
 	return renderTowerConfigured(st, stages, ids, focus, nil, false, tick, width, false, nil)
 }
 
 func renderTowerConfigured(st *projection.State, stages []string, ids map[string]Identity, focus Focus, aliases map[string]string, reducedMotion bool, tick, width int, warExpanded bool, retired map[string]bool) string {
+	return renderTowerLayout(st, stages, ids, focus, aliases, reducedMotion, tick, width, warExpanded, retired).Content
+}
+
+func renderTowerLayout(st *projection.State, stages []string, ids map[string]Identity, focus Focus, aliases map[string]string, reducedMotion bool, tick, width int, warExpanded bool, retired map[string]bool) towerRenderLayout {
 	if st == nil {
 		st = projection.NewState()
 	}
@@ -357,7 +461,7 @@ func renderTowerConfigured(st *projection.State, stages []string, ids map[string
 		for _, stage := range stages {
 			lines = append(lines, stageLabel(aliases, stage)+"  "+themeDim.Render("—"))
 		}
-		return boundedLines(lines, width)
+		return towerRenderLayout{Content: boundedLines(lines, width)}
 	}
 	focusIndex := 0
 	for i, id := range allIssueIDs {
@@ -399,7 +503,24 @@ func renderTowerConfigured(st *projection.State, stages []string, ids map[string
 		}
 		lines = append(lines, withEdgeGutters(label+strings.Join(cells, ""), compactLeft, compactRight))
 	}
-	return boundedLines(lines, width)
+	leftOffset := 0
+	if len(compactLeft) > 0 {
+		leftOffset = lipgloss.Width(edgeGutter(compactLeft)) + 1 // gutter plus separator
+	} else if len(compactRight) > 0 {
+		leftOffset = 1 // withEdgeGutters reserves a leading separator
+	}
+	localY := len(warRoomLines(st, ids, warExpanded)) + 1
+	lanes := make([]mouseLaneTarget, 0, len(issueIDs))
+	for index, issueID := range issueIDs {
+		lanes = append(lanes, mouseLaneTarget{
+			IssueID: issueID,
+			Bounds: interactionRect{
+				X: leftOffset + stageGutterWidth + 1 + index*laneWidth,
+				Y: localY, Width: laneWidth, Height: 4 + len(stages),
+			},
+		})
+	}
+	return towerRenderLayout{Content: boundedLines(lines, width), Lanes: lanes}
 }
 
 // stageLabel renders the fixed-width dim stage name for the left gutter.

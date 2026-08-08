@@ -197,7 +197,11 @@ func main() {
 		if cfg, err := repocfg.Load(repoRoot); err == nil {
 			tui.SetTheme(cfg.Theme) // empty or unknown falls back to tokyo-night
 		}
-		finalModel, runErr := tea.NewProgram(model, tea.WithAltScreen()).Run()
+		finalModel, runErr := tea.NewProgram(
+			model,
+			tea.WithAltScreen(),
+			tea.WithMouseCellMotion(),
+		).Run()
 		if final, ok := finalModel.(tui.Model); ok {
 			_ = final.Close()
 		} else {
