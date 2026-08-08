@@ -495,10 +495,6 @@ func (l *Lease) Seal() error {
 	if l.state != StateActive || l.closed {
 		return ErrLeaseInvalid
 	}
-	files, err := collectFiles(l.activeRoot)
-	if err != nil {
-		return fmt.Errorf("probe active verification cache: %w", err)
-	}
 	temp, err := os.MkdirTemp(l.runtime.CompleteRoot(), ".seal-")
 	if err != nil {
 		return fmt.Errorf("create complete snapshot staging: %w", err)
@@ -506,6 +502,10 @@ func (l *Lease) Seal() error {
 	defer os.RemoveAll(temp)
 	if err := copyTree(l.activeRoot, filepath.Join(temp, "cache")); err != nil {
 		return fmt.Errorf("copy complete verification snapshot: %w", err)
+	}
+	files, err := collectFiles(filepath.Join(temp, "cache"))
+	if err != nil {
+		return fmt.Errorf("record complete verification snapshot: %w", err)
 	}
 	manifest := l.manifest()
 	manifest.State = StateComplete

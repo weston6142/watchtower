@@ -1,9 +1,11 @@
 package verificationcache
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -118,6 +120,65 @@ func TestLeaseSeedsCopyOnWriteAndPreservesCompleteSnapshot(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(first.CompleteRoot(), "seed.txt")); err != nil || string(got) != "known-good" {
 		t.Fatalf("complete snapshot changed: %q, err = %v", got, err)
+	}
+}
+
+func TestSealRecordsCopiedSnapshotWhenActiveCacheChanges(t *testing.T) {
+	repo := initRepository(t)
+	runtime := newTestRuntime(t, repo)
+	lease, err := runtime.Acquire(context.Background(), Config{
+		RepoDir: repo, BaseSHA: "base", BranchSHA: "branch", TreeSHA: "tree", Argv: []string{"go", "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+
+	lockPath := filepath.Join(lease.ActiveRoot(), "gomodcache", "cache", "download", "module.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("cache-data"), 64*1024)
+	for i := 0; i < 48; i++ {
+		path := filepath.Join(lease.ActiveRoot(), "zz-payload", fmt.Sprintf("%03d.bin", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		contents := [][]byte{[]byte("first"), []byte("second-value")}
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = os.WriteFile(lockPath, contents[i%len(contents)], 0o600)
+			}
+		}
+	}()
+	if err := lease.Seal(); err != nil {
+		close(stop)
+		<-stopped
+		t.Fatal(err)
+	}
+	close(stop)
+	<-stopped
+	evidence, err := lease.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ValidateEvidence(evidence); err != nil {
+		t.Fatalf("sealed snapshot did not match its manifest: %v", err)
 	}
 }
 
