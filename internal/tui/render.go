@@ -507,11 +507,10 @@ func renderTowerLayout(st *projection.State, stages []string, ids map[string]Ide
 		lines = append(lines, withEdgeGutters(label+strings.Join(cells, ""), compactLeft, compactRight))
 	}
 	leftOffset := 0
-	if len(compactLeft) > 0 || len(compactRight) > 0 {
-		leftOffset = 1 // withEdgeGutters reserves a leading separator
-	}
 	if len(compactLeft) > 0 {
-		leftOffset += 6 // five-cell gutter plus its separating space
+		leftOffset = lipgloss.Width(edgeGutter(compactLeft)) + 1 // gutter plus separator
+	} else if len(compactRight) > 0 {
+		leftOffset = 1 // withEdgeGutters reserves a leading separator
 	}
 	localY := len(warRoomLines(st, ids, warExpanded)) + 1
 	lanes := make([]mouseLaneTarget, 0, len(issueIDs))

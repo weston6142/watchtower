@@ -2262,6 +2262,30 @@ func TestMouseClickTracksResizeAndFocusedCompaction(t *testing.T) {
 	}
 }
 
+func TestMouseClickCoversCompactedLaneEdges(t *testing.T) {
+	m := FixtureModel("floor", 60, 40)
+	m.Focus = requestFocus(m.Focus, m.State, m.stages, "fx-dark", m.retired)
+	lines := strings.Split(strings.TrimRight(ansi.Strip(m.View()), "\n"), "\n")
+	var x, y int
+	for row, line := range lines {
+		if column := strings.Index(line, "gh-importer"); column >= 0 && row+1 < len(lines) && strings.Contains(lines[row+1], "BRAINSTORM") {
+			x, y = column, row
+			break
+		}
+	}
+	if x == 0 && y == 0 {
+		t.Fatal("gh-importer has no rendered lane edge")
+	}
+
+	got, cmd := sendMouse(t, m, x, y, tea.MouseButtonLeft, tea.MouseActionPress)
+	if cmd != nil {
+		t.Fatal("lane-edge click returned a command without a client")
+	}
+	if got.Focus.Issue != "gh-importer" {
+		t.Fatalf("lane-edge click focused %q, want gh-importer", got.Focus.Issue)
+	}
+}
+
 func renderedTextPointIfPresent(m Model, needle string) (int, int, bool) {
 	lines := strings.Split(strings.TrimRight(ansi.Strip(m.View()), "\n"), "\n")
 	for y, line := range lines {
