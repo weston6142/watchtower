@@ -171,6 +171,8 @@ func Inspect(repoRoot string, loadedSnapshot *InputSnapshot) (ConfigurationHealt
 			status.Class = FileLegacy
 		case bytes.Equal(body, currentDefault):
 			status.Class = FileCurrent
+		case hasBaseline && entry.BaselineVersion == "legacy-adopted":
+			status.Class = FileLegacy
 		case hasBaseline && currentHash == entry.SHA256:
 			status.Class = FileStale
 		case hasBaseline:

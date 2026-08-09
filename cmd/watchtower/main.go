@@ -113,7 +113,7 @@ func main() {
 		fatal(err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|stop|init|reset|repos|tower|new|backlog|claim|release|finish|launch|requeue|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail|planner-artifact> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|stop|init|reset|migrate|repos|tower|new|backlog|claim|release|finish|launch|requeue|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail|planner-artifact> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -147,6 +147,10 @@ func main() {
 		fmt.Println("next: run 'watchtower tower' — the daemon starts automatically")
 	case "reset":
 		if err := runReset(args); err != nil {
+			fatal(err)
+		}
+	case "migrate":
+		if err := runMigrate(args); err != nil {
 			fatal(err)
 		}
 	case "repos":
@@ -614,9 +618,69 @@ func runReset(args []string) error {
 		}
 	}
 
-	client, _, err := connectOrStartDaemon(*data, repo)
+	return replacePreparedTree(*data, repo, prepared, true, "replaced .watchtower defaults", nil)
+}
+
+func runMigrate(args []string) error {
+	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	data := fs.String("data", defaultData(), "data dir")
+	repoFlag := fs.String("repo", "", "target repo (default: walk up from CWD)")
+	apply := fs.Bool("apply", false, "apply eligible migration changes")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("migrate: unexpected argument %q", fs.Arg(0))
+	}
+	repo := resolveRepo(*repoFlag)
+	if !*apply {
+		preview, err := scaffold.PreviewMigration(repo)
+		if err != nil {
+			return err
+		}
+		printMigrationPreview(preview)
+		return nil
+	}
+	prepared, err := scaffold.PrepareMigration(repo)
 	if err != nil {
 		return err
+	}
+	defer prepared.Cancel()
+	if len(prepared.Changes) == 0 {
+		fmt.Fprintln(os.Stdout, "no changes; daemon was not restarted")
+		return nil
+	}
+	return replacePreparedTree(*data, repo, prepared, false, "migrated repository configuration", verifyMigratedSetup)
+}
+
+type preparedTree interface {
+	Apply() error
+	Commit() error
+	Rollback() error
+	Cancel() error
+}
+
+func replacePreparedTree(base, repo string, prepared preparedTree, startIfMissing bool, success string, verify func(*proto.Response) error) error {
+	dataDir := repocfg.RepoDataDir(base, repo)
+	sock := filepath.Join(dataDir, sockFileName)
+	client, err := proto.Dial(sock)
+	running := err == nil
+	if !running && startIfMissing {
+		client, _, err = connectOrStartDaemon(base, repo)
+		if err != nil {
+			return err
+		}
+		running = true
+	}
+	if !running {
+		if err := prepared.Apply(); err != nil {
+			return err
+		}
+		if err := prepared.Commit(); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, success)
+		return nil
 	}
 	response, err := client.Do(proto.Command{Op: "can_reset"})
 	if err != nil {
@@ -635,24 +699,29 @@ func runReset(args []string) error {
 	if !response.OK {
 		return fmt.Errorf("shutdown: %s", response.Error)
 	}
-	if err := waitForDaemonStop(*data, repo); err != nil {
+	if err := waitForDaemonStop(base, repo); err != nil {
 		return err
 	}
-
+	restartOriginal := func() error {
+		oldClient, _, restartErr := connectOrStartDaemon(base, repo)
+		if oldClient != nil {
+			_ = oldClient.Close()
+		}
+		return restartErr
+	}
 	if err := prepared.Apply(); err != nil {
-		originalClient, _, restartErr := connectOrStartDaemon(*data, repo)
-		if originalClient != nil {
-			originalClient.Close()
-		}
-		if restartErr != nil {
-			return fmt.Errorf("apply reset: %v; restart original daemon: %w", err, restartErr)
+		if restartErr := restartOriginal(); restartErr != nil {
+			return fmt.Errorf("apply replacement: %v; restart original daemon: %w", err, restartErr)
 		}
 		return err
 	}
-	newClient, _, startErr := connectOrStartDaemon(*data, repo)
+	newClient, _, startErr := connectOrStartDaemon(base, repo)
 	if startErr == nil {
 		response, startErr = newClient.Do(proto.Command{Op: "setup_outline"})
-		if startErr == nil && (!response.OK || response.Setup == nil) {
+		if startErr == nil && verify != nil {
+			startErr = verify(&response)
+		}
+		if startErr == nil && (verify == nil && (!response.OK || response.Setup == nil)) {
 			startErr = fmt.Errorf("setup validation: %s", response.Error)
 		}
 	}
@@ -660,25 +729,47 @@ func runReset(args []string) error {
 		if newClient != nil {
 			_, _ = newClient.Do(proto.Command{Op: "shutdown"})
 			_ = newClient.Close()
-			_ = waitForDaemonStop(*data, repo)
+			_ = waitForDaemonStop(base, repo)
 		}
-		if rollbackErr := prepared.Rollback(); rollbackErr != nil {
-			return fmt.Errorf("new defaults failed: %v; rollback failed: %w", startErr, rollbackErr)
+		rollbackErr := prepared.Rollback()
+		restartErr := restartOriginal()
+		if rollbackErr != nil && restartErr != nil {
+			return fmt.Errorf("replacement failed: %v; rollback failed: %v; restart original daemon failed: %w", startErr, rollbackErr, restartErr)
 		}
-		oldClient, _, restartErr := connectOrStartDaemon(*data, repo)
-		if oldClient != nil {
-			oldClient.Close()
+		if rollbackErr != nil {
+			return fmt.Errorf("replacement failed: %v; rollback failed: %w", startErr, rollbackErr)
 		}
 		if restartErr != nil {
-			return fmt.Errorf("new defaults failed: %v; restart original daemon: %w", startErr, restartErr)
+			return fmt.Errorf("replacement failed: %v; restart original daemon: %w", startErr, restartErr)
 		}
-		return fmt.Errorf("new defaults failed validation: %w", startErr)
+		return fmt.Errorf("replacement failed: %w", startErr)
 	}
-	newClient.Close()
+	_ = newClient.Close()
 	if err := prepared.Commit(); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, "replaced .watchtower defaults")
+	fmt.Fprintln(os.Stdout, success)
+	return nil
+}
+
+func verifyMigratedSetup(response *proto.Response) error {
+	if !response.OK || response.Setup == nil {
+		return fmt.Errorf("setup validation: %s", response.Error)
+	}
+	if response.Setup.ConfigurationHealth == nil || response.Setup.ConfigurationHealth.ReloadRequired {
+		if response.Setup.ConfigurationHealth == nil {
+			return fmt.Errorf("setup validation: configuration health is missing")
+		}
+		return fmt.Errorf("setup validation: configuration health overall=%s reload_required=%t affected=%v counts=%v",
+			response.Setup.ConfigurationHealth.Overall, response.Setup.ConfigurationHealth.ReloadRequired,
+			response.Setup.ConfigurationHealth.AffectedPaths, response.Setup.ConfigurationHealth.Counts)
+	}
+	want := map[string]string{"spec": "approve_artifact", "plan": "plan_review"}
+	for _, stage := range response.Setup.Stages {
+		if expected, ok := want[stage.Name]; ok && stage.Gate != expected {
+			return fmt.Errorf("setup validation: %s gate = %s, want %s", stage.Name, stage.Gate, expected)
+		}
+	}
 	return nil
 }
 
@@ -1035,9 +1126,39 @@ func statusSentence(o *proto.Overview) string {
 	if o.DollarsTotal > 0 {
 		cost = fmt.Sprintf(" (~$%.2f)", o.DollarsTotal)
 	}
-	return fmt.Sprintf("%s●%s %s — %d building, %d shipped today · %s tokens%s",
+	workload := fmt.Sprintf("%s●%s %s — %d building, %d shipped today · %s tokens%s",
 		color, reset, strings.Join(attention, ", "), o.Building, o.ShippedToday,
 		formatTokens(o.TokensTotal), cost)
+	if o.ConfigurationHealth == nil {
+		return workload
+	}
+	health := o.ConfigurationHealth
+	if health.Overall == scaffold.HealthCurrent && !health.ReloadRequired {
+		return workload + " · configuration current"
+	}
+	return fmt.Sprintf("%s\nconfiguration: %s, %d affected paths, next: %s\n%s",
+		workload, health.Overall, len(health.AffectedPaths), health.NextAction, health.Diff)
+}
+
+func printMigrationPreview(preview scaffold.MigrationPreview) {
+	health := preview.Health
+	fmt.Fprintf(os.Stdout, "configuration: %s (defaults %s)\n", health.Overall, health.DefaultsVersion)
+	fmt.Fprintf(os.Stdout, "counts: current=%d stale=%d customized=%d legacy=%d missing=%d extra=%d invalid=%d\n",
+		health.Counts[scaffold.FileCurrent], health.Counts[scaffold.FileStale],
+		health.Counts[scaffold.FileCustomized], health.Counts[scaffold.FileLegacy],
+		health.Counts[scaffold.FileMissing], health.Counts[scaffold.FileExtra],
+		health.Counts[scaffold.FileInvalid])
+	if len(health.AffectedPaths) > 0 {
+		fmt.Fprintln(os.Stdout, "affected paths:", strings.Join(health.AffectedPaths, ", "))
+	}
+	if health.Diff != "" {
+		fmt.Fprintln(os.Stdout, health.Diff)
+	}
+	action := health.NextAction
+	if len(preview.Changes) > 0 {
+		action = "watchtower migrate --apply"
+	}
+	fmt.Fprintln(os.Stdout, "next_action:", action)
 }
 
 func printJSON(value any) {
