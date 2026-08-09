@@ -789,6 +789,10 @@ func runDaemon(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	loadedInputs, err := scaffold.CaptureInputSnapshot(repo)
+	if err != nil {
+		fatal(fmt.Errorf("capture configuration inputs: %w", err))
+	}
 	decisionIdentities := make(map[string]decision.AgentIdentity, len(packages))
 	for name, pkg := range packages {
 		decisionIdentities[name] = pkg.Identity
@@ -912,6 +916,7 @@ func runDaemon(args []string) {
 	srv.SetPricePerMTok(*pricePerMTok)
 	srv.SetBudget(*budget)
 	srv.SetPlannerBudget(cfg.PlannerBudget)
+	srv.SetConfigurationInputs(repo, loadedInputs)
 	// The setup inspector reports what the daemon is running, so these are the
 	// post-override values, and the workspace is the provider actually held —
 	// workspace.Detect picks treehouse purely on PATH and nothing else can see
