@@ -45,6 +45,15 @@ func prepareResetFS(repoRoot string, source fs.FS, sourceRoot string) (*Prepared
 		_ = prepared.Cancel()
 		return nil, err
 	}
+	manifest, err := BuildManifest(tempRoot, ManagedFiles(source), DefaultsVersion)
+	if err != nil {
+		_ = prepared.Cancel()
+		return nil, err
+	}
+	if err := WriteManifest(filepath.Join(prepared.Staged, ProvenanceFile), manifest); err != nil {
+		_ = prepared.Cancel()
+		return nil, err
+	}
 	if err := validateResetTree(tempRoot); err != nil {
 		_ = prepared.Cancel()
 		return nil, err
