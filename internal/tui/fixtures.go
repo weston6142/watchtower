@@ -12,6 +12,7 @@ import (
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/projection"
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -175,6 +176,10 @@ func fixtureSetup() *setupState {
 	}
 	view := proto.SetupView{
 		Flow: "default", IssueID: "fx-e2e", IssueTitle: "flaky e2e fix",
+		ConfigurationHealth: &scaffold.ConfigurationHealth{
+			Overall: scaffold.HealthCurrent, DefaultsVersion: scaffold.DefaultsVersion,
+			Counts: map[scaffold.FileClass]int{scaffold.FileCurrent: 20},
+		},
 		Repo: proto.RepoSetup{
 			Runner: "codex", Slots: 4, CodexBin: "codex",
 			CodexModel: "gpt-5.6-luna", CodexEffort: "xhigh", ClaudeBin: "claude",

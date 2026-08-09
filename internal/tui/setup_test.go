@@ -11,6 +11,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/scaffold"
 )
 
 // fixtureSetupView mirrors .watchtower/flows/default.yaml: six stages, review
@@ -380,6 +381,105 @@ func TestSetupPromptPagerScrollsAndEscReturnsToOutline(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(m.View()), "workspace treehouse") {
 		t.Fatal("outline did not reappear after esc")
+	}
+}
+
+func TestSetupHealthRowShowsDriftAndReload(t *testing.T) {
+	v := fixtureSetupView()
+	v.ConfigurationHealth = &scaffold.ConfigurationHealth{
+		Overall: scaffold.HealthDrift, DefaultsVersion: scaffold.DefaultsVersion, ReloadRequired: true,
+		Counts:        map[scaffold.FileClass]int{scaffold.FileCurrent: 18, scaffold.FileStale: 1, scaffold.FileCustomized: 1},
+		AffectedPaths: []string{"flows/default.yaml", "packages/planner/prompt.md"},
+		NextAction:    "watchtower migrate --apply",
+		Diff:          "--- flows/default.yaml\n+++ flows/default.yaml (current default)\n-    gate: auto\n+    gate: approve_artifact",
+	}
+	got := ansi.Strip(renderSetup(setupState{View: &v}, 120, 50))
+	for _, want := range []string{"CONFIG · drift", "reload required", "2 paths", "watchtower migrate --apply"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("health rendering missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestSetupHealthRowOpensBoundedDiffPager(t *testing.T) {
+	v := fixtureSetupView()
+	diff := "--- flows/default.yaml\n+++ flows/default.yaml (current default)\n- old\n+ new"
+	v.ConfigurationHealth = &scaffold.ConfigurationHealth{
+		Overall: scaffold.HealthDrift, DefaultsVersion: scaffold.DefaultsVersion, ReloadRequired: true,
+		Counts:        map[scaffold.FileClass]int{scaffold.FileCurrent: 18, scaffold.FileStale: 1},
+		AffectedPaths: []string{"flows/default.yaml"}, NextAction: "watchtower migrate --apply", Diff: diff,
+	}
+	m := NewModel(nil, []string{"brainstorm", "spec", "plan", "execute", "review", "merge"})
+	state := setupState{View: &v, Expanded: map[string]bool{}}
+	m.setup = &state
+	for index, row := range setupSelectable(setupRows(v, state.Expanded)) {
+		if setupRows(v, state.Expanded)[row].Kind == setupRowHealth {
+			m.setup.Sel = index
+			break
+		}
+	}
+	m = pressKey(t, m, "enter")
+	if m.pager.Mode != "pager" || m.pager.Title != "configuration diff" {
+		t.Fatalf("health pager = %+v", m.pager)
+	}
+	if got := strings.Join(m.pager.Lines, "\n"); got != diff {
+		t.Fatalf("pager diff = %q, want %q", got, diff)
+	}
+	m = pressKey(t, m, "j")
+	if m.pager.Top != 1 {
+		t.Fatalf("j did not scroll health diff: %+v", m.pager)
+	}
+	m = pressKey(t, m, "esc")
+	if m.pager.Mode != "" || m.setup == nil || m.setup.Sel < 0 {
+		t.Fatalf("esc did not return to health row: setup=%+v pager=%+v", m.setup, m.pager)
+	}
+}
+
+func TestSetupHealthSelectionKeepsStageAndAgentNavigation(t *testing.T) {
+	v := fixtureSetupView()
+	v.ConfigurationHealth = &scaffold.ConfigurationHealth{Overall: scaffold.HealthCurrent, DefaultsVersion: scaffold.DefaultsVersion}
+	m := NewModel(nil, []string{"brainstorm", "spec", "plan", "execute", "review", "merge"})
+	m.setup = &setupState{View: &v, Expanded: map[string]bool{}}
+	rows := setupRows(v, m.setup.Expanded)
+	selectable := setupSelectable(rows)
+	for index, rowIndex := range selectable {
+		if rows[rowIndex].Kind == setupRowStage && rows[rowIndex].Stage == "review" {
+			m.setup.Sel = index
+			break
+		}
+	}
+	m = pressKey(t, m, "enter")
+	if !m.setup.Expanded["review"] {
+		t.Fatal("health row changed stage expansion behavior")
+	}
+	rows = setupRows(v, m.setup.Expanded)
+	selectable = setupSelectable(rows)
+	for index, rowIndex := range selectable {
+		if rows[rowIndex].Kind == setupRowAgent && rows[rowIndex].Stage == "review" && rows[rowIndex].Pkg == "reviewer" {
+			m.setup.Sel = index
+			break
+		}
+	}
+	row, ok := m.setup.selectedRow()
+	if !ok || row.Kind != setupRowAgent || row.Stage != "review" || row.Pkg != "reviewer" {
+		t.Fatalf("agent navigation after health row = %+v ok=%v", row, ok)
+	}
+}
+
+func TestSetupCurrentHealthIsConcise(t *testing.T) {
+	v := fixtureSetupView()
+	v.ConfigurationHealth = &scaffold.ConfigurationHealth{
+		Overall: scaffold.HealthCurrent, DefaultsVersion: scaffold.DefaultsVersion,
+		Counts: map[scaffold.FileClass]int{scaffold.FileCurrent: 20},
+	}
+	got := ansi.Strip(renderSetup(setupState{View: &v}, 120, 50))
+	if !strings.Contains(got, "CONFIG · current") || !strings.Contains(got, "reload ok") {
+		t.Fatalf("current health summary missing: %s", got)
+	}
+	for _, noisy := range []string{"flows/default.yaml", "next:"} {
+		if strings.Contains(got, noisy) {
+			t.Fatalf("current health rendered noisy %q: %s", noisy, got)
+		}
 	}
 }
 

@@ -1203,6 +1203,19 @@ func (m *Model) setupEnter() tea.Cmd {
 		m.setup.clampTop(m.Height)
 		return nil
 	}
+	if row.Kind == setupRowHealth {
+		if m.setup.View.ConfigurationHealth == nil {
+			return nil
+		}
+		diff := m.setup.View.ConfigurationHealth.Diff
+		if diff == "" {
+			diff = "configuration is current"
+		}
+		m.pager = pagerState{
+			Mode: "pager", Title: "configuration diff", Lines: strings.Split(diff, "\n"), Top: 0,
+		}
+		return nil
+	}
 	return m.fetchSetupPrompt(row.Stage, row.Pkg)
 }
 

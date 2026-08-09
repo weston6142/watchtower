@@ -9,6 +9,17 @@ Codex it also reports the repository model/effort pair. The load stamp makes
 stale daemon state readable rather than confusing. What the panel reports
 about agents is resolved elsewhere — see agent-prompt-and-model-resolution.
 
+The repository header also includes configuration health from the same
+structured result exposed by `watchtower status`. It distinguishes the
+daemon-loaded setup from the current disk classification (`current`, `stale`,
+`customized`, `legacy`, `missing`, `extra`, or `invalid`) and shows
+`reload_required` when disk inputs differ from the snapshot loaded at startup.
+Select the health row and press Enter to open its bounded configuration diff in
+the existing pager. `watchtower migrate` previews safe changes without writes;
+only `watchtower migrate --apply` applies eligible stale or recognized legacy
+gate changes. Migration preserves customization and is separate from the
+explicit whole-tree replacement performed by `watchtower reset --yes`.
+
 ## Codex profiles and fallback
 
 New repositories use a Codex primary profile with an explicit empty feature map
