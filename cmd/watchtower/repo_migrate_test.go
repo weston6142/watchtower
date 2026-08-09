@@ -91,6 +91,25 @@ func TestStatusJSONIncludesConfigurationHealth(t *testing.T) {
 	}
 }
 
+func TestStatusIncludesConfigurationCounts(t *testing.T) {
+	bin, base, repo := newMigrateRepo(t)
+	run(t, bin, repo, "new", "--data", base, "--title", "status counts")
+	config := filepath.Join(repo, ".watchtower", "config.yaml")
+	body, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, append(body, []byte("# intentional\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := run(t, bin, repo, "status", "--data", base, "--repo", repo)
+	for _, want := range []string{"configuration: drift", "current=", "customized=1", "affected paths"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestMigrateApplyRollsBackWhenNewSetupFails(t *testing.T) {
 	bin, base, repo := newMigrateRepo(t)
 	makeLegacyFlow(t, repo)

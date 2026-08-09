@@ -91,6 +91,7 @@ func TestInspectRejectsInvalidManifest(t *testing.T) {
 		"malformed":      "files: [",
 		"duplicate":      "schema_version: 1\ndefaults_version: '2'\nfiles:\n  - {path: config.yaml, sha256: " + strings.Repeat("a", 64) + ", baseline_version: '2'}\n  - {path: config.yaml, sha256: " + strings.Repeat("b", 64) + ", baseline_version: '2'}\n",
 		"traversal":      "schema_version: 1\ndefaults_version: '2'\nfiles:\n  - {path: ../config.yaml, sha256: " + strings.Repeat("a", 64) + ", baseline_version: '2'}\n",
+		"parent":         "schema_version: 1\ndefaults_version: '2'\nfiles:\n  - {path: .., sha256: " + strings.Repeat("a", 64) + ", baseline_version: '2'}\n",
 		"bad hash":       "schema_version: 1\ndefaults_version: '2'\nfiles:\n  - {path: config.yaml, sha256: nope, baseline_version: '2'}\n",
 		"unknown schema": "schema_version: 9\ndefaults_version: '2'\nfiles: []\n",
 	} {
@@ -102,11 +103,14 @@ func TestInspectRejectsInvalidManifest(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, ".watchtower", ProvenanceFile), []byte(body), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := ReadManifest(filepath.Join(root, ".watchtower", ProvenanceFile)); err == nil {
+				t.Fatal("manifest path traversal was accepted")
+			}
 			health, err := Inspect(root, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if health.Overall != HealthInvalid || health.NextAction == "" {
+			if health.Overall != HealthInvalid || health.NextAction == "" || health.Diff == "" {
 				t.Fatalf("invalid manifest health = %+v", health)
 			}
 		})
@@ -173,6 +177,28 @@ func TestLegacyMigrationAdoptsUntouchedBytes(t *testing.T) {
 		}
 		if entry.Path == "flows/default.yaml" && entry.BaselineVersion != DefaultsVersion {
 			t.Fatalf("migrated flow baseline = %q", entry.BaselineVersion)
+		}
+	}
+}
+
+func TestLegacyAdoptedDefaultRemainsLegacy(t *testing.T) {
+	root := t.TempDir()
+	seedDefaultsWithoutManifest(t, root)
+	manifest, err := BuildLegacyManifest(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteManifest(filepath.Join(root, ".watchtower", ProvenanceFile), manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	health, err := Inspect(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range health.Files {
+		if file.Path == "config.yaml" && file.Class != FileLegacy {
+			t.Fatalf("legacy-adopted default classified as %q, want %q", file.Class, FileLegacy)
 		}
 	}
 }

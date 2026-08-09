@@ -29,11 +29,14 @@ type PreparedMigration struct {
 }
 
 func PreviewMigration(repoRoot string) (MigrationPreview, error) {
-	health, err := Inspect(repoRoot, nil)
+	// Capture the source boundary before classifying it. Any edit after this
+	// point is rejected by the prepared migration's source recheck, while an
+	// edit that happened before the boundary is included in the inspection.
+	snapshot, err := CaptureInputSnapshot(repoRoot)
 	if err != nil {
 		return MigrationPreview{}, err
 	}
-	snapshot, err := CaptureInputSnapshot(repoRoot)
+	health, err := Inspect(repoRoot, nil)
 	if err != nil {
 		return MigrationPreview{}, err
 	}

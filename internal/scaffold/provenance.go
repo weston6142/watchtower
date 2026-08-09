@@ -157,7 +157,7 @@ func validateManifestPath(file string) (string, error) {
 		return "", fmt.Errorf("invalid manifest path %q", file)
 	}
 	normalized := path.Clean(file)
-	if normalized == "." || normalized != file || normalized == ProvenanceFile || strings.HasPrefix(normalized, "../") {
+	if normalized == "." || normalized == ".." || normalized != file || normalized == ProvenanceFile || strings.HasPrefix(normalized, "../") {
 		return "", fmt.Errorf("invalid manifest path %q", file)
 	}
 	return normalized, nil

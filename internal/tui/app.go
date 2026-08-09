@@ -1207,9 +1207,15 @@ func (m *Model) setupEnter() tea.Cmd {
 		if m.setup.View.ConfigurationHealth == nil {
 			return nil
 		}
-		diff := m.setup.View.ConfigurationHealth.Diff
+		health := m.setup.View.ConfigurationHealth
+		diff := health.Diff
 		if diff == "" {
-			diff = "configuration is current"
+			if health.ReloadRequired {
+				diff = "configuration changed on disk; daemon reload required"
+			} else {
+				diff = fmt.Sprintf("configuration health: %s; next action: %s",
+					health.Overall, health.NextAction)
+			}
 		}
 		m.pager = pagerState{
 			Mode: "pager", Title: "configuration diff", Lines: strings.Split(diff, "\n"), Top: 0,

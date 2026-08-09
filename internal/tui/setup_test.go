@@ -435,6 +435,28 @@ func TestSetupHealthRowOpensBoundedDiffPager(t *testing.T) {
 	}
 }
 
+func TestSetupHealthPagerNamesReloadOnlyDrift(t *testing.T) {
+	v := fixtureSetupView()
+	v.ConfigurationHealth = &scaffold.ConfigurationHealth{
+		Overall: scaffold.HealthDrift, DefaultsVersion: scaffold.DefaultsVersion,
+		ReloadRequired: true, NextAction: "watchtower migrate --apply",
+	}
+	m := NewModel(nil, []string{"brainstorm", "spec", "plan", "execute", "review", "merge"})
+	m.setup = &setupState{View: &v, Expanded: map[string]bool{}}
+	rows := setupRows(v, m.setup.Expanded)
+	for index, rowIndex := range setupSelectable(rows) {
+		if rows[rowIndex].Kind == setupRowHealth {
+			m.setup.Sel = index
+			break
+		}
+	}
+	m = pressKey(t, m, "enter")
+	got := strings.Join(m.pager.Lines, "\n")
+	if strings.Contains(got, "configuration is current") || !strings.Contains(got, "reload required") {
+		t.Fatalf("reload-only health pager = %q", got)
+	}
+}
+
 func TestSetupHealthSelectionKeepsStageAndAgentNavigation(t *testing.T) {
 	v := fixtureSetupView()
 	v.ConfigurationHealth = &scaffold.ConfigurationHealth{Overall: scaffold.HealthCurrent, DefaultsVersion: scaffold.DefaultsVersion}

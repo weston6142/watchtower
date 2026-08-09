@@ -169,10 +169,10 @@ func Inspect(repoRoot string, loadedSnapshot *InputSnapshot) (ConfigurationHealt
 		switch {
 		case manifestMissing:
 			status.Class = FileLegacy
-		case bytes.Equal(body, currentDefault):
-			status.Class = FileCurrent
 		case hasBaseline && entry.BaselineVersion == "legacy-adopted":
 			status.Class = FileLegacy
+		case bytes.Equal(body, currentDefault):
+			status.Class = FileCurrent
 		case hasBaseline && currentHash == entry.SHA256:
 			status.Class = FileStale
 		case hasBaseline:
@@ -270,6 +270,10 @@ func invalidHealth(err error) ConfigurationHealth {
 	health.Counts[FileInvalid] = 1
 	health.Files = []FileStatus{{Path: ProvenanceFile, Class: FileInvalid, Diagnostic: err.Error()}}
 	health.AffectedPaths = []string{ProvenanceFile}
+	health.Diff = err.Error()
+	if len(health.Diff) > maxHealthDiffBytes {
+		health.Diff = health.Diff[:maxHealthDiffBytes]
+	}
 	health.NextAction = "manual review or watchtower reset --yes"
 	return health
 }

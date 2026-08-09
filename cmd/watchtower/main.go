@@ -677,10 +677,53 @@ func replacePreparedTree(base, repo string, prepared preparedTree, startIfMissin
 			return err
 		}
 		if err := prepared.Commit(); err != nil {
-			return err
+			if rollbackErr := prepared.Rollback(); rollbackErr != nil {
+				return fmt.Errorf("commit replacement: %v; rollback failed: %w", err, rollbackErr)
+			}
+			return fmt.Errorf("commit replacement: %w", err)
 		}
 		fmt.Fprintln(os.Stdout, success)
 		return nil
+	}
+	restartOriginal := func() error {
+		oldClient, _, restartErr := connectOrStartDaemon(base, repo)
+		if oldClient != nil {
+			_ = oldClient.Close()
+		}
+		return restartErr
+	}
+	stopDaemon := func(daemon *proto.Client) error {
+		if daemon == nil {
+			return nil
+		}
+		response, err := daemon.Do(proto.Command{Op: "shutdown"})
+		_ = daemon.Close()
+		if err != nil {
+			return err
+		}
+		if !response.OK {
+			return fmt.Errorf("shutdown: %s", response.Error)
+		}
+		return waitForDaemonStop(base, repo)
+	}
+	recoverReplacement := func(primary error, newClient *proto.Client) error {
+		stopErr := stopDaemon(newClient)
+		rollbackErr := prepared.Rollback()
+		restartErr := restartOriginal()
+		if stopErr == nil && rollbackErr == nil && restartErr == nil {
+			return fmt.Errorf("replacement failed: %w", primary)
+		}
+		parts := []string{fmt.Sprintf("replacement failed: %v", primary)}
+		if stopErr != nil {
+			parts = append(parts, fmt.Sprintf("stop replacement daemon failed: %v", stopErr))
+		}
+		if rollbackErr != nil {
+			parts = append(parts, fmt.Sprintf("rollback failed: %v", rollbackErr))
+		}
+		if restartErr != nil {
+			parts = append(parts, fmt.Sprintf("restart original daemon failed: %v", restartErr))
+		}
+		return fmt.Errorf("%s", strings.Join(parts, "; "))
 	}
 	response, err := client.Do(proto.Command{Op: "can_reset"})
 	if err != nil {
@@ -691,23 +734,11 @@ func replacePreparedTree(base, repo string, prepared preparedTree, startIfMissin
 		client.Close()
 		return fmt.Errorf("can_reset: %s", response.Error)
 	}
-	response, err = client.Do(proto.Command{Op: "shutdown"})
-	client.Close()
-	if err != nil {
-		return err
-	}
-	if !response.OK {
-		return fmt.Errorf("shutdown: %s", response.Error)
-	}
-	if err := waitForDaemonStop(base, repo); err != nil {
-		return err
-	}
-	restartOriginal := func() error {
-		oldClient, _, restartErr := connectOrStartDaemon(base, repo)
-		if oldClient != nil {
-			_ = oldClient.Close()
+	if err := stopDaemon(client); err != nil {
+		if restartErr := restartOriginal(); restartErr != nil {
+			return fmt.Errorf("stop original daemon: %v; restart original daemon failed: %w", err, restartErr)
 		}
-		return restartErr
+		return err
 	}
 	if err := prepared.Apply(); err != nil {
 		if restartErr := restartOriginal(); restartErr != nil {
@@ -726,28 +757,12 @@ func replacePreparedTree(base, repo string, prepared preparedTree, startIfMissin
 		}
 	}
 	if startErr != nil {
-		if newClient != nil {
-			_, _ = newClient.Do(proto.Command{Op: "shutdown"})
-			_ = newClient.Close()
-			_ = waitForDaemonStop(base, repo)
-		}
-		rollbackErr := prepared.Rollback()
-		restartErr := restartOriginal()
-		if rollbackErr != nil && restartErr != nil {
-			return fmt.Errorf("replacement failed: %v; rollback failed: %v; restart original daemon failed: %w", startErr, rollbackErr, restartErr)
-		}
-		if rollbackErr != nil {
-			return fmt.Errorf("replacement failed: %v; rollback failed: %w", startErr, rollbackErr)
-		}
-		if restartErr != nil {
-			return fmt.Errorf("replacement failed: %v; restart original daemon: %w", startErr, restartErr)
-		}
-		return fmt.Errorf("replacement failed: %w", startErr)
+		return recoverReplacement(startErr, newClient)
+	}
+	if err := prepared.Commit(); err != nil {
+		return recoverReplacement(err, newClient)
 	}
 	_ = newClient.Close()
-	if err := prepared.Commit(); err != nil {
-		return err
-	}
 	fmt.Fprintln(os.Stdout, success)
 	return nil
 }
@@ -765,9 +780,18 @@ func verifyMigratedSetup(response *proto.Response) error {
 			response.Setup.ConfigurationHealth.AffectedPaths, response.Setup.ConfigurationHealth.Counts)
 	}
 	want := map[string]string{"spec": "approve_artifact", "plan": "plan_review"}
+	seen := make(map[string]bool, len(want))
 	for _, stage := range response.Setup.Stages {
 		if expected, ok := want[stage.Name]; ok && stage.Gate != expected {
 			return fmt.Errorf("setup validation: %s gate = %s, want %s", stage.Name, stage.Gate, expected)
+		}
+		if _, ok := want[stage.Name]; ok {
+			seen[stage.Name] = true
+		}
+	}
+	for _, name := range []string{"spec", "plan"} {
+		if !seen[name] {
+			return fmt.Errorf("setup validation: missing %s stage", name)
 		}
 	}
 	return nil
@@ -1136,8 +1160,13 @@ func statusSentence(o *proto.Overview) string {
 	if health.Overall == scaffold.HealthCurrent && !health.ReloadRequired {
 		return workload + " · configuration current"
 	}
-	return fmt.Sprintf("%s\nconfiguration: %s, %d affected paths, next: %s\n%s",
-		workload, health.Overall, len(health.AffectedPaths), health.NextAction, health.Diff)
+	counts := fmt.Sprintf("current=%d stale=%d customized=%d legacy=%d missing=%d extra=%d invalid=%d",
+		health.Counts[scaffold.FileCurrent], health.Counts[scaffold.FileStale],
+		health.Counts[scaffold.FileCustomized], health.Counts[scaffold.FileLegacy],
+		health.Counts[scaffold.FileMissing], health.Counts[scaffold.FileExtra],
+		health.Counts[scaffold.FileInvalid])
+	return fmt.Sprintf("%s\nconfiguration: %s (%s), %d affected paths, next: %s\n%s",
+		workload, health.Overall, counts, len(health.AffectedPaths), health.NextAction, health.Diff)
 }
 
 func printMigrationPreview(preview scaffold.MigrationPreview) {
