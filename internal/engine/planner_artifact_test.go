@@ -143,6 +143,18 @@ func TestPlannerArtifactInvalidFinalPairBlocksArchiveAndReview(t *testing.T) {
 		{name: "pair", mutate: func(workdir string) error {
 			return os.WriteFile(filepath.Join(workdir, "touchset.json"), []byte(`{"globs":[]}`), 0o644)
 		}, want: "pair"},
+		{name: "unauthorized-content", mutate: func(workdir string) error {
+			path := filepath.Join(workdir, "plan.md")
+			plan, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			mutated := strings.Replace(string(plan), "section goal", "tampered goal", 1)
+			if mutated == string(plan) {
+				return fmt.Errorf("accepted goal section was not found")
+			}
+			return os.WriteFile(path, []byte(mutated), 0o644)
+		}, want: "plan.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := plannerArtifactEngineFlow()

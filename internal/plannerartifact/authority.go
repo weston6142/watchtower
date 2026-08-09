@@ -1,6 +1,7 @@
 package plannerartifact
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -331,8 +332,32 @@ func (a *Authority) ValidateComplete() error {
 	if err != nil || len(record.Manifest.Sections) == 0 {
 		return finalValidationError("pair", "", "planner manifest is not initialized")
 	}
+	if len(record.Sections) != len(record.Manifest.Sections) {
+		return finalValidationError("pair", "", "planner sections are incomplete")
+	}
+	for index, entry := range record.Manifest.Sections {
+		accepted := record.Sections[index]
+		if accepted.Key != entry.Key || !sameStrings(accepted.Globs, entry.Globs) {
+			return finalValidationError("pair", entry.Key, "durable planner sections are inconsistent")
+		}
+	}
 	session := &Session{workdir: a.binding.Worktree, manifest: &record.Manifest}
-	return session.ValidateComplete()
+	if err := session.ValidateComplete(); err != nil {
+		return err
+	}
+	expectedPlan, expectedTouchset, err := renderPair(record.Manifest, record.Sections)
+	if err != nil {
+		return finalValidationError("pair", "", "durable planner sections cannot be rendered")
+	}
+	actualPlan, err := os.ReadFile(filepath.Join(a.binding.Worktree, "plan.md"))
+	if err != nil || !bytes.Equal(actualPlan, expectedPlan) {
+		return finalValidationError("plan.md", "", "planner content does not match durable validated state")
+	}
+	actualTouchset, err := os.ReadFile(filepath.Join(a.binding.Worktree, "touchset.json"))
+	if err != nil || !bytes.Equal(actualTouchset, expectedTouchset) {
+		return finalValidationError("touchset.json", "", "touchset does not match durable validated state")
+	}
+	return nil
 }
 
 // AcceptedSections reloads the durable validated prefix for retry inspection.
