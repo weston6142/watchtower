@@ -44,15 +44,7 @@ func runPlannerArtifact(args []string, stdin io.Reader, stdout io.Writer) error 
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return fmt.Errorf("decode planner request: trailing data")
 	}
-	workdir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("planner workdir: %w", err)
-	}
-	session, err := plannerartifact.OpenFromEnv(workdir)
-	if err != nil {
-		return err
-	}
-	if err := session.Apply(request); err != nil {
+	if err := plannerartifact.ApplyFromFD(3, request); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "section-validated %s\n", request.Key)

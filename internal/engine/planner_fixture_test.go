@@ -9,7 +9,6 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
-	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -75,13 +74,13 @@ func (r *recordingPlannerRunner) RunPlanner(ctx context.Context, _ string, _ str
 			}
 		}
 		r.UnchangedSourceReused = admittedIssueReads == 1
-		session, err := plannerartifact.OpenFromEnvironment(workdir, runner.PlannerArtifactEnv(ctx))
-		if err != nil {
-			done <- runner.Result{Err: err}
+		authority := runner.PlannerArtifactAuthorityFromContext(ctx)
+		if authority == nil {
+			done <- runner.Result{Err: fmt.Errorf("planner authority unavailable")}
 			return
 		}
 		for _, request := range plannerArtifactRequests() {
-			if err := session.Apply(request); err != nil {
+			if err := authority.ApplyPlannerArtifact(request); err != nil {
 				done <- runner.Result{Err: err}
 				return
 			}

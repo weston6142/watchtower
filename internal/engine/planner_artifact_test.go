@@ -39,19 +39,9 @@ func (r *plannerArtifactEngineRunner) RunPlanner(ctx context.Context, _ string, 
 	go func() {
 		r.started = true
 		r.callCount++
-		var previous string
-		for _, entry := range runner.PlannerArtifactEnv(ctx) {
-			key, value, ok := strings.Cut(entry, "=")
-			if !ok {
-				continue
-			}
-			previous = os.Getenv(key)
-			_ = os.Setenv(key, value)
-			defer os.Setenv(key, previous)
-		}
-		session, err := plannerartifact.OpenFromEnv(workdir)
-		if err != nil {
-			done <- runner.Result{Err: err}
+		authority := runner.PlannerArtifactAuthorityFromContext(ctx)
+		if authority == nil {
+			done <- runner.Result{Err: fmt.Errorf("planner authority unavailable")}
 			return
 		}
 		for index, request := range r.requests {
@@ -59,7 +49,7 @@ func (r *plannerArtifactEngineRunner) RunPlanner(ctx context.Context, _ string, 
 				done <- runner.Result{Err: fmt.Errorf("transport failure at %s", request.Key)}
 				return
 			}
-			if err := session.Apply(request); err != nil {
+			if err := authority.ApplyPlannerArtifact(request); err != nil {
 				done <- runner.Result{Err: err}
 				return
 			}

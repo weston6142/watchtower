@@ -2968,13 +2968,21 @@ func (e *Engine) runStageOnce(
 	}); err != nil {
 		return err
 	}
-	var artifactSession *plannerartifact.Session
+	var artifactAuthority *plannerartifact.Authority
 	if st.DeclaresArtifact("plan.md") && st.DeclaresArtifact("touchset.json") {
-		artifactSession, err = plannerartifact.Initialize(workdir)
+		artifactAuthority, err = plannerartifact.CreateOrLoad(e.cfg.Store, plannerartifact.Binding{
+			IssueID: is.id, Stage: st.Name, Attempt: attempt, Worktree: workdir,
+		})
 		if err != nil {
-			return fmt.Errorf("initialize planner artifacts: %w", err)
+			return fmt.Errorf("initialize planner authority: %w", err)
 		}
-		defer artifactSession.Close()
+		defer func() {
+			if runErr == nil {
+				_ = artifactAuthority.Expire()
+				return
+			}
+			_ = artifactAuthority.Close()
+		}()
 	}
 	checkpointID, err := e.cfg.Store.InsertStageCheckpoint(store.StageCheckpoint{
 		IssueID: is.id, Stage: st.Name, StartCommit: startCommit, Status: "running",
@@ -3113,8 +3121,8 @@ func (e *Engine) runStageOnce(
 		if verificationLease != nil {
 			agentCtx = runner.WithManagedEnvironment(agentCtx, verificationLease.ManagedEnvironment())
 		}
-		if artifactSession != nil {
-			agentCtx = runner.WithPlannerArtifactEnv(agentCtx, artifactSession.Env())
+		if artifactAuthority != nil {
+			agentCtx = runner.WithPlannerArtifactAuthority(agentCtx, artifactAuthority)
 		}
 		asks := make(chan runner.Ask)
 		var resc <-chan runner.Result
@@ -3200,8 +3208,8 @@ func (e *Engine) runStageOnce(
 	if st.Completion == flow.CompletionAny && succeeded == 0 {
 		return firstErr
 	}
-	if artifactSession != nil {
-		if err := artifactSession.ValidateComplete(); err != nil {
+	if artifactAuthority != nil {
+		if err := artifactAuthority.ValidateComplete(); err != nil {
 			return fmt.Errorf("validate planner artifacts: %w", err)
 		}
 	}

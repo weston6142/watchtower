@@ -107,7 +107,7 @@ func TestPlannerSessionEnvironmentReachesClaudeChildWithoutArgLeak(t *testing.T)
 	bin := filepath.Join(dir, "claude-stub")
 	script := `#!/bin/sh
 set -eu
-printf '%s' "$WATCHTOWER_PLANNER_SESSION" > "$CAPTURE_ENV"
+	printf '%s' "${WATCHTOWER_PLANNER_SESSION-}" > "$CAPTURE_ENV"
 : > "$CAPTURE_ARGV"
 for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE_ARGV"; done
 cat > /dev/null &
@@ -122,15 +122,16 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 		Bin: bin, Packages: testPkgs(),
 		ExtraEnv: []string{"CAPTURE_ENV=" + envCapture, "CAPTURE_ARGV=" + argvCapture},
 	}
-	ctx := runner.WithPlannerArtifactEnv(context.Background(), []string{"WATCHTOWER_PLANNER_SESSION=" + sentinel})
+	t.Setenv("WATCHTOWER_PLANNER_SESSION", sentinel)
+	ctx := context.Background()
 	res := <-r.RunPlanner(ctx, "GH-1", "plan", "spec-writer", dir, make(chan runner.Ask), nil)
 	if res.Err != nil {
 		t.Fatal(res.Err)
 	}
 	if got, err := os.ReadFile(envCapture); err != nil {
 		t.Fatal(err)
-	} else if string(got) != sentinel {
-		t.Fatalf("child planner environment = %q, want %q", got, sentinel)
+	} else if string(got) != "" {
+		t.Fatalf("child planner environment = %q, want ambient session removed", got)
 	}
 	if got, err := os.ReadFile(argvCapture); err != nil {
 		t.Fatal(err)

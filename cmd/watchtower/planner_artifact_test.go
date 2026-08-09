@@ -5,18 +5,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/plannerartifact"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func TestPlannerArtifactCommandKeepsPayloadOutOfArgv(t *testing.T) {
 	dir := t.TempDir()
-	session, err := plannerartifact.Initialize(dir)
+	coordinator, err := store.Open(filepath.Join(t.TempDir(), "coordinator.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer coordinator.Close()
+	authority, err := plannerartifact.CreateOrLoad(coordinator, plannerartifact.Binding{
+		IssueID: "GH-62", Stage: "plan", Attempt: 1, Worktree: dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
 	manifest := commandManifest()
 	payload := "quotes ' \" backticks ` $()\n```json\n{\"key\":\"value\"}\n```"
 	request := plannerartifact.WriteRequest{
@@ -33,13 +42,33 @@ func TestPlannerArtifactCommandKeepsPayloadOutOfArgv(t *testing.T) {
 	if err := os.WriteFile(requestPath, requestBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	state := strings.TrimPrefix(session.Env()[0], "WATCHTOWER_PLANNER_SESSION=")
-	t.Setenv("WATCHTOWER_PLANNER_SESSION", state)
+	t.Setenv("WATCHTOWER_PLANNER_SESSION", "agent-private-session")
 	t.Chdir(dir)
 	args := []string{"planner-artifact", "apply", "--request-file", requestPath}
 	if strings.Contains(strings.Join(args, " "), payload) {
 		t.Fatal("request payload was interpolated into command arguments")
 	}
+	descriptor, err := authority.AttachPlannerArtifactDescriptor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, savedErr := syscall.Dup(3)
+	if err := syscall.Dup2(int(descriptor.Fd()), 3); err != nil {
+		descriptor.Close()
+		if savedErr == nil {
+			_ = syscall.Close(saved)
+		}
+		t.Fatal(err)
+	}
+	_ = descriptor.Close()
+	defer func() {
+		if savedErr == nil {
+			_ = syscall.Dup2(saved, 3)
+			_ = syscall.Close(saved)
+			return
+		}
+		_ = syscall.Close(3)
+	}()
 	var stdout strings.Builder
 	if err := runPlannerArtifact(args, strings.NewReader("ignored stdin"), &stdout); err != nil {
 		t.Fatal(err)

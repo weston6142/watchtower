@@ -341,20 +341,37 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 	cmd := exec.CommandContext(ctx, profile.Bin, invocation.Argv...)
 	cmd.Dir = workdir
 	extraEnv := append([]string(nil), c.ExtraEnv...)
-	extraEnv = append(extraEnv, runner.PlannerArtifactEnv(ctx)...)
 	cmd.Env = runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx))
+	var authorityDescriptor *os.File
+	if authority := runner.PlannerArtifactAuthorityFromContext(ctx); authority != nil {
+		var descriptorErr error
+		authorityDescriptor, descriptorErr = authority.AttachPlannerArtifactDescriptor()
+		if descriptorErr != nil {
+			return turnResult{failed: descriptorErr, failureClass: runner.FailureAuthorization, invocation: invocation}
+		}
+		cmd.ExtraFiles = []*os.File{authorityDescriptor}
+	}
+	closeAuthorityDescriptor := func() {
+		if authorityDescriptor != nil {
+			_ = authorityDescriptor.Close()
+			authorityDescriptor = nil
+		}
+	}
 	// If a shell wrapper leaves a child holding the JSONL pipe open after
 	// cancellation, do not let that child defeat CommandContext cancellation.
 	cmd.WaitDelay = 250 * time.Millisecond
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		closeAuthorityDescriptor()
 		return turnResult{failed: fmt.Errorf("codex stdout: %w", err), failureClass: runner.FailureTransport, invocation: invocation}
 	}
 	var stderrTail tailBuffer
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrTail)
 	if err := cmd.Start(); err != nil {
+		closeAuthorityDescriptor()
 		return turnResult{failed: fmt.Errorf("codex start: %w", err), failureClass: runner.FailureLaunch, invocation: invocation}
 	}
+	closeAuthorityDescriptor()
 
 	result := turnResult{invocation: invocation}
 	reconcile := func() {
