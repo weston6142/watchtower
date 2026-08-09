@@ -19,6 +19,33 @@ type Session struct {
 	manifest    *Manifest
 }
 
+// Prepare validates the paired planner targets and creates the empty pair for
+// a new stage. It does not create any authority or ambient session state.
+func Prepare(workdir string) error {
+	if err := validateWorkdir(workdir); err != nil {
+		return err
+	}
+	plan, touchset, fresh, err := inspectTargets(workdir)
+	if err != nil {
+		return err
+	}
+	if fresh {
+		return createFreshTargets(workdir)
+	}
+	document, err := parsePlan(plan)
+	if err != nil {
+		return malformedStartingError("plan.md", err)
+	}
+	set, err := parseTouchset(touchset)
+	if err != nil {
+		return malformedStartingError("touchset.json", err)
+	}
+	if len(document.Sections) == 0 && len(set.Globs) != 0 {
+		return malformedStartingError("pair", fmt.Errorf("unanchored plan has touchset globs"))
+	}
+	return nil
+}
+
 func Initialize(workdir string) (*Session, error) {
 	if err := validateWorkdir(workdir); err != nil {
 		return nil, err
