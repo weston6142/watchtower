@@ -2,10 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/plannerartifact"
@@ -43,7 +44,6 @@ func TestPlannerArtifactCommandKeepsPayloadOutOfArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WATCHTOWER_PLANNER_SESSION", "agent-private-session")
-	t.Chdir(dir)
 	args := []string{"planner-artifact", "apply", "--request-file", requestPath}
 	if strings.Contains(strings.Join(args, " "), payload) {
 		t.Fatal("request payload was interpolated into command arguments")
@@ -52,29 +52,20 @@ func TestPlannerArtifactCommandKeepsPayloadOutOfArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, savedErr := syscall.Dup(3)
-	if err := syscall.Dup2(int(descriptor.Fd()), 3); err != nil {
-		descriptor.Close()
-		if savedErr == nil {
-			_ = syscall.Close(saved)
-		}
-		t.Fatal(err)
-	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPlannerArtifactCommandHelper$", "--")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "WATCHTOWER_PLANNER_HELPER=1", "WATCHTOWER_PLANNER_REQUEST="+requestPath, "WATCHTOWER_PLANNER_SESSION=agent-private-session")
+	cmd.ExtraFiles = []*os.File{descriptor}
+	output, err := cmd.CombinedOutput()
 	_ = descriptor.Close()
-	defer func() {
-		if savedErr == nil {
-			_ = syscall.Dup2(saved, 3)
-			_ = syscall.Close(saved)
-			return
-		}
-		_ = syscall.Close(3)
-	}()
-	var stdout strings.Builder
-	if err := runPlannerArtifact(args, strings.NewReader("ignored stdin"), &stdout); err != nil {
-		t.Fatal(err)
+	if err != nil {
+		t.Fatalf("planner helper: %v: %s", err, output)
 	}
-	if got := stdout.String(); got != "section-validated goal\n" {
+	if got := string(output); !strings.HasPrefix(got, "section-validated goal\n") {
 		t.Fatalf("stdout = %q", got)
+	}
+	if err := authority.VerifyBinding(plannerartifact.Binding{IssueID: "GH-62", Stage: "plan", Attempt: 1, Worktree: dir}); err != nil {
+		t.Fatalf("authority after helper: %v", err)
 	}
 	plan, err := os.ReadFile(filepath.Join(dir, "plan.md"))
 	if err != nil {
@@ -82,6 +73,17 @@ func TestPlannerArtifactCommandKeepsPayloadOutOfArgv(t *testing.T) {
 	}
 	if !strings.Contains(string(plan), payload) {
 		t.Fatalf("plan does not contain payload byte-for-byte: %q", plan)
+	}
+}
+
+func TestPlannerArtifactCommandHelper(t *testing.T) {
+	if os.Getenv("WATCHTOWER_PLANNER_HELPER") != "1" {
+		return
+	}
+	requestPath := os.Getenv("WATCHTOWER_PLANNER_REQUEST")
+	if err := runPlannerArtifact([]string{"planner-artifact", "apply", "--request-file", requestPath}, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 

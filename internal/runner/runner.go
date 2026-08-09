@@ -133,24 +133,11 @@ type AttemptReporter interface {
 
 type operationIDKey struct{}
 
-type plannerArtifactEnvKey struct{}
-
 type plannerArtifactAuthorityKey struct{}
 
 const plannerArtifactSessionEnv = "WATCHTOWER_PLANNER_SESSION"
 
 type managedEnvironmentKey struct{}
-
-func WithPlannerArtifactEnv(ctx context.Context, env []string) context.Context {
-	return context.WithValue(ctx, plannerArtifactEnvKey{}, append([]string(nil), env...))
-}
-
-func PlannerArtifactEnv(ctx context.Context) []string {
-	if env, ok := ctx.Value(plannerArtifactEnvKey{}).([]string); ok {
-		return append([]string(nil), env...)
-	}
-	return nil
-}
 
 // WithPlannerArtifactAuthority attaches an immutable engine-owned authority
 // handle to the runner context.

@@ -7,10 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 )
-
-const plannerSessionEnv = "WATCHTOWER_PLANNER_SESSION"
 
 type Session struct {
 	workdir     string
@@ -85,63 +82,6 @@ func Initialize(workdir string) (*Session, error) {
 		stateDir:    stateDir,
 		removeState: true,
 	}, nil
-}
-
-func OpenFromEnv(workdir string) (*Session, error) {
-	return openFromState(workdir, os.Getenv(plannerSessionEnv))
-}
-
-func OpenFromEnvironment(workdir string, env []string) (*Session, error) {
-	stateDir := ""
-	for _, entry := range env {
-		key, value, ok := strings.Cut(entry, "=")
-		if ok && key == plannerSessionEnv {
-			stateDir = value
-		}
-	}
-	return openFromState(workdir, stateDir)
-}
-
-func openFromState(workdir, stateDir string) (*Session, error) {
-	if err := validateWorkdir(workdir); err != nil {
-		return nil, err
-	}
-	if stateDir == "" {
-		return nil, fmt.Errorf("planner session environment is missing")
-	}
-	info, err := os.Stat(stateDir)
-	if err != nil {
-		return nil, fmt.Errorf("open planner session: %w", err)
-	}
-	if !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("open planner session: insecure session directory")
-	}
-	plan, touchset, fresh, err := inspectTargets(workdir)
-	if err != nil {
-		return nil, err
-	}
-	if fresh {
-		return nil, malformedStartingError("pair", fmt.Errorf("planner targets are missing"))
-	}
-	if _, err := parsePlan(plan); err != nil {
-		return nil, malformedStartingError("plan.md", err)
-	}
-	if _, err := parseTouchset(touchset); err != nil {
-		return nil, malformedStartingError("touchset.json", err)
-	}
-	session := &Session{workdir: workdir, stateDir: stateDir}
-	manifest, err := session.readManifest()
-	if err != nil {
-		return nil, err
-	}
-	if manifest != nil {
-		session.manifest = manifest
-	}
-	return session, nil
-}
-
-func (s *Session) Env() []string {
-	return []string{plannerSessionEnv + "=" + s.stateDir}
 }
 
 func (s *Session) Close() error {
