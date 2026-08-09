@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/flow"
@@ -19,7 +20,7 @@ func TestGH54PlannerRecovery(t *testing.T) {
 			{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}}, Workspace: "none", Completion: flow.CompletionAll},
 		},
 	}
-	executionStarted := false
+	var executionStarted atomic.Bool
 	fake := &runner.FakeRunner{
 		Scripts: map[string]runner.Script{
 			"plan/planner":     {PlannerRequests: plannerArtifactRequests()},
@@ -27,7 +28,7 @@ func TestGH54PlannerRecovery(t *testing.T) {
 		},
 		OnStart: func(_, stage, _, _ string) error {
 			if stage == "execute" {
-				executionStarted = true
+				executionStarted.Store(true)
 			}
 			return nil
 		},
@@ -47,7 +48,7 @@ func TestGH54PlannerRecovery(t *testing.T) {
 	if pending.Review == nil || pending.Review.Stage != "plan" {
 		t.Fatalf("pending recovery review = %+v", pending.Review)
 	}
-	if executionStarted {
+	if executionStarted.Load() {
 		t.Fatal("GH-54 recovery started implementation before plan review")
 	}
 	if err := e.Answer(pending.ID, levers.ChoiceResponse(1)); err != nil {

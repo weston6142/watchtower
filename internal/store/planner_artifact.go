@@ -15,12 +15,11 @@ func (s *Store) LoadPlannerArtifact(issueID, stage string, attempt int, worktree
 		s.failNextPlannerArtifactRead = false
 		return "", nil, nil, nil, false, fmt.Errorf("injected planner artifact registry read failure")
 	}
-	var updatedAt string
 	err = s.db.QueryRow(`
-		SELECT status, capability_digest, manifest, sections, updated_at
+		SELECT status, capability_digest, manifest, sections
 		FROM planner_artifacts
 		WHERE issue_id=? AND stage=? AND attempt=? AND worktree=?`,
-		issueID, stage, attempt, worktree).Scan(&status, &digest, &manifest, &sections, &updatedAt)
+		issueID, stage, attempt, worktree).Scan(&status, &digest, &manifest, &sections)
 	if err == sql.ErrNoRows {
 		return "", nil, nil, nil, false, nil
 	}

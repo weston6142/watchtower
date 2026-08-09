@@ -64,11 +64,11 @@ func TestRealCodexPlannerArtifactBoundary(t *testing.T) {
 				t.Fatal(err)
 			}
 			capture := map[string]string{}
-			for _, name := range []string{"argv", "environment", "stderr", "apply", "lines"} {
+			for _, name := range []string{"argv", "environment", "stderr", "apply"} {
 				capture[name] = filepath.Join(t.TempDir(), name)
 			}
 			marker := "authority-test-secret-marker"
-			shim := writeBoundaryShim(t, helper, requestPath, capture, tc.noDesc)
+			shim := writeBoundaryShim(t, helper, requestPath, capture)
 			r := testRunner(shim)
 			r.ExtraEnv = []string{
 				"BOUNDARY_HELPER=" + helper,
@@ -142,13 +142,10 @@ func buildWatchtowerHelper(t *testing.T, root string) string {
 	return path
 }
 
-func writeBoundaryShim(t *testing.T, helper, request string, capture map[string]string, noDescriptor bool) string {
+func writeBoundaryShim(t *testing.T, helper, request string, capture map[string]string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "codex-shim")
 	apply := fmt.Sprintf("%q planner-artifact apply --request-file %q", helper, request)
-	if noDescriptor {
-		apply = fmt.Sprintf("%q planner-artifact apply --request-file %q", helper, request)
-	}
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
 printf '%%s\n' "$@" > %q
@@ -173,7 +170,7 @@ func captureBoundary(t *testing.T, capture map[string]string, lines []string, re
 	values := map[string]string{"lines": strings.Join(lines, "\n")}
 	for name, path := range capture {
 		data, err := os.ReadFile(path)
-		if err != nil && name != "lines" {
+		if err != nil {
 			t.Fatal(err)
 		}
 		values[name] = string(data)

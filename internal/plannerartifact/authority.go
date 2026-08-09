@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"unicode/utf8"
@@ -40,8 +41,6 @@ type acceptedSection struct {
 }
 
 type authorityRecord struct {
-	Status   string
-	Digest   []byte
 	Manifest Manifest
 	Sections []acceptedSection
 }
@@ -50,12 +49,11 @@ type authorityRecord struct {
 // record. Its capability is intentionally private and has no serialization or
 // environment representation.
 type Authority struct {
-	registry   Registry
-	binding    Binding
-	capability []byte
-	digest     []byte
-	mu         sync.Mutex
-	closed     bool
+	registry Registry
+	binding  Binding
+	digest   []byte
+	mu       sync.Mutex
+	closed   bool
 }
 
 const capabilityBytes = 32
@@ -100,7 +98,7 @@ func CreateOrLoad(registry Registry, binding Binding) (*Authority, error) {
 			return nil, fmt.Errorf("planner authority: registry write failed")
 		}
 	}
-	return &Authority{registry: registry, binding: normalized, capability: capability, digest: digest}, nil
+	return &Authority{registry: registry, binding: normalized, digest: digest}, nil
 }
 
 func normalizeBinding(binding Binding) (Binding, error) {
@@ -200,7 +198,10 @@ func (a *Authority) Apply(request WriteRequest) error {
 	if !utf8.ValidString(request.Markdown) {
 		return &DiagnosticError{Scope: ScopeTransport, Artifact: "plan.md", Key: request.Key, Reason: "section is not valid UTF-8"}
 	}
-	deltaBytes, _ := json.Marshal(manifest.Sections[entryIndex].Globs)
+	deltaBytes, err := json.Marshal(manifest.Sections[entryIndex].Globs)
+	if err != nil {
+		return errors.New("planner authority: encode section delta")
+	}
 	if observed := len([]byte(request.Markdown)) + len(deltaBytes); observed > MaxOperationBytes {
 		return &DiagnosticError{Scope: ScopeTransport, Artifact: "section", Key: request.Key, Observed: observed, Limit: MaxOperationBytes, Reason: "operation exceeds bounded write"}
 	}
@@ -212,7 +213,7 @@ func (a *Authority) Apply(request WriteRequest) error {
 		if accepted.Key != request.Key || accepted.Markdown != normalizedMarkdown(request.Markdown) || !sameStrings(accepted.Globs, requestGlobs) {
 			return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "plan.md", Key: request.Key, Reason: "accepted section conflicts with replay"}
 		}
-		if err := a.publishAccepted(record.Manifest, record.Sections); err != nil {
+		if err := a.publishAccepted(record.Sections); err != nil {
 			return err
 		}
 		return nil
@@ -223,14 +224,20 @@ func (a *Authority) Apply(request WriteRequest) error {
 	candidate := append(append([]acceptedSection(nil), record.Sections...), acceptedSection{
 		Key: request.Key, Markdown: normalizedMarkdown(request.Markdown), Globs: append([]string(nil), requestGlobs...),
 	})
-	if err := a.publishAccepted(record.Manifest, candidate); err != nil {
+	if err := a.publishAccepted(candidate); err != nil {
 		return err
 	}
-	encodedManifest, _ := json.Marshal(record.Manifest)
-	encodedSections, _ := json.Marshal(candidate)
+	encodedManifest, err := json.Marshal(record.Manifest)
+	if err != nil {
+		return errors.New("planner authority: encode manifest")
+	}
+	encodedSections, err := json.Marshal(candidate)
+	if err != nil {
+		return errors.New("planner authority: encode sections")
+	}
 	if err := a.registry.UpdatePlannerArtifact(a.binding.IssueID, a.binding.Stage, a.binding.Attempt, a.binding.Worktree,
 		"active", a.digest, encodedManifest, encodedSections); err != nil {
-		_ = a.publishAccepted(record.Manifest, record.Sections)
+		_ = a.publishAccepted(record.Sections)
 		return errors.New("planner authority: registry write failed")
 	}
 	return nil
@@ -251,8 +258,8 @@ func (a *Authority) ApplyPlannerArtifact(value any) error {
 	return a.Apply(request)
 }
 
-func (a *Authority) publishAccepted(manifest Manifest, sections []acceptedSection) error {
-	plan, touchset, err := renderPair(manifest, sections)
+func (a *Authority) publishAccepted(sections []acceptedSection) error {
+	plan, touchset, err := renderPair(sections)
 	if err != nil {
 		return err
 	}
@@ -263,7 +270,7 @@ func (a *Authority) publishAccepted(manifest Manifest, sections []acceptedSectio
 	return nil
 }
 
-func renderPair(_ Manifest, sections []acceptedSection) ([]byte, []byte, error) {
+func renderPair(sections []acceptedSection) ([]byte, []byte, error) {
 	plan := []byte(planRoot)
 	var globs []string
 	for _, section := range sections {
@@ -290,7 +297,7 @@ func decodeRecord(digest, manifestBytes, sectionsBytes []byte) (authorityRecord,
 	if len(digest) == 0 {
 		return authorityRecord{}, errors.New("planner authority: record digest is missing")
 	}
-	record := authorityRecord{Status: "active", Digest: append([]byte(nil), digest...)}
+	record := authorityRecord{}
 	if len(manifestBytes) != 0 && string(manifestBytes) != "null" {
 		if err := json.Unmarshal(manifestBytes, &record.Manifest); err != nil {
 			return authorityRecord{}, errors.New("planner authority: record manifest is malformed")
@@ -345,7 +352,7 @@ func (a *Authority) ValidateComplete() error {
 	if err := session.ValidateComplete(); err != nil {
 		return err
 	}
-	expectedPlan, expectedTouchset, err := renderPair(record.Manifest, record.Sections)
+	expectedPlan, expectedTouchset, err := renderPair(record.Sections)
 	if err != nil {
 		return finalValidationError("pair", "", "durable planner sections cannot be rendered")
 	}
@@ -432,20 +439,11 @@ func safeAuthorityError(err error) string {
 	}
 	message := err.Error()
 	for _, secret := range []string{"WATCHTOWER_PLANNER_SESSION", "planner-authority", "planner_authority", "capability", "descriptor"} {
-		if len(secret) > 0 && containsString(message, secret) {
+		if strings.Contains(message, secret) {
 			return "planner authority: request rejected"
 		}
 	}
 	return message
-}
-
-func containsString(value, part string) bool {
-	for i := 0; i+len(part) <= len(value); i++ {
-		if value[i:i+len(part)] == part {
-			return true
-		}
-	}
-	return false
 }
 
 // ApplyFromFD is the CLI-side descriptor client. The descriptor contains only
@@ -502,6 +500,5 @@ func (a *Authority) Close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.closed = true
-	a.capability = nil
 	return nil
 }

@@ -83,8 +83,6 @@ CREATE TABLE IF NOT EXISTS planner_artifacts(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY(issue_id, stage, attempt, worktree));
-CREATE INDEX IF NOT EXISTS planner_artifacts_binding
-  ON planner_artifacts(issue_id, stage, attempt, worktree);
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, question TEXT, options TEXT,
   recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
