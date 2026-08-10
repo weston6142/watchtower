@@ -174,6 +174,20 @@ human review and never authorizes automatically. Plan review history uses
 execution boundary. Changing this configuration affects new runs only; an
 in-flight run keeps its persisted policy snapshot.
 
+All decisions also pass through one engine-owned escalation policy. Stage,
+operation, path, destructive-risk, publication-risk, and default policy floors
+are independent; the strictest matching floor is authoritative. Model
+importance is advisory and can raise scrutiny only. An engine-required floor
+cannot be bypassed by omitting or understating model metadata.
+
+Artifact and plan approvals persist exact per-item bindings: kind, SHA-256,
+repository-relative path, trusted operation, policy identity/version, matched
+signals, and explicit dependency hashes. A changed item or policy is stale;
+only explicit dependents are invalidated, while unrelated items retain their
+own approval state. The same gate is re-evaluated at answer time and immediately
+before handoff or execution. Missing context, malformed policy, and stale
+evidence fail closed with explicit outcomes rather than appearing approved.
+
 Artifact and plan reviews are engine-owned choice decisions: they cite the
 exact archived artifact names, checkpoint, and SHA-256 digests, require an
 `approve` / `revise` or `approve` / `reject` option, and never accept typed

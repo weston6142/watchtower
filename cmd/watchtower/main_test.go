@@ -105,3 +105,24 @@ func TestFormatDecisionDoesNotPresentPendingPolicyAsApproved(t *testing.T) {
 		t.Fatalf("pending policy review = %q", got)
 	}
 }
+
+func TestFormatDecisionShowsEngineEscalationEvidence(t *testing.T) {
+	importance := 0.2
+	hash := strings.Repeat("a", 64)
+	evaluation := &review.Evaluation{
+		Outcome: review.OutcomeRequiresApproval, RequiredFloor: review.FloorPolicy, EffectiveFloor: review.FloorOperator,
+		PolicyID: "team-safety", PolicyVersion: "7",
+		Evidence: []review.Evidence{{Signal: "path", Value: "payments/charge.go", Rule: "path:payments/**", Floor: review.FloorOperator}},
+		Model:    review.ModelMetadata{Importance: &importance, Rationale: "advisory rationale"},
+	}
+	got := formatDecision(engine.PendingDecision{ID: 64, IssueID: "GH-64", Stage: "execute", Evaluation: evaluation,
+		Bindings: []review.Binding{{Item: review.ItemBinding{Kind: review.ItemArtifact, Hash: hash, Path: "payments/charge.go", Operation: "approve-artifact"},
+			Dependencies: []review.DependencyBinding{{Kind: "decision", ID: "GH-63", Hash: hash}}}}})
+	for _, want := range []string{"escalation: requires-approval", "floor: policy -> operator", "policy: team-safety@7",
+		"path=payments/charge.go", "item: artifact payments/charge.go approve-artifact", "sha256 " + hash,
+		"dependency: decision/GH-63", "importance: 0.2 (advisory)", "advisory rationale"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatDecision() missing %q:\n%s", want, got)
+		}
+	}
+}

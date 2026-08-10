@@ -163,6 +163,41 @@ func TestDecisionPageHistoricalGapsAreExplicit(t *testing.T) {
 	}
 }
 
+func TestDecisionPageRendersEscalationEvidence(t *testing.T) {
+	importance := 0.2
+	hash := strings.Repeat("a", 64)
+	evaluation := &review.Evaluation{
+		Outcome: review.OutcomeRequiresApproval, RequiredFloor: review.FloorPolicy, EffectiveFloor: review.FloorOperator,
+		PolicyID: "team-safety", PolicyVersion: "7",
+		Evidence:     []review.Evidence{{Signal: "path", Value: "payments/charge.go", Rule: "path:payments/**", Floor: review.FloorOperator}},
+		Item:         review.ItemBinding{Kind: review.ItemArtifact, Hash: hash, Path: "payments/charge.go", Operation: "approve-artifact"},
+		Dependencies: []review.DependencyBinding{{Kind: "decision", ID: "GH-63", Hash: hash}},
+		Model:        review.ModelMetadata{Importance: &importance, Options: []string{"approve"}, Rationale: "advisory rationale"},
+	}
+	f := flow.Flow{Name: "evidence-page", Stages: []flow.Stage{{Name: "execute", Gate: flow.GateAuto}}}
+	e, _ := newEngineCfg(t, &runner.FakeRunner{}, func(cfg *Config) { cfg.Flows = map[string]flow.Flow{f.Name: f} })
+	data, err := e.buildPageDataWithDecisionRows("GH-64", f.Name, "Evidence", "execute",
+		&levers.Decision{Question: "Approve?", Options: []string{"approve"}}, nil, nil, 64, nil,
+		[]store.DecisionRow{{ID: 64, IssueID: "GH-64", Stage: "execute", Evaluation: evaluation,
+			Bindings: []review.Binding{{Item: evaluation.Item, RequiredFloor: evaluation.RequiredFloor, EffectiveFloor: evaluation.EffectiveFloor,
+				PolicyID: evaluation.PolicyID, PolicyVersion: evaluation.PolicyVersion, Evidence: evaluation.Evidence,
+				Dependencies: evaluation.Dependencies, Model: evaluation.Model}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := decisionpage.Render(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(body)
+	for _, want := range []string{"outcome: requires-approval", "floor: policy -&gt; operator", "policy: team-safety@7",
+		"item: artifact payments/charge.go approve-artifact", "sha256 " + hash, "dependency: decision/GH-63", "model: importance 0.2 (advisory)"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("decision page missing %q:\n%s", want, page)
+		}
+	}
+}
+
 func TestDecisionPageCapsPersistedProof(t *testing.T) {
 	tests := map[string]func() *levers.Briefing{
 		"proof": func() *levers.Briefing {

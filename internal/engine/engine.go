@@ -2112,11 +2112,13 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 		e.mu.Unlock()
 		provenance := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: actor}
 		if legacyAnswer(response) == 0 {
-			_, _, contexts, err := e.evaluateReviewTarget(target, false)
+			evaluation, _, contexts, err := e.evaluateReviewTarget(target, false)
 			if err != nil {
+				e.emitDecisionGateFailure(p.IssueID, p.ID, p.Stage, &evaluation, review.Result{Outcome: review.OutcomePolicyError, Err: err})
 				return fmt.Errorf("revalidate artifact review %d: %w", decisionID, err)
 			}
 			if result := checkReviewTarget(bindings, contexts, provenance); result.Outcome != review.OutcomeApproved {
+				e.emitDecisionGateFailure(p.IssueID, p.ID, p.Stage, &evaluation, result)
 				if result.Err != nil {
 					return fmt.Errorf("revalidate artifact review %d: %s: %w", decisionID, result.Outcome, result.Err)
 				}
@@ -2124,11 +2126,15 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 			}
 		}
 		if _, err := e.cfg.Store.ResolveArtifactReview(decisionID, target, response, provenance); err != nil {
+			if errors.Is(err, review.ErrStaleTarget) {
+				e.emitDecisionGateFailure(p.IssueID, p.ID, p.Stage, p.Evaluation, review.Result{Outcome: review.OutcomeStale, Err: err})
+			}
 			return fmt.Errorf("resolve artifact review %d: %w", decisionID, err)
 		}
 		if p.ReviewPolicy != nil {
 			policy := *p.ReviewPolicy
 			payload := planReviewPayload(p.ID, p.Stage, policy)
+			attachDecisionEvidence(payload, p.Evaluation, p.Bindings)
 			payload["approval_kind"] = string(review.ApprovalHuman)
 			payload["actor_id"] = actor
 			eventType := core.EvPlanReviewHumanApproved
@@ -2144,8 +2150,10 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 		delete(e.pend, decisionID)
 		e.mu.Unlock()
 		e.refreshDecisionPage(p.IssueID)
-		e.emit(core.EvDecisionAnswered, p.IssueID, map[string]any{
-			"decision_id": p.ID, "response": response, "review": target, "actor_id": actor})
+		answeredPayload := map[string]any{
+			"decision_id": p.ID, "response": response, "review": target, "actor_id": actor}
+		attachDecisionEvidence(answeredPayload, p.Evaluation, p.Bindings)
+		e.emit(core.EvDecisionAnswered, p.IssueID, answeredPayload)
 		if p.reply != nil {
 			p.reply <- response
 		} else {
@@ -2158,14 +2166,16 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	if p.Evaluation == nil || len(p.Bindings) == 0 {
 		return fmt.Errorf("decision %d has no engine-owned approval binding", decisionID)
 	}
-	current, _, _, err := e.evaluateDecisionEscalation(p.Stage, p.D)
+	current, evaluation, _, err := e.evaluateDecisionEscalation(p.Stage, p.D)
 	if err != nil {
+		e.emitDecisionGateFailure(p.IssueID, p.ID, p.Stage, &evaluation, review.Result{Outcome: evaluation.Outcome, Err: err})
 		return fmt.Errorf("revalidate decision %d: %w", decisionID, err)
 	}
 	result := review.CheckApproval(p.Bindings[0], current, &review.ApprovalProvenance{
 		Kind: review.ApprovalHuman, ActorID: actor,
 	})
 	if result.Outcome != review.OutcomeApproved {
+		e.emitDecisionGateFailure(p.IssueID, p.ID, p.Stage, &evaluation, result)
 		if result.Err != nil {
 			return fmt.Errorf("revalidate decision %d: %s: %w", decisionID, result.Outcome, result.Err)
 		}
@@ -2266,6 +2276,27 @@ func decisionRequiredPayloadWithReview(
 	return payload
 }
 
+func attachDecisionEvidence(payload map[string]any, evaluation *review.Evaluation, bindings []review.Binding) {
+	for key, value := range core.DecisionEvidencePayload(evaluation, bindings) {
+		payload[key] = value
+	}
+}
+
+func (e *Engine) emitDecisionGateFailure(issueID string, decisionID int64, stage string, evaluation *review.Evaluation, result review.Result) {
+	payload := map[string]any{
+		"decision_id": decisionID, "stage": stage, "outcome": result.Outcome,
+	}
+	if result.Err != nil {
+		payload["error"] = result.Err.Error()
+	}
+	attachDecisionEvidence(payload, evaluation, nil)
+	typ := core.EvDecisionStale
+	if result.Outcome == review.OutcomePolicyError || result.Outcome == review.OutcomeInvalidContext {
+		typ = core.EvDecisionPolicyError
+	}
+	e.emit(typ, issueID, payload)
+}
+
 func planReviewPayload(id int64, stage string, policy review.ResolvedPolicy) map[string]any {
 	return map[string]any{
 		"review_kind": "plan", "stage": stage, "decision_id": id,
@@ -2358,9 +2389,9 @@ func (e *Engine) requestArtifactReview(
 		}
 		return levers.Response{}, fmt.Errorf("write artifact review decision page: %w", err)
 	}
-	if err := e.publishPendingDecision(
-		p, decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target),
-	); err != nil {
+	decisionPayload := decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target)
+	attachDecisionEvidence(decisionPayload, &evaluation, bindings)
+	if err := e.publishPendingDecision(p, decisionPayload); err != nil {
 		if errors.Is(err, errDecisionPublicationCanceled) {
 			e.cancelPendingDecisionPublication(is.id, rowID)
 			return levers.Response{}, nil
@@ -2433,6 +2464,7 @@ func (e *Engine) requestPlanReview(
 		return levers.Response{}, fmt.Errorf("request plan review: %w", err)
 	}
 	requested := planReviewPayload(rowID, st.Name, policy)
+	attachDecisionEvidence(requested, &evaluation, bindings)
 	if policy.PolicyAutoApproval && evaluation.EffectiveFloor != review.FloorOperator {
 		if _, err := e.appendEvent(core.EvPlanReviewRequested, is.id, requested); err != nil {
 			_ = e.cfg.Store.DeleteDecision(rowID)
@@ -2455,6 +2487,7 @@ func (e *Engine) requestPlanReview(
 			return levers.Response{}, fmt.Errorf("resolve plan review policy: %w", err)
 		}
 		payload := planReviewPayload(rowID, st.Name, policy)
+		attachDecisionEvidence(payload, &evaluation, bindings)
 		payload["approval_kind"] = string(review.ApprovalPolicy)
 		payload["response"] = levers.ChoiceResponse(0)
 		if _, err := e.appendEvent(core.EvDecisionAutoResolved, is.id, payload); err != nil {
@@ -2473,6 +2506,7 @@ func (e *Engine) requestPlanReview(
 		return levers.Response{}, fmt.Errorf("plan review policy is unresolved")
 	}
 	decisionPayload := decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target)
+	attachDecisionEvidence(decisionPayload, &evaluation, bindings)
 	decisionPayload["review_policy"] = policy
 	p := &pending{
 		PendingDecision: PendingDecision{
@@ -2579,13 +2613,15 @@ func (e *Engine) continueArtifactReview(
 				"stage": stage, "error": fmt.Sprintf("artifact review revalidation: %v", err), "final": true})
 			return
 		}
-		_, _, contexts, err := e.evaluateReviewTarget(*row.Review, false)
+		evaluation, _, contexts, err := e.evaluateReviewTarget(*row.Review, false)
 		if err != nil {
+			e.emitDecisionGateFailure(issueID, decisionID, stage, &evaluation, review.Result{Outcome: review.OutcomePolicyError, Err: err})
 			e.emit(core.EvStageFailed, issueID, map[string]any{
 				"stage": stage, "error": fmt.Sprintf("artifact review revalidation: %v", err), "final": true})
 			return
 		}
 		if result := checkReviewTarget(row.Bindings, contexts, row.Approval); result.Outcome != review.OutcomeApproved {
+			e.emitDecisionGateFailure(issueID, decisionID, stage, &evaluation, result)
 			err := result.Err
 			if err == nil {
 				err = fmt.Errorf("%s", result.Outcome)
@@ -2908,9 +2944,11 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		reportAskError(a, fmt.Errorf("insert auto decision: %w", err))
 		return
 	}
-	if _, err := e.appendEvent(core.EvDecisionAutoResolved, is.id, map[string]any{
+	autoPayload := map[string]any{
 		"stage": stage, "question": a.Decision.Question,
-		"response": a.Decision.RecommendedAnswer(), "context": decisionContext}); err != nil {
+		"response": a.Decision.RecommendedAnswer(), "context": decisionContext}
+	attachDecisionEvidence(autoPayload, &evaluation, []review.Binding{binding})
+	if _, err := e.appendEvent(core.EvDecisionAutoResolved, is.id, autoPayload); err != nil {
 		cleanupErr := e.cfg.Store.DeleteDecision(rowID)
 		if cleanupErr != nil {
 			err = fmt.Errorf("append auto decision event: %w (cleanup decision %d: %v)", err, rowID, cleanupErr)
@@ -2979,7 +3017,9 @@ func (e *Engine) escalateWithEvaluation(
 		}
 		return levers.Response{}, fmt.Errorf("write decision page: %w", err)
 	}
-	if err := e.publishPendingDecision(p, decisionRequiredPayload(rowID, stage, d, decisionContext)); err != nil {
+	decisionPayload := decisionRequiredPayload(rowID, stage, d, decisionContext)
+	attachDecisionEvidence(decisionPayload, &evaluation, []review.Binding{binding})
+	if err := e.publishPendingDecision(p, decisionPayload); err != nil {
 		if errors.Is(err, errDecisionPublicationCanceled) {
 			e.cancelPendingDecisionPublication(is.id, rowID)
 			return levers.Response{}, nil
@@ -3674,11 +3714,13 @@ func (e *Engine) planReviewAuthorization(is *issueState) (store.DecisionRow, []c
 	if found.Review == nil || len(found.Bindings) == 0 {
 		return store.DecisionRow{}, nil, fmt.Errorf("plan review engine approval binding is missing")
 	}
-	_, _, contexts, err := e.evaluateReviewTarget(*found.Review, false)
+	evaluation, _, contexts, err := e.evaluateReviewTarget(*found.Review, false)
 	if err != nil {
+		e.emitDecisionGateFailure(is.id, found.ID, found.Stage, &evaluation, review.Result{Outcome: review.OutcomePolicyError, Err: err})
 		return store.DecisionRow{}, nil, fmt.Errorf("revalidate plan review: %w", err)
 	}
 	if result := checkReviewTarget(found.Bindings, contexts, &approval); result.Outcome != review.OutcomeApproved {
+		e.emitDecisionGateFailure(is.id, found.ID, found.Stage, &evaluation, result)
 		if result.Err != nil {
 			return store.DecisionRow{}, nil, fmt.Errorf("revalidate plan review: %s: %w", result.Outcome, result.Err)
 		}

@@ -238,6 +238,12 @@ func (e *Engine) buildPageDataWithDecisionRows(
 		data.Briefing = buildDecisionPageBriefing(
 			dec, ctx, reviewTarget, currentStage, decisionID, resolution,
 		)
+		for _, row := range decisionRows {
+			if row.ID == decisionID {
+				appendEscalationBriefingEvidence(data.Briefing, row.Evaluation, row.Bindings)
+				break
+			}
+		}
 	}
 	return data, nil
 }
@@ -425,7 +431,42 @@ func resolvedDecisionPageSnapshot(row store.DecisionRow) (decisionpage.PageData,
 	data.Briefing = buildDecisionPageBriefing(
 		&dec, row.Context, row.Review, row.Stage, row.ID, resolution,
 	)
+	appendEscalationBriefingEvidence(data.Briefing, row.Evaluation, row.Bindings)
 	return data, true
+}
+
+func appendEscalationBriefingEvidence(briefing *decisionpage.Briefing, evaluation *review.Evaluation, bindings []review.Binding) {
+	if briefing == nil || evaluation == nil {
+		return
+	}
+	briefing.Excerpts = append(briefing.Excerpts, decisionpage.Excerpt{
+		Text: decisionPageEscalationSummary(evaluation),
+		Cite: "engine-owned escalation gate",
+	})
+	for _, evidence := range evaluation.Evidence {
+		briefing.Excerpts = append(briefing.Excerpts, decisionpage.Excerpt{
+			Text: fmt.Sprintf("signal: %s=%s · rule: %s · floor: %s", evidence.Signal, evidence.Value, evidence.Rule, evidence.Floor),
+			Cite: "configured decision policy",
+		})
+	}
+	for _, binding := range bindings {
+		briefing.Excerpts = append(briefing.Excerpts, decisionpage.Excerpt{
+			Text: fmt.Sprintf("item: %s %s %s · sha256 %s · floor: %s -> %s",
+				binding.Item.Kind, binding.Item.Path, binding.Item.Operation, binding.Item.Hash,
+				binding.RequiredFloor, binding.EffectiveFloor),
+			Cite: "exact approval binding",
+		})
+		for _, dependency := range binding.Dependencies {
+			briefing.Excerpts = append(briefing.Excerpts, decisionpage.Excerpt{
+				Text: fmt.Sprintf("dependency: %s/%s · sha256 %s", dependency.Kind, dependency.ID, dependency.Hash),
+				Cite: "exact approval binding",
+			})
+		}
+	}
+	briefing.Excerpts = append(briefing.Excerpts, decisionpage.Excerpt{
+		Text: decisionPageModelSummary(evaluation.Model),
+		Cite: "model metadata; not authorization",
+	})
 }
 
 func (e *Engine) writeResolvedDecisionArchive(decisionID int64) error {

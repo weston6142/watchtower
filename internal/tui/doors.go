@@ -36,6 +36,10 @@ func renderDecisionsDoor(ds []projection.DecisionView, ids map[string]Identity, 
 			rowLines = append(rowLines, review...)
 			rowLines = append(rowLines, "")
 		}
+		if evidence := decisionEscalationLines(d.Evaluation, d.Bindings, contentWidth); len(evidence) > 0 {
+			rowLines = append(rowLines, evidence...)
+			rowLines = append(rowLines, "")
+		}
 		if policy := decisionPolicyLines(d.ReviewPolicy, d.Approval, contentWidth); len(policy) > 0 {
 			rowLines = append(rowLines, policy...)
 			rowLines = append(rowLines, "")

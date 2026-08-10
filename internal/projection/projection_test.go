@@ -2,6 +2,7 @@ package projection
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/contextpack"
@@ -143,6 +144,34 @@ func TestProjectionLegacyDecisionContext(t *testing.T) {
 	}))
 	if got := s.Decisions[8].Context; got != nil {
 		t.Fatalf("legacy projected context = %#v", got)
+	}
+}
+
+func TestProjectionDecisionEscalationEvidence(t *testing.T) {
+	importance := 0.2
+	hash := strings.Repeat("a", 64)
+	evaluation := review.Evaluation{
+		Outcome: review.OutcomeRequiresApproval, RequiredFloor: review.FloorPolicy, EffectiveFloor: review.FloorOperator,
+		PolicyID: "team-safety", PolicyVersion: "7",
+		Evidence:     []review.Evidence{{Signal: "path", Value: "payments/charge.go", Rule: "path:payments/**", Floor: review.FloorOperator}},
+		Item:         review.ItemBinding{Kind: review.ItemArtifact, Hash: hash, Path: "payments/charge.go", Operation: "approve-artifact"},
+		Dependencies: []review.DependencyBinding{{Kind: "decision", ID: "GH-63", Hash: hash}},
+		Model:        review.ModelMetadata{Importance: &importance, Options: []string{"approve", "revise"}, Rationale: "model metadata"},
+	}
+	binding := review.Binding{Item: evaluation.Item, RequiredFloor: evaluation.RequiredFloor, EffectiveFloor: evaluation.EffectiveFloor,
+		PolicyID: evaluation.PolicyID, PolicyVersion: evaluation.PolicyVersion, Evidence: evaluation.Evidence,
+		Dependencies: evaluation.Dependencies, Model: evaluation.Model}
+	s := NewState()
+	s.Apply(ev(t, core.EvDecisionRequired, "GH-64", map[string]any{
+		"decision_id": float64(64), "stage": "execute", "question": "Approve?",
+		"evaluation": evaluation, "bindings": []review.Binding{binding},
+	}))
+	got := s.Decisions[64]
+	if got.Evaluation == nil || got.Evaluation.Outcome != evaluation.Outcome ||
+		got.Evaluation.PolicyID != evaluation.PolicyID || got.Evaluation.Item != evaluation.Item ||
+		len(got.Evaluation.Evidence) != 1 || len(got.Bindings) != 1 ||
+		got.Bindings[0].Dependencies[0] != binding.Dependencies[0] || got.Bindings[0].Model.Rationale != "model metadata" {
+		t.Fatalf("projected escalation evidence = %#v", got)
 	}
 }
 

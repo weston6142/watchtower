@@ -61,6 +61,24 @@ func buildDecisionPageBriefing(
 	return result
 }
 
+func decisionPageEscalationSummary(evaluation *review.Evaluation) string {
+	if evaluation == nil {
+		return ""
+	}
+	return fmt.Sprintf("outcome: %s · floor: %s -> %s · policy: %s@%s",
+		evaluation.Outcome, evaluation.RequiredFloor, evaluation.EffectiveFloor,
+		evaluation.PolicyID, evaluation.PolicyVersion)
+}
+
+func decisionPageModelSummary(model review.ModelMetadata) string {
+	importance := "omitted"
+	if model.Importance != nil {
+		importance = fmt.Sprintf("%.1f", *model.Importance)
+	}
+	return fmt.Sprintf("model: importance %s (advisory) · options: %s · rationale: %s",
+		importance, strings.Join(model.Options, ", "), model.Rationale)
+}
+
 func decisionPageAction(
 	dec *levers.Decision, target *review.Target, decisionID int64, resolution *decisionPageResolution,
 ) string {

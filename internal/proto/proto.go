@@ -9,6 +9,7 @@ import (
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/stageusage"
@@ -119,6 +120,8 @@ type IssueDetail struct {
 	PlannerOutcome   string               `json:"planner_outcome,omitempty"`
 	DecisionPage     string               `json:"decision_page,omitempty"`
 	FailureHistory   FailureHistory       `json:"failure_history"`
+	DecisionEvaluation *review.Evaluation   `json:"decision_evaluation,omitempty"`
+	DecisionBindings   []review.Binding     `json:"decision_bindings,omitempty"`
 }
 
 type FailureHistory struct {
