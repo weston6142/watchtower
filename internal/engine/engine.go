@@ -2939,7 +2939,7 @@ func (e *Engine) runStageOnce(
 	// acquired workspace for the same reason.
 	workdir := e.stageWorkdir(is, st)
 	defer func() {
-		runErr = e.recordStageFailure(ctx, is, st, attempt, of, workdir, runErr)
+		runErr = e.recordStageFailure(ctx, is, st, attempt, workdir, runErr)
 	}()
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return err

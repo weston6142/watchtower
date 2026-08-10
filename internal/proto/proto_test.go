@@ -156,7 +156,7 @@ func TestIssueDetailFailureHistoryIsAvailableWhenEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := NewServer(nil, s).exec(Command{Op: "issue_detail", IssueID: "GH-63"})
-	if !response.OK || response.Detail == nil || response.Detail.FailureHistory.Status != "available" ||
+	if !response.OK || response.Detail == nil || response.Detail.FailureHistory.Status != failureHistoryAvailable ||
 		response.Detail.FailureHistory.Records == nil || len(response.Detail.FailureHistory.Records) != 0 {
 		t.Fatalf("empty failure history = %+v", response)
 	}
@@ -186,14 +186,14 @@ func TestIssueDetailFailureHistoryUsesCanonicalOrderAndReportsUnavailableReads(t
 		t.Fatal(err)
 	}
 	response := NewServer(nil, s).exec(Command{Op: "issue_detail", IssueID: "GH-63"})
-	if !response.OK || response.Detail == nil || response.Detail.FailureHistory.Status != "available" ||
+	if !response.OK || response.Detail == nil || response.Detail.FailureHistory.Status != failureHistoryAvailable ||
 		len(response.Detail.FailureHistory.Records) != 2 || response.Detail.FailureHistory.Records[0] != first ||
 		response.Detail.FailureHistory.Records[1] != second {
 		t.Fatalf("ordered failure history = %+v", response)
 	}
 	s.FailNextFailureHistoryForTest()
 	response = NewServer(nil, s).exec(Command{Op: "issue_detail", IssueID: "GH-63"})
-	if !response.OK || response.Detail == nil || response.Detail.FailureHistory.Status != "unavailable" ||
+	if !response.OK || response.Detail == nil || response.Detail.FailureHistory.Status != failureHistoryUnavailable ||
 		response.Detail.FailureHistory.Records != nil || response.Detail.Issue.ID != "GH-63" {
 		t.Fatalf("unavailable failure history = %+v", response)
 	}

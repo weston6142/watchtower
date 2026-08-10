@@ -220,10 +220,10 @@ func TestStageRetryFingerprintExcludesAttemptNumber(t *testing.T) {
 	stage := flow.Stage{Name: "execute"}
 	primary := errors.New("runner failed")
 
-	if err := e.recordStageFailure(context.Background(), is, stage, 1, 2, "/worktree", primary); !errors.Is(err, primary) {
+	if err := e.recordStageFailure(context.Background(), is, stage, 1, "/worktree", primary); !errors.Is(err, primary) {
 		t.Fatalf("first failure = %v", err)
 	}
-	if err := e.recordStageFailure(context.Background(), is, stage, 2, 2, "/worktree", primary); !errors.Is(err, primary) {
+	if err := e.recordStageFailure(context.Background(), is, stage, 2, "/worktree", primary); !errors.Is(err, primary) {
 		t.Fatalf("retry failure = %v", err)
 	}
 	if len(recorder.records) != 2 {
@@ -244,13 +244,13 @@ func TestStageFailureFingerprintTracksMaterializedArtifactBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	primary := errors.New("artifact validation failed")
-	if err := e.recordStageFailure(context.Background(), is, stage, 1, 1, workdir, primary); !errors.Is(err, primary) {
+	if err := e.recordStageFailure(context.Background(), is, stage, 1, workdir, primary); !errors.Is(err, primary) {
 		t.Fatalf("first failure = %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(workdir, "result.txt"), []byte("second\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.recordStageFailure(context.Background(), is, stage, 2, 2, workdir, primary); !errors.Is(err, primary) {
+	if err := e.recordStageFailure(context.Background(), is, stage, 2, workdir, primary); !errors.Is(err, primary) {
 		t.Fatalf("changed-artifact failure = %v", err)
 	}
 	if len(recorder.records) != 2 || recorder.records[0].Fingerprint == recorder.records[1].Fingerprint {

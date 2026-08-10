@@ -18,6 +18,11 @@ import (
 // maxMessageBytes bounds a single newline-delimited JSON message on the wire.
 const maxMessageBytes = decision.MaxMessageBytes
 
+const (
+	failureHistoryAvailable   = "available"
+	failureHistoryUnavailable = "unavailable"
+)
+
 type Command struct {
 	Op       string `json:"op"`
 	Title    string `json:"title,omitempty"`
@@ -122,7 +127,7 @@ type FailureHistory struct {
 }
 
 func (history FailureHistory) MarshalJSON() ([]byte, error) {
-	if history.Status == "unavailable" {
+	if history.Status == failureHistoryUnavailable {
 		return json.Marshal(struct {
 			Status string `json:"status"`
 		}{Status: history.Status})

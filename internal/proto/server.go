@@ -368,9 +368,9 @@ func (sv *Server) exec(cmd Command) Response {
 		if !found {
 			return Response{Error: "unknown issue " + cmd.IssueID}
 		}
-		history := FailureHistory{Status: "available", Records: make([]failure.FailureRecord, 0)}
+		history := FailureHistory{Status: failureHistoryAvailable, Records: make([]failure.FailureRecord, 0)}
 		if records, historyErr := sv.st.FailureHistory(context.Background(), cmd.IssueID); historyErr != nil {
-			history.Status = "unavailable"
+			history.Status = failureHistoryUnavailable
 			history.Records = nil
 		} else {
 			history.Records = records

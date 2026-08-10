@@ -47,7 +47,7 @@ type FailureCorrelation struct {
 	Found               bool
 }
 
-func (e *Engine) recordStageFailure(ctx context.Context, is *issueState, stage flow.Stage, attempt, of int, workdir string, primary error) error {
+func (e *Engine) recordStageFailure(ctx context.Context, is *issueState, stage flow.Stage, attempt int, workdir string, primary error) error {
 	if primary == nil || errors.Is(primary, errDependenciesDiscovered) {
 		return primary
 	}
@@ -294,7 +294,6 @@ func (e *Engine) recordFailure(ctx context.Context, failureCtx failureContext) e
 	if fingerprint == "" {
 		fingerprint = failure.BuildFingerprint(inputs)
 	}
-	_, _ = e.CorrelateFailure(diagnosticCtx, failureCtx.IssueID, failureCtx.Stage, site, fingerprint)
 	record, err := e.cfg.FailureRecorder.AppendFailure(diagnosticCtx, failure.RecordInput{
 		IssueID: failureCtx.IssueID, Stage: failureCtx.Stage, StageAttempt: failureCtx.StageAttempt,
 		FailureSite: site, FailureClass: class, RetryDisposition: disposition,
