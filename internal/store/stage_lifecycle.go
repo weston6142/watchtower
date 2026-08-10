@@ -75,7 +75,8 @@ func (s *Store) CreateStageLifecycleAttempt(attempt StageLifecycleAttempt) error
 		&existing.ResultPath, &existing.ResultSHA256, &createdAt)
 	if err == nil {
 		if existing.LegacyCheckpointID != attempt.LegacyCheckpointID ||
-			existing.ResultPath != attempt.ResultPath || existing.ResultSHA256 != attempt.ResultSHA256 {
+			(attempt.ResultPath != "" && existing.ResultPath != attempt.ResultPath) ||
+			(attempt.ResultSHA256 != "" && existing.ResultSHA256 != attempt.ResultSHA256) {
 			return lifecycleDiagnostic(CodeConflict, "attempt identity already exists with different data")
 		}
 		return nil
@@ -402,7 +403,7 @@ func (s *Store) validateResultLocked(attempt StageLifecycleAttempt, record stage
 }
 
 func (s *Store) validateArchiveLocked(attempt StageLifecycleAttempt, record stagelifecycle.Record) error {
-	if record.Substate < stagelifecycle.ArtifactsArchived || len(record.Artifacts) == 0 {
+	if !requiresArchiveValidation(record.Substate) || len(record.Artifacts) == 0 {
 		return nil
 	}
 	for _, artifact := range record.Artifacts {
@@ -411,7 +412,13 @@ func (s *Store) validateArchiveLocked(attempt StageLifecycleAttempt, record stag
 			WHERE issue_id=? AND stage=? AND attempt_id=? AND transition_id=? AND name=?`,
 			attempt.IssueID, attempt.Stage, attempt.AttemptID, record.TransitionID, artifact.Name).Scan(&path, &digest)
 		if errors.Is(err, sql.ErrNoRows) {
-			return lifecycleDiagnostic(CodeIntegrity, "archive reference %q is not committed", artifact.Name)
+			err = s.db.QueryRow(`SELECT path,sha256 FROM stage_attempt_archives
+				WHERE issue_id=? AND stage=? AND attempt_id=? AND name=?
+				ORDER BY created_at DESC LIMIT 1`, attempt.IssueID, attempt.Stage,
+				attempt.AttemptID, artifact.Name).Scan(&path, &digest)
+			if errors.Is(err, sql.ErrNoRows) {
+				return lifecycleDiagnostic(CodeIntegrity, "archive reference %q is not committed", artifact.Name)
+			}
 		}
 		if err != nil {
 			return err
@@ -421,6 +428,16 @@ func (s *Store) validateArchiveLocked(attempt StageLifecycleAttempt, record stag
 		}
 	}
 	return nil
+}
+
+func requiresArchiveValidation(substate stagelifecycle.Substate) bool {
+	switch substate {
+	case stagelifecycle.ArtifactsArchived, stagelifecycle.GateResolved,
+		stagelifecycle.VerificationPassed, stagelifecycle.FinalizationReady:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) loadByTransitionLocked(want stagelifecycle.Record, out *stagelifecycle.Record, status *string) (bool, error) {

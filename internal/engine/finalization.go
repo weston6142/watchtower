@@ -12,9 +12,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/verificationcache"
 	"github.com/weston6142/watchtower/internal/workspace"
@@ -70,11 +72,29 @@ func (e *Engine) prepareFinalization(
 	is *issueState, verificationLease *verificationcache.Lease,
 ) (preparedFinalization, error) {
 	artifactDir := filepath.Join(e.issueDir(is.id), "artifacts")
-	decision, err := marshal.LoadMergeDecision(filepath.Join(artifactDir, "merge-decision.json"))
-	if err != nil {
-		return preparedFinalization{}, fmt.Errorf("load merge decision: %w", err)
+	workdir := artifactDir
+	if stageName := e.integrationStageName(is); stageName != "" {
+		for _, stage := range e.cfg.Flows[is.flowName].Stages {
+			if stage.Name != stageName {
+				continue
+			}
+			workdir = e.stageWorkdir(is, stage)
+			if err := e.materializeIntegrationArtifacts(is, stageName, workdir); err != nil {
+				return preparedFinalization{}, err
+			}
+			break
+		}
 	}
-	verificationPath := filepath.Join(artifactDir, "verification.json")
+	decision, err := marshal.LoadMergeDecision(filepath.Join(workdir, "merge-decision.json"))
+	if err != nil {
+		if workdir != artifactDir {
+			decision, err = marshal.LoadMergeDecision(filepath.Join(artifactDir, "merge-decision.json"))
+		}
+		if err != nil {
+			return preparedFinalization{}, fmt.Errorf("load merge decision: %w", err)
+		}
+	}
+	verificationPath := filepath.Join(workdir, "verification.json")
 	var verification marshal.Verification
 	var verificationReceiptJSON []byte
 	var verificationAttemptID int64
@@ -122,6 +142,22 @@ func (e *Engine) prepareFinalization(
 		return prepared, err
 	}
 	return prepared, nil
+}
+
+func (e *Engine) materializeIntegrationArtifacts(is *issueState, stageName, workdir string) error {
+	records, err := e.cfg.Store.StageLifecycleRecords(is.id, stageName, "")
+	if err != nil {
+		return err
+	}
+	for index := len(records) - 1; index >= 0; index-- {
+		record := records[index]
+		if !record.Committed || !lifecycleReached(record.Substate, stagelifecycle.ArtifactsArchived) || len(record.Artifacts) == 0 {
+			continue
+		}
+		refs := attemptArtifactRefs(record.Artifacts)
+		return contextpack.MaterializeAttemptArtifacts(e.issueDir(is.id), workdir, refs)
+	}
+	return nil
 }
 
 func (e *Engine) validateFinalIdentity(
