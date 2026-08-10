@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +71,165 @@ func TestVerificationCacheWriteReceiptIncludesCompleteEvidence(t *testing.T) {
 	}
 	if got, want := receipt.CacheEvidence.CommandDigest, verificationcache.CommandDigest([]string{"true"}); got != want {
 		t.Fatalf("receipt command digest = %q, want %q", got, want)
+	}
+}
+
+func TestWriteVerificationReceiptCacheIdentityMatchesCompleteEvidence(t *testing.T) {
+	dir, head := initReceiptRepo(t)
+	tree := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^{tree}"))
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: cacheRoot, RepoDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := verificationcache.Config{
+		RepoDir: dir, BaseSHA: head, BranchSHA: head, TreeSHA: tree, Argv: []string{"true"},
+	}
+	lease, err := runtime.Acquire(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{cfg: Config{CacheRoot: cacheRoot, Train: &marshal.Train{Repo: dir, TestCmd: []string{"true"}}}}
+	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
+	if err := e.writeVerificationReceipt(context.Background(), is, dir, lease); err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	receipt, err := marshal.LoadVerification(filepath.Join(dir, "verification.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := receipt.CacheEvidence
+	if evidence == nil {
+		t.Fatal("receipt is missing cache evidence")
+	}
+	if evidence.BaseSHA != head || evidence.BranchSHA != head || evidence.TreeSHA != tree ||
+		evidence.Repository != lease.Repository() || evidence.LeaseID != lease.ID() ||
+		evidence.ManagedScope != lease.ManagedScope() || evidence.SeedLeaseID != lease.SeedLeaseID() ||
+		evidence.CommandDigest != verificationcache.CommandDigest(config.Argv) {
+		t.Fatalf("receipt evidence = %+v, want complete evidence for the live lease", evidence)
+	}
+}
+
+func TestWriteVerificationReceiptRejectsPreGateIdentityMismatch(t *testing.T) {
+	dir, head := initReceiptRepo(t)
+	marker := filepath.Join(t.TempDir(), "invoked")
+	command := filepath.Join(t.TempDir(), "gate.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf invoked > \"$1\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tree := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^{tree}"))
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: cacheRoot, RepoDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := verificationcache.Config{
+		RepoDir: dir, BaseSHA: head, BranchSHA: "stale-branch", TreeSHA: tree,
+		Argv: []string{command, marker},
+	}
+	lease, err := runtime.Acquire(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{cfg: Config{CacheRoot: cacheRoot, Train: &marshal.Train{Repo: dir, TestCmd: []string{command, marker}}}}
+	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
+	if err := e.writeVerificationReceipt(context.Background(), is, dir, lease); err == nil {
+		t.Fatal("pre-gate identity mismatch was accepted")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("configured gate ran despite pre-gate identity mismatch")
+	}
+	if lease.State() != verificationcache.StateQuarantined {
+		t.Fatalf("lease state = %q, want quarantined", lease.State())
+	}
+	if entries, err := os.ReadDir(runtime.CompleteRoot()); err != nil {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("complete cache entries = %d, want none", len(entries))
+	}
+	_ = lease.Close()
+}
+
+func TestWriteVerificationReceiptRejectsGateMutation(t *testing.T) {
+	dir, head := initReceiptRepo(t)
+	marker := filepath.Join(t.TempDir(), "invoked")
+	command := filepath.Join(t.TempDir(), "gate.sh")
+	script := "#!/bin/sh\nprintf invoked > \"$2\"\ngit -C \"$1\" commit --allow-empty -qm gate-mutation\n"
+	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tree := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^{tree}"))
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: cacheRoot, RepoDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := verificationcache.Config{
+		RepoDir: dir, BaseSHA: head, BranchSHA: head, TreeSHA: tree,
+		Argv: []string{command, dir, marker},
+	}
+	lease, err := runtime.Acquire(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{cfg: Config{CacheRoot: cacheRoot, Train: &marshal.Train{Repo: dir, TestCmd: []string{command, dir, marker}}}}
+	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
+	if err := e.writeVerificationReceipt(context.Background(), is, dir, lease); err == nil {
+		t.Fatal("gate-time repository mutation was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "verification.json")); err == nil {
+		t.Fatal("verification receipt was written after gate-time mutation")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("gate did not run: %v", err)
+	}
+	if lease.State() != verificationcache.StateQuarantined {
+		t.Fatalf("lease state = %q, want quarantined", lease.State())
+	}
+	if entries, err := os.ReadDir(runtime.CompleteRoot()); err != nil {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("complete cache entries = %d, want none", len(entries))
+	}
+	_ = lease.Close()
+}
+
+func TestVerificationCacheFinalizationUsesLiveIdentityAfterRestart(t *testing.T) {
+	dir, head := initReceiptRepo(t)
+	tree := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^{tree}"))
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: cacheRoot, RepoDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := runtime.Acquire(context.Background(), verificationcache.Config{
+		RepoDir: dir, BaseSHA: head, BranchSHA: head, TreeSHA: tree, Argv: []string{"true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := lease.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-qm", "after-verification").CombinedOutput(); err != nil {
+		t.Fatalf("mutate repository: %v: %s", err, out)
+	}
+	receipt := marshal.Verification{
+		BaseSHA: head, BranchSHA: head, TreeSHA: tree, Passed: true, Commands: [][]string{{"true"}},
+		CacheEvidence: marshal.NewCacheEvidence(evidence),
+	}
+	e := &Engine{cfg: Config{CacheRoot: cacheRoot, Train: &marshal.Train{Repo: dir, CacheRoot: cacheRoot, TestCmd: []string{"true"}}}}
+	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
+	if err := e.validateFinalIdentity(is, marshal.MergeDecision{}, receipt, nil); err == nil {
+		t.Fatal("stale receipt was accepted after restart")
 	}
 }
 
