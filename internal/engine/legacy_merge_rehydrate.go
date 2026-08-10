@@ -39,12 +39,26 @@ func (e *Engine) reconcileLegacyMerges(rows []store.IssueRow) error {
 		if err != nil {
 			return fmt.Errorf("fold legacy merge evidence for %s: %w", row.ID, err)
 		}
-		if err := proveLegacyCommitReachable(e.cfg.Train.Repo, evidence.LandedSHA, evidence.BaseBranch); err != nil {
+		landedSHA := evidence.LandedSHA
+		if evidence.Kind == legacyMergeBranchOnly {
+			baseSHA, resolveErr := resolveLegacyBaseSHA(e.cfg.Train.Repo, evidence.BaseBranch)
+			if resolveErr != nil {
+				continue
+			}
+			landedSHA = matchCanonicalLegacyMerge(
+				e.cfg.Train.Repo, baseSHA, evidence.BaseBranch, evidence.IssueBranch,
+			)
+			if landedSHA == "" {
+				continue
+			}
+		} else if err := proveLegacyCommitReachable(
+			e.cfg.Train.Repo, evidence.LandedSHA, evidence.BaseBranch,
+		); err != nil {
 			continue
 		}
 		if err := e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
 			IssueID: evidence.IssueID, State: store.IntegrationMerged,
-			BaseBranch: evidence.BaseBranch, LandedSHA: evidence.LandedSHA,
+			BaseBranch: evidence.BaseBranch, LandedSHA: landedSHA,
 		}); err != nil {
 			return fmt.Errorf("persist legacy merge integration for %s: %w", row.ID, err)
 		}

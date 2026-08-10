@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,83 @@ import (
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/store"
 )
+
+func TestRehydrateProjectsBranchOnlyLegacyMerges(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+
+	parents := []string{"GH-61", "GH-62", "GH-63", "GH-64"}
+	landed := make(map[string]string, len(parents))
+	for _, parent := range parents {
+		landed[parent] = createCanonicalLegacyMerge(t, repo, parent)
+	}
+
+	s, err := store.Open(filepath.Join(t.TempDir(), "guildhall.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, parent := range parents {
+		if err := s.UpsertIssue(store.IssueRow{ID: parent, State: "done", Flow: "default"}); err != nil {
+			t.Fatal(err)
+		}
+		child := parent + "-child"
+		if err := s.UpsertIssue(store.IssueRow{ID: child, State: "backlog", Flow: "default"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ReplaceDependencies(child, []string{parent}); err != nil {
+			t.Fatal(err)
+		}
+		appendLegacyEvents(t, s, parent,
+			legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{
+				"branch": "issue/" + parent,
+			}},
+			legacyEventSpec{typ: core.EvIssueCompleted, payload: nil},
+		)
+	}
+
+	e := New(Config{
+		Store: s, Runner: &runner.FakeRunner{}, Pool: slots.NewPool(2),
+		Flows: map[string]flow.Flow{"default": testFlow()}, DataDir: t.TempDir(),
+		Train: &marshal.Train{Repo: repo}, DecisionIdentities: testDecisionIdentities(),
+	})
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, parent := range parents {
+		integration, ok, err := s.IssueIntegration(parent)
+		if err != nil || !ok || integration.State != store.IntegrationMerged ||
+			integration.BaseBranch != "main" || integration.LandedSHA != landed[parent] {
+			t.Fatalf("integration %s = %+v ok=%v err=%v", parent, integration, ok, err)
+		}
+		assertLegacyClaimBlockers(t, e, parent+"-child", nil)
+	}
+
+	eventCount := s.LatestEventSeq()
+	childRunsBefore := make(map[string]int, len(parents))
+	for _, parent := range parents {
+		runs, err := s.StageRuns(parent + "-child")
+		if err != nil {
+			t.Fatal(err)
+		}
+		childRunsBefore[parent] = len(runs)
+	}
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if s.LatestEventSeq() != eventCount {
+		t.Fatalf("event count changed after repeated branch-only rehydrate: %d -> %d", eventCount, s.LatestEventSeq())
+	}
+	for _, parent := range parents {
+		runs, err := s.StageRuns(parent + "-child")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) != childRunsBefore[parent] {
+			t.Fatalf("child stage runs for %s changed after repeat: %d -> %d", parent, childRunsBefore[parent], len(runs))
+		}
+	}
+}
 
 func TestRehydrateProjectsLegacyMergesAfterRestart(t *testing.T) {
 	repo := t.TempDir()
@@ -113,6 +191,20 @@ func TestRehydrateProjectsLegacyMergesAfterRestart(t *testing.T) {
 	if len(childRunsAfter) != len(childRunsBefore) {
 		t.Fatalf("child stage runs changed after repeated rehydrate: %d -> %d", len(childRunsBefore), len(childRunsAfter))
 	}
+}
+
+func createCanonicalLegacyMerge(t *testing.T, repo, issueID string) string {
+	t.Helper()
+	branch := "issue/" + issueID
+	gitOutput(t, repo, "checkout", "-q", "-b", branch, "main")
+	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", issueID)
+	gitOutput(t, repo, "commit", "-qm", "change "+issueID)
+	gitOutput(t, repo, "checkout", "-q", "main")
+	gitOutput(t, repo, "merge", "--no-ff", "-m", "Merge branch '"+branch+"' into main", branch)
+	return strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main"))
 }
 
 func appendLegacyEvents(t *testing.T, s *store.Store, issueID string, specs ...legacyEventSpec) {
