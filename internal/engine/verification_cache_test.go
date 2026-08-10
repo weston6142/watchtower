@@ -138,6 +138,34 @@ func TestVerificationCacheHarnessDoesNotStealLiveLease(t *testing.T) {
 	}
 }
 
+func TestVerificationCacheSingleFlightDuringRebind(t *testing.T) {
+	repo, head := initReceiptRepo(t)
+	tree := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD^{tree}"))
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: filepath.Join(t.TempDir(), "cache"), RepoDir: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := verificationcache.Config{
+		RepoDir: repo, BaseSHA: head, BranchSHA: head, TreeSHA: tree, Argv: []string{"true"},
+	}
+	lease, err := runtime.Acquire(context.Background(), initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebound, err := lease.Rebind(verificationcache.Config{
+		RepoDir: repo, BaseSHA: head, BranchSHA: "repair", TreeSHA: "repair-tree", Argv: []string{"true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rebound.Close()
+	if _, err := runtime.Acquire(context.Background(), verificationcache.Config{
+		RepoDir: repo, BaseSHA: head, BranchSHA: "repair", TreeSHA: "repair-tree", Argv: []string{"true"},
+	}); !errors.Is(err, verificationcache.ErrLeaseBusy) {
+		t.Fatalf("acquire during rebound lease = %v, want ErrLeaseBusy", err)
+	}
+}
+
 func TestVerificationCacheHarnessFailingReplayQuarantinesWithoutReadiness(t *testing.T) {
 	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
 	cacheRoot := t.TempDir()
