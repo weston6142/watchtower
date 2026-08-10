@@ -19,5 +19,14 @@ plan_review:
   policy_id: manual-default
   policy_version: "1"
   auto_approve_regular: false
+decision_policy:
+  policy_id: manual-default
+  policy_version: "1"
+  default_floor: none
+  stage_floors: {}
+  operation_floors: {}
+  path_floors: []
+  destructive_floor: operator
+  publication_floor: operator
 pull: true            # fast-forward the default branch from origin before an issue starts
 push: false           # push the default branch to origin after a merge lands
