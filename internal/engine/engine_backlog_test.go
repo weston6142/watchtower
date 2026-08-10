@@ -145,6 +145,127 @@ func TestLaunchWaitsForUnmergedDependencyWithoutRunningStages(t *testing.T) {
 	}
 }
 
+func TestDurableDependencyReadinessMatrix(t *testing.T) {
+	cases := []struct {
+		name        string
+		checkpoint  string
+		parentEvent core.EventType
+		ready       bool
+	}{
+		{name: "done with merged proof", checkpoint: store.IntegrationMerged, parentEvent: core.EvIssueCompleted, ready: true},
+		{name: "done without proof", parentEvent: core.EvIssueCompleted},
+		{name: "cleanup needed", checkpoint: store.IntegrationCleanupNeeded, parentEvent: core.EvCleanupNeeded, ready: true},
+		{name: "preserved", checkpoint: store.IntegrationPreserved, parentEvent: core.EvIssueCompleted},
+		{name: "verification ready", checkpoint: store.IntegrationVerificationReady, parentEvent: core.EvIssueCompleted},
+		{name: "unknown", checkpoint: "unknown", parentEvent: core.EvIssueCompleted},
+		{name: "absent", parentEvent: core.EvIssueCompleted},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name+" launch", func(t *testing.T) {
+			e, st := newTestEngine(t)
+			useAutoLaunchFlow(e)
+			parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+			child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+			if err := e.SetDependencies(child, []string{parent}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.checkpoint != "" {
+				if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parent, State: tc.checkpoint}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.emit(tc.parentEvent, parent, nil)
+
+			if err := e.LaunchIssue(child); err != nil {
+				t.Fatal(err)
+			}
+			if tc.ready {
+				waitForEvent(t, st, child, core.EvIssueCompleted)
+				if runs, _ := st.StageRuns(child); len(runs) == 0 {
+					t.Fatal("ready dependency ran no stages")
+				}
+				return
+			}
+			waitForEvent(t, st, child, core.EvIssueWaitingDependencies)
+			if row := issueRow(t, st, child); row.State != "waiting_dependencies" {
+				t.Fatalf("state = %q, want waiting_dependencies", row.State)
+			}
+			if runs, _ := st.StageRuns(child); len(runs) != 0 {
+				t.Fatalf("waiting issue ran stages: %#v", runs)
+			}
+		})
+
+		t.Run(tc.name+" claim blockers", func(t *testing.T) {
+			e, st, _, _ := newClaimTestEngine(t)
+			parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+			child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+			if err := e.SetDependencies(child, []string{parent}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.checkpoint != "" {
+				if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parent, State: tc.checkpoint}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.emit(tc.parentEvent, parent, nil)
+
+			got, err := e.ClaimBlockers(child)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.ready {
+				if len(got) != 0 {
+					t.Fatalf("ClaimBlockers = %v, want no blockers", got)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, []string{parent}) {
+				t.Fatalf("ClaimBlockers = %v, want [%s]", got, parent)
+			}
+		})
+
+		t.Run(tc.name+" wake", func(t *testing.T) {
+			e, st := newTestEngine(t)
+			useAutoLaunchFlow(e)
+			parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+			child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+			if err := e.SetDependencies(child, []string{parent}); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.LaunchIssue(child); err != nil {
+				t.Fatal(err)
+			}
+			waitForEvent(t, st, child, core.EvIssueWaitingDependencies)
+			if tc.checkpoint != "" {
+				if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parent, State: tc.checkpoint}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.emit(tc.parentEvent, parent, nil)
+			e.wakeDependents(context.Background(), parent)
+
+			if tc.ready {
+				waitForEvent(t, st, child, core.EvIssueDependenciesSatisfied)
+				waitForEvent(t, st, child, core.EvIssueCompleted)
+				if runs, _ := st.StageRuns(child); len(runs) == 0 {
+					t.Fatal("ready dependency ran no stages")
+				}
+				return
+			}
+			if hasEvent(t, st, child, core.EvIssueDependenciesSatisfied) {
+				t.Fatal("unready dependency released waiting issue")
+			}
+			if row := issueRow(t, st, child); row.State != "waiting_dependencies" {
+				t.Fatalf("state = %q, want waiting_dependencies", row.State)
+			}
+			if runs, _ := st.StageRuns(child); len(runs) != 0 {
+				t.Fatalf("waiting issue ran stages: %#v", runs)
+			}
+		})
+	}
+}
+
 func TestMergedDependencyWakesWaitingIssue(t *testing.T) {
 	e, st := newTestEngine(t)
 	useAutoLaunchFlow(e)
@@ -157,6 +278,11 @@ func TestMergedDependencyWakesWaitingIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForEvent(t, st, child, core.EvIssueWaitingDependencies)
+	if err := st.SetIssueIntegration(store.IssueIntegration{
+		IssueID: parent, State: store.IntegrationMerged, LandedSHA: "merged",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	e.emit(core.EvIssueMerged, parent, nil)
 	e.wakeDependents(context.Background(), parent)
 	waitForEvent(t, st, child, core.EvIssueDependenciesSatisfied)
@@ -440,8 +566,8 @@ func TestClaimIssueRequiresDurablyMergedDependencies(t *testing.T) {
 func TestClaimBlockersTracksCurrentIntegrationStates(t *testing.T) {
 	e, st, _, _ := newClaimTestEngine(t)
 	child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
-	parents := make([]string, 0, 5)
-	for _, title := range []string{"merged", "cleanup", "preserved", "unknown", "missing"} {
+	parents := make([]string, 0, 7)
+	for _, title := range []string{"merged", "cleanup", "preserved", "verification", "unknown", "missing", "done"} {
 		parent, err := e.DraftIssue(title, "", "default", "regular", levers.Matrix{}, 0, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -455,7 +581,8 @@ func TestClaimBlockersTracksCurrentIntegrationStates(t *testing.T) {
 		parents[0]: store.IntegrationMerged,
 		parents[1]: store.IntegrationCleanupNeeded,
 		parents[2]: store.IntegrationPreserved,
-		parents[3]: "mystery",
+		parents[3]: store.IntegrationVerificationReady,
+		parents[4]: "mystery",
 	} {
 		if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: id, State: state}); err != nil {
 			t.Fatal(err)
@@ -471,16 +598,26 @@ func TestClaimBlockersTracksCurrentIntegrationStates(t *testing.T) {
 			t.Fatalf("ClaimBlockers = %v, want %v", got, want)
 		}
 	}
-	assertBlockers(parents[2], parents[3], parents[4])
+	e.emit(core.EvIssueCompleted, parents[6], nil)
+	assertBlockers(parents[2], parents[3], parents[4], parents[5], parents[6])
 
 	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parents[2], State: store.IntegrationMerged}); err != nil {
 		t.Fatal(err)
 	}
-	assertBlockers(parents[3], parents[4])
+	assertBlockers(parents[3], parents[4], parents[5], parents[6])
 	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parents[3], State: store.IntegrationMerged}); err != nil {
 		t.Fatal(err)
 	}
+	assertBlockers(parents[4], parents[5], parents[6])
 	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parents[4], State: store.IntegrationMerged}); err != nil {
+		t.Fatal(err)
+	}
+	assertBlockers(parents[5], parents[6])
+	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parents[5], State: store.IntegrationMerged}); err != nil {
+		t.Fatal(err)
+	}
+	assertBlockers(parents[6])
+	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: parents[6], State: store.IntegrationMerged}); err != nil {
 		t.Fatal(err)
 	}
 	assertBlockers()

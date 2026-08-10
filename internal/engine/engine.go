@@ -227,6 +227,7 @@ type Engine struct {
 	pend                map[int64]*pending
 	reviewContinuations map[int64]bool
 	plannerAuthorities  map[string]*plannerartifact.Authority
+	dependencyReadiness dependencyReadiness
 }
 
 func New(cfg Config) *Engine {
@@ -268,6 +269,7 @@ func New(cfg Config) *Engine {
 		cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{},
 		reviewContinuations: map[int64]bool{},
 		plannerAuthorities:  map[string]*plannerartifact.Authority{},
+		dependencyReadiness: durableDependencyReadiness{source: cfg.Store},
 	}
 	if cfg.OnLine != nil {
 		if sink, ok := cfg.Runner.(runner.LineSink); ok {
@@ -841,25 +843,18 @@ func (e *Engine) SetDependencies(issueID string, parents []string) error {
 }
 
 func (e *Engine) unmetDependencies(issueID string) ([]string, error) {
-	rows, err := e.cfg.Store.Issues()
+	parents, err := e.cfg.Store.Dependencies(issueID)
 	if err != nil {
 		return nil, err
 	}
-	states := map[string]string{}
-	var parents []string
-	for _, row := range rows {
-		states[row.ID] = row.State
-		if row.ID == issueID {
-			parents = row.DependsOn
-		}
+	return deps.ActiveBlockers(parents, e.readiness().Ready)
+}
+
+func (e *Engine) readiness() dependencyReadiness {
+	if e.dependencyReadiness != nil {
+		return e.dependencyReadiness
 	}
-	var unmet []string
-	for _, parent := range parents {
-		if states[parent] != "merged" {
-			unmet = append(unmet, parent)
-		}
-	}
-	return unmet, nil
+	return durableDependencyReadiness{source: e.cfg.Store}
 }
 
 func (e *Engine) startOrWait(ctx context.Context, is *issueState) error {
@@ -1631,7 +1626,7 @@ func (e *Engine) ClaimIssue(id string) (Claim, error) {
 	}
 	e.mu.Unlock()
 
-	unmet, err := e.unmetMergedDependencies(id)
+	unmet, err := e.unmetDependencies(id)
 	if err != nil {
 		return Claim{}, err
 	}
@@ -1830,23 +1825,8 @@ func (e *Engine) restoreClaimedWorkspace(is *issueState, integration store.Issue
 	return nil
 }
 
-func (e *Engine) unmetMergedDependencies(issueID string) ([]string, error) {
-	parents, err := e.cfg.Store.Dependencies(issueID)
-	if err != nil {
-		return nil, err
-	}
-	return deps.ActiveBlockers(parents, func(parent string) (bool, error) {
-		integration, ok, err := e.cfg.Store.IssueIntegration(parent)
-		if err != nil {
-			return false, err
-		}
-		return ok && (integration.State == store.IntegrationMerged ||
-			integration.State == store.IntegrationCleanupNeeded), nil
-	})
-}
-
 func (e *Engine) ClaimBlockers(issueID string) ([]string, error) {
-	return e.unmetMergedDependencies(issueID)
+	return e.unmetDependencies(issueID)
 }
 
 func (e *Engine) ReleaseClaim(id string) (retErr error) {
@@ -2041,6 +2021,10 @@ func (e *Engine) LaunchIssueWithBudget(id string, plannerOverride *plannerbudget
 	if _, ok := e.cfg.Flows[is.flowName]; !ok {
 		e.mu.Unlock()
 		return fmt.Errorf("unknown flow %q", is.flowName)
+	}
+	if _, err := e.unmetDependencies(id); err != nil {
+		e.mu.Unlock()
+		return err
 	}
 	is.draft = false
 	title, body, flowName, matrix, priority := is.title, is.body, is.flowName, is.matrix, is.priority
