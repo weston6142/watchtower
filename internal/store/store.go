@@ -71,6 +71,18 @@ CREATE TABLE IF NOT EXISTS runner_attempts(
   redacted_argv TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL,
   PRIMARY KEY(operation_id, attempt_kind));
+CREATE TABLE IF NOT EXISTS planner_artifacts(
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  worktree TEXT NOT NULL,
+  status TEXT NOT NULL,
+  capability_digest BLOB NOT NULL,
+  manifest TEXT NOT NULL DEFAULT '',
+  sections TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(issue_id, stage, attempt, worktree));
 CREATE TABLE IF NOT EXISTS decisions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT, question TEXT, options TEXT,
   recommended INTEGER, evidence TEXT, lever TEXT, status TEXT, answer TEXT,
@@ -110,6 +122,8 @@ type Store struct {
 	failNextArtifactReviewResolution bool
 	failNextDecisionPageSnapshot     bool
 	failNextPausePersistence         bool
+	failNextPlannerArtifactRead      bool
+	failNextPlannerArtifactWrite     bool
 }
 
 type StageRun struct {

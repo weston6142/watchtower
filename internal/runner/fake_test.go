@@ -68,11 +68,14 @@ func TestManagedEnvironmentOverlayReachesFakeRunner(t *testing.T) {
 
 func TestFakePlannerAppliesSectionRequestsAndRetriesPendingKey(t *testing.T) {
 	dir := t.TempDir()
-	session, err := plannerartifact.Initialize(dir)
+	registry := &runnerAuthorityRegistry{}
+	authority, err := plannerartifact.CreateOrLoad(registry, plannerartifact.Binding{
+		IssueID: "GH-40", Stage: "plan", Attempt: 1, Worktree: dir,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer authority.Close()
 	manifest := fakePlannerManifest()
 	requests := make([]plannerartifact.WriteRequest, 0, len(manifest.Sections))
 	for _, entry := range manifest.Sections {
@@ -81,7 +84,7 @@ func TestFakePlannerAppliesSectionRequestsAndRetriesPendingKey(t *testing.T) {
 	fr := &FakeRunner{Scripts: map[string]Script{
 		"plan/planner": {PlannerRequests: requests, PlannerFailureAt: 1, PlannerFailure: errors.New("stop at architecture")},
 	}}
-	ctx := WithPlannerArtifactEnv(context.Background(), session.Env())
+	ctx := WithPlannerArtifactAuthority(context.Background(), authority)
 	first := <-fr.RunPlanner(ctx, "GH-40", "plan", "planner", dir, make(chan Ask), &scriptedGate{})
 	if first.Err == nil || !strings.Contains(first.Err.Error(), "stop at architecture") {
 		t.Fatalf("first result = %+v", first)

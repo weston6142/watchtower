@@ -174,9 +174,9 @@ func (f *FakeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, w
 			return
 		}
 		if len(sc.PlannerRequests) > 0 {
-			session, err := plannerartifact.OpenFromEnvironment(workdir, PlannerArtifactEnv(ctx))
-			if err != nil {
-				done <- Result{SessionID: sc.SessionID, Err: err}
+			authority := PlannerArtifactAuthorityFromContext(ctx)
+			if authority == nil {
+				done <- Result{SessionID: sc.SessionID, Err: fmt.Errorf("planner authority unavailable")}
 				return
 			}
 			for index, request := range sc.PlannerRequests {
@@ -184,7 +184,7 @@ func (f *FakeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, w
 					done <- Result{SessionID: sc.SessionID, Err: sc.PlannerFailure}
 					return
 				}
-				if err := session.Apply(request); err != nil {
+				if err := authority.ApplyPlannerArtifact(request); err != nil {
 					done <- Result{SessionID: sc.SessionID, Err: err}
 					return
 				}

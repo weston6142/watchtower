@@ -22,6 +22,45 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestPlannerArtifactRegistryRoundTrip(t *testing.T) {
+	database := t.TempDir() + "/planner-artifact.db"
+	s, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	worktree := t.TempDir()
+	digest := []byte("digest")
+	manifest := []byte(`{"sections":[{"key":"goal","globs":["internal/goal/**"]}]}`)
+	sections := []byte(`[{"key":"goal","markdown":"first","globs":["internal/goal/**"]}]`)
+	if err := s.CreatePlannerArtifact("GH-62", "plan", 1, worktree, "active", digest, manifest, sections); err != nil {
+		t.Fatal(err)
+	}
+	status, gotDigest, gotManifest, gotSections, found, err := s.LoadPlannerArtifact("GH-62", "plan", 1, worktree)
+	if err != nil || !found {
+		t.Fatalf("load = status=%q found=%v err=%v", status, found, err)
+	}
+	if status != "active" || string(gotDigest) != string(digest) || string(gotManifest) != string(manifest) || string(gotSections) != string(sections) {
+		t.Fatalf("round trip = %q %q %q %q", status, gotDigest, gotManifest, gotSections)
+	}
+	for _, mismatch := range []struct {
+		issue    string
+		stage    string
+		attempt  int
+		worktree string
+	}{
+		{issue: "GH-61", stage: "plan", attempt: 1, worktree: worktree},
+		{issue: "GH-62", stage: "execute", attempt: 1, worktree: worktree},
+		{issue: "GH-62", stage: "plan", attempt: 2, worktree: worktree},
+		{issue: "GH-62", stage: "plan", attempt: 1, worktree: t.TempDir()},
+	} {
+		_, _, _, _, found, err := s.LoadPlannerArtifact(mismatch.issue, mismatch.stage, mismatch.attempt, mismatch.worktree)
+		if err != nil || found {
+			t.Fatalf("mismatch unexpectedly loaded: %+v found=%v err=%v", mismatch, found, err)
+		}
+	}
+}
+
 func TestRunnerAttemptsPersistSafeLifecycleAcrossReopen(t *testing.T) {
 	database := t.TempDir() + "/runner-attempts.db"
 	s, err := Open(database)

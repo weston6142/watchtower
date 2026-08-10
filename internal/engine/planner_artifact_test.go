@@ -39,19 +39,9 @@ func (r *plannerArtifactEngineRunner) RunPlanner(ctx context.Context, _ string, 
 	go func() {
 		r.started = true
 		r.callCount++
-		var previous string
-		for _, entry := range runner.PlannerArtifactEnv(ctx) {
-			key, value, ok := strings.Cut(entry, "=")
-			if !ok {
-				continue
-			}
-			previous = os.Getenv(key)
-			_ = os.Setenv(key, value)
-			defer os.Setenv(key, previous)
-		}
-		session, err := plannerartifact.OpenFromEnv(workdir)
-		if err != nil {
-			done <- runner.Result{Err: err}
+		authority := runner.PlannerArtifactAuthorityFromContext(ctx)
+		if authority == nil {
+			done <- runner.Result{Err: fmt.Errorf("planner authority unavailable")}
 			return
 		}
 		for index, request := range r.requests {
@@ -59,7 +49,7 @@ func (r *plannerArtifactEngineRunner) RunPlanner(ctx context.Context, _ string, 
 				done <- runner.Result{Err: fmt.Errorf("transport failure at %s", request.Key)}
 				return
 			}
-			if err := session.Apply(request); err != nil {
+			if err := authority.ApplyPlannerArtifact(request); err != nil {
 				done <- runner.Result{Err: err}
 				return
 			}
@@ -153,6 +143,18 @@ func TestPlannerArtifactInvalidFinalPairBlocksArchiveAndReview(t *testing.T) {
 		{name: "pair", mutate: func(workdir string) error {
 			return os.WriteFile(filepath.Join(workdir, "touchset.json"), []byte(`{"globs":[]}`), 0o644)
 		}, want: "pair"},
+		{name: "unauthorized-content", mutate: func(workdir string) error {
+			path := filepath.Join(workdir, "plan.md")
+			plan, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			mutated := strings.Replace(string(plan), "section goal", "tampered goal", 1)
+			if mutated == string(plan) {
+				return fmt.Errorf("accepted goal section was not found")
+			}
+			return os.WriteFile(path, []byte(mutated), 0o644)
+		}, want: "plan.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := plannerArtifactEngineFlow()

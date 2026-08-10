@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/weston6142/watchtower/internal/levers"
@@ -85,6 +86,14 @@ type Runner interface {
 		asks chan<- Ask) <-chan Result
 }
 
+// PlannerArtifactAuthority is the only planner-artifact capability a runner
+// may use. It deliberately exposes no environment, path, or raw capability
+// accessors.
+type PlannerArtifactAuthority interface {
+	ApplyPlannerArtifact(any) error
+	AttachPlannerArtifactDescriptor() (*os.File, error)
+}
+
 type ToolCall struct {
 	Name        string
 	SourceID    string
@@ -124,19 +133,23 @@ type AttemptReporter interface {
 
 type operationIDKey struct{}
 
-type plannerArtifactEnvKey struct{}
+type plannerArtifactAuthorityKey struct{}
+
+const plannerArtifactSessionEnv = "WATCHTOWER_PLANNER_SESSION"
 
 type managedEnvironmentKey struct{}
 
-func WithPlannerArtifactEnv(ctx context.Context, env []string) context.Context {
-	return context.WithValue(ctx, plannerArtifactEnvKey{}, append([]string(nil), env...))
+// WithPlannerArtifactAuthority attaches an immutable engine-owned authority
+// handle to the runner context.
+func WithPlannerArtifactAuthority(ctx context.Context, authority PlannerArtifactAuthority) context.Context {
+	return context.WithValue(ctx, plannerArtifactAuthorityKey{}, authority)
 }
 
-func PlannerArtifactEnv(ctx context.Context) []string {
-	if env, ok := ctx.Value(plannerArtifactEnvKey{}).([]string); ok {
-		return append([]string(nil), env...)
-	}
-	return nil
+// PlannerArtifactAuthorityFromContext returns the engine-owned authority, if
+// one was attached. It never consults process environment or argv.
+func PlannerArtifactAuthorityFromContext(ctx context.Context) PlannerArtifactAuthority {
+	authority, _ := ctx.Value(plannerArtifactAuthorityKey{}).(PlannerArtifactAuthority)
+	return authority
 }
 
 // WithManagedEnvironment carries an immutable child-process environment
@@ -172,6 +185,9 @@ func MergeEnvironment(inherited, extra, managed []string) []string {
 	appendUnmanaged := func(entries []string) {
 		for _, entry := range entries {
 			key, _, ok := strings.Cut(entry, "=")
+			if ok && key == plannerArtifactSessionEnv {
+				continue
+			}
 			if ok {
 				if _, replace := replacements[key]; replace {
 					continue
@@ -183,6 +199,9 @@ func MergeEnvironment(inherited, extra, managed []string) []string {
 	appendUnmanaged(inherited)
 	appendUnmanaged(extra)
 	for _, key := range order {
+		if key == plannerArtifactSessionEnv {
+			continue
+		}
 		result = append(result, key+"="+replacements[key])
 	}
 	return result
