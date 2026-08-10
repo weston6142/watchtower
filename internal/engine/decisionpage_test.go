@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -160,6 +161,50 @@ func TestDecisionPageHistoricalGapsAreExplicit(t *testing.T) {
 		if !strings.Contains(page, want) {
 			t.Errorf("legacy page missing %q: %s", want, page)
 		}
+	}
+}
+
+func TestDecisionPageUsesAttemptArchivePathAndLegacyFallback(t *testing.T) {
+	f := flow.Flow{Name: "attempt-page", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Artifacts: []string{"plan.md"},
+		Gate: flow.GateAuto, Completion: flow.CompletionAll,
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/agent": {Artifacts: map[string]string{"plan.md": "plan v1\n"}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) { cfg.Flows = map[string]flow.Flow{f.Name: f} })
+	id, err := e.CreateIssue("Attempt archive page", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := s.StageCheckpoints(id)
+	if err != nil || len(checkpoints) != 1 {
+		t.Fatalf("stage checkpoints = %+v, err=%v", checkpoints, err)
+	}
+	page, err := e.BuildDecisionPageForTest(id, checkpoints[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(page, "artifacts/attempts/checkpoint-") || !strings.Contains(page, "/plan.md") {
+		t.Fatalf("attempt archive href missing: %s", page)
+	}
+
+	legacyID, err := s.InsertStageCheckpoint(store.StageCheckpoint{
+		IssueID: id, Stage: "execute", Status: "succeeded",
+		Artifacts: []contextpack.Artifact{{Name: "legacy.md"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPage, err := e.BuildDecisionPageForTest(id, legacyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(legacyPage, "artifacts/legacy.md") {
+		t.Fatalf("legacy href missing: %s", legacyPage)
 	}
 }
 

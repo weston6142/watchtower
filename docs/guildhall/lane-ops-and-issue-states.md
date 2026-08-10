@@ -155,6 +155,25 @@ Finalization has a durable boundary that is independent of an agent transcript:
 - Transcript completion is never lifecycle authority. Only validated receipts,
   durable integration state, and completion/merge events can finish a lane.
 
+Stage attempts also have six ordered v1 checkpoints:
+`runner_succeeded`, `artifacts_validated`, `artifacts_archived`, `gate_resolved`,
+`verification_passed`, and `finalization_ready`. The model result is copied to
+the attempt-owned result slot once before `runner_succeeded`; a restart resumes
+from the latest committed checkpoint without requesting the model again.
+Prepared rows and unreferenced filesystem bytes are never recovery authority.
+Checkpoint-finalization failures fail closed and leave the preceding committed
+checkpoint as the retry boundary. Recovery validates the predecessor chain,
+result digest, archive paths, and archive digests before advancing; corruption,
+conflicts, missing results, or unknown versions stop with a diagnostic.
+
+The attempt archive path is the canonical operator link for newly archived
+artifacts. Legacy `stage_checkpoints` rows and `artifacts/<name>` paths remain
+readable for migration and historical pages, but Watchtower never rewrites
+their bytes or replaces a historical artifact with a later attempt. The
+verification-ready, publish-pending, cleanup-needed, and model-free retry
+boundaries described above remain separate from these stage-attempt
+checkpoints.
+
 Flow integration is capability-based, not tied to a stage name or stage count:
 
 - A flow may have no `merge_barrier`. Watchtower then never merges or pushes on
