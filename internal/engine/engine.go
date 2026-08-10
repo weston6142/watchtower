@@ -226,6 +226,7 @@ type Engine struct {
 	issues              map[string]*issueState
 	pend                map[int64]*pending
 	reviewContinuations map[int64]bool
+	plannerAuthorities  map[string]*plannerartifact.Authority
 }
 
 func New(cfg Config) *Engine {
@@ -266,6 +267,7 @@ func New(cfg Config) *Engine {
 	e := &Engine{
 		cfg: cfg, issues: map[string]*issueState{}, pend: map[int64]*pending{},
 		reviewContinuations: map[int64]bool{},
+		plannerAuthorities:  map[string]*plannerartifact.Authority{},
 	}
 	if cfg.OnLine != nil {
 		if sink, ok := cfg.Runner.(runner.LineSink); ok {
@@ -3212,6 +3214,8 @@ func (e *Engine) runStageOnce(
 		if err != nil {
 			return fmt.Errorf("initialize planner authority: %w", err)
 		}
+		e.RegisterPlannerAuthority(artifactAuthority)
+		defer e.UnregisterPlannerAuthority(artifactAuthority.Binding())
 		defer func() {
 			if runErr == nil {
 				_ = artifactAuthority.Expire()

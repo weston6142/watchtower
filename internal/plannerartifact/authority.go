@@ -113,6 +113,34 @@ func (a *Authority) CapabilityHandle() string {
 	return a.capability
 }
 
+// VerifyCapability checks a presented opaque handle without exposing the
+// durable digest or the raw value in an error.
+func (a *Authority) VerifyCapability(handle string) error {
+	capability, err := base64.RawURLEncoding.DecodeString(handle)
+	if err != nil || len(capability) != capabilityBytes {
+		return authorityError(ErrorStaleCapability, "", "capability is not active", nil)
+	}
+	digest := capabilityDigest(capability)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.verifyLocked(); err != nil {
+		return err
+	}
+	if subtle.ConstantTimeCompare(digest, a.digest) != 1 {
+		return authorityError(ErrorStaleCapability, "", "capability is not active", nil)
+	}
+	return nil
+}
+
+// ApplyWithCapability is the daemon-facing authority entry point. The
+// capability is checked before the provider-neutral request reaches Apply.
+func (a *Authority) ApplyWithCapability(handle string, request WriteRequest) error {
+	if err := a.VerifyCapability(handle); err != nil {
+		return err
+	}
+	return a.Apply(request)
+}
+
 func normalizeBinding(binding Binding) (Binding, error) {
 	if binding.IssueID == "" || binding.Stage == "" || binding.Attempt <= 0 || binding.Worktree == "" {
 		return Binding{}, errors.New("planner authority: binding is incomplete")

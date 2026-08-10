@@ -8,6 +8,7 @@ import (
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/failure"
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -34,45 +35,52 @@ type Command struct {
 	// Attach carries absolute paths, never bytes: maxMessageBytes bounds a wire
 	// message well under the per-file cap, so the daemon reads the files off the
 	// shared filesystem itself. A bare name retains an existing attachment.
-	Attach        []string                `json:"attach,omitempty"`
-	DependsOn     []string                `json:"depends_on,omitempty"`
-	IssueID       string                  `json:"issue_id,omitempty"`
-	Worktree      string                  `json:"worktree,omitempty"`
-	AllowNoChange bool                    `json:"allow_no_change,omitempty"`
-	DecisionID    int64                   `json:"decision_id,omitempty"`
-	Option        *int                    `json:"option,omitempty"`
-	Text          string                  `json:"text,omitempty"`
-	Actor         string                  `json:"actor,omitempty"`
-	ProposalID    int64                   `json:"proposal_id,omitempty"`
-	Accept        bool                    `json:"accept,omitempty"`
-	SinceSeq      int64                   `json:"since_seq,omitempty"`
-	ThroughSeq    int64                   `json:"through_seq,omitempty"`
-	Repo          string                  `json:"repo,omitempty"`
-	Stage         string                  `json:"stage,omitempty"`
-	Lever         string                  `json:"lever,omitempty"`
-	Package       string                  `json:"package,omitempty"` // setup_prompt: which agent package
-	N             int                     `json:"n,omitempty"`
-	PlannerBudget *plannerbudget.Override `json:"planner_budget,omitempty"`
+	Attach         []string                      `json:"attach,omitempty"`
+	DependsOn      []string                      `json:"depends_on,omitempty"`
+	IssueID        string                        `json:"issue_id,omitempty"`
+	Worktree       string                        `json:"worktree,omitempty"`
+	AllowNoChange  bool                          `json:"allow_no_change,omitempty"`
+	DecisionID     int64                         `json:"decision_id,omitempty"`
+	Option         *int                          `json:"option,omitempty"`
+	Text           string                        `json:"text,omitempty"`
+	Actor          string                        `json:"actor,omitempty"`
+	ProposalID     int64                         `json:"proposal_id,omitempty"`
+	Accept         bool                          `json:"accept,omitempty"`
+	SinceSeq       int64                         `json:"since_seq,omitempty"`
+	ThroughSeq     int64                         `json:"through_seq,omitempty"`
+	Repo           string                        `json:"repo,omitempty"`
+	Stage          string                        `json:"stage,omitempty"`
+	Attempt        int                           `json:"attempt,omitempty"`
+	PlannerHandle  string                        `json:"planner_handle,omitempty"`
+	PlannerRequest *plannerartifact.WriteRequest `json:"planner_request,omitempty"`
+	Lever          string                        `json:"lever,omitempty"`
+	Package        string                        `json:"package,omitempty"` // setup_prompt: which agent package
+	N              int                           `json:"n,omitempty"`
+	PlannerBudget  *plannerbudget.Override       `json:"planner_budget,omitempty"`
 }
 
 type Response struct {
-	OK         bool                     `json:"ok"`
-	Error      string                   `json:"error,omitempty"`
-	IssueID    string                   `json:"issue_id,omitempty"`
-	Decisions  []engine.PendingDecision `json:"decisions,omitempty"`
-	Proposals  []store.ProposalRow      `json:"proposals,omitempty"`
-	Issues     []store.IssueRow         `json:"issues,omitempty"`
-	Backlog    []BacklogItem            `json:"backlog,omitempty"`
-	Claims     []engine.Claim           `json:"claims,omitempty"`
-	Claim      *engine.Claim            `json:"claim,omitempty"`
-	Events     []core.Event             `json:"events,omitempty"`
-	ThroughSeq int64                    `json:"through_seq,omitempty"`
-	Lines      []string                 `json:"lines,omitempty"`
-	Overview   *Overview                `json:"overview,omitempty"`
-	Detail     *IssueDetail             `json:"detail,omitempty"`
-	FlowStages []string                 `json:"flow_stages,omitempty"`
-	Arch       *archmap.Map             `json:"arch,omitempty"`
-	Setup      *SetupView               `json:"setup,omitempty"`
+	OK            bool                     `json:"ok"`
+	Error         string                   `json:"error,omitempty"`
+	IssueID       string                   `json:"issue_id,omitempty"`
+	Decisions     []engine.PendingDecision `json:"decisions,omitempty"`
+	Proposals     []store.ProposalRow      `json:"proposals,omitempty"`
+	Issues        []store.IssueRow         `json:"issues,omitempty"`
+	Backlog       []BacklogItem            `json:"backlog,omitempty"`
+	Claims        []engine.Claim           `json:"claims,omitempty"`
+	Claim         *engine.Claim            `json:"claim,omitempty"`
+	Events        []core.Event             `json:"events,omitempty"`
+	ThroughSeq    int64                    `json:"through_seq,omitempty"`
+	Lines         []string                 `json:"lines,omitempty"`
+	Overview      *Overview                `json:"overview,omitempty"`
+	Detail        *IssueDetail             `json:"detail,omitempty"`
+	FlowStages    []string                 `json:"flow_stages,omitempty"`
+	Arch          *archmap.Map             `json:"arch,omitempty"`
+	Setup         *SetupView               `json:"setup,omitempty"`
+	ErrorClass    string                   `json:"error_class,omitempty"`
+	CorrelationID string                   `json:"correlation_id,omitempty"`
+	SectionKey    string                   `json:"section_key,omitempty"`
+	PlannerHandle string                   `json:"planner_handle,omitempty"`
 }
 
 type AttachmentSummary struct {

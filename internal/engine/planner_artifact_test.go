@@ -300,3 +300,35 @@ func TestPlannerArtifactInitializationFailsBeforeRunner(t *testing.T) {
 		t.Fatalf("plan review requests = %d", got)
 	}
 }
+
+func TestEnginePlannerAuthorityBindsExactScopeAndValidatesPair(t *testing.T) {
+	coordinator, err := store.Open(filepath.Join(t.TempDir(), "coordinator.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	worktree := t.TempDir()
+	binding := plannerartifact.Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: worktree}
+	authority, err := plannerartifact.CreateOrLoad(coordinator, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New(Config{Store: coordinator, DataDir: t.TempDir()})
+	e.RegisterPlannerAuthority(authority)
+
+	handle, gotBinding, err := e.IssuePlannerAuthority(plannerartifact.Binding{Worktree: worktree})
+	if err != nil || handle == "" || gotBinding != authority.Binding() {
+		t.Fatalf("issued planner authority = handle %q binding %+v err %v", handle, gotBinding, err)
+	}
+	if _, _, err := e.IssuePlannerAuthority(plannerartifact.Binding{IssueID: "GH-71", Worktree: worktree}); plannerartifact.ErrorClassOf(err) != plannerartifact.ErrorScopeMismatch {
+		t.Fatalf("mismatched planner scope error = %v", err)
+	}
+	for _, request := range plannerArtifactRequests() {
+		if _, err := e.ApplyPlannerArtifact(binding, handle, request); err != nil {
+			t.Fatalf("engine apply %s: %v", request.Key, err)
+		}
+	}
+	if err := e.ValidatePlannerAuthority(binding, handle); err != nil {
+		t.Fatalf("engine final validation: %v", err)
+	}
+}

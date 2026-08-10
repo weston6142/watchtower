@@ -49,6 +49,12 @@ func authorityError(class ErrorClass, key, reason string, cause error) error {
 	return &AuthorityError{Class: class, Key: key, Reason: reason, Cause: cause}
 }
 
+// NewAuthorityError creates a safe stable-class failure for an adapter that
+// does not have a lower-level cause to expose.
+func NewAuthorityError(class ErrorClass, key, reason string) error {
+	return authorityError(class, key, reason, nil)
+}
+
 // ErrorClassOf maps planner failures to the stable boundary class. The
 // fallback is intentionally conservative: unknown failures never claim a
 // successful or authoritative operation.

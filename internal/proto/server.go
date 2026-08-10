@@ -32,19 +32,20 @@ import (
 )
 
 type Server struct {
-	eng            *engine.Engine
-	st             *store.Store
-	flows          map[string]flow.Flow
-	packages       map[string]pkgs.Package
-	transcript     *transcript.Buffer
-	pricePerMTok   float64
-	budget         int
-	repoSetup      RepoSetup
-	listenerMu     sync.Mutex
-	listener       net.Listener
-	plannerBudget  plannerbudget.Profile
-	repoRoot       string
-	loadedSnapshot *scaffold.InputSnapshot
+	eng                       *engine.Engine
+	st                        *store.Store
+	flows                     map[string]flow.Flow
+	packages                  map[string]pkgs.Package
+	transcript                *transcript.Buffer
+	pricePerMTok              float64
+	budget                    int
+	repoSetup                 RepoSetup
+	listenerMu                sync.Mutex
+	listener                  net.Listener
+	plannerBudget             plannerbudget.Profile
+	repoRoot                  string
+	loadedSnapshot            *scaffold.InputSnapshot
+	plannerCorrelationCounter uint64
 }
 
 const tailPageEventLimit = 256
@@ -143,6 +144,11 @@ func (sv *Server) closeListener() {
 }
 
 func (sv *Server) exec(cmd Command) Response {
+	if cmd.Op == "planner_authority_issue" || cmd.Op == "apply_planner_artifact" ||
+		cmd.Op == "planner_authority_retry" || cmd.Op == "planner_authority_validate_complete" ||
+		cmd.Op == "planner_authority_expire" {
+		return sv.plannerExec(cmd)
+	}
 	switch cmd.Op {
 	case "can_reset":
 		if sv.eng == nil {
