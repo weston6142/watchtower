@@ -53,6 +53,17 @@ func (e *Engine) reconcileLegacyMerges(rows []store.IssueRow) error {
 }
 
 func proveLegacyCommitReachable(repo, landedSHA, baseBranch string) error {
+	resolve := exec.Command("git", "-C", repo, "rev-parse", "--verify", "--end-of-options", landedSHA+"^{commit}")
+	resolvedOutput, err := resolve.CombinedOutput()
+	resolved := strings.TrimSpace(string(resolvedOutput))
+	if err != nil {
+		return fmt.Errorf("recorded landed commit %s is not a commit: %v: %s",
+			landedSHA, err, resolved)
+	}
+	if !strings.EqualFold(resolved, landedSHA) {
+		return fmt.Errorf("recorded landed commit %q is not a canonical commit ID", landedSHA)
+	}
+
 	cmd := exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", landedSHA, baseBranch)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

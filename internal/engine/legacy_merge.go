@@ -126,6 +126,9 @@ func foldLegacyMergeEvidence(
 				if merge == "left-unmerged" {
 					return reject("completion is left-unmerged")
 				}
+				if merge == "none" {
+					return reject("completion explicitly reports no merge")
+				}
 				if completionOutcome != "" && completionOutcome != merge {
 					return reject(fmt.Sprintf("conflicting completion outcomes %q and %q", completionOutcome, merge))
 				}

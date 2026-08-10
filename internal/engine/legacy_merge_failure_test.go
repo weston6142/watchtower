@@ -38,6 +38,10 @@ func TestRehydrateRejectsInvalidLegacyEvidenceIndependently(t *testing.T) {
 			{typ: core.EvIssueMerged, payload: map[string]any{"branch": "main", "commit": "not-a-commit"}},
 			{typ: core.EvIssueCompleted, payload: map[string]any{}},
 		}},
+		{id: "GH-80", state: "done", events: []legacyEventSpec{
+			{typ: core.EvIssueMerged, payload: map[string]any{"branch": "main", "commit": "main"}},
+			{typ: core.EvIssueCompleted, payload: map[string]any{}},
+		}},
 		{id: "GH-75", state: "done", events: []legacyEventSpec{
 			{typ: core.EvIssueMerged, payload: map[string]any{"branch": "main", "commit": "left-unmerged"}},
 			{typ: core.EvIssueCompleted, payload: map[string]any{"merge": "left-unmerged"}},

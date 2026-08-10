@@ -73,6 +73,18 @@ func TestFoldLegacyMergeEvidence(t *testing.T) {
 			},
 		},
 		{
+			name:  "contradictory non-merge completion",
+			issue: store.IssueRow{ID: "GH-101", State: "done"},
+			events: func(t *testing.T) []core.Event {
+				return orderedLegacyEvents(t,
+					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{
+						"commit": "landed-a", "branch": "main",
+					}},
+					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{"merge": "none"}},
+				)
+			},
+		},
+		{
 			name:  "conflicting commits",
 			issue: store.IssueRow{ID: "GH-101", State: "done"},
 			events: func(t *testing.T) []core.Event {
