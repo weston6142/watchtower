@@ -19,6 +19,7 @@ import (
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/steward"
 	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/workspace"
 )
 
 func newTestEngine(t *testing.T) (*Engine, *store.Store) {
@@ -267,6 +268,30 @@ func TestDurableDependencyReadinessMatrix(t *testing.T) {
 	}
 }
 
+func TestLaunchPropagatesDurableLookupFailure(t *testing.T) {
+	e, st := newTestEngine(t)
+	useAutoLaunchFlow(e)
+	parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+	child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("integration store unavailable")
+	e.dependencyReadiness = durableDependencyReadiness{source: failingIntegrationSource{err: wantErr}}
+	if err := e.LaunchIssue(child); !errors.Is(err, wantErr) || !strings.Contains(err.Error(), parent) {
+		t.Fatalf("LaunchIssue error = %v, want parent context and %v", err, wantErr)
+	}
+	if row := issueRow(t, st, child); row.State != "backlog" {
+		t.Fatalf("failed launch changed state to %q", row.State)
+	}
+	if hasEvent(t, st, child, core.EvIssueCreated) {
+		t.Fatal("failed durable lookup committed a launch")
+	}
+	if runs, _ := st.StageRuns(child); len(runs) != 0 {
+		t.Fatalf("failed launch ran stages: %#v", runs)
+	}
+}
+
 func TestMergedDependencyWakesWaitingIssue(t *testing.T) {
 	e, st := newTestEngine(t)
 	useAutoLaunchFlow(e)
@@ -296,6 +321,126 @@ type failingIntegrationSource struct {
 
 func (f failingIntegrationSource) IssueIntegration(string) (store.IssueIntegration, bool, error) {
 	return store.IssueIntegration{}, false, f.err
+}
+
+type failOnIntegrationRead struct {
+	store  *store.Store
+	failAt int
+	calls  int
+	err    error
+}
+
+func (f *failOnIntegrationRead) IssueIntegration(issueID string) (store.IssueIntegration, bool, error) {
+	f.calls++
+	if f.calls == f.failAt {
+		return store.IssueIntegration{}, false, f.err
+	}
+	return f.store.IssueIntegration(issueID)
+}
+
+func TestFinalizationPropagatesWakeFailureAfterCleanupCheckpoint(t *testing.T) {
+	e, st, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	e.cfg.Observers = []func(core.Event){(&steward.Steward{Store: st}).Observe}
+	e.cfg.Workspace = &failOnceReleaseWorkspace{delegate: workspace.GitWorktree{Repo: repo}}
+	parent, err := e.CreateIssue("parent", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.LaunchIssue(child); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, st, child, core.EvIssueWaitingDependencies)
+
+	wantErr := errors.New("integration store unavailable during wake")
+	e.dependencyReadiness = durableDependencyReadiness{source: &failOnIntegrationRead{
+		store: st, failAt: 2, err: wantErr,
+	}}
+	err = e.StartIssue(context.Background(), parent)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("StartIssue error = %v, want wake failure %v", err, wantErr)
+	}
+	integration, ok, readErr := st.IssueIntegration(parent)
+	if readErr != nil || !ok || integration.State != store.IntegrationCleanupNeeded {
+		t.Fatalf("parent integration = %+v ok=%v err=%v, want durable cleanup_needed", integration, ok, readErr)
+	}
+	if row := issueRow(t, st, child); row.State != "waiting_dependencies" {
+		t.Fatalf("failed wake changed child state to %q", row.State)
+	}
+	if hasEvent(t, st, child, core.EvIssueDependenciesSatisfied) {
+		t.Fatal("failed wake released the dependent")
+	}
+}
+
+type staleMergeOnReleaseWorkspace struct {
+	delegate workspace.GitWorktree
+	store    *store.Store
+}
+
+func (w *staleMergeOnReleaseWorkspace) Acquire(issueID string) (string, func() error, error) {
+	path, _, err := w.delegate.Acquire(issueID)
+	if err != nil {
+		return "", nil, err
+	}
+	return path, func() error {
+		if err := w.store.SetIssueIntegration(store.IssueIntegration{
+			IssueID: issueID, State: store.IntegrationMerged,
+		}); err != nil {
+			return err
+		}
+		w.store.FailIssueIntegrationWriteAfterForTest(0)
+		return errors.New("injected cleanup checkpoint failure")
+	}, nil
+}
+
+func (w *staleMergeOnReleaseWorkspace) ReleasePath(path string) error {
+	return w.delegate.ReleasePath(path)
+}
+
+func (w *staleMergeOnReleaseWorkspace) Name() string { return "stale merge on release" }
+
+func TestFinalizationDoesNotWakeAfterCheckpointWriteFailure(t *testing.T) {
+	e, st, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	e.cfg.Observers = []func(core.Event){(&steward.Steward{Store: st}).Observe}
+	parent, err := e.CreateIssue("parent", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.LaunchIssue(child); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, st, child, core.EvIssueWaitingDependencies)
+
+	e.cfg.Workspace = &staleMergeOnReleaseWorkspace{
+		delegate: workspace.GitWorktree{Repo: repo}, store: st,
+	}
+	err = e.StartIssue(context.Background(), parent)
+	if err == nil || !strings.Contains(err.Error(), "injected integration persistence failure") {
+		t.Fatalf("StartIssue error = %v, want checkpoint persistence failure", err)
+	}
+	integration, ok, readErr := st.IssueIntegration(parent)
+	if readErr != nil || !ok || integration.State != store.IntegrationMerged {
+		t.Fatalf("parent integration = %+v ok=%v err=%v, want stale merged row", integration, ok, readErr)
+	}
+	if row := issueRow(t, st, child); row.State != "waiting_dependencies" {
+		t.Fatalf("failed checkpoint write changed child state to %q", row.State)
+	}
+	if hasEvent(t, st, child, core.EvIssueDependenciesSatisfied) {
+		t.Fatal("failed checkpoint write released the dependent")
+	}
 }
 
 func TestWakeDependentsPropagatesDurableLookupFailure(t *testing.T) {

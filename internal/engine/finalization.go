@@ -209,9 +209,6 @@ func (e *Engine) finalizeIntegration(
 		if cleanupErr := e.finishLandingCleanup(
 			is.id, integration, is.wsPath, is.branch, is.wsRelease,
 		); cleanupErr != nil {
-			if ready, readinessErr := e.readiness().Ready(is.id); readinessErr == nil && ready {
-				_ = e.wakeDependents(context.Background(), is.id)
-			}
 			_ = e.recordBoundaryFailure(ctx, is.id, e.integrationStageName(is), 0,
 				failure.SiteFinalization, failure.ClassStateMismatch, failure.RetryAfterStateChange, failure.StateOperator, cleanupErr)
 			return true, false, cleanupErr
