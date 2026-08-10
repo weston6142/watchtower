@@ -245,7 +245,9 @@ func TestDurableDependencyReadinessMatrix(t *testing.T) {
 				}
 			}
 			e.emit(tc.parentEvent, parent, nil)
-			e.wakeDependents(context.Background(), parent)
+			if err := e.wakeDependents(context.Background(), parent); err != nil {
+				t.Fatal(err)
+			}
 
 			if tc.ready {
 				waitForEvent(t, st, child, core.EvIssueDependenciesSatisfied)
@@ -310,7 +312,9 @@ func TestMergedDependencyWakesWaitingIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.emit(core.EvIssueMerged, parent, nil)
-	e.wakeDependents(context.Background(), parent)
+	if err := e.wakeDependents(context.Background(), parent); err != nil {
+		t.Fatal(err)
+	}
 	waitForEvent(t, st, child, core.EvIssueDependenciesSatisfied)
 	waitForEvent(t, st, child, core.EvIssueCompleted)
 }
@@ -360,7 +364,7 @@ func TestFinalizationPropagatesWakeFailureAfterCleanupCheckpoint(t *testing.T) {
 
 	wantErr := errors.New("integration store unavailable during wake")
 	e.dependencyReadiness = durableDependencyReadiness{source: &failOnIntegrationRead{
-		store: st, failAt: 2, err: wantErr,
+		store: st, failAt: 1, err: wantErr,
 	}}
 	err = e.StartIssue(context.Background(), parent)
 	if !errors.Is(err, wantErr) {

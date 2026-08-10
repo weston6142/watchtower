@@ -213,14 +213,8 @@ func (e *Engine) finalizeIntegration(
 				failure.SiteFinalization, failure.ClassStateMismatch, failure.RetryAfterStateChange, failure.StateOperator, cleanupErr)
 			return true, false, cleanupErr
 		}
-		ready, readinessErr := e.readiness().Ready(is.id)
-		if readinessErr != nil {
-			return true, false, e.recordFinalizationFailure(is, readinessErr)
-		}
-		if ready {
-			if wakeErr := e.wakeDependents(context.Background(), is.id); wakeErr != nil {
-				return true, false, e.recordFinalizationFailure(is, wakeErr)
-			}
+		if wakeErr := e.wakeDependents(context.Background(), is.id); wakeErr != nil {
+			return true, false, e.recordFinalizationFailure(is, wakeErr)
 		}
 	}
 	if e.cfg.Marshal != nil {

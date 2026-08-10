@@ -876,10 +876,10 @@ func (e *Engine) startOrWaitWithPlannerBudget(ctx context.Context, is *issueStat
 	return e.runAndRecordWithPlannerBudget(ctx, is, 0, plannerOverride)
 }
 
-func (e *Engine) wakeDependents(ctx context.Context, mergedID string) error {
-	ids, err := e.cfg.Store.Dependents(mergedID)
+func (e *Engine) wakeDependents(ctx context.Context, parentID string) error {
+	ids, err := e.cfg.Store.Dependents(parentID)
 	if err != nil {
-		return fmt.Errorf("find dependents for %s: %w", mergedID, err)
+		return fmt.Errorf("find dependents for %s: %w", parentID, err)
 	}
 	var firstErr error
 	for _, id := range ids {
