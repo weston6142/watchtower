@@ -102,6 +102,14 @@ func (tr *Train) defaultBranch() (string, error) {
 	return out, nil
 }
 
+// DefaultBranch returns the currently checked-out configured base branch
+// without changing repository state.
+func (tr *Train) DefaultBranch() (string, error) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return tr.defaultBranch()
+}
+
 func (tr *Train) Land(ctx context.Context, issueID, branch string) error {
 	var commands [][]string
 	if len(tr.TestCmd) > 0 {

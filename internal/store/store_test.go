@@ -653,6 +653,48 @@ func TestIssueIntegrationLifecycle(t *testing.T) {
 	}
 }
 
+func TestIssueIntegrationWriteFailureInjection(t *testing.T) {
+	s, err := Open("file:integration-write-failure?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := IssueIntegration{
+		IssueID: "GH-1", State: IntegrationMerged,
+		BaseBranch: "main", LandedSHA: "landed-a",
+	}
+	s.FailIssueIntegrationWriteAfterForTest(0)
+	if err := s.SetIssueIntegration(want); err == nil {
+		t.Fatal("SetIssueIntegration succeeded with an injected failure")
+	}
+	if got, ok, err := s.IssueIntegration(want.IssueID); err != nil || ok {
+		t.Fatalf("failed write left integration = %+v ok=%v err=%v", got, ok, err)
+	}
+	if err := s.SetIssueIntegration(want); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.IssueIntegration(want.IssueID); err != nil || !ok ||
+		got.IssueID != want.IssueID || got.State != want.State ||
+		got.BaseBranch != want.BaseBranch || got.LandedSHA != want.LandedSHA {
+		t.Fatalf("retry integration = %+v ok=%v err=%v", got, ok, err)
+	}
+
+	other := IssueIntegration{
+		IssueID: "GH-2", State: IntegrationMerged,
+		BaseBranch: "main", LandedSHA: "landed-b",
+	}
+	s.FailIssueIntegrationWriteAfterForTest(1)
+	if err := s.SetIssueIntegration(want); err != nil {
+		t.Fatalf("first write with one allowed write failed: %v", err)
+	}
+	if err := s.SetIssueIntegration(other); err == nil {
+		t.Fatal("second write with one allowed write succeeded")
+	}
+	if err := s.SetIssueIntegration(other); err != nil {
+		t.Fatalf("third write after consumed failure failed: %v", err)
+	}
+}
+
 func TestClaimedIssueIntegrationPreservesWorkspaceIdentity(t *testing.T) {
 	s, err := Open("file:claimed-integration?mode=memory&cache=shared")
 	if err != nil {

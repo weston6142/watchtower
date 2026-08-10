@@ -88,6 +88,14 @@ integration evidence, and unknown states remain visible so the system fails
 closed. A later status change is reflected on the next backlog read without
 recreating the relationship.
 
+Legacy completed issues may be reconciled during daemon rehydrate only when
+durable `issue_merged` and `issue_completed` evidence identifies one landed
+commit, proves the commit reachable from the configured base branch, and does
+not mark the issue `left-unmerged`. Reconciliation writes the existing merged
+integration checkpoint; invalid candidates remain blocked, write failures fail
+rehydrate, and dependency claims never use lifecycle evidence without current
+integration state.
+
 `watchtower claim <issue-id>` atomically reserves a ready backlog item and
 returns its durable issue branch, base commit, and isolated worktree. Repeating
 the command resumes the same valid claim; it does not create another workspace.

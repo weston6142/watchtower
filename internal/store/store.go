@@ -142,6 +142,7 @@ type Store struct {
 	failNextPausePersistence         bool
 	failNextPlannerArtifactRead      bool
 	failNextPlannerArtifactWrite     bool
+	failIssueIntegrationWriteAfter   int
 }
 
 type StageRun struct {
@@ -330,7 +331,7 @@ func Open(path string) (*Store, error) {
 	if err := db.QueryRow(`SELECT MAX(seq) FROM events`).Scan(&max); err != nil {
 		return nil, err
 	}
-	return &Store{db: db, seq: max.Int64}, nil
+	return &Store{db: db, seq: max.Int64, failIssueIntegrationWriteAfter: -1}, nil
 }
 
 func ensureColumn(db *sql.DB, table, column, alter string) error {
@@ -622,9 +623,24 @@ func (s *Store) LatestPlannerSnapshot(issueID string) (*stageusage.Snapshot, str
 	return &copy, payload.Outcome, nil
 }
 
+// FailIssueIntegrationWriteAfterForTest fails one integration write after the
+// requested number of successful writes. The hook is consumed exactly once.
+func (s *Store) FailIssueIntegrationWriteAfterForTest(successfulWrites int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failIssueIntegrationWriteAfter = successfulWrites
+}
+
 func (s *Store) SetIssueIntegration(integration IssueIntegration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failIssueIntegrationWriteAfter == 0 {
+		s.failIssueIntegrationWriteAfter = -1
+		return errors.New("injected integration persistence failure")
+	}
+	if s.failIssueIntegrationWriteAfter > 0 {
+		s.failIssueIntegrationWriteAfter--
+	}
 	updatedAt := integration.UpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
