@@ -286,6 +286,127 @@ func TestSetupOutlineReportsConfiguredWorkflow(t *testing.T) {
 	}
 }
 
+func TestOverviewIncludesConfigurationHealthWithoutChangingWorkloadFields(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := scaffold.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Open("file:configuration-health-overview?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	snapshot, err := scaffold.CaptureInputSnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := NewServer(nil, s)
+	sv.SetConfigurationInputs(root, snapshot)
+	response := sv.exec(Command{Op: "overview"})
+	if !response.OK || response.Overview == nil || response.Overview.ConfigurationHealth == nil {
+		t.Fatalf("overview = %+v", response)
+	}
+	if response.Overview.Building != 0 || response.Overview.NeedYou != 0 ||
+		response.Overview.Queued != 0 || response.Overview.Failing != 0 ||
+		response.Overview.ShippedToday != 0 || response.Overview.TokensTotal != 0 ||
+		response.Overview.DollarsTotal != 0 {
+		t.Fatalf("workload fields changed: %+v", response.Overview)
+	}
+	if response.Overview.ConfigurationHealth.Overall != scaffold.HealthCurrent {
+		t.Fatalf("configuration health = %+v", response.Overview.ConfigurationHealth)
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Response
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Overview == nil || decoded.Overview.ConfigurationHealth == nil ||
+		decoded.Overview.ConfigurationHealth.DefaultsVersion != scaffold.DefaultsVersion {
+		t.Fatalf("health JSON round trip = %+v", decoded)
+	}
+}
+
+func TestSetupOutlineSharesConfigurationHealth(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := scaffold.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	f, err := flow.Load(filepath.Join(root, ".watchtower", "flows", "default.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packages, err := pkgs.LoadDir(filepath.Join(root, ".watchtower", "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Open("file:configuration-health-setup?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	snapshot, err := scaffold.CaptureInputSnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := NewServer(nil, s)
+	sv.SetFlows(map[string]flow.Flow{"default": f})
+	sv.SetPackages(packages)
+	sv.SetConfigurationInputs(root, snapshot)
+	overview := sv.exec(Command{Op: "overview"})
+	setup := sv.exec(Command{Op: "setup_outline"})
+	if overview.Overview == nil || setup.Setup == nil || setup.Setup.ConfigurationHealth == nil {
+		t.Fatalf("overview=%+v setup=%+v", overview, setup)
+	}
+	if !reflect.DeepEqual(overview.Overview.ConfigurationHealth, setup.Setup.ConfigurationHealth) {
+		t.Fatalf("health differs between surfaces: overview=%+v setup=%+v",
+			overview.Overview.ConfigurationHealth, setup.Setup.ConfigurationHealth)
+	}
+}
+
+func TestReloadRequiredTracksLoadedSnapshot(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := scaffold.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Open("file:configuration-health-reload?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	loaded, err := scaffold.CaptureInputSnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := NewServer(nil, s)
+	sv.SetConfigurationInputs(root, loaded)
+	config := filepath.Join(root, ".watchtower", "config.yaml")
+	body, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, append(body, []byte("# changed\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed := sv.exec(Command{Op: "overview"})
+	if changed.Overview == nil || changed.Overview.ConfigurationHealth == nil ||
+		!changed.Overview.ConfigurationHealth.ReloadRequired {
+		t.Fatalf("changed health = %+v", changed)
+	}
+	reloaded, err := scaffold.CaptureInputSnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv.SetConfigurationInputs(root, reloaded)
+	current := sv.exec(Command{Op: "overview"})
+	if current.Overview == nil || current.Overview.ConfigurationHealth == nil ||
+		current.Overview.ConfigurationHealth.ReloadRequired {
+		t.Fatalf("reloaded health = %+v", current)
+	}
+}
+
 func newTestClient(t *testing.T) *Client {
 	t.Helper()
 	f := flow.Flow{

@@ -13,16 +13,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type PreparedReset struct {
+type PreparedReplacement struct {
 	RepoRoot string
 	Staged   string
 
-	tempRoot string
-	oldTree  string
-	applied  bool
-	finished bool
-	rename   func(string, string) error
+	tempRoot      string
+	oldTree       string
+	applied       bool
+	finished      bool
+	rename        func(string, string) error
+	sourceRecheck func() error
 }
+
+type PreparedReset = PreparedReplacement
 
 func PrepareReset(repoRoot string) (*PreparedReset, error) {
 	return prepareResetFS(repoRoot, defaults, "defaults")
@@ -37,11 +40,20 @@ func prepareResetFS(repoRoot string, source fs.FS, sourceRoot string) (*Prepared
 	if err != nil {
 		return nil, err
 	}
-	prepared := &PreparedReset{
+	prepared := &PreparedReplacement{
 		RepoRoot: absolute, Staged: filepath.Join(tempRoot, ".watchtower"),
 		tempRoot: tempRoot, rename: os.Rename,
 	}
 	if err := copyDefaults(source, sourceRoot, prepared.Staged); err != nil {
+		_ = prepared.Cancel()
+		return nil, err
+	}
+	manifest, err := BuildManifest(tempRoot, ManagedFiles(source), DefaultsVersion)
+	if err != nil {
+		_ = prepared.Cancel()
+		return nil, err
+	}
+	if err := WriteManifest(filepath.Join(prepared.Staged, ProvenanceFile), manifest); err != nil {
 		_ = prepared.Cancel()
 		return nil, err
 	}
@@ -77,6 +89,10 @@ func copyDefaults(source fs.FS, sourceRoot, destination string) error {
 }
 
 func validateResetTree(stagedRoot string) error {
+	_, err := ReadManifest(filepath.Join(stagedRoot, ".watchtower", ProvenanceFile))
+	if err != nil {
+		return fmt.Errorf("validate provenance: %w", err)
+	}
 	config, err := repocfg.Load(stagedRoot)
 	if err != nil {
 		return fmt.Errorf("validate config: %w", err)
@@ -126,12 +142,17 @@ func validateResetTree(stagedRoot string) error {
 	return nil
 }
 
-func (p *PreparedReset) Apply() error {
+func (p *PreparedReplacement) Apply() error {
 	if p == nil || p.finished {
 		return fmt.Errorf("reset is not prepared")
 	}
 	if p.applied {
 		return fmt.Errorf("reset is already applied")
+	}
+	if p.sourceRecheck != nil {
+		if err := p.sourceRecheck(); err != nil {
+			return err
+		}
 	}
 	target := filepath.Join(p.RepoRoot, ".watchtower")
 	oldPlaceholder, err := os.MkdirTemp(p.RepoRoot, ".watchtower-old-*")
@@ -139,10 +160,13 @@ func (p *PreparedReset) Apply() error {
 		return err
 	}
 	if err := os.Remove(oldPlaceholder); err != nil {
+		_ = os.RemoveAll(oldPlaceholder)
 		return err
 	}
 	p.oldTree = oldPlaceholder
 	if err := p.rename(target, p.oldTree); err != nil {
+		_ = os.RemoveAll(p.oldTree)
+		p.oldTree = ""
 		return fmt.Errorf("preserve current .watchtower: %w", err)
 	}
 	if err := p.rename(p.Staged, target); err != nil {
@@ -157,7 +181,7 @@ func (p *PreparedReset) Apply() error {
 	return nil
 }
 
-func (p *PreparedReset) SetTestCommand(command string) error {
+func (p *PreparedReplacement) SetTestCommand(command string) error {
 	if p == nil || p.applied || p.finished {
 		return fmt.Errorf("reset is not awaiting configuration")
 	}
@@ -193,7 +217,7 @@ func (p *PreparedReset) SetTestCommand(command string) error {
 	return fmt.Errorf("reset config has no test_cmd field")
 }
 
-func (p *PreparedReset) Commit() error {
+func (p *PreparedReplacement) Commit() error {
 	if p == nil || !p.applied || p.finished {
 		return fmt.Errorf("reset is not applied")
 	}
@@ -210,7 +234,7 @@ func (p *PreparedReset) Commit() error {
 	return nil
 }
 
-func (p *PreparedReset) Rollback() error {
+func (p *PreparedReplacement) Rollback() error {
 	if p == nil || !p.applied || p.finished {
 		return fmt.Errorf("reset is not applied")
 	}
@@ -227,7 +251,7 @@ func (p *PreparedReset) Rollback() error {
 	return nil
 }
 
-func (p *PreparedReset) Cancel() error {
+func (p *PreparedReplacement) Cancel() error {
 	if p == nil || p.finished {
 		return nil
 	}

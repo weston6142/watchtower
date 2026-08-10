@@ -7,6 +7,7 @@ import (
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 )
@@ -78,13 +79,14 @@ type BacklogItem struct {
 }
 
 type Overview struct {
-	Building     int     `json:"building"`
-	NeedYou      int     `json:"need_you"`
-	Failing      int     `json:"failing"`
-	Queued       int     `json:"queued"`
-	ShippedToday int     `json:"shipped_today"`
-	TokensTotal  int     `json:"tokens_total"`
-	DollarsTotal float64 `json:"dollars_total"`
+	Building            int                           `json:"building"`
+	NeedYou             int                           `json:"need_you"`
+	Failing             int                           `json:"failing"`
+	Queued              int                           `json:"queued"`
+	ShippedToday        int                           `json:"shipped_today"`
+	TokensTotal         int                           `json:"tokens_total"`
+	DollarsTotal        float64                       `json:"dollars_total"`
+	ConfigurationHealth *scaffold.ConfigurationHealth `json:"configuration_health,omitempty"`
 }
 
 type IssueDetail struct {
@@ -114,11 +116,12 @@ type IssueDetail struct {
 // resolved config plus the flow's stages, agents, and packages. It reports the
 // daemon's cached config, never the files on disk.
 type SetupView struct {
-	Flow       string       `json:"flow"`
-	IssueID    string       `json:"issue_id,omitempty"`
-	IssueTitle string       `json:"issue_title,omitempty"`
-	Repo       RepoSetup    `json:"repo"`
-	Stages     []StageSetup `json:"stages"`
+	Flow                string                        `json:"flow"`
+	IssueID             string                        `json:"issue_id,omitempty"`
+	IssueTitle          string                        `json:"issue_title,omitempty"`
+	Repo                RepoSetup                     `json:"repo"`
+	Stages              []StageSetup                  `json:"stages"`
+	ConfigurationHealth *scaffold.ConfigurationHealth `json:"configuration_health,omitempty"`
 }
 
 // RepoSetup is the repo-level config after flag overrides — what the daemon

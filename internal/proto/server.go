@@ -25,22 +25,25 @@ import (
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/transcript"
 )
 
 type Server struct {
-	eng           *engine.Engine
-	st            *store.Store
-	flows         map[string]flow.Flow
-	packages      map[string]pkgs.Package
-	transcript    *transcript.Buffer
-	pricePerMTok  float64
-	budget        int
-	repoSetup     RepoSetup
-	listenerMu    sync.Mutex
-	listener      net.Listener
-	plannerBudget plannerbudget.Profile
+	eng            *engine.Engine
+	st             *store.Store
+	flows          map[string]flow.Flow
+	packages       map[string]pkgs.Package
+	transcript     *transcript.Buffer
+	pricePerMTok   float64
+	budget         int
+	repoSetup      RepoSetup
+	listenerMu     sync.Mutex
+	listener       net.Listener
+	plannerBudget  plannerbudget.Profile
+	repoRoot       string
+	loadedSnapshot *scaffold.InputSnapshot
 }
 
 const tailPageEventLimit = 256
@@ -73,6 +76,24 @@ func (sv *Server) resolvePlannerOverride(override *plannerbudget.Override) error
 // report what the daemon is running rather than what config.yaml says. One
 // setter rather than five: these values only ever travel together.
 func (sv *Server) SetRepoSetup(r RepoSetup) { sv.repoSetup = r }
+
+// SetConfigurationInputs records the repository and the exact managed-input
+// snapshot used to start the daemon. Health rendering compares disk against
+// this boundary without making presentation code read repository files.
+func (sv *Server) SetConfigurationInputs(repoRoot string, snapshot scaffold.InputSnapshot) {
+	sv.repoRoot = repoRoot
+	copySnapshot := snapshot
+	copySnapshot.Files = append([]scaffold.SnapshotFile(nil), snapshot.Files...)
+	sv.loadedSnapshot = &copySnapshot
+}
+
+func (sv *Server) configurationHealth() *scaffold.ConfigurationHealth {
+	if sv.repoRoot == "" {
+		return nil
+	}
+	health, _ := scaffold.Inspect(sv.repoRoot, sv.loadedSnapshot)
+	return &health
+}
 
 func (sv *Server) Serve(l net.Listener) error {
 	sv.listenerMu.Lock()
@@ -503,6 +524,7 @@ func (sv *Server) overview() (Overview, error) {
 		latest[ev.IssueID] = ev
 	}
 	var out Overview
+	out.ConfigurationHealth = sv.configurationHealth()
 	out.NeedYou = needYou
 	for _, issue := range issues {
 		state := issue.State
@@ -693,7 +715,7 @@ func (sv *Server) setupView(cmd Command) (*SetupView, error) {
 		}
 		name = "default"
 	}
-	view := &SetupView{Flow: name, Repo: sv.repoSetup}
+	view := &SetupView{Flow: name, Repo: sv.repoSetup, ConfigurationHealth: sv.configurationHealth()}
 	if scoped {
 		view.IssueID, view.IssueTitle = issue.ID, issue.Title
 	}

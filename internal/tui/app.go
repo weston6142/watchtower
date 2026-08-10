@@ -1203,6 +1203,25 @@ func (m *Model) setupEnter() tea.Cmd {
 		m.setup.clampTop(m.Height)
 		return nil
 	}
+	if row.Kind == setupRowHealth {
+		if m.setup.View.ConfigurationHealth == nil {
+			return nil
+		}
+		health := m.setup.View.ConfigurationHealth
+		diff := health.Diff
+		if diff == "" {
+			if health.ReloadRequired {
+				diff = "configuration changed on disk; daemon reload required"
+			} else {
+				diff = fmt.Sprintf("configuration health: %s; next action: %s",
+					health.Overall, health.NextAction)
+			}
+		}
+		m.pager = pagerState{
+			Mode: "pager", Title: "configuration diff", Lines: strings.Split(diff, "\n"), Top: 0,
+		}
+		return nil
+	}
 	return m.fetchSetupPrompt(row.Stage, row.Pkg)
 }
 

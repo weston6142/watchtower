@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/weston6142/watchtower/internal/proto"
+	"github.com/weston6142/watchtower/internal/scaffold"
 )
 
 // setupState is the setup inspector's own state: the daemon's picture of the
@@ -26,6 +27,7 @@ const (
 	// setupRowHeader rows are information, not targets: the repo header, a
 	// stage's detail line, and an agent's tools/prompt rows.
 	setupRowHeader setupRowKind = iota
+	setupRowHealth
 	setupRowStage
 	setupRowAgent
 )
@@ -208,6 +210,31 @@ func setupStageDetail(st proto.StageSetup) string {
 		Render(truncate(strings.Join(parts, " · "), setupRowWidth-4))
 }
 
+func setupHealthLine(health *scaffold.ConfigurationHealth) string {
+	if health == nil {
+		return ""
+	}
+	parts := []string{"CONFIG", string(health.Overall), "defaults " + health.DefaultsVersion}
+	if health.ReloadRequired {
+		parts = append(parts, "reload required")
+	} else {
+		parts = append(parts, "reload ok")
+	}
+	for _, class := range []scaffold.FileClass{
+		scaffold.FileStale, scaffold.FileCustomized, scaffold.FileLegacy,
+		scaffold.FileMissing, scaffold.FileExtra, scaffold.FileInvalid,
+	} {
+		if count := health.Counts[class]; count > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", class, count))
+		}
+	}
+	if len(health.AffectedPaths) > 0 {
+		parts = append(parts, fmt.Sprintf("%d paths", len(health.AffectedPaths)))
+	}
+	return lipgloss.NewStyle().Foreground(activeTheme.Structure).
+		Render(truncate(strings.Join(parts, " · "), setupRowWidth))
+}
+
 // setupAgentLines renders one agent: its selectable head row first, then its
 // detail rows. runnerKind distinguishes "the package is missing" from "the fake
 // runner loads none", which are different facts.
@@ -276,6 +303,13 @@ func setupRows(v proto.SetupView, expanded map[string]bool) []setupRow {
 		rows = append(rows, setupRow{Kind: setupRowHeader, Text: line})
 	}
 	rows = append(rows, setupRow{Kind: setupRowHeader})
+	if v.ConfigurationHealth != nil {
+		rows = append(rows, setupRow{Kind: setupRowHealth, Text: setupHealthLine(v.ConfigurationHealth)})
+		if v.ConfigurationHealth.Overall != scaffold.HealthCurrent && v.ConfigurationHealth.NextAction != "" {
+			rows = append(rows, setupRow{Kind: setupRowHeader,
+				Text: "  next: " + truncate(v.ConfigurationHealth.NextAction, setupRowWidth-2)})
+		}
+	}
 	for _, st := range v.Stages {
 		open := expanded[st.Name]
 		rows = append(rows, setupRow{Kind: setupRowStage, Text: setupStageLine(st, open), Stage: st.Name})

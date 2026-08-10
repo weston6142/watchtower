@@ -3,9 +3,9 @@ package scaffold
 
 import (
 	"embed"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 //go:embed all:defaults
@@ -15,31 +15,42 @@ var defaults embed.FS
 // overwrites: existing files are reported in skipped instead.
 func Init(repoRoot string) (created, skipped []string, err error) {
 	dst := filepath.Join(repoRoot, ".watchtower")
-	err = fs.WalkDir(defaults, "defaults", func(path string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return werr
+	paths := ManagedFiles(defaults)
+	for _, rel := range paths {
+		target := filepath.Join(dst, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return created, skipped, err
 		}
-		rel, rerr := filepath.Rel("defaults", path)
-		if rerr != nil {
-			return rerr
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		if _, serr := os.Stat(target); serr == nil {
+		if _, statErr := os.Lstat(target); statErr == nil {
 			skipped = append(skipped, rel)
-			return nil
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return created, skipped, statErr
 		}
-		b, rerr := defaults.ReadFile(path)
-		if rerr != nil {
-			return rerr
+		body, readErr := defaults.ReadFile(filepath.ToSlash(filepath.Join("defaults", rel)))
+		if readErr != nil {
+			return created, skipped, readErr
 		}
-		if werr := os.WriteFile(target, b, 0o644); werr != nil {
-			return werr
+		if writeErr := os.WriteFile(target, body, 0o644); writeErr != nil {
+			return created, skipped, writeErr
 		}
 		created = append(created, rel)
-		return nil
-	})
-	return created, skipped, err
+	}
+	slices.Sort(created)
+	slices.Sort(skipped)
+	manifestPath := filepath.Join(dst, ProvenanceFile)
+	if len(created) > 0 {
+		if _, statErr := os.Lstat(manifestPath); os.IsNotExist(statErr) {
+			manifest, buildErr := BuildManifest(repoRoot, created, DefaultsVersion)
+			if buildErr != nil {
+				return created, skipped, buildErr
+			}
+			if writeErr := WriteManifest(manifestPath, manifest); writeErr != nil {
+				return created, skipped, writeErr
+			}
+		} else if statErr != nil {
+			return created, skipped, statErr
+		}
+	}
+	return created, skipped, nil
 }
