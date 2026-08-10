@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/failure"
+	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -208,6 +210,92 @@ func TestFailureRetryCorrelationAcrossSurfaces(t *testing.T) {
 	records, err = s.FailureHistory(context.Background(), "GH-63")
 	if err != nil || len(records) != 2 || records[0].RecordID == records[1].RecordID || records[0].Fingerprint != records[1].Fingerprint {
 		t.Fatalf("retry history = %+v, err=%v", records, err)
+	}
+}
+
+func TestStageRetryFingerprintExcludesAttemptNumber(t *testing.T) {
+	recorder := &fakeFailureRecorder{}
+	e := New(Config{FailureRecorder: recorder})
+	is := &issueState{id: "GH-63", baseRef: "base"}
+	stage := flow.Stage{Name: "execute"}
+	primary := errors.New("runner failed")
+
+	if err := e.recordStageFailure(context.Background(), is, stage, 1, 2, "/worktree", primary); !errors.Is(err, primary) {
+		t.Fatalf("first failure = %v", err)
+	}
+	if err := e.recordStageFailure(context.Background(), is, stage, 2, 2, "/worktree", primary); !errors.Is(err, primary) {
+		t.Fatalf("retry failure = %v", err)
+	}
+	if len(recorder.records) != 2 {
+		t.Fatalf("records = %d, want 2", len(recorder.records))
+	}
+	if recorder.records[0].Fingerprint != recorder.records[1].Fingerprint {
+		t.Fatalf("retry fingerprint changed with attempt: %q != %q", recorder.records[0].Fingerprint, recorder.records[1].Fingerprint)
+	}
+}
+
+func TestStageFailureFingerprintTracksMaterializedArtifactBytes(t *testing.T) {
+	recorder := &fakeFailureRecorder{}
+	e := New(Config{FailureRecorder: recorder})
+	is := &issueState{id: "GH-63", baseRef: "base"}
+	stage := flow.Stage{Name: "execute", Artifacts: []string{"result.txt"}}
+	workdir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workdir, "result.txt"), []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	primary := errors.New("artifact validation failed")
+	if err := e.recordStageFailure(context.Background(), is, stage, 1, 1, workdir, primary); !errors.Is(err, primary) {
+		t.Fatalf("first failure = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "result.txt"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.recordStageFailure(context.Background(), is, stage, 2, 2, workdir, primary); !errors.Is(err, primary) {
+		t.Fatalf("changed-artifact failure = %v", err)
+	}
+	if len(recorder.records) != 2 || recorder.records[0].Fingerprint == recorder.records[1].Fingerprint {
+		t.Fatalf("artifact fingerprints = %+v", recorder.records)
+	}
+}
+
+func TestCleanupFailureIsRecordedBeforeCleanupStateIsPersisted(t *testing.T) {
+	s, err := store.Open("file:failure-cleanup-record?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	e := New(Config{Store: s})
+	cleanupErr := errors.New("release workspace failed")
+	integration := store.IssueIntegration{IssueID: "GH-63", LandedSHA: "commit"}
+	if err := e.recordCleanupNeeded(integration, []string{"release_worktree:/worktree"}, cleanupErr); err != nil {
+		t.Fatalf("record cleanup state = %v", err)
+	}
+	records, err := s.FailureHistory(context.Background(), "GH-63")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].FailureSite != failure.SiteFinalization {
+		t.Fatalf("cleanup failure records = %+v", records)
+	}
+}
+
+func TestCanceledPrimaryContextDoesNotDiscardFailureRecord(t *testing.T) {
+	s, err := store.Open("file:failure-canceled-context?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	e := New(Config{Store: s})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	primary := errors.New("operation canceled after runner failure")
+	if err := e.recordBoundaryFailure(ctx, "GH-63", "execute", 1,
+		failure.SiteRunner, failure.ClassCancellation, failure.RetryNow, failure.StateRunnerInput, primary); !errors.Is(err, primary) {
+		t.Fatalf("primary error = %v", err)
+	}
+	records, err := s.FailureHistory(context.Background(), "GH-63")
+	if err != nil || len(records) != 1 {
+		t.Fatalf("canceled-context records = %+v, err = %v", records, err)
 	}
 }
 

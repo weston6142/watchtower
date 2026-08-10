@@ -249,7 +249,14 @@ func (e *Engine) restoreVerifiedWorkspace(
 	return nil
 }
 
-func (e *Engine) restorePersistedWorkspace(is *issueState, run store.RunState) error {
+func (e *Engine) restorePersistedWorkspace(is *issueState, run store.RunState) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			retErr = e.recordBoundaryFailure(context.Background(), is.id, run.Stage, 0,
+				failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange,
+				failure.StateWorkspace, retErr)
+		}
+	}()
 	if run.Worktree == "" {
 		if run.Branch != "" || run.BaseRef != "" {
 			return fmt.Errorf("persisted workspace identity is incomplete")

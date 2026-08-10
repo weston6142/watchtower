@@ -9,6 +9,8 @@ import (
 
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/failure"
+	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -189,5 +191,42 @@ func TestFailureRetryCorrelation(t *testing.T) {
 	}
 	if len(recorder.records) != 2 {
 		t.Fatalf("retry records = %d, want 2", len(recorder.records))
+	}
+}
+
+func TestClassifyFailureKeepsVerificationCacheAndUnknownDistinct(t *testing.T) {
+	cases := []struct {
+		name string
+		err  string
+		site failure.Site
+	}{
+		{name: "cache", err: "initialize verification cache: unavailable", site: failure.SiteCache},
+		{name: "verification", err: "verification branch commit: invalid receipt", site: failure.SiteVerification},
+		{name: "unknown", err: "opaque operation failed", site: failure.SiteUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			site, _, _, _ := classifyFailure(errors.New(tc.err))
+			if site != tc.site {
+				t.Fatalf("classified site = %q, want %q", site, tc.site)
+			}
+		})
+	}
+}
+
+func TestRunnerResultBoundaryRetainsEachFailedAgentOccurrence(t *testing.T) {
+	recorder := &fakeFailureRecorder{}
+	e := New(Config{FailureRecorder: recorder})
+	is := &issueState{id: "GH-63"}
+	stage := flow.Stage{Name: "execute"}
+	primary := errors.New("runner failed")
+	for _, agent := range []string{"agent-a", "agent-b"} {
+		result := runner.Result{Err: primary, FailureClass: runner.FailureExecution, Attempt: runner.Attempt{AgentPackage: agent}}
+		if err := e.recordRunnerFailure(context.Background(), is, stage, 1, "/worktree", result); !errors.Is(err, primary) {
+			t.Fatalf("%s failure = %v", agent, err)
+		}
+	}
+	if len(recorder.records) != 2 {
+		t.Fatalf("runner records = %d, want 2", len(recorder.records))
 	}
 }
