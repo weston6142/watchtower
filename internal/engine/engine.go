@@ -476,6 +476,9 @@ func (e *Engine) Rehydrate() error {
 	for _, row := range rows {
 		issueRows[row.ID] = row
 	}
+	if err := e.reconcileLegacyMerges(rows); err != nil {
+		return err
+	}
 	activeReviewIssues := map[string]bool{}
 	reviewCheckpointIDs := map[string]int64{}
 	var authorizedReviews []store.DecisionRow
