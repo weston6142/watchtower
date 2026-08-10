@@ -172,6 +172,10 @@ func foldLegacyMergeEvidence(
 		return reject("issue_merged evidence does not precede issue_completed evidence")
 	}
 	if landedSHA != "" {
+		if mergedBranch == "issue/"+issue.ID && len(mergedFields) == 1 &&
+			hasKey(mergedFields, "branch") {
+			return reject("branch-only merge evidence contains landed commit")
+		}
 		return legacyMergeEvidence{
 			IssueID: issue.ID, BaseBranch: baseBranch,
 			LandedSHA: landedSHA, Kind: legacyMergeLanded,

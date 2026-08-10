@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,6 +19,194 @@ type legacyFailureCandidate struct {
 	id     string
 	state  string
 	events []legacyEventSpec
+}
+
+type branchOnlyHistoryCase struct {
+	name    string
+	issueID string
+	setup   func(*testing.T, string)
+	events  func(*testing.T, *store.Store, string, string)
+}
+
+func TestRehydrateRejectsBranchOnlyHistoryAndLifecycleEvidence(t *testing.T) {
+	cases := []branchOnlyHistoryCase{
+		{
+			name:    "zero-canonical-candidates",
+			issueID: "GH-61",
+		},
+		{
+			name:    "multiple-canonical-candidates",
+			issueID: "GH-61",
+			setup: func(t *testing.T, repo string) {
+				createCanonicalLegacyMerge(t, repo, "GH-61")
+				gitOutput(t, repo, "checkout", "-q", "issue/GH-61")
+				if err := os.WriteFile(filepath.Join(repo, "GH-61-second"), []byte("second\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitOutput(t, repo, "add", "GH-61-second")
+				gitOutput(t, repo, "commit", "-qm", "second GH-61 change")
+				gitOutput(t, repo, "checkout", "-q", "main")
+				gitOutput(t, repo, "merge", "--no-ff", "-m", canonicalLegacyMergeSubject("GH-61", "main"), "issue/GH-61")
+			},
+		},
+		{
+			name:    "malformed-json",
+			issueID: "GH-61",
+			events: func(t *testing.T, s *store.Store, issueID, _ string) {
+				appendLegacyEvents(t, s, issueID,
+					legacyEventSpec{typ: core.EvIssueMerged, raw: json.RawMessage(`{"branch":`)},
+					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{}},
+				)
+			},
+		},
+		{
+			name:    "completion-before-merge",
+			issueID: "GH-61",
+			events: func(t *testing.T, s *store.Store, issueID, _ string) {
+				appendLegacyEvents(t, s, issueID,
+					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{}},
+					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "issue/" + issueID}},
+				)
+			},
+		},
+		{
+			name:    "duplicate-conflicting-merge-events",
+			issueID: "GH-61",
+			events: func(t *testing.T, s *store.Store, issueID, _ string) {
+				appendLegacyEvents(t, s, issueID,
+					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "issue/GH-61"}},
+					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "issue/GH-62"}},
+					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{}},
+				)
+			},
+		},
+		{
+			name:    "left-unmerged",
+			issueID: "GH-61",
+			events: func(t *testing.T, s *store.Store, issueID, _ string) {
+				appendLegacyEvents(t, s, issueID,
+					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "issue/" + issueID}},
+					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{"merge": "left-unmerged"}},
+				)
+			},
+		},
+		{
+			name:    "explicit-none",
+			issueID: "GH-61",
+			events: func(t *testing.T, s *store.Store, issueID, _ string) {
+				appendLegacyEvents(t, s, issueID,
+					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "issue/" + issueID}},
+					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{"merge": "none"}},
+				)
+			},
+		},
+		{
+			name:    "branch-mismatch",
+			issueID: "GH-62",
+			events: func(t *testing.T, s *store.Store, issueID, _ string) {
+				appendLegacyEvents(t, s, issueID,
+					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "issue/GH-61"}},
+					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{}},
+				)
+			},
+		},
+		{
+			name:    "wrong-base-subject",
+			issueID: "GH-61",
+			setup: func(t *testing.T, repo string) {
+				createCanonicalLegacyMergeWithSubject(t, repo, "GH-61", canonicalLegacyMergeSubject("GH-61", "develop"), "main")
+			},
+		},
+		{
+			name:    "spoofed-extra-subject-text",
+			issueID: "GH-61",
+			setup: func(t *testing.T, repo string) {
+				createCanonicalLegacyMergeWithSubject(t, repo, "GH-61", canonicalLegacyMergeSubject("GH-61", "main")+" (recovered)", "main")
+			},
+		},
+		{
+			name:    "ordinary-one-parent",
+			issueID: "GH-61",
+			setup: func(t *testing.T, repo string) {
+				createOneParentLegacySubject(t, repo, "GH-61", canonicalLegacyMergeSubject("GH-61", "main"))
+			},
+		},
+		{
+			name:    "squash-one-parent",
+			issueID: "GH-61",
+			setup: func(t *testing.T, repo string) {
+				createSquashLegacySubject(t, repo, "GH-61", canonicalLegacyMergeSubject("GH-61", "main"))
+			},
+		},
+		{
+			name:    "rebase-shaped-one-parent",
+			issueID: "GH-61",
+			setup: func(t *testing.T, repo string) {
+				createFastForwardLegacySubject(t, repo, "GH-61", canonicalLegacyMergeSubject("GH-61", "main"))
+			},
+		},
+		{
+			name:    "three-parent-commit",
+			issueID: "GH-61",
+			setup: func(t *testing.T, repo string) {
+				createThreeParentLegacySubject(t, repo, "GH-61", canonicalLegacyMergeSubject("GH-61", "main"))
+			},
+		},
+		{
+			name:    "unreachable-canonical-merge",
+			issueID: "GH-61",
+			setup: func(t *testing.T, repo string) {
+				createCanonicalLegacyMergeWithSubject(t, repo, "GH-61", canonicalLegacyMergeSubject("GH-61", "main"), "legacy-merge")
+			},
+		},
+		{
+			name:    "branch-only-with-landed-sha",
+			issueID: "GH-61",
+			setup: func(t *testing.T, repo string) {
+				createCanonicalLegacyMerge(t, repo, "GH-61")
+			},
+			events: func(t *testing.T, s *store.Store, issueID, repo string) {
+				landedSHA := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main"))
+				appendLegacyEvents(t, s, issueID,
+					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "issue/" + issueID}},
+					legacyEventSpec{typ: core.EvPublishSucceeded, payload: map[string]any{"branch": "main", "commit": landedSHA}},
+					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{}},
+				)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, s, repo, _ := newLegacyFailureEngine(t, []legacyFailureCandidate{
+				{id: tc.issueID, state: "done"},
+				{id: "GH-60", state: "done"},
+			})
+			if tc.setup != nil {
+				tc.setup(t, repo)
+			}
+			if tc.events != nil {
+				tc.events(t, s, tc.issueID, repo)
+			} else {
+				appendBranchOnlyLegacyEvents(t, s, tc.issueID)
+			}
+			independentSHA := createCanonicalLegacyMerge(t, repo, "GH-60")
+			appendBranchOnlyLegacyEvents(t, s, "GH-60")
+
+			if err := e.Rehydrate(); err != nil {
+				t.Fatal(err)
+			}
+			if integration, ok, err := s.IssueIntegration(tc.issueID); err != nil || ok {
+				t.Fatalf("rejected integration %s = %+v ok=%v err=%v", tc.issueID, integration, ok, err)
+			}
+			assertLegacyClaimBlockers(t, e, tc.issueID+"-child", []string{tc.issueID})
+			integration, ok, err := s.IssueIntegration("GH-60")
+			if err != nil || !ok || integration.LandedSHA != independentSHA {
+				t.Fatalf("independent integration = %+v ok=%v err=%v", integration, ok, err)
+			}
+			assertLegacyClaimBlockers(t, e, "GH-60-child", nil)
+		})
+	}
 }
 
 func TestRehydrateRejectsInvalidLegacyEvidenceIndependently(t *testing.T) {
@@ -129,6 +318,43 @@ func TestRehydratePersistenceFailureIsFatalAndRetryable(t *testing.T) {
 	}
 }
 
+func TestRehydrateBranchOnlyPersistenceFailureIsFatalAndRetryable(t *testing.T) {
+	ids := []string{"GH-80", "GH-81"}
+	e, s, repo, _ := newLegacyFailureEngine(t, []legacyFailureCandidate{
+		{id: ids[0], state: "done"},
+		{id: ids[1], state: "done"},
+	})
+	landed := make(map[string]string, len(ids))
+	for _, id := range ids {
+		landed[id] = createCanonicalLegacyMerge(t, repo, id)
+		appendBranchOnlyLegacyEvents(t, s, id)
+	}
+	beforeEvents := s.LatestEventSeq()
+	s.FailIssueIntegrationWriteAfterForTest(1)
+	if err := e.Rehydrate(); err == nil || !strings.Contains(err.Error(), "integration persistence") {
+		t.Fatalf("Rehydrate branch-only persistence failure = %v", err)
+	}
+	first, ok, err := s.IssueIntegration(ids[0])
+	if err != nil || !ok || first.State != store.IntegrationMerged || first.LandedSHA != landed[ids[0]] {
+		t.Fatalf("first branch-only candidate after failed batch = %+v ok=%v err=%v", first, ok, err)
+	}
+	if second, ok, err := s.IssueIntegration(ids[1]); err != nil || ok {
+		t.Fatalf("second branch-only candidate unexpectedly persisted after failed batch: %+v ok=%v err=%v", second, ok, err)
+	}
+	assertLegacyClaimBlockers(t, e, ids[1]+"-child", []string{ids[1]})
+	if s.LatestEventSeq() != beforeEvents {
+		t.Fatalf("branch-only persistence failure appended lifecycle evidence: before=%d after=%d", beforeEvents, s.LatestEventSeq())
+	}
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	second, ok, err := s.IssueIntegration(ids[1])
+	if err != nil || !ok || second.State != store.IntegrationMerged || second.LandedSHA != landed[ids[1]] {
+		t.Fatalf("second branch-only candidate after retry = %+v ok=%v err=%v", second, ok, err)
+	}
+	assertLegacyClaimBlockers(t, e, ids[1]+"-child", nil)
+}
+
 func TestLegacyEvidenceCannotSatisfyStrictClaims(t *testing.T) {
 	parents := []legacyFailureCandidate{
 		{id: "GH-90", state: "done", events: []legacyEventSpec{
@@ -221,4 +447,102 @@ func assertLegacyClaimBlockers(t *testing.T, e *Engine, child string, want []str
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("ClaimBlockers(%s) = %v, want %v", child, got, want)
 	}
+}
+
+func appendBranchOnlyLegacyEvents(t *testing.T, s *store.Store, issueID string) {
+	t.Helper()
+	appendLegacyEvents(t, s, issueID,
+		legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "issue/" + issueID}},
+		legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{}},
+	)
+}
+
+func canonicalLegacyMergeSubject(issueID, baseBranch string) string {
+	return "Merge branch 'issue/" + issueID + "' into " + baseBranch
+}
+
+func createCanonicalLegacyMergeWithSubject(t *testing.T, repo, issueID, subject, target string) string {
+	t.Helper()
+	branch := "issue/" + issueID
+	gitOutput(t, repo, "checkout", "-q", "-b", branch, "main")
+	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", issueID)
+	gitOutput(t, repo, "commit", "-qm", "change "+issueID)
+	if target == "main" {
+		gitOutput(t, repo, "checkout", "-q", "main")
+	} else {
+		gitOutput(t, repo, "checkout", "-q", "-b", target, "main")
+	}
+	gitOutput(t, repo, "merge", "--no-ff", "-m", subject, branch)
+	landedSHA := strings.TrimSpace(gitOutput(t, repo, "rev-parse", target))
+	if target != "main" {
+		gitOutput(t, repo, "checkout", "-q", "main")
+	}
+	return landedSHA
+}
+
+func createOneParentLegacySubject(t *testing.T, repo, issueID, subject string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", issueID)
+	gitOutput(t, repo, "commit", "-qm", subject)
+	return strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main"))
+}
+
+func createSquashLegacySubject(t *testing.T, repo, issueID, subject string) string {
+	t.Helper()
+	branch := "issue/" + issueID
+	gitOutput(t, repo, "checkout", "-q", "-b", branch, "main")
+	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", issueID)
+	gitOutput(t, repo, "commit", "-qm", "change "+issueID)
+	gitOutput(t, repo, "checkout", "-q", "main")
+	gitOutput(t, repo, "merge", "--squash", branch)
+	gitOutput(t, repo, "commit", "-qm", subject)
+	return strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main"))
+}
+
+func createFastForwardLegacySubject(t *testing.T, repo, issueID, subject string) string {
+	t.Helper()
+	branch := "issue/" + issueID
+	gitOutput(t, repo, "checkout", "-q", "-b", branch, "main")
+	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", issueID)
+	gitOutput(t, repo, "commit", "-qm", subject)
+	gitOutput(t, repo, "checkout", "-q", "main")
+	gitOutput(t, repo, "merge", "--ff-only", branch)
+	return strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main"))
+}
+
+func createThreeParentLegacySubject(t *testing.T, repo, issueID, subject string) string {
+	t.Helper()
+	base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main"))
+	gitOutput(t, repo, "checkout", "-q", "-b", "support-a", "main")
+	if err := os.WriteFile(filepath.Join(repo, "support-a"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "support-a")
+	gitOutput(t, repo, "commit", "-qm", "support a")
+	parentA := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "support-a"))
+	gitOutput(t, repo, "checkout", "-q", "main")
+	gitOutput(t, repo, "checkout", "-q", "-b", "support-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "support-b"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "support-b")
+	gitOutput(t, repo, "commit", "-qm", "support b")
+	parentB := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "support-b"))
+	gitOutput(t, repo, "checkout", "-q", "main")
+	tree := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main^{tree}"))
+	candidate := strings.TrimSpace(gitOutput(t, repo, "commit-tree", tree, "-p", base, "-p", parentA, "-p", parentB, "-m", subject))
+	gitOutput(t, repo, "update-ref", "refs/heads/main", candidate)
+	return candidate
 }
