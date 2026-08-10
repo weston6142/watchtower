@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/verificationcache"
@@ -137,6 +138,8 @@ func (e *Engine) integrationStageName(is *issueState) string {
 }
 
 func (e *Engine) recordFinalizationFailure(is *issueState, cause error) error {
+	_ = e.recordBoundaryFailure(context.Background(), is.id, e.integrationStageName(is), 0,
+		failure.SiteFinalization, failure.ClassStateMismatch, failure.RetryAfterStateChange, failure.StateOperator, cause)
 	integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
 	if err != nil {
 		return fmt.Errorf("%v (read finalization checkpoint: %w)", cause, err)
@@ -171,6 +174,8 @@ func (e *Engine) finalizeIntegration(
 					Cleanup: cleanupOperations(is.wsPath, is.branch),
 				}
 				if storeErr := e.cfg.Store.SetIssueIntegration(integration); storeErr != nil {
+					_ = e.recordBoundaryFailure(ctx, is.id, e.integrationStageName(is), 0,
+						failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateStore, storeErr)
 					return false, true, fmt.Errorf("%v (persist publish pending: %w)", landErr, storeErr)
 				}
 				e.emit(core.EvPublishPending, is.id, map[string]string{
@@ -205,6 +210,8 @@ func (e *Engine) finalizeIntegration(
 		if cleanupErr := e.finishLandingCleanup(
 			is.id, integration, is.wsPath, is.branch, is.wsRelease,
 		); cleanupErr != nil {
+			_ = e.recordBoundaryFailure(ctx, is.id, e.integrationStageName(is), 0,
+				failure.SiteFinalization, failure.ClassStateMismatch, failure.RetryAfterStateChange, failure.StateOperator, cleanupErr)
 			return true, false, cleanupErr
 		}
 	}

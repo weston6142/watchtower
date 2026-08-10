@@ -22,6 +22,7 @@ import (
 	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/evidence"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
@@ -44,6 +45,7 @@ var errConflictHeld = errors.New("merge conflict held")
 
 type Config struct {
 	Store              *store.Store
+	FailureRecorder    failure.Recorder
 	Runner             runner.Runner
 	Marshal            Sequencer
 	Train              *marshal.Train
@@ -223,6 +225,9 @@ type Engine struct {
 }
 
 func New(cfg Config) *Engine {
+	if cfg.FailureRecorder == nil {
+		cfg.FailureRecorder = cfg.Store
+	}
 	if cfg.PlannerBudget == (plannerbudget.Profile{}) {
 		cfg.PlannerBudget = plannerbudget.DefaultProfile()
 	}
@@ -249,6 +254,8 @@ func New(cfg Config) *Engine {
 
 func (e *Engine) RecordAttempt(ctx context.Context, attempt runner.Attempt) error {
 	if err := e.cfg.Store.RecordAttempt(ctx, attempt); err != nil {
+		_ = e.recordBoundaryFailure(ctx, attempt.IssueID, attempt.Stage, 0,
+			failure.SiteStore, failure.ClassUnavailable, failure.RetryNow, failure.StateStore, err)
 		return err
 	}
 	e.emit(core.EvRunnerAttempt, attempt.IssueID, map[string]any{
@@ -2885,6 +2892,9 @@ func (e *Engine) runStageOnce(
 	// (brainstorm.md -> spec stage, etc.); worktree/readonly stages share the
 	// acquired workspace for the same reason.
 	workdir := e.stageWorkdir(is, st)
+	defer func() {
+		runErr = e.recordStageFailure(ctx, is, st, attempt, of, workdir, runErr)
+	}()
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return err
 	}
@@ -3565,6 +3575,8 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plan
 		if needsWorkspace {
 			path, release, err := e.cfg.Workspace.Acquire(is.id)
 			if err != nil {
+				_ = e.recordBoundaryFailure(ctx, is.id, st.Name, 0,
+					failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateWorkspace, err)
 				e.emit(core.EvStageFailed, is.id, map[string]string{"stage": st.Name, "error": "workspace: " + err.Error()})
 				return err
 			}

@@ -54,6 +54,7 @@ const (
 	EvStageKilled                EventType = "stage_killed"
 	EvLeverChanged               EventType = "lever_changed"
 	EvRunnerAttempt              EventType = "runner_attempt"
+	EvFailureRecorded            EventType = "failure_recorded"
 )
 
 type Event struct {
