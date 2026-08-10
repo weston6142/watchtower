@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Binding is an approval claim for one exact item under one policy evaluation.
@@ -38,6 +39,9 @@ func CheckApproval(record Binding, current EscalationContext, approval *Approval
 	}
 	if err := validateBinding(record); err != nil {
 		return Result{Outcome: OutcomeInvalidContext, Err: err}
+	}
+	if !sameEvidence(record.Evidence, evaluation.Evidence) {
+		return Result{Outcome: OutcomeStale}
 	}
 	if !sameItem(record.Item, current.Item) ||
 		record.PolicyID != current.Policy.ID || record.PolicyVersion != current.Policy.Version ||
@@ -79,6 +83,15 @@ func validateBinding(binding Binding) error {
 	}
 	if binding.PolicyID == "" || binding.PolicyVersion == "" {
 		return errors.New("binding policy identity is incomplete")
+	}
+	if len(binding.Evidence) == 0 {
+		return errors.New("binding policy evidence is missing")
+	}
+	for _, evidence := range binding.Evidence {
+		if strings.TrimSpace(evidence.Signal) == "" || strings.TrimSpace(evidence.Value) == "" ||
+			strings.TrimSpace(evidence.Rule) == "" || !evidence.Floor.valid() {
+			return errors.New("binding policy evidence is malformed")
+		}
 	}
 	seen := make(map[string]struct{}, len(binding.Dependencies))
 	for _, dependency := range binding.Dependencies {
@@ -122,6 +135,36 @@ func sameDependencies(left, right []DependencyBinding) bool {
 	right = append([]DependencyBinding(nil), right...)
 	sort.Slice(left, func(i, j int) bool { return dependencyKey(left[i]) < dependencyKey(left[j]) })
 	sort.Slice(right, func(i, j int) bool { return dependencyKey(right[i]) < dependencyKey(right[j]) })
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameEvidence(left, right []Evidence) bool {
+	left = append([]Evidence(nil), left...)
+	right = append([]Evidence(nil), right...)
+	less := func(items []Evidence) func(int, int) bool {
+		return func(i, j int) bool {
+			if items[i].Signal != items[j].Signal {
+				return items[i].Signal < items[j].Signal
+			}
+			if items[i].Value != items[j].Value {
+				return items[i].Value < items[j].Value
+			}
+			if items[i].Rule != items[j].Rule {
+				return items[i].Rule < items[j].Rule
+			}
+			return items[i].Floor < items[j].Floor
+		}
+	}
+	sort.Slice(left, less(left))
+	sort.Slice(right, less(right))
 	if len(left) != len(right) {
 		return false
 	}

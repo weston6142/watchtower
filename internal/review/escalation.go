@@ -97,9 +97,12 @@ type Policy struct {
 type EscalationPolicy = Policy
 
 type EscalationContext struct {
-	Stage           string
-	Operation       string
-	Paths           []string
+	Stage     string
+	Operation string
+	Paths     []string
+	// RiskFactsValid distinguishes an explicitly evaluated low-risk decision
+	// from a caller that omitted the destructive/publication facts entirely.
+	RiskFactsValid  bool
 	DestructiveRisk bool
 	PublicationRisk bool
 	Policy          Policy
@@ -146,6 +149,9 @@ func ValidatePolicy(policy Policy) error {
 		if err != nil {
 			return err
 		}
+		if _, err := pathpkg.Match(glob, ""); err != nil {
+			return fmt.Errorf("path rule %q has malformed glob: %w", glob, err)
+		}
 		if !rule.Floor.valid() {
 			return fmt.Errorf("path rule %q has unknown floor", glob)
 		}
@@ -183,6 +189,9 @@ func ValidateContext(ctx EscalationContext) error {
 	}
 	if len(ctx.Paths) == 0 {
 		return errors.New("affected paths are empty")
+	}
+	if !ctx.RiskFactsValid {
+		return errors.New("destructive and publication risk facts are missing")
 	}
 	seenPaths := make(map[string]struct{}, len(ctx.Paths))
 	for _, raw := range ctx.Paths {

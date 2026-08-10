@@ -42,7 +42,7 @@ func (e *Engine) decisionEscalationContext(stage string, d levers.Decision) (rev
 	}
 	model := review.ModelMetadata{Importance: &d.Importance, Options: append([]string(nil), d.Options...), Rationale: d.Why}
 	ctx := review.EscalationContext{
-		Stage: stage, Operation: operation, Paths: paths, Item: item,
+		Stage: stage, Operation: operation, Paths: paths, RiskFactsValid: true, Item: item,
 		Policy: e.cfg.DecisionPolicy, Model: model,
 	}
 	return ctx, item, nil
@@ -86,6 +86,7 @@ func (e *Engine) evaluateReviewTarget(target review.Target, publicationRisk bool
 			Stage:           canonical.Stage,
 			Operation:       item.Operation,
 			Paths:           []string{item.Path},
+			RiskFactsValid:  true,
 			PublicationRisk: publicationRisk,
 			Policy:          e.cfg.DecisionPolicy,
 			Item:            item,

@@ -31,6 +31,7 @@ func TestExactItemBindingsAndApprovalGateOutcomes(t *testing.T) {
 	record := bindings[0]
 	record.RequiredFloor, record.EffectiveFloor = review.FloorOperator, review.FloorOperator
 	record.PolicyID, record.PolicyVersion = current.Policy.ID, current.Policy.Version
+	record.Evidence = review.Evaluate(current).Evidence
 	approval := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: "operator"}
 	if result := review.CheckApproval(record, current, approval); result.Outcome != review.OutcomeApproved {
 		t.Fatalf("approval result = %+v, want approved", result)
@@ -65,7 +66,7 @@ func TestDependencyInvalidationDoesNotAffectUnrelatedBinding(t *testing.T) {
 	dependencyC := review.DependencyBinding{Kind: "artifact", ID: "c", Hash: strings.Repeat("d", 64)}
 	current := gateContext(item, []review.DependencyBinding{dependencyA, dependencyB})
 	record := review.Binding{Item: item, RequiredFloor: review.FloorOperator, EffectiveFloor: review.FloorOperator,
-		PolicyID: current.Policy.ID, PolicyVersion: current.Policy.Version,
+		PolicyID: current.Policy.ID, PolicyVersion: current.Policy.Version, Evidence: review.Evaluate(current).Evidence,
 		Dependencies: []review.DependencyBinding{dependencyA, dependencyB}}
 	approval := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: "operator"}
 	changed := current
@@ -87,7 +88,7 @@ func TestApprovalGateFailsClosedForInvalidPolicyContextAndCurrentFloor(t *testin
 	item := review.ItemBinding{Kind: review.ItemDecision, Hash: strings.Repeat("a", 64), Path: "decision.json", Operation: "decide"}
 	current := gateContext(item, nil)
 	record := review.Binding{Item: item, RequiredFloor: review.FloorOperator, EffectiveFloor: review.FloorOperator,
-		PolicyID: current.Policy.ID, PolicyVersion: current.Policy.Version}
+		PolicyID: current.Policy.ID, PolicyVersion: current.Policy.Version, Evidence: review.Evaluate(current).Evidence}
 	approval := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: "operator"}
 
 	invalid := current
@@ -112,9 +113,33 @@ func TestApprovalGateFailsClosedForInvalidPolicyContextAndCurrentFloor(t *testin
 	}
 }
 
+func TestApprovalGateRejectsIncompleteRecordedEvidence(t *testing.T) {
+	item := review.ItemBinding{Kind: review.ItemDecision, Hash: strings.Repeat("a", 64), Path: "decision.json", Operation: "decide"}
+	current := gateContext(item, nil)
+	record := review.Binding{Item: item, RequiredFloor: review.FloorOperator, EffectiveFloor: review.FloorOperator,
+		PolicyID: current.Policy.ID, PolicyVersion: current.Policy.Version}
+	approval := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: "operator"}
+	if result := review.CheckApproval(record, current, approval); result.Outcome != review.OutcomeInvalidContext {
+		t.Fatalf("incomplete evidence result = %+v, want invalid-context", result)
+	}
+}
+
+func TestApprovalGateRejectsChangedRecordedEvidence(t *testing.T) {
+	item := review.ItemBinding{Kind: review.ItemDecision, Hash: strings.Repeat("a", 64), Path: "decision.json", Operation: "decide"}
+	current := gateContext(item, nil)
+	record := review.Binding{Item: item, RequiredFloor: review.FloorOperator, EffectiveFloor: review.FloorOperator,
+		PolicyID: current.Policy.ID, PolicyVersion: current.Policy.Version, Evidence: review.Evaluate(current).Evidence}
+	record.Evidence[0].Rule = "tampered"
+	approval := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: "operator"}
+	if result := review.CheckApproval(record, current, approval); result.Outcome != review.OutcomeStale {
+		t.Fatalf("changed evidence result = %+v, want stale", result)
+	}
+}
+
 func gateContext(item review.ItemBinding, dependencies []review.DependencyBinding) review.EscalationContext {
 	return review.EscalationContext{
-		Stage: "execute", Operation: item.Operation, Paths: []string{item.Path}, Item: item, Dependencies: dependencies,
+		Stage: "execute", Operation: item.Operation, Paths: []string{item.Path}, RiskFactsValid: true,
+		Item: item, Dependencies: dependencies,
 		Policy: review.Policy{
 			ID: "team-safety", Version: "7", Valid: true,
 			StageFloors:     map[string]review.ApprovalFloor{"execute": review.FloorOperator},

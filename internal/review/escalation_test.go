@@ -13,6 +13,7 @@ func TestEvaluateUsesStrictestIndependentFloor(t *testing.T) {
 	result := review.Evaluate(review.EscalationContext{
 		Stage: "execute", Operation: "repair",
 		Paths:           []string{"payments/charge.go"},
+		RiskFactsValid:  true,
 		DestructiveRisk: true, PublicationRisk: false,
 		Policy: review.Policy{
 			ID: "team-safety", Version: "7", Valid: true,
@@ -106,6 +107,10 @@ func TestEvaluateFailsClosedForInvalidContextAndPolicy(t *testing.T) {
 		}, want: review.OutcomeInvalidContext},
 		{name: "invalid policy", mutate: func(ctx *review.EscalationContext) { ctx.Policy.Valid = false }, want: review.OutcomePolicyError},
 		{name: "unknown floor", mutate: func(ctx *review.EscalationContext) { ctx.Policy.DefaultFloor = review.ApprovalFloor(99) }, want: review.OutcomePolicyError},
+		{name: "missing risk facts", mutate: func(ctx *review.EscalationContext) { ctx.RiskFactsValid = false }, want: review.OutcomeInvalidContext},
+		{name: "malformed path glob", mutate: func(ctx *review.EscalationContext) {
+			ctx.Policy.PathFloors = []review.PathFloor{{Glob: "[", Floor: review.FloorOperator}}
+		}, want: review.OutcomePolicyError},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,6 +126,7 @@ func TestEvaluateFailsClosedForInvalidContextAndPolicy(t *testing.T) {
 func baseContext() review.EscalationContext {
 	return review.EscalationContext{
 		Stage: "execute", Operation: "review", Paths: []string{"internal/review/escalation.go"},
+		RiskFactsValid: true,
 		Policy: review.Policy{
 			ID: "team-safety", Version: "7", Valid: true, DefaultFloor: review.FloorNone,
 			StageFloors:      map[string]review.ApprovalFloor{"merge-verification": review.FloorPolicy},
