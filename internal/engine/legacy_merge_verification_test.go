@@ -20,9 +20,7 @@ func TestLegacyMergeVerificationMatrix(t *testing.T) {
 		{id: "GH-105", state: "done"},
 	}
 	e, s, _, landedSHA := newLegacyFailureEngine(t, candidates)
-	if err := appendLegacyFailureEvents(t, s, "GH-100", validLegacyFailureEvents(landedSHA)); err != nil {
-		t.Fatal(err)
-	}
+	appendLegacyEvents(t, s, "GH-100", validLegacyFailureEvents(landedSHA)...)
 	for id, state := range map[string]string{
 		"GH-103": store.IntegrationPreserved,
 		"GH-104": store.IntegrationCleanupNeeded,

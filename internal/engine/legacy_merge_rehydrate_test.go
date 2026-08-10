@@ -118,9 +118,15 @@ func TestRehydrateProjectsLegacyMergesAfterRestart(t *testing.T) {
 func appendLegacyEvents(t *testing.T, s *store.Store, issueID string, specs ...legacyEventSpec) {
 	t.Helper()
 	for _, spec := range specs {
-		event, err := core.NewEvent(spec.typ, issueID, spec.payload)
-		if err != nil {
-			t.Fatal(err)
+		var event core.Event
+		if spec.raw != nil {
+			event = core.Event{Type: spec.typ, IssueID: issueID, Payload: spec.raw}
+		} else {
+			var err error
+			event, err = core.NewEvent(spec.typ, issueID, spec.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 		if _, err := s.Append(event); err != nil {
 			t.Fatal(err)

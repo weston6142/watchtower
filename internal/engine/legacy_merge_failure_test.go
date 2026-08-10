@@ -66,12 +66,10 @@ func TestRehydrateRejectsInvalidLegacyEvidenceIndependently(t *testing.T) {
 		}},
 	}
 	e, s, _, landedSHA := newLegacyFailureEngine(t, candidates)
-	if err := appendLegacyFailureEvents(t, s, valid, []legacyEventSpec{
-		{typ: core.EvIssueMerged, payload: map[string]any{"branch": "main", "commit": landedSHA}},
-		{typ: core.EvIssueCompleted, payload: map[string]any{}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	appendLegacyEvents(t, s, valid,
+		legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "main", "commit": landedSHA}},
+		legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{}},
+	)
 	beforeEvents := s.LatestEventSeq()
 	if err := e.Rehydrate(); err != nil {
 		t.Fatal(err)
@@ -105,9 +103,7 @@ func TestRehydratePersistenceFailureIsFatalAndRetryable(t *testing.T) {
 	})
 	// The temporary repository's real main commit is the only reachable landing.
 	for _, id := range []string{"GH-80", "GH-81"} {
-		if err := appendLegacyFailureEvents(t, s, id, validLegacyFailureEvents(landedSHA)); err != nil {
-			t.Fatal(err)
-		}
+		appendLegacyEvents(t, s, id, validLegacyFailureEvents(landedSHA)...)
 	}
 	s.FailIssueIntegrationWriteAfterForTest(1)
 	if err := e.Rehydrate(); err == nil || !strings.Contains(err.Error(), "integration persistence") {
@@ -206,9 +202,7 @@ func newLegacyFailureEngine(t *testing.T, candidates []legacyFailureCandidate) (
 		if err := s.ReplaceDependencies(child, []string{candidate.id}); err != nil {
 			t.Fatal(err)
 		}
-		if err := appendLegacyFailureEvents(t, s, candidate.id, candidate.events); err != nil {
-			t.Fatal(err)
-		}
+		appendLegacyEvents(t, s, candidate.id, candidate.events...)
 	}
 	e := New(Config{
 		Store: s, Runner: &runner.FakeRunner{}, Pool: slots.NewPool(2),
@@ -216,26 +210,6 @@ func newLegacyFailureEngine(t *testing.T, candidates []legacyFailureCandidate) (
 		Train: &marshal.Train{Repo: repo}, DecisionIdentities: testDecisionIdentities(),
 	})
 	return e, s, repo, landedSHA
-}
-
-func appendLegacyFailureEvents(t *testing.T, s *store.Store, issueID string, specs []legacyEventSpec) error {
-	t.Helper()
-	for _, spec := range specs {
-		var event core.Event
-		var err error
-		if spec.raw != nil {
-			event = core.Event{Type: spec.typ, IssueID: issueID, Payload: spec.raw}
-		} else {
-			event, err = core.NewEvent(spec.typ, issueID, spec.payload)
-			if err != nil {
-				return err
-			}
-		}
-		if _, err := s.Append(event); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func assertLegacyClaimBlockers(t *testing.T, e *Engine, child string, want []string) {
