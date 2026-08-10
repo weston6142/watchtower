@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"unicode/utf8"
 )
 
 // Binding identifies one stage attempt. Every field participates in registry
@@ -49,11 +49,12 @@ type authorityRecord struct {
 // record. Its capability is intentionally private and has no serialization or
 // environment representation.
 type Authority struct {
-	registry Registry
-	binding  Binding
-	digest   []byte
-	mu       sync.Mutex
-	closed   bool
+	registry   Registry
+	binding    Binding
+	digest     []byte
+	capability string
+	mu         sync.Mutex
+	closed     bool
 }
 
 const capabilityBytes = 32
@@ -98,7 +99,18 @@ func CreateOrLoad(registry Registry, binding Binding) (*Authority, error) {
 			return nil, fmt.Errorf("planner authority: registry write failed")
 		}
 	}
-	return &Authority{registry: registry, binding: normalized, digest: digest}, nil
+	return &Authority{
+		registry: registry, binding: normalized, digest: digest,
+		capability: base64.RawURLEncoding.EncodeToString(capability),
+	}, nil
+}
+
+// CapabilityHandle is available only to the engine/daemon route. Runners and
+// provider interfaces never receive this value, and it is never persisted.
+func (a *Authority) CapabilityHandle() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.capability
 }
 
 func normalizeBinding(binding Binding) (Binding, error) {
@@ -137,23 +149,23 @@ func (a *Authority) VerifyBinding(binding Binding) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if normalized != a.binding {
-		return errors.New("planner authority: binding mismatch")
+		return authorityError(ErrorScopeMismatch, "", "binding mismatch", nil)
 	}
 	return a.verifyLocked()
 }
 
 func (a *Authority) verifyLocked() error {
 	if a.closed {
-		return errors.New("planner authority: authority is closed")
+		return authorityError(ErrorStaleCapability, "", "authority is closed", nil)
 	}
 	status, storedDigest, _, _, found, err := a.registry.LoadPlannerArtifact(
 		a.binding.IssueID, a.binding.Stage, a.binding.Attempt, a.binding.Worktree)
 	if err != nil {
-		return errors.New("planner authority: registry read failed")
+		return authorityError(ErrorAuthorityState, "", "registry read failed", err)
 	}
 	if !found || status != "active" || len(storedDigest) == 0 ||
 		subtle.ConstantTimeCompare(storedDigest, a.digest) != 1 {
-		return errors.New("planner authority: authority is not valid for binding")
+		return authorityError(ErrorStaleCapability, "", "authority is not active", nil)
 	}
 	return nil
 }
@@ -168,7 +180,7 @@ func (a *Authority) Apply(request WriteRequest) error {
 	status, digest, manifestBytes, sectionBytes, found, err := a.registry.LoadPlannerArtifact(
 		a.binding.IssueID, a.binding.Stage, a.binding.Attempt, a.binding.Worktree)
 	if err != nil || !found || status != "active" || subtle.ConstantTimeCompare(digest, a.digest) != 1 {
-		return errors.New("planner authority: registry state is unavailable")
+		return authorityError(ErrorAuthorityState, request.Key, "registry state is unavailable", err)
 	}
 	record, err := decodeRecord(digest, manifestBytes, sectionBytes)
 	if err != nil {
@@ -176,10 +188,10 @@ func (a *Authority) Apply(request WriteRequest) error {
 	}
 	manifest, err := normalizedManifest(request.Manifest)
 	if err != nil {
-		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "plan.md", Key: request.Key, Reason: "request manifest is invalid"}
+		return authorityError(ErrorInvalidSection, request.Key, "request manifest is invalid", err)
 	}
 	if len(manifestBytes) != 0 && string(manifestBytes) != "null" && string(manifestBytes) != "" && !manifestsEqual(record.Manifest, manifest) {
-		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "pair", Key: request.Key, Reason: "request manifest changed"}
+		return authorityError(ErrorInvalidSection, request.Key, "request manifest changed", nil)
 	}
 	entryIndex := -1
 	for i, entry := range manifest.Sections {
@@ -189,21 +201,21 @@ func (a *Authority) Apply(request WriteRequest) error {
 		}
 	}
 	if entryIndex < 0 {
-		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "plan.md", Key: request.Key, Reason: "request key is not in manifest"}
+		return authorityError(ErrorInvalidSection, request.Key, "request key is not in manifest", nil)
 	}
 	requestGlobs, err := canonicalGlobs(request.Globs)
 	if err != nil || !sameStrings(requestGlobs, manifest.Sections[entryIndex].Globs) {
-		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "touchset.json", Key: request.Key, Reason: "request globs do not match manifest"}
+		return authorityError(ErrorInvalidSection, request.Key, "request globs do not match manifest", err)
 	}
-	if !utf8.ValidString(request.Markdown) {
-		return &DiagnosticError{Scope: ScopeTransport, Artifact: "plan.md", Key: request.Key, Reason: "section is not valid UTF-8"}
+	if err := validateFinalSection(request.Markdown); err != nil {
+		return authorityError(ErrorInvalidSection, request.Key, "request section is invalid", err)
 	}
 	deltaBytes, err := json.Marshal(manifest.Sections[entryIndex].Globs)
 	if err != nil {
 		return errors.New("planner authority: encode section delta")
 	}
 	if observed := len([]byte(request.Markdown)) + len(deltaBytes); observed > MaxOperationBytes {
-		return &DiagnosticError{Scope: ScopeTransport, Artifact: "section", Key: request.Key, Observed: observed, Limit: MaxOperationBytes, Reason: "operation exceeds bounded write"}
+		return authorityError(ErrorInvalidSection, request.Key, "operation exceeds bounded write", nil)
 	}
 	if len(record.Manifest.Sections) == 0 {
 		record.Manifest = manifest
@@ -211,34 +223,42 @@ func (a *Authority) Apply(request WriteRequest) error {
 	if entryIndex < len(record.Sections) {
 		accepted := record.Sections[entryIndex]
 		if accepted.Key != request.Key || accepted.Markdown != normalizedMarkdown(request.Markdown) || !sameStrings(accepted.Globs, requestGlobs) {
-			return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "plan.md", Key: request.Key, Reason: "accepted section conflicts with replay"}
-		}
-		if err := a.publishAccepted(record.Sections); err != nil {
-			return err
+			return authorityError(ErrorInvalidSection, request.Key, "accepted section conflicts with replay", nil)
 		}
 		return nil
 	}
 	if entryIndex != len(record.Sections) {
-		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "plan.md", Key: request.Key, Reason: "request skips a pending section"}
+		return authorityError(ErrorInvalidSection, request.Key, "request skips a pending section", nil)
 	}
 	candidate := append(append([]acceptedSection(nil), record.Sections...), acceptedSection{
 		Key: request.Key, Markdown: normalizedMarkdown(request.Markdown), Globs: append([]string(nil), requestGlobs...),
 	})
+	priorPlan, err := os.ReadFile(filepath.Join(a.binding.Worktree, "plan.md"))
+	if err != nil {
+		return authorityError(ErrorAuthorityState, request.Key, "plan state is unavailable", err)
+	}
+	priorTouchset, err := os.ReadFile(filepath.Join(a.binding.Worktree, "touchset.json"))
+	if err != nil {
+		return authorityError(ErrorAuthorityState, request.Key, "touchset state is unavailable", err)
+	}
 	if err := a.publishAccepted(candidate); err != nil {
-		return err
+		_ = a.restorePair(priorPlan, priorTouchset)
+		return authorityError(ErrorAuthorityState, request.Key, "pair publication failed", err)
 	}
 	encodedManifest, err := json.Marshal(record.Manifest)
 	if err != nil {
-		return errors.New("planner authority: encode manifest")
+		_ = a.restorePair(priorPlan, priorTouchset)
+		return authorityError(ErrorAuthorityState, request.Key, "manifest state is unavailable", err)
 	}
 	encodedSections, err := json.Marshal(candidate)
 	if err != nil {
-		return errors.New("planner authority: encode sections")
+		_ = a.restorePair(priorPlan, priorTouchset)
+		return authorityError(ErrorAuthorityState, request.Key, "section state is unavailable", err)
 	}
 	if err := a.registry.UpdatePlannerArtifact(a.binding.IssueID, a.binding.Stage, a.binding.Attempt, a.binding.Worktree,
 		"active", a.digest, encodedManifest, encodedSections); err != nil {
-		_ = a.publishAccepted(record.Sections)
-		return errors.New("planner authority: registry write failed")
+		_ = a.restorePair(priorPlan, priorTouchset)
+		return authorityError(ErrorAuthorityState, request.Key, "registry write failed", err)
 	}
 	return nil
 }
@@ -253,7 +273,10 @@ func (a *Authority) ApplyPlannerArtifact(value any) error {
 		}
 	}
 	if !ok {
-		return errors.New("planner authority: request type is invalid")
+		if text, textOK := value.(string); textOK && strings.Contains(text, "WATCHTOWER_PLANNER_SESSION") {
+			return authorityError(ErrorPrivateSession, "", "private session is not authoritative", nil)
+		}
+		return authorityError(ErrorDescriptor, "", "descriptor or private value is not authoritative", nil)
 	}
 	return a.Apply(request)
 }
@@ -268,6 +291,11 @@ func (a *Authority) publishAccepted(sections []acceptedSection) error {
 		return err
 	}
 	return nil
+}
+
+func (a *Authority) restorePair(plan, touchset []byte) error {
+	session := &Session{workdir: a.binding.Worktree}
+	return session.publishPair(plan, touchset, "")
 }
 
 func renderPair(sections []acceptedSection) ([]byte, []byte, error) {
@@ -450,7 +478,7 @@ func safeAuthorityError(err error) string {
 // the provider-neutral request and the current working-directory binding.
 func ApplyFromFD(fd int, request WriteRequest) error {
 	if fd < 0 {
-		return errors.New("planner authority: authority unavailable")
+		return authorityError(ErrorDescriptor, request.Key, "descriptor is not authoritative", nil)
 	}
 	file := os.NewFile(uintptr(fd), "planner-authority-client")
 	if file == nil {

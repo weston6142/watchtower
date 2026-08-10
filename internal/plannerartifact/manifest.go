@@ -76,6 +76,9 @@ func ValidateManifest(manifest Manifest) error {
 			return fmt.Errorf("manifest section %q is duplicated", entry.Key)
 		}
 		seen[entry.Key] = struct{}{}
+		if len(entry.Globs) == 0 {
+			return fmt.Errorf("manifest section %q has no canonical globs", entry.Key)
+		}
 		if _, err := canonicalGlobs(entry.Globs); err != nil {
 			return fmt.Errorf("manifest section %q has invalid globs: %w", entry.Key, err)
 		}

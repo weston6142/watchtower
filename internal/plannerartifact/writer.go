@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode/utf8"
 )
 
 func normalizedManifest(manifest Manifest) (Manifest, error) {
@@ -41,12 +40,7 @@ func (s *Session) Apply(request WriteRequest) error {
 	if err != nil {
 		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "plan.md", Key: request.Key, Reason: "request manifest is invalid"}
 	}
-	if s.manifest == nil {
-		s.manifest = &manifest
-		if err := s.writeManifest(); err != nil {
-			return err
-		}
-	} else if !manifestsEqual(*s.manifest, manifest) {
+	if s.manifest != nil && !manifestsEqual(*s.manifest, manifest) {
 		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "pair", Key: request.Key, Reason: "request manifest changed"}
 	}
 
@@ -64,8 +58,8 @@ func (s *Session) Apply(request WriteRequest) error {
 	if err != nil || !sameStrings(requestGlobs, manifest.Sections[entryIndex].Globs) {
 		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "touchset.json", Key: request.Key, Reason: "request globs do not match manifest"}
 	}
-	if !utf8.ValidString(request.Markdown) {
-		return &DiagnosticError{Scope: ScopeTransport, Artifact: "plan.md", Key: request.Key, Reason: "section is not valid UTF-8"}
+	if err := validateFinalSection(request.Markdown); err != nil {
+		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "plan.md", Key: request.Key, Reason: err.Error()}
 	}
 	deltaBytes, err := json.Marshal(manifest.Sections[entryIndex].Globs)
 	if err != nil {
@@ -146,6 +140,13 @@ func (s *Session) Apply(request WriteRequest) error {
 	gotGlobs, _ := canonicalGlobs(parsedCandidateTouchset.Globs)
 	if !sameStrings(gotGlobs, wantGlobs) {
 		return &DiagnosticError{Scope: ScopeSectionStructure, Artifact: "pair", Key: request.Key, Reason: "candidate plan and touchset are inconsistent"}
+	}
+	if s.manifest == nil {
+		s.manifest = &manifest
+		if err := s.writeManifest(); err != nil {
+			s.manifest = nil
+			return err
+		}
 	}
 	return s.publishPair(candidatePlan, candidateTouchset, request.Key)
 }
