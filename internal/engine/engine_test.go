@@ -3362,12 +3362,8 @@ func commitVerifierRepair(t *testing.T, workdir, filename, message string) strin
 	if err := os.WriteFile(filepath.Join(workdir, filename), []byte(message+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "-C", workdir, "add", filename).CombinedOutput(); err != nil {
-		t.Fatalf("git add %s: %v: %s", filename, err, out)
-	}
-	if out, err := exec.Command("git", "-C", workdir, "commit", "-qm", message).CombinedOutput(); err != nil {
-		t.Fatalf("git commit %s: %v: %s", message, err, out)
-	}
+	gitOutput(t, workdir, "add", filename)
+	gitOutput(t, workdir, "commit", "-qm", message)
 	return strings.TrimSpace(gitOutput(t, workdir, "rev-parse", "HEAD"))
 }
 

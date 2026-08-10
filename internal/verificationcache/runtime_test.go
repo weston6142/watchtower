@@ -211,17 +211,10 @@ func TestRebindTransfersLockAndBindsFinalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rebinder, ok := any(lease).(interface {
-		Rebind(Config) (*Lease, error)
-	})
-	if !ok {
-		_ = lease.Close()
-		t.Fatal("active lease does not expose the lock-preserving rebind behavior")
-	}
 	final := initial
 	final.BranchSHA = "after-repair"
 	final.TreeSHA = "tree-after-repair"
-	rebound, err := rebinder.Rebind(final)
+	rebound, err := lease.Rebind(final)
 	if err != nil {
 		_ = lease.Close()
 		t.Fatal(err)
@@ -309,16 +302,10 @@ func TestRebindUsesOnlyFinalObservedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Close()
-	rebinder, ok := any(lease).(interface {
-		Rebind(Config) (*Lease, error)
-	})
-	if !ok {
-		t.Fatal("active lease does not expose the lock-preserving rebind behavior")
-	}
 	final := initial
 	final.BranchSHA = "commit-three"
 	final.TreeSHA = "tree-three"
-	rebound, err := rebinder.Rebind(final)
+	rebound, err := lease.Rebind(final)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,17 +355,10 @@ func TestRebindInterruptedReplacementIsReconciled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rebinder, ok := any(lease).(interface {
-		Rebind(Config) (*Lease, error)
-	})
-	if !ok {
-		_ = lease.Close()
-		t.Fatal("active lease does not expose the lock-preserving rebind behavior")
-	}
 	final := initial
 	final.BranchSHA = "after-repair"
 	final.TreeSHA = "tree-after-repair"
-	rebound, err := rebinder.Rebind(final)
+	rebound, err := lease.Rebind(final)
 	if err != nil {
 		_ = lease.Close()
 		t.Fatal(err)
