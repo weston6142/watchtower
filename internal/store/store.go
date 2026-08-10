@@ -1324,7 +1324,16 @@ func (s *Store) ResolveArtifactReview(
 		}
 		switch provenance.Kind {
 		case review.ApprovalHuman:
-			if !stored.ReviewPolicy.HumanRequired {
+			humanAllowed := stored.ReviewPolicy.HumanRequired
+			if !humanAllowed {
+				for _, binding := range stored.Bindings {
+					if binding.EffectiveFloor >= review.FloorPolicy {
+						humanAllowed = true
+						break
+					}
+				}
+			}
+			if !humanAllowed {
 				return "", fmt.Errorf("decision %d does not accept human approval", id)
 			}
 		case review.ApprovalPolicy:
@@ -1365,6 +1374,7 @@ func (s *Store) ResolveArtifactReview(
 		Stage:        checkpointStage,
 		CheckpointID: storedTarget.CheckpointID,
 		Artifacts:    artifacts,
+		Operation:    storedTarget.Operation,
 		NextStage:    storedTarget.NextStage,
 	}).Canonical()
 	if err != nil || checkpointStatus != "awaiting_review" || !storedTarget.Matches(current) ||
@@ -1450,7 +1460,7 @@ func (s *Store) CompleteArtifactReview(checkpointID int64, target review.Target)
 	}
 	current, err := (review.Target{
 		IssueID: issueID, Stage: stage, CheckpointID: checkpointID,
-		Artifacts: artifacts, NextStage: canonical.NextStage,
+		Artifacts: artifacts, Operation: canonical.Operation, NextStage: canonical.NextStage,
 	}).Canonical()
 	if err != nil || !canonical.Matches(current) {
 		return review.ErrStaleTarget

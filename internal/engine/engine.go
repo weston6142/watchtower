@@ -44,24 +44,26 @@ var errDependenciesDiscovered = errors.New("new dependencies discovered")
 var errConflictHeld = errors.New("merge conflict held")
 
 type Config struct {
-	Store              *store.Store
-	FailureRecorder    failure.Recorder
-	Runner             runner.Runner
-	Marshal            Sequencer
-	Train              *marshal.Train
-	Librarian          *librarian.Librarian
-	Observers          []func(core.Event)
-	Pool               *slots.Pool
-	Flows              map[string]flow.Flow
-	Rules              levers.Rules
-	PlanReview         review.PolicySettings
-	DecisionIdentities map[string]decision.AgentIdentity
-	DataDir            string
-	CacheRoot          string
-	Workspace          workspace.Provider
-	TokenBudget        int
-	PlannerBudget      plannerbudget.Profile
-	OnLine             func(issueID, stage, line string)
+	Store                    *store.Store
+	FailureRecorder          failure.Recorder
+	Runner                   runner.Runner
+	Marshal                  Sequencer
+	Train                    *marshal.Train
+	Librarian                *librarian.Librarian
+	Observers                []func(core.Event)
+	Pool                     *slots.Pool
+	Flows                    map[string]flow.Flow
+	Rules                    levers.Rules
+	PlanReview               review.PolicySettings
+	DecisionPolicy           review.EscalationPolicy
+	DecisionPolicyConfigured bool
+	DecisionIdentities       map[string]decision.AgentIdentity
+	DataDir                  string
+	CacheRoot                string
+	Workspace                workspace.Provider
+	TokenBudget              int
+	PlannerBudget            plannerbudget.Profile
+	OnLine                   func(issueID, stage, line string)
 }
 
 type plannerExplorationGate struct {
@@ -133,6 +135,8 @@ type PendingDecision struct {
 	Context      *decision.DecisionContext `json:"context,omitempty"`
 	Review       *review.Target            `json:"review,omitempty"`
 	ReviewPolicy *review.ResolvedPolicy    `json:"review_policy,omitempty"`
+	Evaluation   *review.Evaluation        `json:"evaluation,omitempty"`
+	Bindings     []review.Binding          `json:"bindings,omitempty"`
 }
 
 type pending struct {
@@ -227,6 +231,28 @@ type Engine struct {
 func New(cfg Config) *Engine {
 	if cfg.FailureRecorder == nil {
 		cfg.FailureRecorder = cfg.Store
+	}
+	if !cfg.DecisionPolicyConfigured && cfg.DecisionPolicy.ID == "" && cfg.DecisionPolicy.Version == "" {
+		cfg.DecisionPolicy = defaultDecisionEscalationPolicy()
+	}
+	if cfg.DecisionPolicy.StageFloors == nil {
+		cfg.DecisionPolicy.StageFloors = map[string]review.ApprovalFloor{}
+	}
+	if cfg.DecisionPolicy.OperationFloors == nil {
+		cfg.DecisionPolicy.OperationFloors = map[string]review.ApprovalFloor{}
+	}
+	for _, pattern := range cfg.Rules.AlwaysEscalate {
+		found := false
+		for _, rule := range cfg.DecisionPolicy.PathFloors {
+			if rule.Glob == pattern {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.DecisionPolicy.PathFloors = append(cfg.DecisionPolicy.PathFloors,
+				review.PathFloor{Glob: pattern, Floor: review.FloorOperator})
+		}
 	}
 	if cfg.PlannerBudget == (plannerbudget.Profile{}) {
 		cfg.PlannerBudget = plannerbudget.DefaultProfile()
@@ -348,6 +374,7 @@ func (e *Engine) rehydrateArtifactReview(
 			PendingDecision: PendingDecision{
 				ID: row.ID, IssueID: row.IssueID, Stage: row.Stage, D: d,
 				Context: row.Context, Review: row.Review, ReviewPolicy: row.ReviewPolicy,
+				Evaluation: row.Evaluation, Bindings: row.Bindings,
 			},
 			published: true,
 		}
@@ -2081,8 +2108,21 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	}
 	if p.Review != nil {
 		target := *p.Review
+		bindings := append([]review.Binding(nil), p.Bindings...)
 		e.mu.Unlock()
 		provenance := &review.ApprovalProvenance{Kind: review.ApprovalHuman, ActorID: actor}
+		if legacyAnswer(response) == 0 {
+			_, _, contexts, err := e.evaluateReviewTarget(target, false)
+			if err != nil {
+				return fmt.Errorf("revalidate artifact review %d: %w", decisionID, err)
+			}
+			if result := checkReviewTarget(bindings, contexts, provenance); result.Outcome != review.OutcomeApproved {
+				if result.Err != nil {
+					return fmt.Errorf("revalidate artifact review %d: %s: %w", decisionID, result.Outcome, result.Err)
+				}
+				return fmt.Errorf("revalidate artifact review %d: %s", decisionID, result.Outcome)
+			}
+		}
 		if _, err := e.cfg.Store.ResolveArtifactReview(decisionID, target, response, provenance); err != nil {
 			return fmt.Errorf("resolve artifact review %d: %w", decisionID, err)
 		}
@@ -2113,6 +2153,28 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 		}
 		reportResolvedDecisionArchiveError(p.ID, archiveErr)
 		return nil
+	}
+	e.mu.Unlock()
+	if p.Evaluation == nil || len(p.Bindings) == 0 {
+		return fmt.Errorf("decision %d has no engine-owned approval binding", decisionID)
+	}
+	current, _, _, err := e.evaluateDecisionEscalation(p.Stage, p.D)
+	if err != nil {
+		return fmt.Errorf("revalidate decision %d: %w", decisionID, err)
+	}
+	result := review.CheckApproval(p.Bindings[0], current, &review.ApprovalProvenance{
+		Kind: review.ApprovalHuman, ActorID: actor,
+	})
+	if result.Outcome != review.OutcomeApproved {
+		if result.Err != nil {
+			return fmt.Errorf("revalidate decision %d: %s: %w", decisionID, result.Outcome, result.Err)
+		}
+		return fmt.Errorf("revalidate decision %d: %s", decisionID, result.Outcome)
+	}
+	e.mu.Lock()
+	if e.pend[decisionID] != p {
+		e.mu.Unlock()
+		return fmt.Errorf("no pending decision %d", decisionID)
 	}
 	delete(e.pend, decisionID)
 	e.mu.Unlock()
@@ -2252,6 +2314,10 @@ func (e *Engine) requestArtifactReview(
 		return levers.Response{}, err
 	}
 	d := artifactReviewDecision(target, false)
+	evaluation, bindings, _, err := e.evaluateReviewTarget(target, false)
+	if err != nil {
+		return levers.Response{}, fmt.Errorf("evaluate artifact review: %w", err)
+	}
 	if err := validateDecisionEnvelope(is.id, st.Name, d, decisionContext); err != nil {
 		return levers.Response{}, err
 	}
@@ -2264,6 +2330,7 @@ func (e *Engine) requestArtifactReview(
 		Importance: d.Importance, RequiresOption: d.RequiresOption,
 		Why: d.Why, Consequences: d.Consequences,
 		Reversible: d.Reversible, Briefing: d.Briefing, Context: &decisionContext,
+		Evaluation: &evaluation, Bindings: bindings,
 		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
@@ -2272,7 +2339,7 @@ func (e *Engine) requestArtifactReview(
 	p := &pending{
 		PendingDecision: PendingDecision{
 			ID: rowID, IssueID: is.id, Stage: st.Name, D: d,
-			Context: &decisionContext, Review: &target,
+			Context: &decisionContext, Review: &target, Evaluation: &evaluation, Bindings: bindings,
 		},
 		reply: make(chan levers.Response, 1),
 	}
@@ -2318,6 +2385,11 @@ func (e *Engine) requestPlanReview(
 	if err != nil {
 		return levers.Response{}, err
 	}
+	target.Operation = "approve-plan"
+	target, err = target.Canonical()
+	if err != nil {
+		return levers.Response{}, fmt.Errorf("build plan review target: %w", err)
+	}
 	agentPkg, err := e.decisionAgentPackage(is.flowName, st.Name)
 	if err != nil {
 		return levers.Response{}, err
@@ -2330,6 +2402,10 @@ func (e *Engine) requestPlanReview(
 	policy := is.planReview
 	e.mu.Unlock()
 	d := artifactReviewDecision(target, true)
+	evaluation, bindings, _, err := e.evaluateReviewTarget(target, false)
+	if err != nil {
+		return levers.Response{}, fmt.Errorf("evaluate plan review: %w", err)
+	}
 	if err := validateDecisionEnvelope(is.id, st.Name, d, decisionContext); err != nil {
 		return levers.Response{}, err
 	}
@@ -2350,19 +2426,30 @@ func (e *Engine) requestPlanReview(
 		Why: d.Why, Consequences: d.Consequences,
 		Reversible: d.Reversible, Briefing: d.Briefing,
 		Context: &decisionContext, ReviewPolicy: &policy, PageSnapshot: pageSnapshot,
+		Evaluation: &evaluation, Bindings: bindings,
 		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("request plan review: %w", err)
 	}
 	requested := planReviewPayload(rowID, st.Name, policy)
-	if policy.PolicyAutoApproval {
+	if policy.PolicyAutoApproval && evaluation.EffectiveFloor != review.FloorOperator {
 		if _, err := e.appendEvent(core.EvPlanReviewRequested, is.id, requested); err != nil {
 			_ = e.cfg.Store.DeleteDecision(rowID)
 			return levers.Response{}, fmt.Errorf("append plan review request: %w", err)
 		}
 		provenance := &review.ApprovalProvenance{
 			Kind: review.ApprovalPolicy, PolicyID: policy.PolicyID, PolicyVersion: policy.PolicyVersion,
+		}
+		_, _, contexts, err := e.evaluateReviewTarget(target, false)
+		if err != nil {
+			return levers.Response{}, fmt.Errorf("revalidate plan review policy: %w", err)
+		}
+		if result := checkReviewTarget(bindings, contexts, provenance); result.Outcome != review.OutcomeApproved {
+			if result.Err != nil {
+				return levers.Response{}, fmt.Errorf("authorize plan review policy: %s: %w", result.Outcome, result.Err)
+			}
+			return levers.Response{}, fmt.Errorf("authorize plan review policy: %s", result.Outcome)
 		}
 		if _, err := e.cfg.Store.ResolveArtifactReview(rowID, target, levers.ChoiceResponse(0), provenance); err != nil {
 			return levers.Response{}, fmt.Errorf("resolve plan review policy: %w", err)
@@ -2382,7 +2469,7 @@ func (e *Engine) requestPlanReview(
 		e.refreshDecisionPage(is.id)
 		return levers.ChoiceResponse(0), nil
 	}
-	if !policy.HumanRequired {
+	if !policy.HumanRequired && evaluation.EffectiveFloor != review.FloorOperator {
 		return levers.Response{}, fmt.Errorf("plan review policy is unresolved")
 	}
 	decisionPayload := decisionRequiredPayloadWithReview(rowID, st.Name, d, decisionContext, target)
@@ -2391,6 +2478,7 @@ func (e *Engine) requestPlanReview(
 		PendingDecision: PendingDecision{
 			ID: rowID, IssueID: is.id, Stage: st.Name, D: d,
 			Context: &decisionContext, Review: &target, ReviewPolicy: &policy,
+			Evaluation: &evaluation, Bindings: bindings,
 		},
 		reply: make(chan levers.Response, 1),
 	}
@@ -2480,6 +2568,32 @@ func (e *Engine) continueArtifactReview(
 		e.emit(core.EvStageFailed, issueID, map[string]any{
 			"stage": stage, "error": "artifact review stage is not in the configured flow", "final": true})
 		return
+	}
+	if response.Kind == levers.DecisionChoice && response.Option != nil && *response.Option == 0 {
+		row, exists, err := e.cfg.Store.DecisionByID(decisionID)
+		if err != nil || !exists || row.Review == nil || row.Approval == nil {
+			if err == nil {
+				err = fmt.Errorf("approval evidence is missing")
+			}
+			e.emit(core.EvStageFailed, issueID, map[string]any{
+				"stage": stage, "error": fmt.Sprintf("artifact review revalidation: %v", err), "final": true})
+			return
+		}
+		_, _, contexts, err := e.evaluateReviewTarget(*row.Review, false)
+		if err != nil {
+			e.emit(core.EvStageFailed, issueID, map[string]any{
+				"stage": stage, "error": fmt.Sprintf("artifact review revalidation: %v", err), "final": true})
+			return
+		}
+		if result := checkReviewTarget(row.Bindings, contexts, row.Approval); result.Outcome != review.OutcomeApproved {
+			err := result.Err
+			if err == nil {
+				err = fmt.Errorf("%s", result.Outcome)
+			}
+			e.emit(core.EvStageFailed, issueID, map[string]any{
+				"stage": stage, "error": fmt.Sprintf("artifact review revalidation: %v", err), "final": true})
+			return
+		}
 	}
 	if err := e.cfg.Store.CompleteArtifactReview(target.CheckpointID, target); err != nil {
 		recordArtifactFailure(fmt.Errorf("artifact review handoff: %w", err))
@@ -2743,14 +2857,26 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		reportAskError(a, err)
 		return
 	}
-	lever := is.matrix[stage]
-	if levers.Route(a.Decision, lever, e.cfg.Rules) {
-		response, err := e.escalateWithContext(is, stage, a.Decision, decisionContext)
+	current, evaluation, binding, err := e.evaluateDecisionEscalation(stage, a.Decision)
+	if err != nil {
+		reportAskError(a, fmt.Errorf("evaluate decision escalation: %w", err))
+		return
+	}
+	if evaluation.EffectiveFloor != review.FloorNone {
+		response, err := e.escalateWithEvaluation(is, stage, a.Decision, decisionContext, evaluation, binding)
 		if err != nil {
 			reportAskError(a, err)
 			return
 		}
 		a.Reply <- response
+		return
+	}
+	if result := review.CheckApproval(binding, current, nil); result.Outcome != review.OutcomeApproved {
+		if result.Err != nil {
+			reportAskError(a, fmt.Errorf("authorize automatic decision: %s: %w", result.Outcome, result.Err))
+		} else {
+			reportAskError(a, fmt.Errorf("authorize automatic decision: %s", result.Outcome))
+		}
 		return
 	}
 	if err := validateDecisionEnvelope(is.id, stage, a.Decision, decisionContext); err != nil {
@@ -2770,8 +2896,9 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		AllowFreeform: a.Decision.AllowFreeform, Importance: a.Decision.Importance,
 		Paths: a.Decision.Paths,
 		Why:   a.Decision.Why, Consequences: a.Decision.Consequences, Reversible: a.Decision.Reversible,
-		Briefing:     a.Decision.Briefing,
-		Context:      &decisionContext,
+		Briefing:   a.Decision.Briefing,
+		Context:    &decisionContext,
+		Evaluation: &evaluation, Bindings: []review.Binding{binding},
 		PageSnapshot: pageSnapshot,
 		Status:       "auto", Response: a.Decision.RecommendedAnswer(),
 		CreatedAt: resolvedAt, AnsweredAt: resolvedAt,
@@ -2802,6 +2929,17 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 }
 
 func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Decision, decisionContext decision.DecisionContext) (levers.Response, error) {
+	_, evaluation, binding, err := e.evaluateDecisionEscalation(stage, d)
+	if err != nil {
+		return levers.Response{}, fmt.Errorf("evaluate decision escalation: %w", err)
+	}
+	return e.escalateWithEvaluation(is, stage, d, decisionContext, evaluation, binding)
+}
+
+func (e *Engine) escalateWithEvaluation(
+	is *issueState, stage string, d levers.Decision, decisionContext decision.DecisionContext,
+	evaluation review.Evaluation, binding review.Binding,
+) (levers.Response, error) {
 	if err := validateDecisionEnvelope(is.id, stage, d, decisionContext); err != nil {
 		return levers.Response{}, err
 	}
@@ -2815,14 +2953,16 @@ func (e *Engine) escalateWithContext(is *issueState, stage string, d levers.Deci
 		EngineContinuation: d.EngineContinuation,
 		Briefing:           d.Briefing,
 		Context:            &decisionContext,
-		BlockingCost:       e.blockingCost(is.id),
+		Evaluation:         &evaluation, Bindings: []review.Binding{binding},
+		BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("insert decision: %w", err)
 	}
 	p := &pending{
-		PendingDecision: PendingDecision{ID: rowID, IssueID: is.id, Stage: stage, D: d, Context: &decisionContext},
-		reply:           make(chan levers.Response, 1),
+		PendingDecision: PendingDecision{ID: rowID, IssueID: is.id, Stage: stage, D: d, Context: &decisionContext,
+			Evaluation: &evaluation, Bindings: []review.Binding{binding}},
+		reply: make(chan levers.Response, 1),
 	}
 	if !e.registerPendingDecision(is, p) {
 		e.cancelPendingDecisionPublication(is.id, rowID)
@@ -3531,9 +3671,22 @@ func (e *Engine) planReviewAuthorization(is *issueState) (store.DecisionRow, []c
 	}
 	policy := *found.ReviewPolicy
 	approval := *found.Approval
+	if found.Review == nil || len(found.Bindings) == 0 {
+		return store.DecisionRow{}, nil, fmt.Errorf("plan review engine approval binding is missing")
+	}
+	_, _, contexts, err := e.evaluateReviewTarget(*found.Review, false)
+	if err != nil {
+		return store.DecisionRow{}, nil, fmt.Errorf("revalidate plan review: %w", err)
+	}
+	if result := checkReviewTarget(found.Bindings, contexts, &approval); result.Outcome != review.OutcomeApproved {
+		if result.Err != nil {
+			return store.DecisionRow{}, nil, fmt.Errorf("revalidate plan review: %s: %w", result.Outcome, result.Err)
+		}
+		return store.DecisionRow{}, nil, fmt.Errorf("revalidate plan review: %s", result.Outcome)
+	}
 	var approvalEvent core.EventType
 	switch {
-	case policy.HumanRequired && approval.Kind == review.ApprovalHuman && approval.ActorID != "":
+	case (policy.HumanRequired || hasReviewFloor(found.Bindings, review.FloorPolicy)) && approval.Kind == review.ApprovalHuman && approval.ActorID != "":
 		if found.Status != "answered" {
 			return store.DecisionRow{}, nil, fmt.Errorf("human plan approval has invalid status")
 		}

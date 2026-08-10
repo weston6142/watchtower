@@ -56,7 +56,8 @@ func CheckApproval(record Binding, current EscalationContext, approval *Approval
 	}
 	switch record.EffectiveFloor {
 	case FloorPolicy:
-		if approval.Kind == ApprovalPolicy && approval.PolicyID == record.PolicyID && approval.PolicyVersion == record.PolicyVersion {
+		if approval.Kind == ApprovalHuman ||
+			(approval.Kind == ApprovalPolicy && approval.PolicyID == record.PolicyID && approval.PolicyVersion == record.PolicyVersion) {
 			return Result{Outcome: OutcomeApproved}
 		}
 	case FloorOperator:

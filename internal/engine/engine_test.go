@@ -586,6 +586,126 @@ func scripts() map[string]runner.Script {
 	}
 }
 
+func TestEngineOwnedEscalationAndImportanceCannotBypass(t *testing.T) {
+	f := flow.Flow{Name: "engine-escalation", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "brainstorm"}}, Workspace: "none",
+		Completion: flow.CompletionAll, Gate: flow.GateAuto,
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/brainstorm": {Asks: []levers.Decision{{
+			Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0,
+			Importance: 0, Paths: []string{"payments/charge.go"},
+		}}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.DecisionPolicy = review.Policy{
+			ID: "team-safety", Version: "7", Valid: true,
+			DefaultFloor: review.FloorNone,
+			PathFloors:   []review.PathFloor{{Glob: "payments/**", Floor: review.FloorOperator}},
+			StageFloors:  map[string]review.ApprovalFloor{}, OperationFloors: map[string]review.ApprovalFloor{},
+		}
+	})
+	id, err := e.CreateIssue("engine-owned", "", f.Name, levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e, "execute")
+	if pending.Evaluation == nil || pending.Evaluation.RequiredFloor != review.FloorOperator ||
+		pending.Evaluation.EffectiveFloor != review.FloorOperator {
+		t.Fatalf("pending evaluation = %+v", pending.Evaluation)
+	}
+	if countEventType(t, s, id, core.EvDecisionAutoResolved) != 0 {
+		t.Fatal("engine auto-resolved a policy-required decision")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("stage completed before operator answer: %v", err)
+	default:
+	}
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestImportanceCanRequestStricterReviewWithoutLoweringPolicyFloor(t *testing.T) {
+	f := flow.Flow{Name: "model-escalation", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "brainstorm"}}, Workspace: "none",
+		Completion: flow.CompletionAll, Gate: flow.GateAuto,
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/brainstorm": {Asks: []levers.Decision{{
+			Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0,
+			Importance: 1.0, Paths: []string{"docs/guide.md"},
+		}}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.DecisionPolicy = review.Policy{
+			ID: "team-safety", Version: "7", Valid: true, DefaultFloor: review.FloorNone,
+			StageFloors: map[string]review.ApprovalFloor{}, OperationFloors: map[string]review.ApprovalFloor{},
+		}
+	})
+	id, err := e.CreateIssue("model asks stricter", "", f.Name, levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e, "execute")
+	if pending.Evaluation == nil || pending.Evaluation.RequiredFloor != review.FloorNone ||
+		pending.Evaluation.EffectiveFloor != review.FloorOperator ||
+		countEventType(t, s, id, core.EvDecisionAutoResolved) != 0 {
+		t.Fatalf("model evaluation = %+v, auto events=%d", pending.Evaluation, countEventType(t, s, id, core.EvDecisionAutoResolved))
+	}
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApprovalRevalidationRejectsPolicyMutation(t *testing.T) {
+	f := flow.Flow{Name: "revalidate-escalation", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "brainstorm"}}, Workspace: "none",
+		Completion: flow.CompletionAll, Gate: flow.GateAuto,
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/brainstorm": {Asks: []levers.Decision{{
+			Question: "Proceed?", Options: []string{"yes", "no"}, Recommended: 0,
+			Importance: 0, Paths: []string{"payments/charge.go"},
+		}}},
+	}}
+	e, _ := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.DecisionPolicy = review.Policy{
+			ID: "team-safety", Version: "7", Valid: true, DefaultFloor: review.FloorNone,
+			PathFloors:  []review.PathFloor{{Glob: "payments/**", Floor: review.FloorOperator}},
+			StageFloors: map[string]review.ApprovalFloor{}, OperationFloors: map[string]review.ApprovalFloor{},
+		}
+	})
+	id, err := e.CreateIssue("policy mutation", "", f.Name, levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.KillStage(id) })
+	go func() { _ = e.StartIssue(context.Background(), id) }()
+	pending := waitForPendingStage(t, e, "execute")
+	e.cfg.DecisionPolicy.Version = "8"
+	if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err == nil {
+		t.Fatal("policy mutation was accepted")
+	}
+	if len(e.PendingDecisions()) != 1 {
+		t.Fatal("stale policy mutation removed the pending decision")
+	}
+}
+
 func artifactGateFlow() flow.Flow {
 	return flow.Flow{Name: "artifact-gates", Stages: []flow.Stage{
 		{Name: "spec", Agents: []flow.AgentRef{{Package: "spec-writer"}}, Workspace: "none", Completion: flow.CompletionAll,
