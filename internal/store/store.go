@@ -74,6 +74,46 @@ CREATE TABLE IF NOT EXISTS stage_checkpoints(
   session_id TEXT,
   failure TEXT,
 	created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS stage_lifecycle_attempts(
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  legacy_checkpoint_id INTEGER NOT NULL DEFAULT 0,
+  result_path TEXT NOT NULL DEFAULT '',
+  result_sha256 TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(issue_id,stage,attempt_id)
+);
+CREATE TABLE IF NOT EXISTS stage_attempt_archives(
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  transition_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(issue_id,stage,attempt_id,transition_id,name)
+);
+CREATE TABLE IF NOT EXISTS stage_lifecycle_checkpoints(
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  version INTEGER NOT NULL,
+  substate TEXT NOT NULL,
+  predecessor_version INTEGER NOT NULL,
+  transition_id TEXT NOT NULL,
+  payload_digest TEXT NOT NULL,
+  result_path TEXT NOT NULL,
+  result_sha256 TEXT NOT NULL,
+  artifacts TEXT NOT NULL,
+  status TEXT NOT NULL,
+  failure TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(issue_id,stage,attempt_id,version),
+  UNIQUE(issue_id,stage,attempt_id,transition_id)
+);
 CREATE TABLE IF NOT EXISTS runner_attempts(
   operation_id TEXT NOT NULL,
   attempt_kind TEXT NOT NULL,
@@ -157,6 +197,8 @@ type Store struct {
 	failNextPausePersistence         bool
 	failNextPlannerArtifactRead      bool
 	failNextPlannerArtifactWrite     bool
+	failNextStageLifecycleCommit     bool
+	failNextStageArchiveManifest     bool
 	failIssueIntegrationWriteAfter   int
 	failNextVerificationRetry        bool
 }
