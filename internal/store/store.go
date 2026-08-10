@@ -194,6 +194,8 @@ type DecisionRow struct {
 	Review              *review.Target
 	ReviewPolicy        *review.ResolvedPolicy
 	Approval            *review.ApprovalProvenance
+	Evaluation          *review.Evaluation
+	Bindings            []review.Binding
 	Status              string
 	Response            levers.Response
 	BlockingCost        int
@@ -1020,6 +1022,8 @@ type decisionEvidence struct {
 	Review              *review.Target             `json:"review,omitempty"`
 	ReviewPolicy        *review.ResolvedPolicy     `json:"review_policy,omitempty"`
 	Approval            *review.ApprovalProvenance `json:"approval,omitempty"`
+	Evaluation          *review.Evaluation         `json:"evaluation,omitempty"`
+	Bindings            []review.Binding           `json:"bindings,omitempty"`
 }
 
 func validateApprovalProvenance(approval *review.ApprovalProvenance) error {
@@ -1105,6 +1109,7 @@ func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
 		EngineContinuation: d.EngineContinuation,
 		Context:            d.Context, Review: target, ReviewPolicy: d.ReviewPolicy, Approval: d.Approval,
+		Evaluation: d.Evaluation, Bindings: d.Bindings,
 	})
 	if err != nil {
 		return 0, err
@@ -1215,6 +1220,12 @@ func (s *Store) RequestArtifactReview(target review.Target, d DecisionRow) (int6
 	d.Stage = canonical.Stage
 	d.Status = "pending"
 	d.Review = &canonical
+	if d.Bindings == nil {
+		d.Bindings, err = canonical.Bindings()
+		if err != nil {
+			return 0, err
+		}
+	}
 	if d.ReviewPolicy != nil && !validResolvedPolicy(*d.ReviewPolicy) {
 		return 0, fmt.Errorf("invalid plan review policy")
 	}
@@ -1313,7 +1324,16 @@ func (s *Store) ResolveArtifactReview(
 		}
 		switch provenance.Kind {
 		case review.ApprovalHuman:
-			if !stored.ReviewPolicy.HumanRequired {
+			humanAllowed := stored.ReviewPolicy.HumanRequired
+			if !humanAllowed {
+				for _, binding := range stored.Bindings {
+					if binding.EffectiveFloor >= review.FloorPolicy {
+						humanAllowed = true
+						break
+					}
+				}
+			}
+			if !humanAllowed {
 				return "", fmt.Errorf("decision %d does not accept human approval", id)
 			}
 		case review.ApprovalPolicy:
@@ -1354,6 +1374,7 @@ func (s *Store) ResolveArtifactReview(
 		Stage:        checkpointStage,
 		CheckpointID: storedTarget.CheckpointID,
 		Artifacts:    artifacts,
+		Operation:    storedTarget.Operation,
 		NextStage:    storedTarget.NextStage,
 	}).Canonical()
 	if err != nil || checkpointStatus != "awaiting_review" || !storedTarget.Matches(current) ||
@@ -1439,7 +1460,7 @@ func (s *Store) CompleteArtifactReview(checkpointID int64, target review.Target)
 	}
 	current, err := (review.Target{
 		IssueID: issueID, Stage: stage, CheckpointID: checkpointID,
-		Artifacts: artifacts, NextStage: canonical.NextStage,
+		Artifacts: artifacts, Operation: canonical.Operation, NextStage: canonical.NextStage,
 	}).Canonical()
 	if err != nil || !canonical.Matches(current) {
 		return review.ErrStaleTarget
@@ -1556,6 +1577,12 @@ func (s *Store) decisionRows(where string, args ...any) ([]DecisionRow, error) {
 			}
 			if stored.Approval != nil {
 				d.Approval = stored.Approval
+			}
+			if stored.Evaluation != nil {
+				d.Evaluation = stored.Evaluation
+			}
+			if stored.Bindings != nil {
+				d.Bindings = stored.Bindings
 			}
 			if contextRaw, ok := raw["context"]; ok {
 				if string(contextRaw) == "null" {

@@ -18,24 +18,25 @@ import (
 // Config mirrors the daemon flags. Zero fields are filled from Default()
 // after unmarshalling, so a partial config.yaml is fine.
 type Config struct {
-	Flows         string                `yaml:"flows"`
-	Packages      string                `yaml:"packages"`
-	Runner        string                `yaml:"runner"`
-	Slots         int                   `yaml:"slots"`
-	Budget        int                   `yaml:"budget"`
-	PricePerMTok  float64               `yaml:"price_per_mtok"`
-	ClaudeBin     string                `yaml:"claude_bin"`
-	CodexBin      string                `yaml:"codex_bin"`
-	CodexModel    string                `yaml:"codex_model"`
-	CodexEffort   string                `yaml:"codex_effort"`
-	Codex         CodexConfig           `yaml:"codex"`
-	TestCmd       string                `yaml:"test_cmd"`
-	TestArgv      []string              `yaml:"-"`
-	Theme         string                `yaml:"theme"`
-	Pull          bool                  `yaml:"pull"`
-	Push          bool                  `yaml:"push"`
-	PlanReview    PlanReviewConfig      `yaml:"plan_review"`
-	PlannerBudget plannerbudget.Profile `yaml:"planner_budget"`
+	Flows          string                `yaml:"flows"`
+	Packages       string                `yaml:"packages"`
+	Runner         string                `yaml:"runner"`
+	Slots          int                   `yaml:"slots"`
+	Budget         int                   `yaml:"budget"`
+	PricePerMTok   float64               `yaml:"price_per_mtok"`
+	ClaudeBin      string                `yaml:"claude_bin"`
+	CodexBin       string                `yaml:"codex_bin"`
+	CodexModel     string                `yaml:"codex_model"`
+	CodexEffort    string                `yaml:"codex_effort"`
+	Codex          CodexConfig           `yaml:"codex"`
+	TestCmd        string                `yaml:"test_cmd"`
+	TestArgv       []string              `yaml:"-"`
+	Theme          string                `yaml:"theme"`
+	Pull           bool                  `yaml:"pull"`
+	Push           bool                  `yaml:"push"`
+	PlanReview     PlanReviewConfig      `yaml:"plan_review"`
+	DecisionPolicy DecisionPolicyConfig  `yaml:"decision_policy"`
+	PlannerBudget  plannerbudget.Profile `yaml:"planner_budget"`
 }
 
 type CodexProfile struct {
@@ -93,6 +94,59 @@ type PlanReviewConfig struct {
 	Valid              bool   `yaml:"-"`
 }
 
+// DecisionPolicyConfig is the YAML boundary for engine-owned escalation.
+// Floors remain strings here so malformed YAML cannot collapse into the safe
+// zero value and accidentally become permissive policy.
+type DecisionPolicyConfig struct {
+	PolicyID         string                    `yaml:"policy_id"`
+	PolicyVersion    string                    `yaml:"policy_version"`
+	DefaultFloor     string                    `yaml:"default_floor"`
+	StageFloors      map[string]string         `yaml:"stage_floors"`
+	OperationFloors  map[string]string         `yaml:"operation_floors"`
+	PathFloors       []DecisionPathFloorConfig `yaml:"path_floors"`
+	DestructiveFloor string                    `yaml:"destructive_floor"`
+	PublicationFloor string                    `yaml:"publication_floor"`
+	Valid            bool                      `yaml:"-"`
+	Present          bool                      `yaml:"-"`
+}
+
+type DecisionPathFloorConfig struct {
+	Glob  string `yaml:"glob"`
+	Floor string `yaml:"floor"`
+}
+
+// decisionPolicyDecode is a method-free view of DecisionPolicyConfig used to
+// avoid duplicating the YAML field list in its custom decoder.
+type decisionPolicyDecode DecisionPolicyConfig
+
+func (c *DecisionPolicyConfig) UnmarshalYAML(node *yaml.Node) error {
+	*c = DecisionPolicyConfig{Present: true}
+	var decoded decisionPolicyDecode
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	if err := node.Decode(&decoded); err != nil {
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key, value := node.Content[index].Value, node.Content[index+1]
+			var text string
+			if value.Decode(&text) != nil {
+				continue
+			}
+			switch key {
+			case "policy_id":
+				c.PolicyID = text
+			case "policy_version":
+				c.PolicyVersion = text
+			}
+		}
+		return nil
+	}
+	*c = DecisionPolicyConfig(decoded)
+	c.Valid = true
+	c.Present = true
+	return nil
+}
+
 func Default() Config {
 	return Config{
 		Flows:       filepath.Join(".watchtower", "flows"),
@@ -138,6 +192,77 @@ func (c Config) PlanReviewSettings() review.PolicySettings {
 		Version:            c.PlanReview.PolicyVersion,
 		AutoApproveRegular: c.PlanReview.AutoApproveRegular,
 		Valid:              c.PlanReview.Valid,
+	}
+}
+
+// DecisionEscalationPolicy converts repository configuration into the typed
+// engine policy. An absent section receives the explicit manual-default policy;
+// a present malformed section remains invalid and never receives that fallback.
+func (c Config) DecisionEscalationPolicy() review.EscalationPolicy {
+	if !c.DecisionPolicy.Present {
+		return review.EscalationPolicy{
+			ID: review.ManualPolicyID, Version: review.ManualPolicyVersion, Valid: true,
+			DefaultFloor: review.FloorNone,
+			StageFloors:  map[string]review.ApprovalFloor{}, OperationFloors: map[string]review.ApprovalFloor{},
+			DestructiveFloor: review.FloorOperator, PublicationFloor: review.FloorOperator,
+		}
+	}
+
+	raw := c.DecisionPolicy
+	policy := review.EscalationPolicy{
+		ID: raw.PolicyID, Version: raw.PolicyVersion, Valid: raw.Valid,
+		StageFloors: map[string]review.ApprovalFloor{}, OperationFloors: map[string]review.ApprovalFloor{},
+	}
+	if strings.TrimSpace(raw.PolicyID) == "" || strings.TrimSpace(raw.PolicyVersion) == "" {
+		policy.Valid = false
+	}
+	var err error
+	if policy.DefaultFloor, err = parseDecisionFloor(raw.DefaultFloor); err != nil {
+		policy.Valid = false
+	}
+	if policy.DestructiveFloor, err = parseDecisionFloor(raw.DestructiveFloor); err != nil {
+		policy.Valid = false
+	}
+	if policy.PublicationFloor, err = parseDecisionFloor(raw.PublicationFloor); err != nil {
+		policy.Valid = false
+	}
+	for name, floorName := range raw.StageFloors {
+		floor, parseErr := parseDecisionFloor(floorName)
+		if parseErr != nil {
+			policy.Valid = false
+			continue
+		}
+		policy.StageFloors[name] = floor
+	}
+	for name, floorName := range raw.OperationFloors {
+		floor, parseErr := parseDecisionFloor(floorName)
+		if parseErr != nil {
+			policy.Valid = false
+			continue
+		}
+		policy.OperationFloors[name] = floor
+	}
+	for _, pathRule := range raw.PathFloors {
+		floor, parseErr := parseDecisionFloor(pathRule.Floor)
+		if parseErr != nil {
+			policy.Valid = false
+			continue
+		}
+		policy.PathFloors = append(policy.PathFloors, review.PathFloor{Glob: pathRule.Glob, Floor: floor})
+	}
+	return policy
+}
+
+func parseDecisionFloor(value string) (review.ApprovalFloor, error) {
+	switch strings.TrimSpace(value) {
+	case "none":
+		return review.FloorNone, nil
+	case "policy":
+		return review.FloorPolicy, nil
+	case "operator":
+		return review.FloorOperator, nil
+	default:
+		return review.FloorNone, fmt.Errorf("unknown decision policy floor %q", value)
 	}
 }
 

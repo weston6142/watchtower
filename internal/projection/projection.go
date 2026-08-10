@@ -29,21 +29,23 @@ type IssueView struct {
 	// drafted/updated events and read only by the edit modal's prefill:
 	// EvIssueCreated rebuilds the view wholesale, so a launched issue drops
 	// the list, which is fine because a launched issue is not editable.
-	Attachments    []string
-	DependsOn      []string
-	Behind         string
-	Merged         bool
-	Unmerged       bool
-	Paused         bool
-	Killed         bool
-	Cleanup        []string
-	AreaWeights    map[string]int
-	MergedAt       time.Time
-	ReviewPolicy   review.ResolvedPolicy
-	ReviewStatus   string
-	Approval       *review.ApprovalProvenance
-	Planner        *stageusage.Snapshot
-	PlannerOutcome string
+	Attachments        []string
+	DependsOn          []string
+	Behind             string
+	Merged             bool
+	Unmerged           bool
+	Paused             bool
+	Killed             bool
+	Cleanup            []string
+	AreaWeights        map[string]int
+	MergedAt           time.Time
+	ReviewPolicy       review.ResolvedPolicy
+	ReviewStatus       string
+	Approval           *review.ApprovalProvenance
+	DecisionEvaluation *review.Evaluation
+	DecisionBindings   []review.Binding
+	Planner            *stageusage.Snapshot
+	PlannerOutcome     string
 }
 
 // DecisionView is the projected operator-facing decision. RequiresOption
@@ -68,6 +70,8 @@ type DecisionView struct {
 	ReviewPolicy        *review.ResolvedPolicy
 	ReviewStatus        string
 	Approval            *review.ApprovalProvenance
+	Evaluation          *review.Evaluation
+	Bindings            []review.Binding
 }
 
 type Notice struct {
@@ -249,6 +253,8 @@ func (s *State) Apply(ev core.Event) {
 		if decisionPolicy != nil {
 			decisionReviewStatus = "pending"
 		}
+		evaluation := escalationEvaluationFromPayload(p)
+		bindings := escalationBindingsFromPayload(p)
 		id := int64(num("decision_id"))
 		s.Decisions[id] = DecisionView{ID: id, IssueID: ev.IssueID, Stage: str("stage"),
 			Kind: str("kind"), Question: str("question"), Options: opts,
@@ -257,13 +263,37 @@ func (s *State) Apply(ev core.Event) {
 			RequiresOption: p["requires_option"] == true || reviewTarget != nil,
 			Why:            str("why"), Consequences: stringsFromPayload(p["consequences"]),
 			Reversible: str("reversible"), Paths: stringsFromPayload(p["paths"]), Context: context,
-			Review: reviewTarget, ReviewPolicy: decisionPolicy, ReviewStatus: decisionReviewStatus}
+			Review: reviewTarget, ReviewPolicy: decisionPolicy, ReviewStatus: decisionReviewStatus,
+			Evaluation: evaluation, Bindings: bindings}
 		if iv != nil {
 			iv.State = "waiting_decision"
+			iv.DecisionEvaluation = evaluation
+			iv.DecisionBindings = bindings
 			if decisionPolicy != nil {
 				iv.ReviewPolicy = *decisionPolicy
 				iv.ReviewStatus = "pending"
 			}
+		}
+	case core.EvDecisionAutoResolved:
+		if iv != nil {
+			iv.DecisionEvaluation = escalationEvaluationFromPayload(p)
+			iv.DecisionBindings = escalationBindingsFromPayload(p)
+			iv.State = "running"
+		}
+		delete(s.Decisions, int64(num("decision_id")))
+	case core.EvDecisionStale, core.EvDecisionPolicyError:
+		id := int64(num("decision_id"))
+		evaluation := escalationEvaluationFromPayload(p)
+		if decision, exists := s.Decisions[id]; exists {
+			decision.Evaluation = evaluation
+			decision.Bindings = escalationBindingsFromPayload(p)
+			decision.ReviewStatus = string(ev.Type)
+			s.Decisions[id] = decision
+		}
+		if iv != nil {
+			iv.DecisionEvaluation = evaluation
+			iv.DecisionBindings = escalationBindingsFromPayload(p)
+			iv.ReviewStatus = string(ev.Type)
 		}
 	case core.EvPlanReviewHumanApproved, core.EvPlanReviewPolicyApproved, core.EvPlanReviewRejected:
 		if iv != nil {
@@ -271,6 +301,8 @@ func (s *State) Apply(ev core.Event) {
 				iv.ReviewPolicy = *policy
 			}
 			iv.Approval = approvalFromPayload(p, policy)
+			iv.DecisionEvaluation = escalationEvaluationFromPayload(p)
+			iv.DecisionBindings = escalationBindingsFromPayload(p)
 			switch ev.Type {
 			case core.EvPlanReviewHumanApproved:
 				iv.ReviewStatus = "approved"
@@ -425,6 +457,38 @@ func (s *State) Apply(ev core.Event) {
 			s.ProposalCount--
 		}
 	}
+}
+
+func escalationEvaluationFromPayload(payload map[string]any) *review.Evaluation {
+	raw, ok := payload["evaluation"]
+	if !ok || raw == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var evaluation review.Evaluation
+	if err := json.Unmarshal(encoded, &evaluation); err != nil {
+		return nil
+	}
+	return &evaluation
+}
+
+func escalationBindingsFromPayload(payload map[string]any) []review.Binding {
+	raw, ok := payload["bindings"]
+	if !ok || raw == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var bindings []review.Binding
+	if err := json.Unmarshal(encoded, &bindings); err != nil {
+		return nil
+	}
+	return bindings
 }
 
 func resolvedPolicyFromPayload(payload map[string]any, key string) *review.ResolvedPolicy {

@@ -9,6 +9,7 @@ import (
 	"github.com/weston6142/watchtower/internal/engine"
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
+	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
 	"github.com/weston6142/watchtower/internal/stageusage"
@@ -98,27 +99,29 @@ type Overview struct {
 }
 
 type IssueDetail struct {
-	Issue            store.IssueRow       `json:"issue"`
-	Runs             []store.StageRun     `json:"runs"`
-	Attempts         []runner.Attempt     `json:"attempts,omitempty"`
-	Tokens           int                  `json:"tokens"`
-	Artifacts        []string             `json:"artifacts"`
-	Model            string               `json:"model,omitempty"`
-	Effort           string               `json:"effort,omitempty"`
-	LastError        string               `json:"last_error,omitempty"`
-	Attempt          int                  `json:"attempt,omitempty"`
-	AttemptOf        int                  `json:"attempt_of,omitempty"`
-	Budget           int                  `json:"budget,omitempty"`
-	Levers           map[string]string    `json:"levers,omitempty"`
-	Cleanup          []string             `json:"cleanup,omitempty"`
-	Dollars          float64              `json:"dollars,omitempty"`
-	IntegrationState string               `json:"integration_state,omitempty"`
-	Worktree         string               `json:"worktree,omitempty"`
-	Branch           string               `json:"branch,omitempty"`
-	Planner          *stageusage.Snapshot `json:"planner,omitempty"`
-	PlannerOutcome   string               `json:"planner_outcome,omitempty"`
-	DecisionPage     string               `json:"decision_page,omitempty"`
-	FailureHistory   FailureHistory       `json:"failure_history"`
+	Issue              store.IssueRow       `json:"issue"`
+	Runs               []store.StageRun     `json:"runs"`
+	Attempts           []runner.Attempt     `json:"attempts,omitempty"`
+	Tokens             int                  `json:"tokens"`
+	Artifacts          []string             `json:"artifacts"`
+	Model              string               `json:"model,omitempty"`
+	Effort             string               `json:"effort,omitempty"`
+	LastError          string               `json:"last_error,omitempty"`
+	Attempt            int                  `json:"attempt,omitempty"`
+	AttemptOf          int                  `json:"attempt_of,omitempty"`
+	Budget             int                  `json:"budget,omitempty"`
+	Levers             map[string]string    `json:"levers,omitempty"`
+	Cleanup            []string             `json:"cleanup,omitempty"`
+	Dollars            float64              `json:"dollars,omitempty"`
+	IntegrationState   string               `json:"integration_state,omitempty"`
+	Worktree           string               `json:"worktree,omitempty"`
+	Branch             string               `json:"branch,omitempty"`
+	Planner            *stageusage.Snapshot `json:"planner,omitempty"`
+	PlannerOutcome     string               `json:"planner_outcome,omitempty"`
+	DecisionPage       string               `json:"decision_page,omitempty"`
+	FailureHistory     FailureHistory       `json:"failure_history"`
+	DecisionEvaluation *review.Evaluation   `json:"decision_evaluation,omitempty"`
+	DecisionBindings   []review.Binding     `json:"decision_bindings,omitempty"`
 }
 
 type FailureHistory struct {

@@ -979,8 +979,9 @@ func runDaemon(args []string) {
 		Store: st, Runner: run, Pool: slots.NewPool(*slotN),
 		Flows: flows, DataDir: filepath.Join(data, "issues"), CacheRoot: data,
 		Workspace: ws, TokenBudget: *budget,
-		PlannerBudget:      cfg.PlannerBudget,
-		PlanReview:         cfg.PlanReviewSettings(),
+		PlannerBudget:  cfg.PlannerBudget,
+		PlanReview:     cfg.PlanReviewSettings(),
+		DecisionPolicy: cfg.DecisionEscalationPolicy(), DecisionPolicyConfigured: true,
 		DecisionIdentities: decisionIdentities,
 		Marshal:            seq, Train: train,
 		Librarian: lib,
@@ -1244,6 +1245,28 @@ func formatDecision(d engine.PendingDecision) string {
 		fmt.Fprintf(&out, "review policy: %s\n", requirement)
 		fmt.Fprintf(&out, "    mode: %s\n", policy.Mode)
 		fmt.Fprintf(&out, "    policy: %s@%s\n", policy.PolicyID, policy.PolicyVersion)
+	}
+	if evaluation := d.Evaluation; evaluation != nil {
+		fmt.Fprintf(&out, "escalation: %s\n", evaluation.Outcome)
+		fmt.Fprintf(&out, "    floor: %s -> %s\n", evaluation.RequiredFloor, evaluation.EffectiveFloor)
+		fmt.Fprintf(&out, "    policy: %s@%s\n", evaluation.PolicyID, evaluation.PolicyVersion)
+		for _, signal := range evaluation.Evidence {
+			fmt.Fprintf(&out, "    %s=%s · rule: %s · floor: %s\n", signal.Signal, signal.Value, signal.Rule, signal.Floor)
+		}
+		for _, binding := range d.Bindings {
+			fmt.Fprintf(&out, "    item: %s %s %s · sha256 %s\n", binding.Item.Kind, binding.Item.Path, binding.Item.Operation, binding.Item.Hash)
+			for _, dependency := range binding.Dependencies {
+				fmt.Fprintf(&out, "    dependency: %s/%s · sha256 %s\n", dependency.Kind, dependency.ID, dependency.Hash)
+			}
+		}
+		importance := "omitted"
+		if evaluation.Model.Importance != nil {
+			importance = fmt.Sprintf("%.1f", *evaluation.Model.Importance)
+		}
+		fmt.Fprintf(&out, "    importance: %s (advisory)\n", importance)
+		if evaluation.Model.Rationale != "" {
+			fmt.Fprintf(&out, "    rationale: %s (advisory)\n", evaluation.Model.Rationale)
+		}
 	}
 	if d.D.Kind == levers.DecisionFreeform {
 		fmt.Fprintf(&out, "    recommended: %s\n", d.D.RecommendedResponse)

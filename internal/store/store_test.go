@@ -1073,6 +1073,41 @@ func TestDecisionEvidenceKeepsContextNested(t *testing.T) {
 	}
 }
 
+func TestDecisionRoundTripsEscalationEvidenceAndExactBindings(t *testing.T) {
+	s, err := Open("file:decision-escalation-evidence?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	hash := strings.Repeat("a", 64)
+	id, err := s.InsertDecision(DecisionRow{
+		IssueID: "GH-64", Stage: "execute", Question: "Approve repair?",
+		Evaluation: &review.Evaluation{
+			Outcome: review.OutcomeRequiresApproval, RequiredFloor: review.FloorOperator,
+			EffectiveFloor: review.FloorOperator, PolicyID: "team-safety", PolicyVersion: "7",
+			Item: review.ItemBinding{Kind: review.ItemRepair, Hash: hash, Path: "payments/charge.go", Operation: "repair"},
+		},
+		Bindings: []review.Binding{{
+			Item:          review.ItemBinding{Kind: review.ItemRepair, Hash: hash, Path: "payments/charge.go", Operation: "repair"},
+			RequiredFloor: review.FloorOperator, EffectiveFloor: review.FloorOperator,
+			PolicyID: "team-safety", PolicyVersion: "7",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.DecisionByID(id)
+	if err != nil || !ok || got.Evaluation == nil || len(got.Bindings) != 1 {
+		t.Fatalf("decision = %+v, ok=%v, err=%v", got, ok, err)
+	}
+	if got.Evaluation.RequiredFloor != review.FloorOperator || got.Evaluation.PolicyID != "team-safety" ||
+		got.Bindings[0].Item.Hash != hash || got.Bindings[0].Item.Path != "payments/charge.go" ||
+		got.Bindings[0].Item.Operation != "repair" {
+		t.Fatalf("escalation evidence = %+v bindings=%+v", got.Evaluation, got.Bindings)
+	}
+}
+
 func TestProposalLifecycle(t *testing.T) {
 	s, _ := Open("file:t4?mode=memory&cache=shared")
 	defer s.Close()

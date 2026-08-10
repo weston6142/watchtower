@@ -211,6 +211,38 @@ func TestRenderPlanReviewPolicyInToastAndEditor(t *testing.T) {
 	}
 }
 
+func TestRenderDecisionEscalationEvidence(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	importance := 0.2
+	hash := strings.Repeat("a", 64)
+	evaluation := &review.Evaluation{
+		Outcome: review.OutcomeRequiresApproval, RequiredFloor: review.FloorPolicy, EffectiveFloor: review.FloorOperator,
+		PolicyID: "team-safety", PolicyVersion: "7",
+		Evidence:     []review.Evidence{{Signal: "path", Value: "payments/charge.go", Rule: "path:payments/**", Floor: review.FloorOperator}},
+		Item:         review.ItemBinding{Kind: review.ItemArtifact, Hash: hash, Path: "payments/charge.go", Operation: "approve-artifact"},
+		Dependencies: []review.DependencyBinding{{Kind: "decision", ID: "GH-63", Hash: hash}},
+		Model:        review.ModelMetadata{Importance: &importance, Options: []string{"approve", "revise"}, Rationale: "advisory rationale"},
+	}
+	d := projection.DecisionView{ID: 64, Stage: "execute", Question: "Approve?", Evaluation: evaluation,
+		Bindings: []review.Binding{{Item: evaluation.Item, RequiredFloor: evaluation.RequiredFloor, EffectiveFloor: evaluation.EffectiveFloor,
+			PolicyID: evaluation.PolicyID, PolicyVersion: evaluation.PolicyVersion, Evidence: evaluation.Evidence,
+			Dependencies: evaluation.Dependencies, Model: evaluation.Model}}}
+	out := ansi.Strip(renderToast(d, Identity{Tag: "GH"}, 0, 0, 80))
+	for _, want := range []string{"outcome: requires-approval", "floor: policy -> operator", "policy: team-safety@7",
+		"path=payments/charge.go", "item: artifact payments/charge.go approve-artifact",
+		"dependency: decision/GH-63", "importance: 0.2 (advisory)", "advisory rationale"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rendered escalation evidence missing %q:\n%s", want, out)
+		}
+	}
+	for start := 0; start < len(hash); start += 16 {
+		end := min(start+16, len(hash))
+		if !strings.Contains(out, hash[start:end]) {
+			t.Fatalf("rendered escalation evidence missing hash fragment %q:\n%s", hash[start:end], out)
+		}
+	}
+}
+
 func TestRenderPendingPolicyReviewIsNotShownAsApproved(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	d := projection.DecisionView{

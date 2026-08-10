@@ -10,7 +10,79 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/plannerbudget"
+	"github.com/weston6142/watchtower/internal/review"
 )
+
+func TestLoadDecisionPolicySettings(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := []byte("decision_policy:\n" +
+		"  policy_id: team-safety\n" +
+		"  policy_version: \"7\"\n" +
+		"  default_floor: none\n" +
+		"  stage_floors: {merge-verification: operator}\n" +
+		"  operation_floors: {repair: operator}\n" +
+		"  path_floors: [{glob: payments/**, floor: operator}]\n" +
+		"  destructive_floor: policy\n" +
+		"  publication_floor: operator\n")
+	if err := os.WriteFile(filepath.Join(root, ".watchtower", "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.DecisionEscalationPolicy()
+	if !got.Valid || got.ID != "team-safety" || got.Version != "7" ||
+		got.StageFloors["merge-verification"] != review.FloorOperator ||
+		got.OperationFloors["repair"] != review.FloorOperator ||
+		len(got.PathFloors) != 1 || got.PathFloors[0].Glob != "payments/**" ||
+		got.DestructiveFloor != review.FloorPolicy || got.PublicationFloor != review.FloorOperator {
+		t.Fatalf("decision policy = %+v", got)
+	}
+}
+
+func TestLoadDecisionPolicyDefaultsWhenAbsent(t *testing.T) {
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.DecisionEscalationPolicy()
+	if !got.Valid || got.ID != review.ManualPolicyID || got.Version != review.ManualPolicyVersion ||
+		got.DefaultFloor != review.FloorNone || got.DestructiveFloor != review.FloorOperator ||
+		got.PublicationFloor != review.FloorOperator {
+		t.Fatalf("absent decision policy = %+v", got)
+	}
+}
+
+func TestMalformedDecisionPolicyRemainsUnevaluable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".watchtower", "config.yaml"), []byte(`decision_policy:
+  policy_id: team-safety
+  policy_version: "7"
+  default_floor: [operator]
+  stage_floors: {}
+  operation_floors: {}
+  path_floors: []
+  destructive_floor: operator
+  publication_floor: operator
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.DecisionEscalationPolicy()
+	if got.Valid || got.ID != "team-safety" || got.Version != "7" {
+		t.Fatalf("malformed decision policy = %+v, want invalid identity-preserving policy", got)
+	}
+}
 
 func TestLoadPlanReviewSettings(t *testing.T) {
 	root := t.TempDir()

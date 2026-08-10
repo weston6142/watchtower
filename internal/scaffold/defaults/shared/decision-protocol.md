@@ -67,3 +67,27 @@ internal fragments only. Do not include `script`, `style`, `foreignObject`,
 external images, external URLs, event handlers, or inline style attributes.
 The page validates this SVG before displaying it, so omit the diagram when the
 mechanism cannot be represented within these constraints.
+
+## Engine-owned escalation authority
+
+The model's `importance` is advisory metadata. It may request stricter review,
+but it can never lower, omit, or replace an approval required by the engine's
+configured policy. The engine evaluates independent stage, operation, affected
+path, destructive-risk, publication-risk, and policy floors; the strictest
+matching floor wins.
+
+Every actionable approval records the outcome, required and effective floors,
+policy identity and version, matched signal evidence, and an exact item binding:
+kind, SHA-256, repository-relative path, and trusted operation. Explicit
+dependencies are recorded with their hashes. A changed item invalidates only
+that item and its explicit dependents; an unrelated item remains independently
+approved. Policy identity, floor, path, operation, dependency, or hash changes
+are stale and require reapproval.
+
+The engine gate has explicit `approved`, `requires-approval`, `stale`,
+`invalid-context`, and `policy-error` outcomes. Missing or malformed policy or
+item context fails closed. The gate is checked when a decision is answered and
+again immediately before a protected handoff or execution transition. Human
+approval is sufficient for a policy floor; an operator floor still requires a
+human approval. Rendered rationale, options, and consequences remain advisory
+metadata and never synthesize approval.

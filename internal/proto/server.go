@@ -414,6 +414,17 @@ func (sv *Server) exec(cmd Command) Response {
 				decisionPage = candidate
 			}
 		}
+		var decisionEvaluation *review.Evaluation
+		var decisionBindings []review.Binding
+		if rows, rowsErr := sv.st.AllDecisionRows(); rowsErr == nil {
+			for _, row := range rows {
+				if row.IssueID == cmd.IssueID && row.Evaluation != nil {
+					copy := *row.Evaluation
+					decisionEvaluation = &copy
+					decisionBindings = append([]review.Binding(nil), row.Bindings...)
+				}
+			}
+		}
 		model, effort := "", ""
 		if f, ok := sv.flows[issue.Flow]; ok {
 			for _, stg := range f.Stages {
@@ -436,8 +447,8 @@ func (sv *Server) exec(cmd Command) Response {
 			IntegrationState: integration.State,
 			Worktree:         integration.Worktree, Branch: integration.Branch,
 			Planner: plannerSnapshot, PlannerOutcome: plannerOutcome,
-			DecisionPage:   decisionPage,
-			FailureHistory: history,
+			DecisionPage: decisionPage, FailureHistory: history,
+			DecisionEvaluation: decisionEvaluation, DecisionBindings: decisionBindings,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

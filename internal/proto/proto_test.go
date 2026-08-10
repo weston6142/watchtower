@@ -80,6 +80,33 @@ func TestPendingDecisionJSONExposesRequiredResponseCapability(t *testing.T) {
 	}
 }
 
+func TestPendingDecisionJSONCarriesEscalationEvidence(t *testing.T) {
+	importance := 0.2
+	hash := strings.Repeat("a", 64)
+	evaluation := review.Evaluation{
+		Outcome: review.OutcomeRequiresApproval, RequiredFloor: review.FloorPolicy, EffectiveFloor: review.FloorOperator,
+		PolicyID: "team-safety", PolicyVersion: "7", Item: review.ItemBinding{
+			Kind: review.ItemDecision, Hash: hash, Path: "payments/charge.go", Operation: "decision",
+		}, Model: review.ModelMetadata{Importance: &importance, Options: []string{"approve"}, Rationale: "advisory"},
+	}
+	pending := engine.PendingDecision{ID: 64, IssueID: "GH-64", Stage: "execute", Evaluation: &evaluation,
+		Bindings: []review.Binding{{Item: evaluation.Item, RequiredFloor: evaluation.RequiredFloor, EffectiveFloor: evaluation.EffectiveFloor,
+			PolicyID: evaluation.PolicyID, PolicyVersion: evaluation.PolicyVersion, Model: evaluation.Model}}}
+	encoded, err := json.Marshal(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded engine.PendingDecision
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Evaluation == nil || decoded.Evaluation.Outcome != evaluation.Outcome ||
+		decoded.Evaluation.RequiredFloor != review.FloorPolicy || decoded.Evaluation.PolicyID != "team-safety" ||
+		len(decoded.Bindings) != 1 || decoded.Bindings[0].Item.Hash != hash || decoded.Bindings[0].Model.Rationale != "advisory" {
+		t.Fatalf("pending escalation evidence = %#v JSON=%s", decoded, encoded)
+	}
+}
+
 func TestPlannerOverrideRoundTripsThroughCommandJSON(t *testing.T) {
 	warn, hard := int64(4), int64(5)
 	elapsedWarn, elapsedHard := 2*time.Minute, 3*time.Minute

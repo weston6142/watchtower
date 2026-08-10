@@ -86,6 +86,38 @@ func decisionReviewLines(target *review.Target, width int) []string {
 	return lines
 }
 
+func decisionEscalationLines(evaluation *review.Evaluation, bindings []review.Binding, width int) []string {
+	if evaluation == nil {
+		return nil
+	}
+	width = max(1, width)
+	lines := []string{"escalation evidence"}
+	lines = append(lines, wrapIndent("outcome: "+string(evaluation.Outcome), width, "")...)
+	lines = append(lines, wrapIndent(fmt.Sprintf("floor: %s -> %s", evaluation.RequiredFloor, evaluation.EffectiveFloor), width, "")...)
+	lines = append(lines, wrapIndent("policy: "+evaluation.PolicyID+"@"+evaluation.PolicyVersion, width, "")...)
+	for _, signal := range evaluation.Evidence {
+		lines = append(lines, wrapIndent(fmt.Sprintf("%s=%s · rule: %s · floor: %s", signal.Signal, signal.Value, signal.Rule, signal.Floor), width, "")...)
+	}
+	for _, binding := range bindings {
+		lines = append(lines, wrapIndent(fmt.Sprintf("item: %s %s %s · sha256 %s", binding.Item.Kind, binding.Item.Path, binding.Item.Operation, binding.Item.Hash), width, "")...)
+		for _, dependency := range binding.Dependencies {
+			lines = append(lines, wrapIndent(fmt.Sprintf("dependency: %s/%s · sha256 %s", dependency.Kind, dependency.ID, dependency.Hash), width, "")...)
+		}
+	}
+	importance := "omitted"
+	if evaluation.Model.Importance != nil {
+		importance = fmt.Sprintf("%.1f", *evaluation.Model.Importance)
+	}
+	lines = append(lines, wrapIndent("importance: "+importance+" (advisory)", width, "")...)
+	if len(evaluation.Model.Options) > 0 {
+		lines = append(lines, wrapIndent("options: "+strings.Join(evaluation.Model.Options, ", "), width, "")...)
+	}
+	if evaluation.Model.Rationale != "" {
+		lines = append(lines, wrapIndent("rationale: "+evaluation.Model.Rationale+" (advisory)", width, "")...)
+	}
+	return lines
+}
+
 func decisionPolicyLines(policy *review.ResolvedPolicy, approval *review.ApprovalProvenance, width int) []string {
 	if policy == nil {
 		return nil
@@ -416,6 +448,10 @@ func renderToast(d projection.DecisionView, id Identity, sel, streak, width int)
 		lines = append(lines, review...)
 		lines = append(lines, "")
 	}
+	if evidence := decisionEscalationLines(d.Evaluation, d.Bindings, inner); len(evidence) > 0 {
+		lines = append(lines, evidence...)
+		lines = append(lines, "")
+	}
 	if policy := decisionPolicyLines(d.ReviewPolicy, d.Approval, inner); len(policy) > 0 {
 		lines = append(lines, policy...)
 		lines = append(lines, "")
@@ -477,6 +513,10 @@ func renderDecisionEditor(d projection.DecisionView, editor decisionEditor, widt
 	}
 	if review := decisionReviewLines(d.Review, inner); len(review) > 0 {
 		lines = append(lines, review...)
+		lines = append(lines, "")
+	}
+	if evidence := decisionEscalationLines(d.Evaluation, d.Bindings, inner); len(evidence) > 0 {
+		lines = append(lines, evidence...)
 		lines = append(lines, "")
 	}
 	if policy := decisionPolicyLines(d.ReviewPolicy, d.Approval, inner); len(policy) > 0 {

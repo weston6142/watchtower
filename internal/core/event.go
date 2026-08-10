@@ -3,6 +3,8 @@ package core
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/weston6142/watchtower/internal/review"
 )
 
 type EventType string
@@ -21,6 +23,8 @@ const (
 	EvDecisionRequired           EventType = "decision_required"
 	EvDecisionAnswered           EventType = "decision_answered"
 	EvDecisionAutoResolved       EventType = "decision_auto_resolved"
+	EvDecisionStale              EventType = "decision_stale"
+	EvDecisionPolicyError        EventType = "decision_policy_error"
 	EvPlanReviewRequested        EventType = "plan_review_requested"
 	EvPlanReviewHumanApproved    EventType = "plan_review_human_approved"
 	EvPlanReviewPolicyApproved   EventType = "plan_review_policy_approved"
@@ -64,6 +68,13 @@ type Event struct {
 	IssueID string          `json:"issue_id"`
 	Payload json.RawMessage `json:"payload"`
 	At      time.Time       `json:"at"`
+}
+
+// DecisionEvidencePayload is the stable top-level event contract for
+// engine-owned escalation evidence. Rendered rationale is never authorization
+// state, so consumers receive the recorded gate fields explicitly.
+func DecisionEvidencePayload(evaluation *review.Evaluation, bindings []review.Binding) map[string]any {
+	return map[string]any{"evaluation": evaluation, "bindings": bindings}
 }
 
 func NewEvent(t EventType, issueID string, payload any) (Event, error) {
