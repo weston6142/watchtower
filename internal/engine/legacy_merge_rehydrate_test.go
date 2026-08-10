@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,7 +90,7 @@ func TestRehydrateProjectsBranchOnlyLegacyMerges(t *testing.T) {
 	}
 }
 
-func TestRehydratePreservesLandedSHAForBranchOnlyMergeEvidence(t *testing.T) {
+func TestRehydratePrefersLandedSHAOverBranchOnlyMergeEvidence(t *testing.T) {
 	e, s, _, landedSHA := newLegacyFailureEngine(t, []legacyFailureCandidate{
 		{id: "GH-61", state: "done"},
 	})
@@ -220,16 +219,7 @@ func TestRehydrateProjectsLegacyMergesAfterRestart(t *testing.T) {
 
 func createCanonicalLegacyMerge(t *testing.T, repo, issueID string) string {
 	t.Helper()
-	branch := "issue/" + issueID
-	gitOutput(t, repo, "checkout", "-q", "-b", branch, "main")
-	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitOutput(t, repo, "add", issueID)
-	gitOutput(t, repo, "commit", "-qm", "change "+issueID)
-	gitOutput(t, repo, "checkout", "-q", "main")
-	gitOutput(t, repo, "merge", "--no-ff", "-m", "Merge branch '"+branch+"' into main", branch)
-	return strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main"))
+	return createCanonicalLegacyMergeWithSubject(t, repo, issueID, canonicalLegacyMergeSubject(issueID, "main"), "main")
 }
 
 func appendLegacyEvents(t *testing.T, s *store.Store, issueID string, specs ...legacyEventSpec) {

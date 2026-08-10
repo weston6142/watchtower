@@ -27,7 +27,7 @@ func matchCanonicalLegacyMerge(repo, baseSHA, baseBranch, issueBranch string) st
 	if err != nil {
 		return ""
 	}
-	wantSubject := fmt.Sprintf("Merge branch '%s' into %s", issueBranch, baseBranch)
+	canonicalSubject := fmt.Sprintf("Merge branch '%s' into %s", issueBranch, baseBranch)
 	var matches []string
 	for _, line := range strings.Split(string(out), "\n") {
 		if line == "" {
@@ -39,7 +39,7 @@ func matchCanonicalLegacyMerge(repo, baseSHA, baseBranch, issueBranch string) st
 		}
 		candidate := line[:separator]
 		subject := line[separator+1:]
-		if !isLegacyCommitID(candidate) || subject != wantSubject {
+		if !isLegacyCommitID(candidate) || subject != canonicalSubject {
 			continue
 		}
 
@@ -52,9 +52,9 @@ func matchCanonicalLegacyMerge(repo, baseSHA, baseBranch, issueBranch string) st
 		if err != nil {
 			continue
 		}
-		fields := strings.Fields(string(parentOutput))
-		if len(fields) != 3 || fields[0] != candidate ||
-			!isLegacyCommitID(fields[1]) || !isLegacyCommitID(fields[2]) {
+		parentFields := strings.Fields(string(parentOutput))
+		if len(parentFields) != 3 || parentFields[0] != candidate ||
+			!isLegacyCommitID(parentFields[1]) || !isLegacyCommitID(parentFields[2]) {
 			continue
 		}
 

@@ -448,13 +448,7 @@ func canonicalLegacyMergeSubject(issueID, baseBranch string) string {
 
 func createCanonicalLegacyMergeWithSubject(t *testing.T, repo, issueID, subject, target string) string {
 	t.Helper()
-	branch := "issue/" + issueID
-	gitOutput(t, repo, "checkout", "-q", "-b", branch, "main")
-	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitOutput(t, repo, "add", issueID)
-	gitOutput(t, repo, "commit", "-qm", "change "+issueID)
+	branch := createLegacyIssueBranch(t, repo, issueID, "change "+issueID)
 	if target == "main" {
 		gitOutput(t, repo, "checkout", "-q", "main")
 	} else {
@@ -466,6 +460,18 @@ func createCanonicalLegacyMergeWithSubject(t *testing.T, repo, issueID, subject,
 		gitOutput(t, repo, "checkout", "-q", "main")
 	}
 	return landedSHA
+}
+
+func createLegacyIssueBranch(t *testing.T, repo, issueID, commitMessage string) string {
+	t.Helper()
+	branch := "issue/" + issueID
+	gitOutput(t, repo, "checkout", "-q", "-b", branch, "main")
+	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", issueID)
+	gitOutput(t, repo, "commit", "-qm", commitMessage)
+	return branch
 }
 
 func createOneParentLegacySubject(t *testing.T, repo, issueID, subject string) string {
@@ -480,13 +486,7 @@ func createOneParentLegacySubject(t *testing.T, repo, issueID, subject string) s
 
 func createSquashLegacySubject(t *testing.T, repo, issueID, subject string) string {
 	t.Helper()
-	branch := "issue/" + issueID
-	gitOutput(t, repo, "checkout", "-q", "-b", branch, "main")
-	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitOutput(t, repo, "add", issueID)
-	gitOutput(t, repo, "commit", "-qm", "change "+issueID)
+	branch := createLegacyIssueBranch(t, repo, issueID, "change "+issueID)
 	gitOutput(t, repo, "checkout", "-q", "main")
 	gitOutput(t, repo, "merge", "--squash", branch)
 	gitOutput(t, repo, "commit", "-qm", subject)
@@ -495,13 +495,7 @@ func createSquashLegacySubject(t *testing.T, repo, issueID, subject string) stri
 
 func createFastForwardLegacySubject(t *testing.T, repo, issueID, subject string) string {
 	t.Helper()
-	branch := "issue/" + issueID
-	gitOutput(t, repo, "checkout", "-q", "-b", branch, "main")
-	if err := os.WriteFile(filepath.Join(repo, issueID), []byte(issueID+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitOutput(t, repo, "add", issueID)
-	gitOutput(t, repo, "commit", "-qm", subject)
+	branch := createLegacyIssueBranch(t, repo, issueID, subject)
 	gitOutput(t, repo, "checkout", "-q", "main")
 	gitOutput(t, repo, "merge", "--ff-only", branch)
 	return strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main"))

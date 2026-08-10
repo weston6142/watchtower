@@ -73,7 +73,6 @@ func foldLegacyMergeEvidence(
 		mergedBranch            string
 		mergedFields            map[string]json.RawMessage
 		landedSHA               string
-		completionOutcome       string
 	)
 	for _, event := range relevant {
 		fields, err := legacyEventFields(event.Payload)
@@ -88,12 +87,12 @@ func foldLegacyMergeEvidence(
 			hasMerged = true
 			mergedSeq = event.Seq
 			mergedFields = fields
-			branch, present, err := legacyStringField(fields, "branch")
+			recordedBranch, present, err := legacyStringField(fields, "branch")
 			if err != nil {
 				return reject(fmt.Sprintf("issue_merged branch evidence is malformed: %v", err))
 			}
 			if present {
-				mergedBranch = branch
+				mergedBranch = recordedBranch
 			}
 		}
 		if event.Type == core.EvIssueCompleted {
@@ -127,37 +126,31 @@ func foldLegacyMergeEvidence(
 			}
 		}
 
-		branch, present, err := legacyStringField(fields, "base_branch")
+		baseBranchEvidence, present, err := legacyStringField(fields, "base_branch")
 		if err != nil {
 			return reject(fmt.Sprintf("%s base_branch evidence is malformed: %v", event.Type, err))
 		}
-		if present && branch != baseBranch {
-			return reject(fmt.Sprintf("conflicting base branches %q and %q", branch, baseBranch))
+		if present && baseBranchEvidence != baseBranch {
+			return reject(fmt.Sprintf("conflicting base branches %q and %q", baseBranchEvidence, baseBranch))
 		}
-		branch, present, err = legacyStringField(fields, "branch")
+		issueBranchEvidence, present, err := legacyStringField(fields, "branch")
 		if err != nil {
 			return reject(fmt.Sprintf("%s branch evidence is malformed: %v", event.Type, err))
 		}
-		if present && branch != "issue/"+issue.ID && branch != baseBranch {
-			return reject(fmt.Sprintf("conflicting branch evidence %q and %q", branch, baseBranch))
+		if present && issueBranchEvidence != "issue/"+issue.ID && issueBranchEvidence != baseBranch {
+			return reject(fmt.Sprintf("conflicting branch evidence %q and %q", issueBranchEvidence, baseBranch))
 		}
 
 		if event.Type == core.EvIssueCompleted {
-			merge, present, err := legacyStringField(fields, "merge")
+			mergeOutcome, present, err := legacyStringField(fields, "merge")
 			if err != nil {
 				return reject(fmt.Sprintf("completion outcome is malformed: %v", err))
 			}
-			if present {
-				if merge == "left-unmerged" {
-					return reject("completion is left-unmerged")
-				}
-				if merge == "none" {
-					return reject("completion explicitly reports no merge")
-				}
-				if completionOutcome != "" && completionOutcome != merge {
-					return reject(fmt.Sprintf("conflicting completion outcomes %q and %q", completionOutcome, merge))
-				}
-				completionOutcome = merge
+			if present && mergeOutcome == "left-unmerged" {
+				return reject("completion is left-unmerged")
+			}
+			if present && mergeOutcome == "none" {
+				return reject("completion explicitly reports no merge")
 			}
 		}
 	}
@@ -180,8 +173,7 @@ func foldLegacyMergeEvidence(
 	if mergedBranch != "issue/"+issue.ID {
 		return reject("branch-only merge evidence does not identify the exact issue branch")
 	}
-	if hasKey(mergedFields, "commit") || hasKey(mergedFields, "landed_sha") ||
-		hasKey(mergedFields, "base_branch") || len(mergedFields) != 1 {
+	if len(mergedFields) != 1 {
 		return reject("issue_merged branch-only payload contains extra merge evidence")
 	}
 	return legacyMergeEvidence{
@@ -217,11 +209,6 @@ func legacyStringField(fields map[string]json.RawMessage, name string) (string, 
 		return "", true, fmt.Errorf("%s is empty", name)
 	}
 	return value, true, nil
-}
-
-func hasKey(fields map[string]json.RawMessage, name string) bool {
-	_, ok := fields[name]
-	return ok
 }
 
 func mergeLegacyStringEvidence(existing, next string) (string, error) {
