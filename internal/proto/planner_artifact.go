@@ -62,17 +62,11 @@ func (sv *Server) plannerExec(cmd Command) Response {
 		}
 		handle := cmd.PlannerHandle
 		if handle == "" {
-			var issueErr error
-			handle, _, issueErr = sv.eng.IssuePlannerAuthority(scope)
-			if issueErr != nil {
-				return sv.plannerFailure(issueErr)
-			}
+			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorStaleCapability, "", "capability is not active"))
 		}
 		key, err := sv.eng.ApplyPlannerArtifact(scope, handle, *request)
 		if err != nil {
-			response := sv.plannerFailure(err)
-			response.SectionKey = request.Key
-			return response
+			return sv.plannerFailure(err)
 		}
 		return Response{OK: true, SectionKey: key, CorrelationID: sv.plannerCorrelation()}
 	case "planner_authority_retry":

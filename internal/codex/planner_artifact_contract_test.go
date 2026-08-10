@@ -27,37 +27,49 @@ func TestInstalledCodexPlannerBoundary(t *testing.T) {
 	for _, issueID := range []string{"GH-63", "GH-64"} {
 		t.Run(issueID, func(t *testing.T) {
 			repo, home, coordinator, listener, authority, requestPath := startInstalledDaemon(t, issueID)
-			request := installedContractRequest(issueID)
-			data, err := json.Marshal(request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(requestPath, data, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command(installed, "planner-artifact", "apply", "--request-file", requestPath)
-			cmd.Dir = repo
-			cmd.Env = append(os.Environ(), "HOME="+home, "WATCHTOWER_PLANNER_SESSION=private-"+issueID)
-			if len(cmd.ExtraFiles) != 0 || strings.Contains(strings.Join(cmd.Args, " "), request.Markdown) {
-				t.Fatal("installed Codex boundary used a descriptor or placed the body in argv")
-			}
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("installed planner route: %v output=%q", err, output)
-			}
-			if string(output) != "section-validated goal\n" {
-				t.Fatalf("installed planner output = %q", output)
-			}
-			if strings.Contains(string(output), request.Markdown) || strings.Contains(string(output), "private-"+issueID) {
-				t.Fatalf("installed planner output disclosed request or private session: %q", output)
+			requests := installedContractRequests(issueID)
+			for _, request := range requests {
+				data, err := json.Marshal(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(requestPath, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command(installed, "planner-artifact", "apply", "--request-file", requestPath)
+				cmd.Dir = repo
+				cmd.Env = append(os.Environ(), "HOME="+home, "WATCHTOWER_PLANNER_SESSION=private-"+issueID)
+				if len(cmd.ExtraFiles) != 0 || strings.Contains(strings.Join(cmd.Args, " "), request.Markdown) {
+					t.Fatal("installed Codex boundary used a descriptor or placed the body in argv")
+				}
+				output, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("installed planner route for %s: %v output=%q", request.Key, err, output)
+				}
+				if string(output) != "section-validated "+request.Key+"\n" {
+					t.Fatalf("installed planner output for %s = %q", request.Key, output)
+				}
+				if strings.Contains(string(output), request.Markdown) || strings.Contains(string(output), "private-"+issueID) {
+					t.Fatalf("installed planner output disclosed request or private session: %q", output)
+				}
 			}
 			plan, err := os.ReadFile(filepath.Join(repo, "plan.md"))
-			if err != nil || !strings.Contains(string(plan), request.Markdown) {
-				t.Fatalf("installed planner did not publish final goal: err=%v plan=%q", err, plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, request := range requests {
+				if !strings.Contains(string(plan), request.Markdown) {
+					t.Fatalf("installed planner did not publish %s: plan=%q", request.Key, plan)
+				}
 			}
 			status, _, _, sections, found, err := coordinator.LoadPlannerArtifact(issueID, "plan", 1, authority.Binding().Worktree)
-			if err != nil || !found || status != "active" || !strings.Contains(string(sections), request.Markdown) {
+			if err != nil || !found || status != "active" {
 				t.Fatalf("durable planner state = status=%q found=%v sections=%s err=%v", status, found, sections, err)
+			}
+			for _, request := range requests {
+				if !strings.Contains(string(sections), request.Markdown) {
+					t.Fatalf("durable planner state omitted %s: %s", request.Key, sections)
+				}
 			}
 			_ = listener
 			_ = authority
@@ -107,7 +119,7 @@ func startInstalledDaemon(t *testing.T, issueID string) (repo, home string, coor
 	return repo, home, coordinator, listener, authority, requestPath
 }
 
-func installedContractRequest(issueID string) plannerartifact.WriteRequest {
+func installedContractRequests(issueID string) []plannerartifact.WriteRequest {
 	manifest := plannerartifact.Manifest{Sections: []plannerartifact.ManifestEntry{
 		{Key: "goal", Globs: []string{"internal/" + strings.ToLower(issueID) + "/goal/**"}},
 		{Key: "architecture", Globs: []string{"internal/" + strings.ToLower(issueID) + "/architecture/**"}},
@@ -117,5 +129,11 @@ func installedContractRequest(issueID string) plannerartifact.WriteRequest {
 		{Key: "task-0001", Globs: []string{"internal/" + strings.ToLower(issueID) + "/task/**"}},
 		{Key: "verification", Globs: []string{"internal/" + strings.ToLower(issueID) + "/verification/**"}},
 	}}
-	return plannerartifact.WriteRequest{Manifest: manifest, Key: "goal", Markdown: "final reviewed " + issueID + " goal", Globs: manifest.Sections[0].Globs}
+	requests := make([]plannerartifact.WriteRequest, 0, len(manifest.Sections))
+	for _, section := range manifest.Sections {
+		requests = append(requests, plannerartifact.WriteRequest{
+			Manifest: manifest, Key: section.Key, Markdown: "final reviewed " + issueID + " " + section.Key, Globs: section.Globs,
+		})
+	}
+	return requests
 }

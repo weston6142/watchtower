@@ -3552,6 +3552,11 @@ type runnerStageError struct {
 	Result runner.Result
 }
 
+func plannerAuthorityFinalValidation(err error) bool {
+	var diagnostic *plannerartifact.DiagnosticError
+	return errors.As(err, &diagnostic) && diagnostic.Scope == plannerartifact.ScopeFinalValidation
+}
+
 func (e *runnerStageError) Error() string {
 	if e.Result.Err == nil {
 		return fmt.Sprintf("agent %s failed", e.Agent)
@@ -3622,6 +3627,13 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 		if e.wasKilled(is) {
 			e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
 			return context.Canceled
+		}
+		if plannerAuthorityFinalValidation(err) {
+			e.emit(core.EvStageFailed, is.id, map[string]any{
+				"stage": st.Name, "error": err.Error(),
+				"attempt": attempt + 1, "of": of, "final": true,
+			})
+			break
 		}
 		payload := map[string]any{
 			"stage": st.Name, "error": err.Error(),

@@ -332,3 +332,32 @@ func TestEnginePlannerAuthorityBindsExactScopeAndValidatesPair(t *testing.T) {
 		t.Fatalf("engine final validation: %v", err)
 	}
 }
+
+func TestEnginePlannerAuthorityRecoversFromDurableStoreAfterRestart(t *testing.T) {
+	coordinator, err := store.Open(filepath.Join(t.TempDir(), "coordinator.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	worktree := t.TempDir()
+	binding := plannerartifact.Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: worktree}
+	authority, err := plannerartifact.CreateOrLoad(coordinator, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := plannerArtifactRequests()[0].Manifest
+	if err := authority.Apply(plannerartifact.WriteRequest{Manifest: manifest, Key: "goal", Markdown: "retained after restart", Globs: manifest.Sections[0].Globs}); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := New(Config{Store: coordinator, DataDir: t.TempDir()})
+	handle, recoveredBinding, err := restarted.IssuePlannerAuthority(plannerartifact.Binding{Worktree: worktree})
+	if err != nil || handle == "" || recoveredBinding != authority.Binding() {
+		t.Fatalf("restart recovery = handle %q binding %+v err %v", handle, recoveredBinding, err)
+	}
+	if _, err := restarted.ApplyPlannerArtifact(binding, handle, plannerartifact.WriteRequest{
+		Manifest: manifest, Key: "architecture", Markdown: "next section after restart", Globs: manifest.Sections[1].Globs,
+	}); err != nil {
+		t.Fatalf("apply after restart: %v", err)
+	}
+}

@@ -54,6 +54,12 @@ func TestDaemonPlannerAuthorityAppliesThroughEngineAndRetainsSafeResponse(t *tes
 	}
 	manifest := plannerRouteManifest()
 	request := plannerartifact.WriteRequest{Manifest: manifest, Key: "goal", Markdown: "final daemon-routed goal", Globs: manifest.Sections[0].Globs}
+	missingHandle := server.exec(Command{
+		Op: "apply_planner_artifact", Worktree: worktree, PlannerRequest: &request,
+	})
+	if missingHandle.OK || missingHandle.ErrorClass != string(plannerartifact.ErrorStaleCapability) {
+		t.Fatalf("missing capability response = %+v", missingHandle)
+	}
 	result := server.exec(Command{
 		Op: "apply_planner_artifact", Worktree: worktree, PlannerHandle: issued.PlannerHandle,
 		PlannerRequest: &request,

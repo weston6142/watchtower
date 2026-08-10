@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 )
 
 // LoadPlannerArtifact reads the exact authority tuple. The boolean is false
@@ -27,6 +29,55 @@ func (s *Store) LoadPlannerArtifact(issueID, stage string, attempt int, worktree
 		return "", nil, nil, nil, false, err
 	}
 	return status, append([]byte(nil), digest...), []byte(manifest), []byte(sections), true, nil
+}
+
+// ActivePlannerArtifactBindings returns the exact active scopes for one
+// canonical worktree. It is used only during daemon recovery; callers still
+// validate the durable record before issuing a new capability.
+func (s *Store) ActivePlannerArtifactBindings(worktree string) ([]plannerartifact.Binding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`
+		SELECT issue_id, stage, attempt, worktree
+		FROM planner_artifacts
+		WHERE status=? AND worktree=?`, "active", worktree)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var bindings []plannerartifact.Binding
+	for rows.Next() {
+		var binding plannerartifact.Binding
+		if err := rows.Scan(&binding.IssueID, &binding.Stage, &binding.Attempt, &binding.Worktree); err != nil {
+			return nil, err
+		}
+		bindings = append(bindings, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return bindings, nil
+}
+
+// LoadLatestPlannerArtifact returns the newest active planner record for one
+// issue/stage/worktree. A retry uses this durable prefix to initialize its
+// next exact attempt without trusting client or worktree content.
+func (s *Store) LoadLatestPlannerArtifact(issueID, stage, worktree string) (attempt int, status string, digest, manifest, sections []byte, found bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.db.QueryRow(`
+		SELECT attempt, status, capability_digest, manifest, sections
+		FROM planner_artifacts
+		WHERE issue_id=? AND stage=? AND worktree=? AND status=?
+		ORDER BY attempt DESC LIMIT 1`,
+		issueID, stage, worktree, "active").Scan(&attempt, &status, &digest, &manifest, &sections)
+	if err == sql.ErrNoRows {
+		return 0, "", nil, nil, nil, false, nil
+	}
+	if err != nil {
+		return 0, "", nil, nil, nil, false, err
+	}
+	return attempt, status, append([]byte(nil), digest...), []byte(manifest), []byte(sections), true, nil
 }
 
 // CreatePlannerArtifact inserts one exact-tuple authority record.

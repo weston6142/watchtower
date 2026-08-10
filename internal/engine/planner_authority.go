@@ -57,15 +57,51 @@ func (e *Engine) plannerAuthorityForScope(asserted plannerartifact.Binding) (*pl
 		}
 		match, binding = authority, candidate
 	}
-	if match == nil {
+	if match != nil {
+		if (asserted.IssueID != "" && asserted.IssueID != binding.IssueID) ||
+			(asserted.Stage != "" && asserted.Stage != binding.Stage) ||
+			(asserted.Attempt != 0 && asserted.Attempt != binding.Attempt) {
+			return nil, plannerartifact.Binding{}, plannerartifact.NewAuthorityError(plannerartifact.ErrorScopeMismatch, "", "planner scope does not match active attempt")
+		}
+		return match, binding, nil
+	}
+	if e.cfg.Store == nil {
 		return nil, plannerartifact.Binding{}, plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "no active planner authority")
 	}
-	if (asserted.IssueID != "" && asserted.IssueID != binding.IssueID) ||
-		(asserted.Stage != "" && asserted.Stage != binding.Stage) ||
-		(asserted.Attempt != 0 && asserted.Attempt != binding.Attempt) {
+	active, err := e.cfg.Store.ActivePlannerArtifactBindings(canonical)
+	if err != nil {
+		return nil, plannerartifact.Binding{}, plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityState, "", "planner authority recovery is unavailable")
+	}
+	latest := make(map[string]plannerartifact.Binding)
+	for _, candidate := range active {
+		if (asserted.IssueID == "" || asserted.IssueID == candidate.IssueID) &&
+			(asserted.Stage == "" || asserted.Stage == candidate.Stage) &&
+			(asserted.Attempt == 0 || asserted.Attempt == candidate.Attempt) {
+			key := candidate.IssueID + "\x00" + candidate.Stage
+			if previous, ok := latest[key]; !ok || candidate.Attempt > previous.Attempt {
+				latest[key] = candidate
+			}
+		}
+	}
+	if len(active) > 0 && len(latest) == 0 {
 		return nil, plannerartifact.Binding{}, plannerartifact.NewAuthorityError(plannerartifact.ErrorScopeMismatch, "", "planner scope does not match active attempt")
 	}
-	return match, binding, nil
+	if len(latest) == 0 {
+		return nil, plannerartifact.Binding{}, plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "no active planner authority")
+	}
+	if len(latest) != 1 {
+		return nil, plannerartifact.Binding{}, plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityState, "", "planner scope is ambiguous")
+	}
+	var recoveredBinding plannerartifact.Binding
+	for _, candidate := range latest {
+		recoveredBinding = candidate
+	}
+	recoveredAuthority, err := plannerartifact.CreateOrLoad(e.cfg.Store, recoveredBinding)
+	if err != nil {
+		return nil, plannerartifact.Binding{}, err
+	}
+	e.plannerAuthorities[plannerBindingKey(recoveredBinding)] = recoveredAuthority
+	return recoveredAuthority, recoveredBinding, nil
 }
 
 // IssuePlannerAuthority presents the live engine-issued capability to the
