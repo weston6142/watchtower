@@ -49,6 +49,21 @@ func repoWithBranch(t *testing.T, conflicting bool) (string, string) {
 	return repo, "issue/GH-1"
 }
 
+func TestDefaultBranchAccessor(t *testing.T) {
+	repo, _ := repoWithBranch(t, false)
+	tr := &Train{Repo: repo}
+	branch, err := tr.DefaultBranch()
+	if err != nil || branch != "main" {
+		t.Fatalf("DefaultBranch() = %q, %v; want main", branch, err)
+	}
+
+	detached, _ := repoWithBranch(t, false)
+	git(t, detached, "checkout", "--detach", "HEAD")
+	if branch, err := (&Train{Repo: detached}).DefaultBranch(); err == nil {
+		t.Fatalf("DefaultBranch() on detached repository = %q, want error", branch)
+	}
+}
+
 func TestLandCleanMerge(t *testing.T) {
 	repo, branch := repoWithBranch(t, false)
 	tr := &Train{Repo: repo}
