@@ -22,6 +22,7 @@ import (
 	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/evidence"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/librarian"
@@ -44,6 +45,7 @@ var errConflictHeld = errors.New("merge conflict held")
 
 type Config struct {
 	Store              *store.Store
+	FailureRecorder    failure.Recorder
 	Runner             runner.Runner
 	Marshal            Sequencer
 	Train              *marshal.Train
@@ -223,6 +225,9 @@ type Engine struct {
 }
 
 func New(cfg Config) *Engine {
+	if cfg.FailureRecorder == nil {
+		cfg.FailureRecorder = cfg.Store
+	}
 	if cfg.PlannerBudget == (plannerbudget.Profile{}) {
 		cfg.PlannerBudget = plannerbudget.DefaultProfile()
 	}
@@ -249,6 +254,8 @@ func New(cfg Config) *Engine {
 
 func (e *Engine) RecordAttempt(ctx context.Context, attempt runner.Attempt) error {
 	if err := e.cfg.Store.RecordAttempt(ctx, attempt); err != nil {
+		_ = e.recordBoundaryFailure(ctx, attempt.IssueID, attempt.Stage, 0,
+			failure.SiteStore, failure.ClassUnavailable, failure.RetryNow, failure.StateStore, err)
 		return err
 	}
 	e.emit(core.EvRunnerAttempt, attempt.IssueID, map[string]any{
@@ -1632,22 +1639,34 @@ func (e *Engine) ClaimIssue(id string) (Claim, error) {
 	}
 	path, release, err := e.cfg.Workspace.Acquire(id)
 	if err != nil {
+		_ = e.recordBoundaryFailure(context.Background(), id, "claim", 0,
+			failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange,
+			failure.StateWorkspace, err)
 		rollback(nil)
 		return Claim{}, err
 	}
 	if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
 		if err := repocfg.BindWorktree(e.cfg.Train.Repo, path); err != nil {
+			_ = e.recordBoundaryFailure(context.Background(), id, "claim", 0,
+				failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange,
+				failure.StateWorkspace, err)
 			rollback(release)
 			return Claim{}, err
 		}
 	}
 	branch, err := gitCommandOutput(path, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
+		_ = e.recordBoundaryFailure(context.Background(), id, "claim", 0,
+			failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange,
+			failure.StateWorkspace, err)
 		rollback(release)
 		return Claim{}, fmt.Errorf("read claimed branch: %w", err)
 	}
 	baseSHA, err := gitRevision(path, "HEAD")
 	if err != nil {
+		_ = e.recordBoundaryFailure(context.Background(), id, "claim", 0,
+			failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange,
+			failure.StateWorkspace, err)
 		rollback(release)
 		return Claim{}, fmt.Errorf("read claim base: %w", err)
 	}
@@ -1659,6 +1678,9 @@ func (e *Engine) ClaimIssue(id string) (Claim, error) {
 		IssueID: id, State: store.IntegrationClaimed, PreSHA: baseSHA,
 		Worktree: path, Branch: branch,
 	}); err != nil {
+		_ = e.recordBoundaryFailure(context.Background(), id, "claim", 0,
+			failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
+			failure.StateStore, err)
 		rollback(release)
 		return Claim{}, err
 	}
@@ -1666,6 +1688,9 @@ func (e *Engine) ClaimIssue(id string) (Claim, error) {
 		ID: id, Title: is.title, Body: is.body, State: "claimed", Flow: is.flowName,
 		Levers: matrixStrings(is.matrix), Priority: is.priority,
 	}); err != nil {
+		_ = e.recordBoundaryFailure(context.Background(), id, "claim", 0,
+			failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
+			failure.StateStore, err)
 		_ = e.cfg.Store.DeleteIssueIntegration(id)
 		rollback(release)
 		return Claim{}, err
@@ -1735,7 +1760,14 @@ func (e *Engine) claimFromState(is *issueState) Claim {
 	}
 }
 
-func (e *Engine) restoreClaimedWorkspace(is *issueState, integration store.IssueIntegration) error {
+func (e *Engine) restoreClaimedWorkspace(is *issueState, integration store.IssueIntegration) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			retErr = e.recordBoundaryFailure(context.Background(), is.id, "claim", 0,
+				failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange,
+				failure.StateWorkspace, retErr)
+		}
+	}()
 	if integration.Worktree == "" || integration.Branch == "" || integration.PreSHA == "" {
 		return fmt.Errorf("claim is missing workspace identity")
 	}
@@ -1785,7 +1817,12 @@ func (e *Engine) ClaimBlockers(issueID string) ([]string, error) {
 	return e.unmetMergedDependencies(issueID)
 }
 
-func (e *Engine) ReleaseClaim(id string) error {
+func (e *Engine) ReleaseClaim(id string) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			retErr = e.recordClassifiedBoundaryFailure(context.Background(), id, "claim", retErr)
+		}
+	}()
 	e.mu.Lock()
 	is, ok := e.issues[id]
 	if !ok {
@@ -1843,7 +1880,12 @@ func (e *Engine) ReleaseClaim(id string) error {
 	return nil
 }
 
-func (e *Engine) FinishClaim(req FinishClaimRequest) error {
+func (e *Engine) FinishClaim(req FinishClaimRequest) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			retErr = e.recordClassifiedBoundaryFailure(context.Background(), req.IssueID, "claim", retErr)
+		}
+	}()
 	e.mu.Lock()
 	is, ok := e.issues[req.IssueID]
 	if !ok {
@@ -2401,16 +2443,25 @@ func (e *Engine) scheduleArtifactContinuation(
 func (e *Engine) continueArtifactReview(
 	decisionID int64, issueID, stage string, target review.Target, response levers.Response, emitAnswered bool,
 ) {
+	recordArtifactFailure := func(err error) {
+		if err != nil {
+			_ = e.recordBoundaryFailure(context.Background(), issueID, stage, 0,
+				failure.SiteArtifact, failure.ClassUnavailable, failure.RetryAfterStateChange,
+				failure.StateArtifact, err)
+		}
+	}
 	e.mu.Lock()
 	is, ok := e.issues[issueID]
 	e.mu.Unlock()
 	if !ok {
+		recordArtifactFailure(errors.New("artifact review issue state is unavailable"))
 		e.emit(core.EvStageFailed, issueID, map[string]any{
 			"stage": stage, "error": "artifact review issue state is unavailable", "final": true})
 		return
 	}
 	f, ok := e.cfg.Flows[is.flowName]
 	if !ok {
+		recordArtifactFailure(fmt.Errorf("flow %q is not configured", is.flowName))
 		e.emit(core.EvStageFailed, issueID, map[string]any{
 			"stage": stage, "error": fmt.Sprintf("flow %q is not configured", is.flowName), "final": true})
 		return
@@ -2425,11 +2476,13 @@ func (e *Engine) continueArtifactReview(
 		}
 	}
 	if nextIdx < 0 {
+		recordArtifactFailure(errors.New("artifact review stage is not in the configured flow"))
 		e.emit(core.EvStageFailed, issueID, map[string]any{
 			"stage": stage, "error": "artifact review stage is not in the configured flow", "final": true})
 		return
 	}
 	if err := e.cfg.Store.CompleteArtifactReview(target.CheckpointID, target); err != nil {
+		recordArtifactFailure(fmt.Errorf("artifact review handoff: %w", err))
 		e.emit(core.EvStageFailed, issueID, map[string]any{
 			"stage": stage, "error": fmt.Sprintf("artifact review handoff: %v", err), "final": true})
 		return
@@ -2885,6 +2938,9 @@ func (e *Engine) runStageOnce(
 	// (brainstorm.md -> spec stage, etc.); worktree/readonly stages share the
 	// acquired workspace for the same reason.
 	workdir := e.stageWorkdir(is, st)
+	defer func() {
+		runErr = e.recordStageFailure(ctx, is, st, attempt, workdir, runErr)
+	}()
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return err
 	}
@@ -3003,18 +3059,22 @@ func (e *Engine) runStageOnce(
 				}
 			}
 		}
-		status, failure := "succeeded", ""
+		status, failureMessage := "succeeded", ""
 		switch {
 		case errors.Is(runErr, errDependenciesDiscovered):
 			status = "waiting_dependencies"
 		case runErr != nil && ctx.Err() != nil:
-			status, failure = "killed", runErr.Error()
+			status, failureMessage = "killed", runErr.Error()
 		case runErr != nil:
-			status, failure = "failed", runErr.Error()
+			status, failureMessage = "failed", runErr.Error()
 		}
-		_ = e.cfg.Store.FinishStageCheckpoint(
+		if err := e.cfg.Store.FinishStageCheckpoint(
 			checkpointID, status, endCommit, strings.Join(sessionIDs, ","),
-			failure, checkpointArtifacts)
+			failureMessage, checkpointArtifacts); err != nil {
+			_ = e.recordBoundaryFailure(context.WithoutCancel(ctx), is.id, st.Name, attempt,
+				failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
+				failure.StateStore, err)
+		}
 		e.refreshDecisionPage(is.id)
 	}()
 	e.emit(core.EvStageStarted, is.id, map[string]any{
@@ -3097,7 +3157,11 @@ func (e *Engine) runStageOnce(
 			if runErr != nil {
 				reason = runErr.Error()
 			}
-			_ = verificationLease.Quarantine(reason)
+			if err := verificationLease.Quarantine(reason); err != nil {
+				_ = e.recordBoundaryFailure(context.WithoutCancel(ctx), is.id, st.Name, attempt,
+					failure.SiteCache, failure.ClassUnavailable, failure.RetryAfterStateChange,
+					failure.StateCache, err)
+			}
 		}
 		_ = verificationLease.Close()
 	}()
@@ -3156,9 +3220,17 @@ func (e *Engine) runStageOnce(
 						}
 						plannerTokensMu.Unlock()
 					}
-					if err := e.cfg.Store.FinishStageRun(runID, status, res.SessionID, tokens); err != nil && res.Err == nil {
-						res.Err = fmt.Errorf("finish stage run: %w", err)
+					if err := e.cfg.Store.FinishStageRun(runID, status, res.SessionID, tokens); err != nil {
+						_ = e.recordBoundaryFailure(context.WithoutCancel(ctx), is.id, st.Name, attempt,
+							failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
+							failure.StateStore, err)
+						if res.Err == nil {
+							res.Err = fmt.Errorf("finish stage run: %w", err)
+						}
 					}
+				}
+				if res.Err != nil {
+					_ = e.recordRunnerFailure(ctx, is, st, attempt, workdir, res)
 				}
 				dones <- agentDone{a.Package, res}
 				return
@@ -3565,6 +3637,8 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plan
 		if needsWorkspace {
 			path, release, err := e.cfg.Workspace.Acquire(is.id)
 			if err != nil {
+				_ = e.recordBoundaryFailure(ctx, is.id, st.Name, 0,
+					failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateWorkspace, err)
 				e.emit(core.EvStageFailed, is.id, map[string]string{"stage": st.Name, "error": "workspace: " + err.Error()})
 				return err
 			}
@@ -3675,7 +3749,12 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plan
 	return nil
 }
 
-func (e *Engine) completeWithoutIntegration(is *issueState) (bool, error) {
+func (e *Engine) completeWithoutIntegration(is *issueState) (preserve bool, retErr error) {
+	defer func() {
+		if retErr != nil {
+			retErr = e.recordClassifiedBoundaryFailure(context.Background(), is.id, "", retErr)
+		}
+	}()
 	if is.wsPath == "" || is.branch == "" {
 		e.emit(core.EvIssueCompleted, is.id, map[string]string{"merge": "none"})
 		return false, nil
@@ -3714,7 +3793,12 @@ func (e *Engine) completeWithoutIntegration(is *issueState) (bool, error) {
 
 func (e *Engine) finalVerificationDecision(
 	is *issueState,
-) (string, marshal.Verification, error) {
+) (decision string, receipt marshal.Verification, retErr error) {
+	defer func() {
+		if retErr != nil {
+			retErr = e.recordClassifiedBoundaryFailure(context.Background(), is.id, e.integrationStageName(is), retErr)
+		}
+	}()
 	prepared, err := e.prepareFinalization(is, nil)
 	if err != nil {
 		return "", marshal.Verification{}, err
@@ -4056,7 +4140,14 @@ func gitCommandOutput(dir string, args ...string) (string, error) {
 
 func (e *Engine) retryPublish(
 	ctx context.Context, is *issueState, integration store.IssueIntegration,
-) error {
+) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			retErr = e.recordBoundaryFailure(context.Background(), is.id, "", 0,
+				failure.SiteFinalization, failure.ClassStateMismatch, failure.RetryAfterStateChange,
+				failure.StateOperator, retErr)
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -4065,6 +4156,9 @@ func (e *Engine) retryPublish(
 	if err := e.cfg.Train.Publish(integration.LandedSHA, integration.BaseBranch); err != nil {
 		integration.LastError = err.Error()
 		if storeErr := e.cfg.Store.SetIssueIntegration(integration); storeErr != nil {
+			_ = e.recordBoundaryFailure(context.Background(), is.id, "", 0,
+				failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
+				failure.StateStore, storeErr)
 			return fmt.Errorf("%v (persist publish retry: %w)", err, storeErr)
 		}
 		e.emit(core.EvPublishPending, is.id, map[string]string{
@@ -4132,6 +4226,9 @@ func (e *Engine) retryCleanup(
 	ctx context.Context, is *issueState, integration store.IssueIntegration,
 ) error {
 	if err := ctx.Err(); err != nil {
+		_ = e.recordBoundaryFailure(context.Background(), is.id, "", 0,
+			failure.SiteFinalization, failure.ClassCancellation, failure.RetryNow,
+			failure.StateOperator, err)
 		return err
 	}
 	remaining := append([]string(nil), integration.Cleanup...)
@@ -4166,6 +4263,9 @@ func (e *Engine) retryCleanup(
 	integration.Cleanup = nil
 	integration.LastError = ""
 	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		_ = e.recordBoundaryFailure(context.Background(), is.id, "", 0,
+			failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
+			failure.StateStore, err)
 		return err
 	}
 	e.emit(core.EvCleanupCompleted, is.id, map[string]string{
@@ -4176,10 +4276,16 @@ func (e *Engine) retryCleanup(
 func (e *Engine) recordCleanupNeeded(
 	integration store.IssueIntegration, operations []string, cleanupErr error,
 ) error {
+	_ = e.recordBoundaryFailure(context.Background(), integration.IssueID, "", 0,
+		failure.SiteFinalization, failure.ClassUnavailable, failure.RetryAfterStateChange,
+		failure.StateOperator, cleanupErr)
 	integration.State = store.IntegrationCleanupNeeded
 	integration.Cleanup = append([]string(nil), operations...)
 	integration.LastError = cleanupErr.Error()
 	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		_ = e.recordBoundaryFailure(context.Background(), integration.IssueID, "", 0,
+			failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
+			failure.StateStore, err)
 		return fmt.Errorf("%v (persist cleanup: %w)", cleanupErr, err)
 	}
 	e.emit(core.EvCleanupNeeded, integration.IssueID, map[string]any{

@@ -19,6 +19,7 @@ import (
 	"github.com/weston6142/watchtower/internal/claude"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
@@ -367,6 +368,13 @@ func (sv *Server) exec(cmd Command) Response {
 		if !found {
 			return Response{Error: "unknown issue " + cmd.IssueID}
 		}
+		history := FailureHistory{Status: failureHistoryAvailable, Records: make([]failure.FailureRecord, 0)}
+		if records, historyErr := sv.st.FailureHistory(context.Background(), cmd.IssueID); historyErr != nil {
+			history.Status = failureHistoryUnavailable
+			history.Records = nil
+		} else {
+			history.Records = records
+		}
 		runs, err := sv.st.StageRuns(cmd.IssueID)
 		if err != nil {
 			return Response{Error: err.Error()}
@@ -428,7 +436,8 @@ func (sv *Server) exec(cmd Command) Response {
 			IntegrationState: integration.State,
 			Worktree:         integration.Worktree, Branch: integration.Branch,
 			Planner: plannerSnapshot, PlannerOutcome: plannerOutcome,
-			DecisionPage: decisionPage,
+			DecisionPage:   decisionPage,
+			FailureHistory: history,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

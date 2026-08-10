@@ -2,8 +2,12 @@ package core
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/weston6142/watchtower/internal/failure"
 )
 
 func TestNewEventMarshalsPayloadSnakeCase(t *testing.T) {
@@ -43,5 +47,30 @@ func TestRunnerAttemptEventHasStablePublicPayload(t *testing.T) {
 func TestPlannerBudgetUpdatedEventTypeIsAdditive(t *testing.T) {
 	if EvPlannerBudgetUpdated != EventType("planner_budget_updated") {
 		t.Fatalf("planner event type = %q", EvPlannerBudgetUpdated)
+	}
+}
+
+func TestFailureRecordedEventProjectsCanonicalRecord(t *testing.T) {
+	record := failure.FailureRecord{
+		RecordID: 17, SchemaVersion: failure.SchemaVersion, IssueID: "GH-63", Stage: "execute", StageAttempt: 3,
+		FailureSite: failure.SiteVerification, FailureClass: failure.ClassValidation,
+		RetryDisposition: failure.RetryAfterStateChange, RequiredStateChange: failure.StateVerification,
+		Fingerprint: "sha256:" + strings.Repeat("a", 64), OccurredAt: time.Date(2026, 8, 9, 18, 0, 0, 123, time.UTC),
+	}
+	ev, err := NewEvent(EvFailureRecorded, record.IssueID, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got failure.FailureRecord
+	if err := json.Unmarshal(ev.Payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, record) || ev.IssueID != record.IssueID {
+		t.Fatalf("failure event = %+v, want %+v", got, record)
+	}
+	for _, secret := range []string{"raw error", "/private/repo", "run command", "configuration body", "normalized input", "artifact bytes", "decision text"} {
+		if strings.Contains(string(ev.Payload), secret) {
+			t.Fatalf("failure event leaked %q: %s", secret, ev.Payload)
+		}
 	}
 }

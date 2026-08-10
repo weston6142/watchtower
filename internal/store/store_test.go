@@ -15,6 +15,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/decisionpage"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -58,6 +59,56 @@ func TestPlannerArtifactRegistryRoundTrip(t *testing.T) {
 		if err != nil || found {
 			t.Fatalf("mismatch unexpectedly loaded: %+v found=%v err=%v", mismatch, found, err)
 		}
+	}
+}
+
+func TestFailureHistoryRetainsDuplicateFingerprintsInRecordOrder(t *testing.T) {
+	s, err := Open("file:failure-history?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	input := failure.RecordInput{
+		IssueID: "GH-63", Stage: "plan", StageAttempt: 2,
+		FailureSite: failure.SitePlanner, FailureClass: failure.ClassUnavailable,
+		RetryDisposition:    failure.RetryAfterStateChange,
+		RequiredStateChange: failure.StatePlannerInput,
+		Fingerprint:         "sha256:" + strings.Repeat("a", 64),
+	}
+	first, err := s.AppendFailure(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.AppendFailure(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RecordID <= 0 || second.RecordID <= first.RecordID {
+		t.Fatalf("record IDs = %d, %d", first.RecordID, second.RecordID)
+	}
+	records, err := s.FailureHistory(context.Background(), "GH-63")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0].Fingerprint != records[1].Fingerprint ||
+		records[0].RecordID != first.RecordID || records[1].RecordID != second.RecordID {
+		t.Fatalf("failure history = %#v", records)
+	}
+}
+
+func TestFailureHistoryIsEmptyAndInjectable(t *testing.T) {
+	s, err := Open("file:failure-history-empty?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	records, err := s.FailureHistory(context.Background(), "GH-empty")
+	if err != nil || records == nil || len(records) != 0 {
+		t.Fatalf("empty failure history = %#v, err=%v", records, err)
+	}
+	s.FailNextFailureHistoryForTest()
+	if _, err := s.FailureHistory(context.Background(), "GH-empty"); err == nil {
+		t.Fatal("injected failure-history read unexpectedly succeeded")
 	}
 }
 

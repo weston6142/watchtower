@@ -18,6 +18,7 @@ import (
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/deps"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
@@ -29,6 +30,21 @@ const schema = `
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, seq INTEGER UNIQUE,
   type TEXT, issue_id TEXT, payload TEXT, at TEXT);
+CREATE TABLE IF NOT EXISTS failure_records(
+  record_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  schema_version INTEGER NOT NULL,
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  stage_attempt INTEGER NOT NULL,
+  failure_site TEXT NOT NULL,
+  failure_class TEXT NOT NULL,
+  retry_disposition TEXT NOT NULL,
+  required_state_change TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS failure_records_issue_order
+  ON failure_records(issue_id, record_id);
 CREATE TABLE IF NOT EXISTS issues(
   id TEXT PRIMARY KEY, title TEXT, body TEXT, state TEXT,
   flow TEXT, levers TEXT, priority INTEGER, links TEXT,
@@ -119,6 +135,8 @@ type Store struct {
 	mu                               sync.Mutex
 	seq                              int64
 	failNextAppendType               core.EventType
+	failNextFailureAppend            bool
+	failNextFailureHistory           bool
 	failNextArtifactReviewResolution bool
 	failNextDecisionPageSnapshot     bool
 	failNextPausePersistence         bool
@@ -359,6 +377,112 @@ func (s *Store) Append(ev core.Event) (core.Event, error) {
 	}
 	ev.ID, _ = res.LastInsertId()
 	return ev, nil
+}
+
+// AppendFailure stores one canonical failure occurrence. Fingerprints are
+// deliberately not unique: equal fingerprints still represent separate
+// attempts and retain their occurrence order.
+func (s *Store) AppendFailure(ctx context.Context, input failure.RecordInput) (failure.FailureRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failNextFailureAppend {
+		s.failNextFailureAppend = false
+		return failure.FailureRecord{}, fmt.Errorf("injected failure record append failure")
+	}
+	if err := ctx.Err(); err != nil {
+		return failure.FailureRecord{}, err
+	}
+	if err := failure.ValidateRecordInput(input); err != nil {
+		return failure.FailureRecord{}, err
+	}
+	occurredAt := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO failure_records(
+		  schema_version,issue_id,stage,stage_attempt,failure_site,failure_class,
+		  retry_disposition,required_state_change,fingerprint,occurred_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		failure.SchemaVersion, input.IssueID, input.Stage, input.StageAttempt,
+		string(input.FailureSite), string(input.FailureClass), string(input.RetryDisposition),
+		string(input.RequiredStateChange), input.Fingerprint, occurredAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return failure.FailureRecord{}, err
+	}
+	recordID, err := result.LastInsertId()
+	if err != nil {
+		return failure.FailureRecord{}, err
+	}
+	record := failure.FailureRecord{
+		RecordID: recordID, SchemaVersion: failure.SchemaVersion,
+		IssueID: input.IssueID, Stage: input.Stage, StageAttempt: input.StageAttempt,
+		FailureSite: input.FailureSite, FailureClass: input.FailureClass,
+		RetryDisposition: input.RetryDisposition, RequiredStateChange: input.RequiredStateChange,
+		Fingerprint: input.Fingerprint, OccurredAt: occurredAt,
+	}
+	if err := failure.ValidateRecord(record); err != nil {
+		return failure.FailureRecord{}, err
+	}
+	return record, nil
+}
+
+// FailureHistory returns all canonical failure occurrences for an issue in
+// durable record order. A successful empty query returns a non-nil slice.
+func (s *Store) FailureHistory(ctx context.Context, issueID string) ([]failure.FailureRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failNextFailureHistory {
+		s.failNextFailureHistory = false
+		return nil, fmt.Errorf("injected failure history read failure")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	records := make([]failure.FailureRecord, 0)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT record_id,schema_version,issue_id,stage,stage_attempt,failure_site,
+		       failure_class,retry_disposition,required_state_change,fingerprint,occurred_at
+		FROM failure_records WHERE issue_id=? ORDER BY record_id ASC`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var record failure.FailureRecord
+		var site, class, disposition, state, occurredAt string
+		if err := rows.Scan(&record.RecordID, &record.SchemaVersion, &record.IssueID, &record.Stage,
+			&record.StageAttempt, &site, &class, &disposition, &state, &record.Fingerprint, &occurredAt); err != nil {
+			return nil, err
+		}
+		record.FailureSite = failure.Site(site)
+		record.FailureClass = failure.Class(class)
+		record.RetryDisposition = failure.RetryDisposition(disposition)
+		record.RequiredStateChange = failure.StateChange(state)
+		record.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse failure record timestamp: %w", err)
+		}
+		if err := failure.ValidateRecord(record); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+// FailNextFailureAppendForTest injects one failure-record persistence error.
+func (s *Store) FailNextFailureAppendForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextFailureAppend = true
+}
+
+// FailNextFailureHistoryForTest injects one failure-history read error.
+func (s *Store) FailNextFailureHistoryForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextFailureHistory = true
 }
 
 // AppendBatch assigns consecutive sequence numbers and appends all events in
