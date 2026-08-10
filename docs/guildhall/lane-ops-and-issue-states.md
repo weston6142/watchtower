@@ -157,9 +157,10 @@ Finalization has a durable boundary that is independent of an agent transcript:
 
 Stage attempts also have six ordered v1 checkpoints:
 `runner_succeeded`, `artifacts_validated`, `artifacts_archived`, `gate_resolved`,
-`verification_passed`, and `finalization_ready`. The model result is copied to
-the attempt-owned result slot once before `runner_succeeded`; a restart resumes
-from the latest committed checkpoint without requesting the model again.
+`verification_passed`, and `finalization_ready`. Each attempt has a stable
+identity and an immutable model-result slot materialized once before
+`runner_succeeded`; a restart resumes from the latest committed checkpoint
+without requesting the model again.
 Prepared rows and unreferenced filesystem bytes are never recovery authority.
 Checkpoint-finalization failures fail closed and leave the preceding committed
 checkpoint as the retry boundary. Recovery validates the predecessor chain,
