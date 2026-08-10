@@ -99,37 +99,18 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 		extraEnv = append(extraEnv, env)
 	}
 	cmd.Env = runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx))
-	var authorityDescriptor *os.File
-	if authority := runner.PlannerArtifactAuthorityFromContext(ctx); authority != nil {
-		var descriptorErr error
-		authorityDescriptor, descriptorErr = authority.AttachPlannerArtifactDescriptor()
-		if descriptorErr != nil {
-			return runner.Result{Err: descriptorErr}
-		}
-		cmd.ExtraFiles = []*os.File{authorityDescriptor}
-	}
-	closeAuthorityDescriptor := func() {
-		if authorityDescriptor != nil {
-			_ = authorityDescriptor.Close()
-			authorityDescriptor = nil
-		}
-	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		closeAuthorityDescriptor()
 		return runner.Result{Err: err}
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		closeAuthorityDescriptor()
 		return runner.Result{Err: err}
 	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		closeAuthorityDescriptor()
 		return runner.Result{Err: err}
 	}
-	closeAuthorityDescriptor()
 
 	task := agentprotocol.TaskMessage(stage, issueID)
 	if _, err := stdin.Write(UserMessage(task)); err != nil {

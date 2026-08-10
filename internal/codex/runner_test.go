@@ -13,8 +13,10 @@ import (
 	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func writeStub(t *testing.T, body string) string {
@@ -142,6 +144,37 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE_ARGV"; done`))
 		t.Fatal(err)
 	} else if strings.Contains(string(got), sentinel) {
 		t.Fatalf("planner session leaked into child argv: %q", got)
+	}
+}
+
+func TestPlannerArtifactSubprocessDoesNotInheritDescriptor(t *testing.T) {
+	workdir := t.TempDir()
+	capture := filepath.Join(workdir, "descriptor")
+	bin := writeStub(t, `
+if (printf x >&3) 2>/dev/null; then
+  printf 'attached' > "$CAPTURE"
+else
+  printf 'absent' > "$CAPTURE"
+fi`+successfulStub(""))
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"CAPTURE=" + capture}
+	coordinator, err := store.Open(filepath.Join(t.TempDir(), "coordinator.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	authority, err := plannerartifact.CreateOrLoad(coordinator, plannerartifact.Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: workdir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := <-r.RunPlanner(runner.WithPlannerArtifactAuthority(context.Background(), authority), "GH-72", "plan", "executor", workdir, make(chan runner.Ask), nil)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if got, err := os.ReadFile(capture); err != nil {
+		t.Fatal(err)
+	} else if string(got) != "absent" {
+		t.Fatalf("planner descriptor reached Codex child: %q", got)
 	}
 }
 

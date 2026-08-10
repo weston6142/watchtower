@@ -1,0 +1,107 @@
+package proto
+
+import (
+	"fmt"
+	"sync/atomic"
+
+	"github.com/weston6142/watchtower/internal/plannerartifact"
+)
+
+func plannerBinding(cmd Command) plannerartifact.Binding {
+	return plannerartifact.Binding{
+		IssueID:  cmd.IssueID,
+		Stage:    cmd.Stage,
+		Attempt:  cmd.Attempt,
+		Worktree: cmd.Worktree,
+	}
+}
+
+func (sv *Server) plannerCorrelation() string {
+	return fmt.Sprintf("planner-%d", atomic.AddUint64(&sv.plannerCorrelationCounter, 1))
+}
+
+func (sv *Server) requirePlannerEngine() error {
+	if sv.eng == nil {
+		return plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "engine authority is unavailable")
+	}
+	return nil
+}
+
+func (sv *Server) plannerFailure(err error) Response {
+	class := plannerartifact.ErrorClassOf(err)
+	if class == "" {
+		class = plannerartifact.ErrorAuthorityState
+	}
+	message := "planner authority: " + string(class)
+	if err != nil {
+		message = err.Error()
+	}
+	return Response{
+		Error:         message,
+		ErrorClass:    string(class),
+		CorrelationID: sv.plannerCorrelation(),
+	}
+}
+
+func (sv *Server) plannerExec(cmd Command) Response {
+	scope := plannerBinding(cmd)
+	switch cmd.Op {
+	case "planner_authority_issue":
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
+		}
+		handle, binding, err := sv.eng.IssuePlannerAuthority(scope)
+		if err != nil {
+			return sv.plannerFailure(err)
+		}
+		return Response{OK: true, PlannerHandle: handle, IssueID: binding.IssueID,
+			CorrelationID: sv.plannerCorrelation()}
+	case "apply_planner_artifact":
+		request := cmd.PlannerRequest
+		if request == nil {
+			request = cmd.PlannerArtifact
+		}
+		if request == nil {
+			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorInvalidSection, "", "planner request is missing"))
+		}
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
+		}
+		handle := cmd.PlannerHandle
+		if handle == "" {
+			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorStaleCapability, "", "capability is not active"))
+		}
+		key, err := sv.eng.ApplyPlannerArtifact(scope, handle, *request)
+		if err != nil {
+			return sv.plannerFailure(err)
+		}
+		return Response{OK: true, SectionKey: key, CorrelationID: sv.plannerCorrelation()}
+	case "planner_authority_retry":
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
+		}
+		handle, err := sv.eng.RetryPlannerAuthority(scope)
+		if err != nil {
+			return sv.plannerFailure(err)
+		}
+		return Response{OK: true, PlannerHandle: handle, CorrelationID: sv.plannerCorrelation()}
+	case "planner_authority_validate_complete":
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
+		}
+		if err := sv.eng.ValidatePlannerAuthority(scope, cmd.PlannerHandle); err != nil {
+			return sv.plannerFailure(err)
+		}
+		return Response{OK: true, CorrelationID: sv.plannerCorrelation()}
+	case "planner_authority_expire":
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
+		}
+		if err := sv.eng.ExpirePlannerAuthority(scope); err != nil {
+			return sv.plannerFailure(err)
+		}
+		return Response{OK: true, CorrelationID: sv.plannerCorrelation()}
+	default:
+		return Response{Error: "unknown planner authority operation"}
+	}
+}

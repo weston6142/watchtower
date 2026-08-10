@@ -2,7 +2,7 @@ package runner
 
 import (
 	"context"
-	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -51,10 +51,6 @@ func (p *typedPlannerAuthorityProbe) ApplyPlannerArtifact(request any) error {
 	return nil
 }
 
-func (p *typedPlannerAuthorityProbe) AttachPlannerArtifactDescriptor() (*os.File, error) {
-	return nil, nil
-}
-
 func TestFakePlannerUsesTypedAuthorityInsteadOfAmbientSession(t *testing.T) {
 	manifest := plannerartifact.Manifest{Sections: []plannerartifact.ManifestEntry{
 		{Key: "goal", Globs: []string{"internal/goal/**"}},
@@ -75,6 +71,23 @@ func TestFakePlannerUsesTypedAuthorityInsteadOfAmbientSession(t *testing.T) {
 	}
 	if len(probe.requests) != 1 {
 		t.Fatalf("typed authority requests = %d, want 1", len(probe.requests))
+	}
+}
+
+func TestPlannerArtifactEnvironmentStripsPrivateAuthorityValues(t *testing.T) {
+	merged := MergeEnvironment(
+		[]string{"WATCHTOWER_PLANNER_SESSION=private", "WATCHTOWER_PLANNER_CAPABILITY=secret", "KEEP=inherited"},
+		[]string{"WATCHTOWER_PLANNER_DESCRIPTOR=3", "KEEP=extra"},
+		[]string{"WATCHTOWER_PLANNER_SESSION=overlay", "WATCHTOWER_PLANNER_CAPABILITY=overlay-secret", "SAFE=managed"},
+	)
+	joined := strings.Join(merged, "\n")
+	for _, forbidden := range []string{"WATCHTOWER_PLANNER_SESSION", "WATCHTOWER_PLANNER_CAPABILITY", "WATCHTOWER_PLANNER_DESCRIPTOR"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("private planner authority value reached child environment: %q", joined)
+		}
+	}
+	if !strings.Contains(joined, "KEEP=extra") || !strings.Contains(joined, "SAFE=managed") {
+		t.Fatalf("ordinary environment values were lost: %q", joined)
 	}
 }
 

@@ -1,6 +1,7 @@
 package plannerartifact
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -107,6 +108,183 @@ func TestPlannerArtifactAuthorityPrivateSessionAndRegistryFailure(t *testing.T) 
 	if err := authority.Apply(WriteRequest{Manifest: request.Manifest, Key: "architecture", Markdown: "second", Globs: []string{"internal/architecture/**"}}); err == nil {
 		t.Fatal("registry read failure authorized an apply")
 	}
+}
+
+func TestPlannerArtifactAuthorityDoesNotEchoUntrustedRequestKey(t *testing.T) {
+	workdir := t.TempDir()
+	authority, err := CreateOrLoad(&authorityTestRegistry{}, Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: workdir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "request-body-not-for-diagnostics"
+	err = authority.Apply(WriteRequest{
+		Manifest: authorityTestManifest(),
+		Key:      secret,
+		Markdown: "final reviewed content",
+		Globs:    []string{"internal/goal/**"},
+	})
+	if err == nil {
+		t.Fatal("invalid request unexpectedly applied")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("authority error echoed untrusted request key: %v", err)
+	}
+}
+
+func TestPlannerArtifactAuthorityReloadFailsClosedWhenPairDiffersFromDurableState(t *testing.T) {
+	workdir := t.TempDir()
+	registry := &authorityTestRegistry{}
+	binding := Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: workdir}
+	authority, err := CreateOrLoad(registry, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := authorityTestManifest()
+	if err := authority.Apply(WriteRequest{Manifest: manifest, Key: "goal", Markdown: "durable content", Globs: manifest.Sections[0].Globs}); err != nil {
+		t.Fatal(err)
+	}
+	planPath := filepath.Join(workdir, "plan.md")
+	plan, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan = bytes.Replace(plan, []byte("durable content"), []byte("tampered content"), 1)
+	if err := os.WriteFile(planPath, plan, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateOrLoad(registry, binding); err == nil || ErrorClassOf(err) != ErrorAuthorityState {
+		t.Fatalf("reload after durable-pair tampering = %v, want authority_state_unavailable", err)
+	}
+}
+
+func TestAuthorityFirstApplyPublishesFinalSectionAndDurablePrefix(t *testing.T) {
+	workdir := t.TempDir()
+	registry := &authorityTestRegistry{}
+	authority, err := CreateOrLoad(registry, Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: workdir})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := authorityTestManifest()
+	request := WriteRequest{
+		Manifest: manifest,
+		Key:      "goal",
+		Markdown: "The final reviewed planner goal crosses the daemon boundary.",
+		Globs:    manifest.Sections[0].Globs,
+	}
+	if err := authority.Apply(request); err != nil {
+		t.Fatalf("first final apply: %v", err)
+	}
+
+	plan := mustReadAuthorityFile(t, workdir, "plan.md")
+	if !strings.Contains(string(plan), request.Markdown) {
+		t.Fatalf("plan omitted final section: %q", plan)
+	}
+	touchset := mustReadAuthorityFile(t, workdir, "touchset.json")
+	if !strings.Contains(string(touchset), manifest.Sections[0].Globs[0]) {
+		t.Fatalf("touchset omitted canonical delta: %q", touchset)
+	}
+	status, _, storedManifest, storedSections, found, err := registry.LoadPlannerArtifact("GH-72", "plan", 1, workdir)
+	if err != nil || !found || status != "active" {
+		t.Fatalf("durable authority row = status %q found %v err %v", status, found, err)
+	}
+	if !strings.Contains(string(storedManifest), `"goal"`) || !strings.Contains(string(storedSections), request.Markdown) {
+		t.Fatalf("durable prefix omitted first section: manifest=%s sections=%s", storedManifest, storedSections)
+	}
+}
+
+func TestAuthorityRetryRetainsPrefixAndRejectsReplacedHandle(t *testing.T) {
+	workdir := t.TempDir()
+	registry := &authorityTestRegistry{}
+	binding := Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: workdir}
+	first, err := CreateOrLoad(registry, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := authorityTestManifest()
+	goal := WriteRequest{Manifest: manifest, Key: "goal", Markdown: "final goal", Globs: manifest.Sections[0].Globs}
+	if err := first.Apply(goal); err != nil {
+		t.Fatal(err)
+	}
+
+	retry, err := CreateOrLoad(registry, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	architecture := WriteRequest{Manifest: manifest, Key: "architecture", Markdown: "final architecture", Globs: manifest.Sections[1].Globs}
+	if err := first.Apply(architecture); err == nil {
+		t.Fatal("replaced capability remained authorized")
+	}
+	if err := retry.Apply(architecture); err != nil {
+		t.Fatalf("retry lost validated prefix: %v", err)
+	}
+	plan := string(mustReadAuthorityFile(t, workdir, "plan.md"))
+	if strings.Count(plan, "key=goal") != 2 || strings.Count(plan, "key=architecture") != 2 {
+		t.Fatalf("retry did not retain exactly one prefix and next section: %q", plan)
+	}
+}
+
+func TestAuthorityRejectsPrivateSessionAndDescriptorAuthority(t *testing.T) {
+	workdir := t.TempDir()
+	authority, err := CreateOrLoad(&authorityTestRegistry{}, Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: workdir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.ApplyPlannerArtifact("WATCHTOWER_PLANNER_SESSION=private"); err == nil || !strings.Contains(err.Error(), "private_session_rejected") {
+		t.Fatalf("private authority error = %v, want private_session_rejected", err)
+	}
+	if err := authority.ApplyWithCapability("WATCHTOWER_PLANNER_SESSION=private", WriteRequest{}); err == nil || !strings.Contains(err.Error(), "private_session_rejected") {
+		t.Fatalf("private capability error = %v, want private_session_rejected", err)
+	}
+	if err := ApplyFromFD(-1, WriteRequest{}); err == nil || !strings.Contains(err.Error(), "descriptor_non_authoritative") {
+		t.Fatalf("descriptor authority error = %v, want descriptor_non_authoritative", err)
+	}
+}
+
+func TestAuthorityRejectsInvalidSectionBeforeMutation(t *testing.T) {
+	cases := []struct {
+		name     string
+		markdown string
+		globs    []string
+	}{
+		{name: "empty markdown", markdown: "   "},
+		{name: "placeholder", markdown: "[transport probe]"},
+		{name: "empty delta", markdown: "final", globs: []string{}},
+		{name: "traversal delta", markdown: "final", globs: []string{"../synthetic/**"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			registry := &authorityTestRegistry{}
+			authority, err := CreateOrLoad(registry, Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: workdir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest := authorityTestManifest()
+			if tc.globs != nil {
+				manifest.Sections[0].Globs = tc.globs
+			}
+			beforePlan := mustReadAuthorityFile(t, workdir, "plan.md")
+			beforeTouchset := mustReadAuthorityFile(t, workdir, "touchset.json")
+			err = authority.Apply(WriteRequest{Manifest: manifest, Key: "goal", Markdown: tc.markdown, Globs: manifest.Sections[0].Globs})
+			if err == nil || !strings.Contains(err.Error(), "invalid_section") {
+				t.Fatalf("invalid section error = %v, want invalid_section", err)
+			}
+			if !bytes.Equal(beforePlan, mustReadAuthorityFile(t, workdir, "plan.md")) ||
+				!bytes.Equal(beforeTouchset, mustReadAuthorityFile(t, workdir, "touchset.json")) {
+				t.Fatal("rejected first apply changed the artifact pair")
+			}
+		})
+	}
+}
+
+func mustReadAuthorityFile(t *testing.T, workdir, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(workdir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func authorityTestManifest() Manifest {
