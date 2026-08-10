@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 // Binding identifies one stage attempt. Every field participates in registry
@@ -446,94 +445,17 @@ func (a *Authority) AcceptedSections() ([]WriteRequest, error) {
 	return requests, nil
 }
 
-// AttachPlannerArtifactDescriptor creates a one-request private socketpair.
-// Only the endpoint is inherited by a provider process; no authority bytes or
-// filesystem transport identifiers cross the boundary.
+// AttachPlannerArtifactDescriptor remains only as a compatibility symbol for
+// older callers. Descriptors are never authoritative and cannot mutate plan
+// state.
 func (a *Authority) AttachPlannerArtifactDescriptor() (*os.File, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if err := a.verifyLocked(); err != nil {
-		return nil, err
-	}
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
-	if err != nil {
-		return nil, errors.New("planner authority: private transport unavailable")
-	}
-	server := os.NewFile(uintptr(fds[0]), "planner-authority-server")
-	client := os.NewFile(uintptr(fds[1]), "planner-authority-client")
-	go a.serveDescriptor(server)
-	return client, nil
+	return nil, authorityError(ErrorDescriptor, "", "descriptor is not authoritative", nil)
 }
 
-func (a *Authority) serveDescriptor(server *os.File) {
-	defer server.Close()
-	decoder := json.NewDecoder(server)
-	encoder := json.NewEncoder(server)
-	var envelope struct {
-		Workdir string       `json:"workdir"`
-		Request WriteRequest `json:"request"`
-	}
-	var response struct {
-		Error string `json:"error,omitempty"`
-	}
-	if err := decoder.Decode(&envelope); err != nil {
-		response.Error = "planner authority: request is unavailable"
-	} else {
-		canonical, err := filepath.EvalSymlinks(envelope.Workdir)
-		if err != nil || canonical != a.binding.Worktree {
-			response.Error = "planner authority: binding mismatch"
-		} else if err := a.Apply(envelope.Request); err != nil {
-			response.Error = safeAuthorityError(err)
-		}
-	}
-	_ = encoder.Encode(response)
-}
-
-func safeAuthorityError(err error) string {
-	if err == nil {
-		return ""
-	}
-	message := err.Error()
-	for _, secret := range []string{"WATCHTOWER_PLANNER_SESSION", "planner-authority", "planner_authority", "capability", "descriptor"} {
-		if strings.Contains(message, secret) {
-			return "planner authority: request rejected"
-		}
-	}
-	return message
-}
-
-// ApplyFromFD is the CLI-side descriptor client. The descriptor contains only
-// the provider-neutral request and the current working-directory binding.
+// ApplyFromFD remains only as a compatibility symbol. It always fails closed;
+// the daemon route is the only authority transport.
 func ApplyFromFD(fd int, request WriteRequest) error {
-	if fd < 0 {
-		return authorityError(ErrorDescriptor, request.Key, "descriptor is not authoritative", nil)
-	}
-	file := os.NewFile(uintptr(fd), "planner-authority-client")
-	if file == nil {
-		return errors.New("planner authority: authority unavailable")
-	}
-	defer file.Close()
-	workdir, err := os.Getwd()
-	if err != nil {
-		return errors.New("planner authority: authority unavailable")
-	}
-	envelope := struct {
-		Workdir string       `json:"workdir"`
-		Request WriteRequest `json:"request"`
-	}{Workdir: workdir, Request: request}
-	if err := json.NewEncoder(file).Encode(envelope); err != nil {
-		return errors.New("planner authority: authority unavailable")
-	}
-	var response struct {
-		Error string `json:"error,omitempty"`
-	}
-	if err := json.NewDecoder(file).Decode(&response); err != nil {
-		return errors.New("planner authority: authority unavailable")
-	}
-	if response.Error != "" {
-		return errors.New(response.Error)
-	}
-	return nil
+	return authorityError(ErrorDescriptor, request.Key, "descriptor is not authoritative", nil)
 }
 
 // Expire closes the authority and retains the historical registry state.
