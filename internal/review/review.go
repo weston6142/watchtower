@@ -19,6 +19,7 @@ type Target struct {
 	CheckpointID    int64                  `json:"checkpoint_id"`
 	Artifacts       []contextpack.Artifact `json:"artifacts"`
 	ArtifactVersion string                 `json:"artifact_version"`
+	Operation       string                 `json:"operation"`
 	NextStage       string                 `json:"next_stage"`
 }
 
@@ -46,6 +47,12 @@ func (t Target) Canonical() (Target, error) {
 	}
 	canonical := t
 	canonical.Artifacts = append([]contextpack.Artifact(nil), t.Artifacts...)
+	if canonical.Operation == "" {
+		canonical.Operation = "approve-artifact"
+	}
+	if operation, err := canonicalToken(canonical.Operation, "review operation"); err != nil || operation != canonical.Operation {
+		return Target{}, fmt.Errorf("unsafe review operation %q", canonical.Operation)
+	}
 	seen := make(map[string]struct{}, len(canonical.Artifacts))
 	for i, artifact := range canonical.Artifacts {
 		name := filepath.ToSlash(filepath.Clean(filepath.FromSlash(artifact.Name)))
@@ -77,6 +84,23 @@ func (t Target) Canonical() (Target, error) {
 	return canonical, nil
 }
 
+// Bindings expands one archived artifact target into independent exact-item
+// approval claims. Each artifact can therefore become stale without forcing
+// unrelated artifacts to reapprove.
+func (t Target) Bindings() ([]Binding, error) {
+	canonical, err := t.Canonical()
+	if err != nil {
+		return nil, err
+	}
+	bindings := make([]Binding, 0, len(canonical.Artifacts))
+	for _, artifact := range canonical.Artifacts {
+		bindings = append(bindings, Binding{Item: ItemBinding{
+			Kind: ItemArtifact, Hash: artifact.SHA256, Path: artifact.Name, Operation: canonical.Operation,
+		}})
+	}
+	return bindings, nil
+}
+
 // VersionKey is stable for a checkpoint and its complete sorted artifact set.
 func (t Target) VersionKey() string {
 	artifacts := append([]contextpack.Artifact(nil), t.Artifacts...)
@@ -105,6 +129,7 @@ func (t Target) Matches(other Target) bool {
 	}
 	if left.IssueID != right.IssueID || left.Stage != right.Stage ||
 		left.CheckpointID != right.CheckpointID || left.ArtifactVersion != right.ArtifactVersion ||
+		left.Operation != right.Operation ||
 		left.NextStage != right.NextStage || len(left.Artifacts) != len(right.Artifacts) {
 		return false
 	}

@@ -194,6 +194,8 @@ type DecisionRow struct {
 	Review              *review.Target
 	ReviewPolicy        *review.ResolvedPolicy
 	Approval            *review.ApprovalProvenance
+	Evaluation          *review.Evaluation
+	Bindings            []review.Binding
 	Status              string
 	Response            levers.Response
 	BlockingCost        int
@@ -1020,6 +1022,8 @@ type decisionEvidence struct {
 	Review              *review.Target             `json:"review,omitempty"`
 	ReviewPolicy        *review.ResolvedPolicy     `json:"review_policy,omitempty"`
 	Approval            *review.ApprovalProvenance `json:"approval,omitempty"`
+	Evaluation          *review.Evaluation         `json:"evaluation,omitempty"`
+	Bindings            []review.Binding           `json:"bindings,omitempty"`
 }
 
 func validateApprovalProvenance(approval *review.ApprovalProvenance) error {
@@ -1105,6 +1109,7 @@ func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 		Why: d.Why, Consequences: d.Consequences, Reversible: d.Reversible,
 		EngineContinuation: d.EngineContinuation,
 		Context:            d.Context, Review: target, ReviewPolicy: d.ReviewPolicy, Approval: d.Approval,
+		Evaluation: d.Evaluation, Bindings: d.Bindings,
 	})
 	if err != nil {
 		return 0, err
@@ -1215,6 +1220,12 @@ func (s *Store) RequestArtifactReview(target review.Target, d DecisionRow) (int6
 	d.Stage = canonical.Stage
 	d.Status = "pending"
 	d.Review = &canonical
+	if d.Bindings == nil {
+		d.Bindings, err = canonical.Bindings()
+		if err != nil {
+			return 0, err
+		}
+	}
 	if d.ReviewPolicy != nil && !validResolvedPolicy(*d.ReviewPolicy) {
 		return 0, fmt.Errorf("invalid plan review policy")
 	}
@@ -1556,6 +1567,12 @@ func (s *Store) decisionRows(where string, args ...any) ([]DecisionRow, error) {
 			}
 			if stored.Approval != nil {
 				d.Approval = stored.Approval
+			}
+			if stored.Evaluation != nil {
+				d.Evaluation = stored.Evaluation
+			}
+			if stored.Bindings != nil {
+				d.Bindings = stored.Bindings
 			}
 			if contextRaw, ok := raw["context"]; ok {
 				if string(contextRaw) == "null" {
