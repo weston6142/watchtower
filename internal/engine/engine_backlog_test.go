@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -287,6 +288,44 @@ func TestMergedDependencyWakesWaitingIssue(t *testing.T) {
 	e.wakeDependents(context.Background(), parent)
 	waitForEvent(t, st, child, core.EvIssueDependenciesSatisfied)
 	waitForEvent(t, st, child, core.EvIssueCompleted)
+}
+
+type failingIntegrationSource struct {
+	err error
+}
+
+func (f failingIntegrationSource) IssueIntegration(string) (store.IssueIntegration, bool, error) {
+	return store.IssueIntegration{}, false, f.err
+}
+
+func TestWakeDependentsPropagatesDurableLookupFailure(t *testing.T) {
+	e, st := newTestEngine(t)
+	useAutoLaunchFlow(e)
+	parent, _ := e.DraftIssue("parent", "", "default", "regular", levers.Matrix{}, 0, nil)
+	child, _ := e.DraftIssue("child", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err := e.SetDependencies(child, []string{parent}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.LaunchIssue(child); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvent(t, st, child, core.EvIssueWaitingDependencies)
+
+	wantErr := errors.New("integration store unavailable")
+	e.dependencyReadiness = durableDependencyReadiness{source: failingIntegrationSource{err: wantErr}}
+	err := e.wakeDependents(context.Background(), parent)
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), parent) {
+		t.Fatalf("wakeDependents error = %v, want parent context and %v", err, wantErr)
+	}
+	if row := issueRow(t, st, child); row.State != "waiting_dependencies" {
+		t.Fatalf("failed wake changed state to %q", row.State)
+	}
+	if hasEvent(t, st, child, core.EvIssueDependenciesSatisfied) {
+		t.Fatal("failed durable lookup released the dependent")
+	}
+	if runs, _ := st.StageRuns(child); len(runs) != 0 {
+		t.Fatalf("failed wake ran stages: %#v", runs)
+	}
 }
 
 func TestRehydratePreservesDependencyWait(t *testing.T) {

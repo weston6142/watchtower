@@ -876,11 +876,12 @@ func (e *Engine) startOrWaitWithPlannerBudget(ctx context.Context, is *issueStat
 	return e.runAndRecordWithPlannerBudget(ctx, is, 0, plannerOverride)
 }
 
-func (e *Engine) wakeDependents(ctx context.Context, mergedID string) {
+func (e *Engine) wakeDependents(ctx context.Context, mergedID string) error {
 	ids, err := e.cfg.Store.Dependents(mergedID)
 	if err != nil {
-		return
+		return fmt.Errorf("find dependents for %s: %w", mergedID, err)
 	}
+	var firstErr error
 	for _, id := range ids {
 		e.mu.Lock()
 		is := e.issues[id]
@@ -890,7 +891,13 @@ func (e *Engine) wakeDependents(ctx context.Context, mergedID string) {
 			continue
 		}
 		unmet, err := e.unmetDependencies(id)
-		if err != nil || len(unmet) != 0 {
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("requeue dependent %s: %w", id, err)
+			}
+			continue
+		}
+		if len(unmet) != 0 {
 			continue
 		}
 		e.mu.Lock()
@@ -899,6 +906,7 @@ func (e *Engine) wakeDependents(ctx context.Context, mergedID string) {
 		e.emit(core.EvIssueDependenciesSatisfied, id, nil)
 		go e.runAndRecord(ctx, is, 0)
 	}
+	return firstErr
 }
 
 // issueNumber extracts n from a GH-n issue ID.
@@ -4369,9 +4377,20 @@ func (e *Engine) retryPublish(
 		"branch": integration.BaseBranch, "commit": integration.LandedSHA})
 	e.emit(core.EvIssueMerged, is.id, map[string]string{
 		"branch": integration.BaseBranch, "commit": integration.LandedSHA})
-	e.wakeDependents(context.Background(), is.id)
-	if err := e.retryCleanup(ctx, is, integration); err != nil {
-		return err
+	cleanupErr := e.retryCleanup(ctx, is, integration)
+	ready, readinessErr := e.readiness().Ready(is.id)
+	var wakeErr error
+	if readinessErr == nil && ready {
+		wakeErr = e.wakeDependents(context.Background(), is.id)
+	}
+	if cleanupErr != nil {
+		return cleanupErr
+	}
+	if readinessErr != nil {
+		return readinessErr
+	}
+	if wakeErr != nil {
+		return wakeErr
 	}
 	if e.cfg.Marshal != nil {
 		e.cfg.Marshal.Merged(is.id)

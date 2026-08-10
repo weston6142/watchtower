@@ -200,7 +200,6 @@ func (e *Engine) finalizeIntegration(
 				"branch": result.BaseBranch, "commit": result.LandedSHA})
 		}
 		e.emit(core.EvIssueMerged, is.id, map[string]string{"branch": is.branch})
-		e.wakeDependents(context.Background(), is.id)
 		integration := store.IssueIntegration{
 			IssueID: is.id, State: store.IntegrationMerged,
 			BaseBranch: result.BaseBranch, PreSHA: result.PreSHA,
@@ -210,9 +209,21 @@ func (e *Engine) finalizeIntegration(
 		if cleanupErr := e.finishLandingCleanup(
 			is.id, integration, is.wsPath, is.branch, is.wsRelease,
 		); cleanupErr != nil {
+			if ready, readinessErr := e.readiness().Ready(is.id); readinessErr == nil && ready {
+				_ = e.wakeDependents(context.Background(), is.id)
+			}
 			_ = e.recordBoundaryFailure(ctx, is.id, e.integrationStageName(is), 0,
 				failure.SiteFinalization, failure.ClassStateMismatch, failure.RetryAfterStateChange, failure.StateOperator, cleanupErr)
 			return true, false, cleanupErr
+		}
+		ready, readinessErr := e.readiness().Ready(is.id)
+		if readinessErr != nil {
+			return true, false, e.recordFinalizationFailure(is, readinessErr)
+		}
+		if ready {
+			if wakeErr := e.wakeDependents(context.Background(), is.id); wakeErr != nil {
+				return true, false, e.recordFinalizationFailure(is, wakeErr)
+			}
 		}
 	}
 	if e.cfg.Marshal != nil {
