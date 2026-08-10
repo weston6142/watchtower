@@ -50,16 +50,28 @@ func (sv *Server) plannerExec(cmd Command) Response {
 		return Response{OK: true, PlannerHandle: handle, IssueID: binding.IssueID,
 			CorrelationID: sv.plannerCorrelation()}
 	case "apply_planner_artifact":
-		if cmd.PlannerRequest == nil {
+		request := cmd.PlannerRequest
+		if request == nil {
+			request = cmd.PlannerArtifact
+		}
+		if request == nil {
 			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorInvalidSection, "", "planner request is missing"))
 		}
 		if sv.eng == nil {
 			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "engine authority is unavailable"))
 		}
-		key, err := sv.eng.ApplyPlannerArtifact(scope, cmd.PlannerHandle, *cmd.PlannerRequest)
+		handle := cmd.PlannerHandle
+		if handle == "" {
+			var issueErr error
+			handle, _, issueErr = sv.eng.IssuePlannerAuthority(scope)
+			if issueErr != nil {
+				return sv.plannerFailure(issueErr)
+			}
+		}
+		key, err := sv.eng.ApplyPlannerArtifact(scope, handle, *request)
 		if err != nil {
 			response := sv.plannerFailure(err)
-			response.SectionKey = cmd.PlannerRequest.Key
+			response.SectionKey = request.Key
 			return response
 		}
 		return Response{OK: true, SectionKey: key, CorrelationID: sv.plannerCorrelation()}
