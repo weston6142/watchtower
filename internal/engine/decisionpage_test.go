@@ -184,7 +184,7 @@ func TestDecisionPageUsesAttemptArchivePathAndLegacyFallback(t *testing.T) {
 	if err != nil || len(checkpoints) != 1 {
 		t.Fatalf("stage checkpoints = %+v, err=%v", checkpoints, err)
 	}
-	page, err := e.BuildDecisionPageForTest(id, checkpoints[0].ID)
+	page, err := e.buildDecisionPageForCheckpoint(id, checkpoints[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestDecisionPageUsesAttemptArchivePathAndLegacyFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyPage, err := e.BuildDecisionPageForTest(id, legacyID)
+	legacyPage, err := e.buildDecisionPageForCheckpoint(id, legacyID)
 	if err != nil {
 		t.Fatal(err)
 	}

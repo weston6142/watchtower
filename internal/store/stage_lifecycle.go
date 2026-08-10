@@ -50,6 +50,8 @@ const (
 	CodeCheckpointFinalization = stagelifecycle.CodeCheckpointFinalization
 )
 
+const stageLifecycleRecordColumns = "schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,transition_id,payload_digest,result_path,result_sha256,artifacts,status"
+
 func BeginAttempt(issueID, stage, attemptID string) StageLifecycleAttempt {
 	return StageLifecycleAttempt{
 		IssueID: issueID, Stage: stage, AttemptID: attemptID,
@@ -354,8 +356,7 @@ func (s *Store) LatestCommittedStageLifecycle(attempt StageLifecycleAttempt) (st
 func (s *Store) StageLifecycleRecords(issueID, stage, attemptID string) ([]stagelifecycle.Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	query := `SELECT schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,
-		transition_id,payload_digest,result_path,result_sha256,artifacts,status
+	query := `SELECT ` + stageLifecycleRecordColumns + `
 		FROM stage_lifecycle_checkpoints WHERE issue_id=? AND stage=?`
 	args := []any{issueID, stage}
 	if attemptID != "" {
@@ -447,8 +448,7 @@ func (s *Store) validatePredecessorLocked(record stagelifecycle.Record) error {
 	var predecessor Record
 	var status string
 	var artifacts string
-	err := s.db.QueryRow(`SELECT schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,
-		transition_id,payload_digest,result_path,result_sha256,artifacts,status
+	err := s.db.QueryRow(`SELECT `+stageLifecycleRecordColumns+`
 		FROM stage_lifecycle_checkpoints WHERE issue_id=? AND stage=? AND attempt_id=? AND version=?`,
 		record.IssueID, record.Stage, record.AttemptID, record.PredecessorVersion).Scan(
 		&predecessor.SchemaVersion, &predecessor.IssueID, &predecessor.Stage, &predecessor.AttemptID,
@@ -547,8 +547,7 @@ func requiresArchiveValidation(substate stagelifecycle.Substate) bool {
 }
 
 func (s *Store) loadByTransitionLocked(want stagelifecycle.Record, out *stagelifecycle.Record, status *string) (bool, error) {
-	row := s.db.QueryRow(`SELECT schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,
-		transition_id,payload_digest,result_path,result_sha256,artifacts,status
+	row := s.db.QueryRow(`SELECT `+stageLifecycleRecordColumns+`
 		FROM stage_lifecycle_checkpoints WHERE issue_id=? AND stage=? AND attempt_id=? AND transition_id=?`,
 		want.IssueID, want.Stage, want.AttemptID, want.TransitionID)
 	record, currentStatus, err := scanLifecycleRecord(row)
@@ -564,9 +563,7 @@ func (s *Store) loadByTransitionLocked(want stagelifecycle.Record, out *stagelif
 }
 
 func (s *Store) latestCommittedLocked(attempt StageLifecycleAttempt) (stagelifecycle.Record, bool, error) {
-	row := s.db.QueryRow(`SELECT schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,
-		transition_id,payload_digest,result_path,result_sha256,artifacts,status
-		FROM stage_lifecycle_checkpoints WHERE issue_id=? AND stage=? AND attempt_id=? AND status='committed'
+	row := s.db.QueryRow(`SELECT `+stageLifecycleRecordColumns+` FROM stage_lifecycle_checkpoints WHERE issue_id=? AND stage=? AND attempt_id=? AND status='committed'
 		ORDER BY version DESC LIMIT 1`, attempt.IssueID, attempt.Stage, attempt.AttemptID)
 	record, status, err := scanLifecycleRecord(row)
 	if errors.Is(err, sql.ErrNoRows) {

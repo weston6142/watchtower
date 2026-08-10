@@ -257,10 +257,10 @@ func (e *Engine) buildPageDataWithDecisionRows(
 	return data, nil
 }
 
-// BuildDecisionPageForTest renders a checkpoint's page using the same data
-// path as the daemon. It is intentionally small so presentation tests can
-// exercise persisted checkpoint and archive state without private fixtures.
-func (e *Engine) BuildDecisionPageForTest(issueID string, checkpointID int64) (string, error) {
+// buildDecisionPageForCheckpoint renders a checkpoint's page using the same
+// data path as the daemon. Tests use it to exercise persisted checkpoint and
+// archive state without private fixtures.
+func (e *Engine) buildDecisionPageForCheckpoint(issueID string, checkpointID int64) (string, error) {
 	rows, err := e.cfg.Store.Issues()
 	if err != nil {
 		return "", err

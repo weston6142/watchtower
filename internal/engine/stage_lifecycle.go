@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -61,16 +60,6 @@ func (e *Engine) lifecycleAttemptFor(is *issueState, st flow.Stage, checkpointID
 	return attempt, selectedRecords, nil
 }
 
-// startOrResumeLifecycleAttempt establishes the stable attempt identity before
-// any model call. The durable result and checkpoint records are read by the
-// caller to decide whether the runner can be skipped.
-func (e *Engine) startOrResumeLifecycleAttempt(
-	_ context.Context, is *issueState, st flow.Stage, checkpointID int64,
-) error {
-	_, _, err := e.lifecycleAttemptFor(is, st, checkpointID)
-	return err
-}
-
 func (e *Engine) lifecycleResultFromRecord(record stagelifecycle.Record) contextpack.AttemptResult {
 	result := contextpack.AttemptResult{
 		AttemptID: record.AttemptID, IssueID: record.IssueID, Stage: record.Stage,
@@ -110,20 +99,17 @@ func lifecycleRecordResult(records []stagelifecycle.Record) (stagelifecycle.Reco
 }
 
 func lifecycleReached(current stagelifecycle.Substate, target stagelifecycle.Substate) bool {
-	order := []stagelifecycle.Substate{
-		stagelifecycle.RunnerSucceeded, stagelifecycle.ArtifactsValidated,
-		stagelifecycle.ArtifactsArchived, stagelifecycle.GateResolved,
-		stagelifecycle.VerificationPassed, stagelifecycle.FinalizationReady,
+	if target == "" {
+		return false
 	}
-	position := func(value stagelifecycle.Substate) int {
-		for index, item := range order {
-			if item == value {
-				return index
-			}
+	for current != target {
+		next, ok := stagelifecycle.Next(target)
+		if !ok {
+			return false
 		}
-		return -1
+		target = next
 	}
-	return position(current) >= position(target) && position(target) >= 0
+	return true
 }
 
 func (e *Engine) restoreLifecycleResult(issueDir string, record stagelifecycle.Record, workdir string) (contextpack.AttemptResult, error) {
@@ -255,23 +241,6 @@ func (e *Engine) commitLifecycleSubstate(
 	return nil
 }
 
-// recoverLifecycleAttempt validates the durable result and makes it available
-// in the stage workdir without invoking a runner.
-func (e *Engine) recoverLifecycleAttempt(
-	_ context.Context, is *issueState, _ flow.Stage, attempt store.StageLifecycleAttempt,
-) error {
-	records, err := e.cfg.Store.StageLifecycleRecords(attempt.IssueID, attempt.Stage, attempt.AttemptID)
-	if err != nil {
-		return err
-	}
-	record, found := lifecycleRecordResult(records)
-	if !found {
-		return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "durable runner result checkpoint is missing"}
-	}
-	_, err = e.restoreLifecycleResult(e.issueDir(is.id), record, e.stageWorkdir(is, e.cfg.Flows[is.flowName].Stages[is.stageIdx]))
-	return err
-}
-
 func (e *Engine) commitRehydratedArtifactReviewGate(issueID, stage string, checkpointID int64) error {
 	attemptID := fmt.Sprintf("checkpoint-%d", checkpointID)
 	records, err := e.cfg.Store.StageLifecycleRecords(issueID, stage, attemptID)
@@ -321,18 +290,6 @@ func lifecycleErrorMessage(err error) string {
 		return err.Error()
 	}
 	return string(code)
-}
-
-func lifecycleDigestFromArtifacts(artifacts []contextpack.Artifact) string {
-	var builder strings.Builder
-	for _, artifact := range artifacts {
-		builder.WriteString(artifact.Name)
-		builder.WriteByte(0)
-		builder.WriteString(artifact.SHA256)
-		builder.WriteByte(0)
-	}
-	digest := sha256.Sum256([]byte(builder.String()))
-	return hex.EncodeToString(digest[:])
 }
 
 func (e *Engine) materializeStageContext(issueID, workdir string, names []string) error {
