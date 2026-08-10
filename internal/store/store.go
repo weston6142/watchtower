@@ -197,8 +197,10 @@ type Store struct {
 	failNextPausePersistence         bool
 	failNextPlannerArtifactRead      bool
 	failNextPlannerArtifactWrite     bool
+	failNextStageLifecyclePrepare    bool
 	failNextStageLifecycleCommit     bool
 	failNextStageArchiveManifest     bool
+	failNextStageCheckpointFinish    bool
 	failIssueIntegrationWriteAfter   int
 	failNextVerificationRetry        bool
 }
@@ -964,6 +966,10 @@ func (s *Store) FinishStageCheckpoint(
 ) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failNextStageCheckpointFinish {
+		s.failNextStageCheckpointFinish = false
+		return errors.New("stage checkpoint finalization failed")
+	}
 	encoded, err := json.Marshal(artifacts)
 	if err != nil {
 		return err

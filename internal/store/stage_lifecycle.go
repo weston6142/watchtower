@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -92,6 +93,57 @@ func (s *Store) CreateStageLifecycleAttempt(attempt StageLifecycleAttempt) error
 	return err
 }
 
+func (s *Store) StageLifecycleAttempts(issueID, stage string) ([]StageLifecycleAttempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT issue_id,stage,attempt_id,legacy_checkpoint_id,
+		result_path,result_sha256,created_at FROM stage_lifecycle_attempts
+		WHERE issue_id=? AND stage=? ORDER BY created_at,attempt_id`, issueID, stage)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var attempts []StageLifecycleAttempt
+	for rows.Next() {
+		var attempt StageLifecycleAttempt
+		var createdAt string
+		if err := rows.Scan(&attempt.IssueID, &attempt.Stage, &attempt.AttemptID,
+			&attempt.LegacyCheckpointID, &attempt.ResultPath, &attempt.ResultSHA256, &createdAt); err != nil {
+			return nil, err
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, err
+		}
+		attempt.CreatedAt = parsed
+		attempts = append(attempts, attempt)
+	}
+	return attempts, rows.Err()
+}
+
+func (s *Store) StageLifecycleResult(attempt StageLifecycleAttempt) (contextpack.AttemptResult, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := validateAttempt(attempt); err != nil {
+		return contextpack.AttemptResult{}, false, err
+	}
+	var result contextpack.AttemptResult
+	err := s.db.QueryRow(`SELECT result_path,result_sha256 FROM stage_lifecycle_attempts
+		WHERE issue_id=? AND stage=? AND attempt_id=?`, attempt.IssueID, attempt.Stage, attempt.AttemptID).
+		Scan(&result.ResultPath, &result.ResultSHA256)
+	if errors.Is(err, sql.ErrNoRows) {
+		return contextpack.AttemptResult{}, false, nil
+	}
+	if err != nil {
+		return contextpack.AttemptResult{}, false, err
+	}
+	if result.ResultPath == "" || result.ResultSHA256 == "" {
+		return contextpack.AttemptResult{}, false, nil
+	}
+	result.AttemptID, result.IssueID, result.Stage = attempt.AttemptID, attempt.IssueID, attempt.Stage
+	return result, true, nil
+}
+
 // PutStageLifecycleResult records the immutable result slot identity. The
 // variadic form keeps this boundary convenient for callers that already hold
 // an AttemptResult while retaining one unambiguous storage operation.
@@ -105,14 +157,39 @@ func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results .
 		return lifecycleDiagnostic(CodeMissingResult, "exactly one attempt result is required")
 	}
 	result := results[0]
-	if result.AttemptID != attempt.AttemptID || strings.TrimSpace(result.ResultPath) == "" ||
-		!validDigest(result.ResultSHA256) {
+	expectedResultPath := path.Join("artifacts", "attempts", attempt.AttemptID, "result", "manifest.json")
+	if result.AttemptID != attempt.AttemptID || result.ResultPath != expectedResultPath {
+		return lifecycleDiagnostic(CodeIntegrity, "attempt result identity or path conflicts")
+	}
+	if strings.TrimSpace(result.ResultPath) == "" || !validDigest(result.ResultSHA256) {
 		return lifecycleDiagnostic(CodeMissingResult, "attempt result identity or digest is missing")
 	}
-	if _, err := s.db.Exec(`UPDATE stage_lifecycle_attempts SET result_path=?,result_sha256=?
-		WHERE issue_id=? AND stage=? AND attempt_id=?`, result.ResultPath, result.ResultSHA256,
-		attempt.IssueID, attempt.Stage, attempt.AttemptID); err != nil {
+	if err := s.requireAttemptLocked(attempt); err != nil {
 		return err
+	}
+	var existingPath, existingDigest string
+	err := s.db.QueryRow(`SELECT result_path,result_sha256 FROM stage_lifecycle_attempts
+		WHERE issue_id=? AND stage=? AND attempt_id=?`, attempt.IssueID, attempt.Stage, attempt.AttemptID).
+		Scan(&existingPath, &existingDigest)
+	if err != nil {
+		return err
+	}
+	if existingPath != "" || existingDigest != "" {
+		if existingPath == result.ResultPath && existingDigest == result.ResultSHA256 {
+			return nil
+		}
+		return lifecycleDiagnostic(CodeConflict, "attempt result identity already has different data")
+	}
+	updated, err := s.db.Exec(`UPDATE stage_lifecycle_attempts SET result_path=?,result_sha256=?
+		WHERE issue_id=? AND stage=? AND attempt_id=?`, result.ResultPath, result.ResultSHA256,
+		attempt.IssueID, attempt.Stage, attempt.AttemptID)
+	if err != nil {
+		return err
+	}
+	if affected, err := updated.RowsAffected(); err != nil {
+		return err
+	} else if affected != 1 {
+		return lifecycleDiagnostic(CodeMissingResult, "attempt result slot was not persisted")
 	}
 	return nil
 }
@@ -138,7 +215,7 @@ func (s *Store) PutStageArchiveManifest(attempt StageLifecycleAttempt, transitio
 		return err
 	}
 	for _, ref := range refs[0] {
-		if !validArchiveRef(ref) {
+		if !validArchiveRef(attempt.AttemptID, ref) {
 			return lifecycleDiagnostic(CodeIntegrity, "archive reference for %q is invalid", ref.Name)
 		}
 		var path, digest string
@@ -191,6 +268,10 @@ func (s *Store) PrepareStageLifecycle(record stagelifecycle.Record) error {
 	}
 	if err := s.validatePredecessorLocked(record); err != nil {
 		return err
+	}
+	if s.failNextStageLifecyclePrepare {
+		s.failNextStageLifecyclePrepare = false
+		return lifecycleDiagnostic(CodeCheckpointFinalization, "checkpoint preparation failed")
 	}
 	encoded, err := json.Marshal(record.Artifacts)
 	if err != nil {
@@ -333,10 +414,22 @@ func (s *Store) FailNextStageLifecycleCommitForTest() {
 	s.failNextStageLifecycleCommit = true
 }
 
+func (s *Store) FailNextStageLifecyclePrepareForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextStageLifecyclePrepare = true
+}
+
 func (s *Store) FailNextStageArchiveManifestForTest() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failNextStageArchiveManifest = true
+}
+
+func (s *Store) FailNextStageCheckpointFinishForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextStageCheckpointFinish = true
 }
 
 func (s *Store) requireAttemptLocked(attempt StageLifecycleAttempt) error {
@@ -353,6 +446,7 @@ func (s *Store) requireAttemptLocked(attempt StageLifecycleAttempt) error {
 func (s *Store) validatePredecessorLocked(record stagelifecycle.Record) error {
 	var predecessor Record
 	var status string
+	var artifacts string
 	err := s.db.QueryRow(`SELECT schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,
 		transition_id,payload_digest,result_path,result_sha256,artifacts,status
 		FROM stage_lifecycle_checkpoints WHERE issue_id=? AND stage=? AND attempt_id=? AND version=?`,
@@ -360,7 +454,7 @@ func (s *Store) validatePredecessorLocked(record stagelifecycle.Record) error {
 		&predecessor.SchemaVersion, &predecessor.IssueID, &predecessor.Stage, &predecessor.AttemptID,
 		&predecessor.Version, &predecessor.Substate, &predecessor.PredecessorVersion,
 		&predecessor.TransitionID, &predecessor.PayloadDigest, &predecessor.ResultRef,
-		&predecessor.ResultDigest, new(string), &status)
+		&predecessor.ResultDigest, &artifacts, &status)
 	if record.PredecessorVersion == 0 {
 		if !errors.Is(err, sql.ErrNoRows) {
 			if err == nil {
@@ -379,6 +473,12 @@ func (s *Store) validatePredecessorLocked(record stagelifecycle.Record) error {
 	if status != "committed" {
 		return lifecycleDiagnostic(CodeInvalidState, "lifecycle predecessor is not committed")
 	}
+	if artifacts == "" {
+		artifacts = "[]"
+	}
+	if err := json.Unmarshal([]byte(artifacts), &predecessor.Artifacts); err != nil {
+		return lifecycleDiagnostic(CodeIntegrity, "lifecycle predecessor artifacts are invalid")
+	}
 	return stagelifecycle.ValidateTransition(&predecessor, record)
 }
 
@@ -390,10 +490,16 @@ func (s *Store) validateResultLocked(attempt StageLifecycleAttempt, record stage
 	err := s.db.QueryRow(`SELECT result_path,result_sha256 FROM stage_lifecycle_attempts
 		WHERE issue_id=? AND stage=? AND attempt_id=?`, attempt.IssueID, attempt.Stage, attempt.AttemptID).
 		Scan(&path, &digest)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
+		return lifecycleDiagnostic(CodeMissingResult, "lifecycle attempt result is not durable")
+	}
+	if err != nil {
 		return err
 	}
-	if err == nil && path != "" && (path != record.ResultRef || (record.ResultDigest != "" && digest != record.ResultDigest)) {
+	if path == "" || digest == "" {
+		return lifecycleDiagnostic(CodeMissingResult, "lifecycle attempt result is incomplete")
+	}
+	if path != record.ResultRef || digest != record.ResultDigest {
 		return lifecycleDiagnostic(CodeConflict, "lifecycle result reference conflicts with attempt result")
 	}
 	if record.ResultDigest != "" && !validDigest(record.ResultDigest) {
@@ -503,9 +609,14 @@ func validateAttempt(attempt StageLifecycleAttempt) error {
 	return nil
 }
 
-func validArchiveRef(ref contextpack.AttemptArtifact) bool {
+func validArchiveRef(attemptID string, ref contextpack.AttemptArtifact) bool {
+	cleanName := path.Clean(ref.Name)
+	if ref.Name == "" || strings.ContainsAny(ref.Name, `\\`) || strings.Contains(ref.Name, "\x00") ||
+		cleanName != ref.Name || cleanName == "." || strings.HasPrefix(cleanName, "../") {
+		return false
+	}
 	return ref.Name != "" && safeRelativePath(ref.Path) && validDigest(ref.SHA256) &&
-		strings.HasPrefix(ref.Path, "artifacts/attempts/") && strings.HasSuffix(ref.Path, "/"+ref.Name)
+		ref.Path == path.Join("artifacts", "attempts", attemptID, ref.Name)
 }
 
 func lifecycleDiagnostic(code stagelifecycle.DiagnosticCode, format string, args ...any) error {

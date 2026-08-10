@@ -29,11 +29,11 @@ func TestSixSubstatesAreOrdered(t *testing.T) {
 
 func TestExactTransitionReplayIsHarmlessButConflictsFailClosed(t *testing.T) {
 	first := Record{SchemaVersion: 1, Version: 2, Substate: ArtifactsValidated,
-		PredecessorVersion: 1, TransitionID: "attempt-7:artifacts_validated",
-		ResultRef: "result.json", PayloadDigest: strings.Repeat("a", 64)}
+		AttemptID: "attempt-7", PredecessorVersion: 1, TransitionID: "attempt-7:artifacts_validated",
+		ResultRef: "artifacts/attempts/attempt-7/result/manifest.json", ResultDigest: strings.Repeat("a", 64), PayloadDigest: strings.Repeat("a", 64)}
 	predecessor := &Record{SchemaVersion: 1, Version: 1, Substate: RunnerSucceeded,
-		TransitionID: "attempt-7:runner_succeeded",
-		ResultRef: "result.json", PayloadDigest: strings.Repeat("a", 64)}
+		AttemptID: "attempt-7", TransitionID: "attempt-7:runner_succeeded",
+		ResultRef: "artifacts/attempts/attempt-7/result/manifest.json", ResultDigest: strings.Repeat("a", 64), PayloadDigest: strings.Repeat("a", 64)}
 	if err := ValidateTransition(predecessor, first); err != nil {
 		t.Fatal(err)
 	}
@@ -49,12 +49,12 @@ func TestExactTransitionReplayIsHarmlessButConflictsFailClosed(t *testing.T) {
 
 func TestTransitionDiagnosticsRejectUnsafeOrUnknownState(t *testing.T) {
 	valid := Record{SchemaVersion: SchemaVersion, Version: 1, Substate: RunnerSucceeded,
-		TransitionID: "attempt-7:runner_succeeded", ResultRef: "result.json",
-		PayloadDigest: strings.Repeat("a", 64)}
+		AttemptID: "attempt-7", TransitionID: "attempt-7:runner_succeeded", ResultRef: "artifacts/attempts/attempt-7/result/manifest.json",
+		ResultDigest: strings.Repeat("a", 64), PayloadDigest: strings.Repeat("a", 64)}
 	cases := []struct {
-		name string
+		name   string
 		record Record
-		code DiagnosticCode
+		code   DiagnosticCode
 	}{
 		{name: "unknown version", record: Record{SchemaVersion: 2, Version: 1,
 			Substate: RunnerSucceeded, TransitionID: "id", ResultRef: "result.json",
@@ -67,6 +67,12 @@ func TestTransitionDiagnosticsRejectUnsafeOrUnknownState(t *testing.T) {
 			PayloadDigest: "not-a-digest"}, code: CodeIntegrity},
 		{name: "missing result", record: Record{SchemaVersion: SchemaVersion, Version: 1,
 			Substate: RunnerSucceeded, TransitionID: "id", PayloadDigest: strings.Repeat("a", 64)}, code: CodeMissingResult},
+		{name: "missing result digest", record: Record{SchemaVersion: SchemaVersion, Version: 1,
+			Substate: RunnerSucceeded, TransitionID: "id", ResultRef: "result.json",
+			PayloadDigest: strings.Repeat("a", 64)}, code: CodeIntegrity},
+		{name: "result outside attempt slot", record: Record{SchemaVersion: SchemaVersion, Version: 1,
+			AttemptID: "attempt-7", Substate: RunnerSucceeded, TransitionID: "id", ResultRef: "result.json",
+			ResultDigest: strings.Repeat("a", 64), PayloadDigest: strings.Repeat("a", 64)}, code: CodeIntegrity},
 		{name: "escaping artifact", record: Record{SchemaVersion: SchemaVersion, Version: 1,
 			Substate: RunnerSucceeded, TransitionID: "id", ResultRef: "result.json",
 			PayloadDigest: strings.Repeat("a", 64), Artifacts: []ArtifactRef{{
@@ -90,8 +96,8 @@ func TestTransitionDiagnosticsRejectUnsafeOrUnknownState(t *testing.T) {
 	}
 	if err := ValidateTransition(&valid, Record{
 		SchemaVersion: SchemaVersion, Version: 2, Substate: ArtifactsValidated,
-		PredecessorVersion: 1, TransitionID: "id-2", ResultRef: "result.json",
-		PayloadDigest: strings.Repeat("a", 64),
+		AttemptID: "attempt-7", PredecessorVersion: 1, TransitionID: "id-2", ResultRef: "artifacts/attempts/attempt-7/result/manifest.json",
+		ResultDigest: strings.Repeat("a", 64), PayloadDigest: strings.Repeat("a", 64),
 	}); err != nil {
 		t.Fatalf("valid next transition rejected: %v", err)
 	}

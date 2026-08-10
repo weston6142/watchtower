@@ -23,20 +23,42 @@ func (e *Engine) lifecycleAttemptFor(is *issueState, st flow.Stage, checkpointID
 	if err != nil {
 		return store.StageLifecycleAttempt{}, nil, err
 	}
+	attempts, err := e.cfg.Store.StageLifecycleAttempts(is.id, st.Name)
+	if err != nil {
+		return store.StageLifecycleAttempt{}, nil, err
+	}
 	attemptID := fmt.Sprintf("checkpoint-%d", checkpointID)
 	if !(is.retryUnmerged && st.MergeBarrier) {
-		for index := len(records) - 1; index >= 0; index-- {
-			if records[index].AttemptID != "" {
-				attemptID = records[index].AttemptID
-				break
+		latestAttemptID := ""
+		for _, candidate := range attempts {
+			if candidate.ResultPath != "" &&
+				(latestAttemptID == "" || lifecycleAttemptAfter(candidate.AttemptID, latestAttemptID)) {
+				latestAttemptID = candidate.AttemptID
 			}
+		}
+		if latestAttemptID == "" {
+			for _, record := range records {
+				if record.AttemptID != "" &&
+					(latestAttemptID == "" || lifecycleAttemptAfter(record.AttemptID, latestAttemptID)) {
+					latestAttemptID = record.AttemptID
+				}
+			}
+		}
+		if latestAttemptID != "" {
+			attemptID = latestAttemptID
+		}
+	}
+	selectedRecords := records[:0]
+	for _, record := range records {
+		if record.AttemptID == attemptID {
+			selectedRecords = append(selectedRecords, record)
 		}
 	}
 	attempt := store.BeginAttempt(is.id, st.Name, attemptID)
 	if err := e.cfg.Store.CreateStageLifecycleAttempt(attempt); err != nil {
 		return store.StageLifecycleAttempt{}, nil, err
 	}
-	return attempt, records, nil
+	return attempt, selectedRecords, nil
 }
 
 // startOrResumeLifecycleAttempt establishes the stable attempt identity before
@@ -60,6 +82,22 @@ func (e *Engine) lifecycleResultFromRecord(record stagelifecycle.Record) context
 		})
 	}
 	return result
+}
+
+func lifecycleRunnerRecord(result contextpack.AttemptResult) stagelifecycle.Record {
+	return stagelifecycle.Record{
+		SchemaVersion: stagelifecycle.SchemaVersion,
+		IssueID:       result.IssueID,
+		Stage:         result.Stage,
+		AttemptID:     result.AttemptID,
+		Version:       1,
+		Substate:      stagelifecycle.RunnerSucceeded,
+		TransitionID:  result.AttemptID + ":" + string(stagelifecycle.RunnerSucceeded),
+		PayloadDigest: lifecyclePayloadDigest(stagelifecycle.RunnerSucceeded, result, result.Artifacts),
+		ResultRef:     result.ResultPath,
+		ResultDigest:  result.ResultSHA256,
+		Artifacts:     lifecycleArtifactRefs(result.Artifacts),
+	}
 }
 
 func lifecycleRecordResult(records []stagelifecycle.Record) (stagelifecycle.Record, bool) {
@@ -95,25 +133,44 @@ func (e *Engine) restoreLifecycleResult(issueDir string, record stagelifecycle.R
 			Code: stagelifecycle.CodeMissingResult, Message: "durable model result is missing",
 		}
 	}
-	path := filepath.Join(issueDir, filepath.FromSlash(result.ResultPath))
-	body, err := os.ReadFile(path)
+	loaded, err := contextpack.LoadAttemptResult(issueDir, result)
 	if err != nil {
+		code := stagelifecycle.CodeIntegrity
+		if errors.Is(err, os.ErrNotExist) {
+			code = stagelifecycle.CodeMissingResult
+		}
 		return contextpack.AttemptResult{}, &stagelifecycle.DiagnosticError{
-			Code: stagelifecycle.CodeMissingResult, Message: "durable model result cannot be read",
+			Code: code, Message: "durable model result cannot be validated",
 		}
 	}
-	digest := sha256.Sum256(body)
-	if hex.EncodeToString(digest[:]) != result.ResultSHA256 {
+	if !lifecycleArtifactsMatch(record.Artifacts, loaded.Artifacts) {
 		return contextpack.AttemptResult{}, &stagelifecycle.DiagnosticError{
-			Code: stagelifecycle.CodeIntegrity, Message: "durable model result digest does not validate",
+			Code: stagelifecycle.CodeIntegrity, Message: "durable model output conflicts with checkpoint",
 		}
 	}
-	if err := contextpack.MaterializeAttemptArtifacts(issueDir, workdir, result.Artifacts); err != nil {
+	if err := contextpack.MaterializeAttemptArtifacts(issueDir, workdir, loaded.Artifacts); err != nil {
 		return contextpack.AttemptResult{}, &stagelifecycle.DiagnosticError{
 			Code: stagelifecycle.CodeIntegrity, Message: "durable model output does not validate",
 		}
 	}
-	return result, nil
+	return loaded, nil
+}
+
+func lifecycleArtifactsMatch(recorded []stagelifecycle.ArtifactRef, loaded []contextpack.AttemptArtifact) bool {
+	if len(recorded) != len(loaded) {
+		return false
+	}
+	byName := make(map[string]contextpack.AttemptArtifact, len(loaded))
+	for _, artifact := range loaded {
+		byName[artifact.Name] = artifact
+	}
+	for _, artifact := range recorded {
+		candidate, ok := byName[artifact.Name]
+		if !ok || candidate.Path != artifact.Path || candidate.SHA256 != artifact.SHA256 {
+			return false
+		}
+	}
+	return true
 }
 
 func lifecycleArtifactRefs(values []contextpack.AttemptArtifact) []stagelifecycle.ArtifactRef {
@@ -215,6 +272,33 @@ func (e *Engine) recoverLifecycleAttempt(
 	return err
 }
 
+func (e *Engine) commitRehydratedArtifactReviewGate(issueID, stage string, checkpointID int64) error {
+	attemptID := fmt.Sprintf("checkpoint-%d", checkpointID)
+	records, err := e.cfg.Store.StageLifecycleRecords(issueID, stage, attemptID)
+	if err != nil || len(records) == 0 {
+		return err
+	}
+	attempt := store.BeginAttempt(issueID, stage, attemptID)
+	if err := e.cfg.Store.CreateStageLifecycleAttempt(attempt); err != nil {
+		return err
+	}
+	latest, found, err := e.cfg.Store.LatestCommittedStageLifecycle(attempt)
+	if err != nil {
+		return err
+	}
+	if !found || lifecycleReached(latest.Substate, stagelifecycle.GateResolved) {
+		return nil
+	}
+	runnerRecord, ok := lifecycleRecordResult(records)
+	if !ok {
+		return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "artifact review result checkpoint is missing"}
+	}
+	result := e.lifecycleResultFromRecord(runnerRecord)
+	archiveRefs := attemptArtifactRefs(latest.Artifacts)
+	return e.commitLifecycleSubstate(attempt, stagelifecycle.GateResolved,
+		lifecyclePayloadDigest(stagelifecycle.GateResolved, result, archiveRefs), result, archiveRefs)
+}
+
 func lifecycleArchiveRefs(archive []contextpack.AttemptArtifact) []contextpack.Artifact {
 	result := make([]contextpack.Artifact, 0, len(archive))
 	for _, artifact := range archive {
@@ -272,19 +356,34 @@ func (e *Engine) materializeStageContext(issueID, workdir string, names []string
 		if recordsErr != nil {
 			return recordsErr
 		}
-		for index := len(records) - 1; index >= 0; index-- {
-			record := records[index]
-			if !record.Committed || !lifecycleReached(record.Substate, stagelifecycle.ArtifactsArchived) {
-				continue
+		latestAttemptID := ""
+		for _, record := range records {
+			if record.Committed && lifecycleReached(record.Substate, stagelifecycle.ArtifactsArchived) &&
+				(latestAttemptID == "" || lifecycleAttemptAfter(record.AttemptID, latestAttemptID)) {
+				latestAttemptID = record.AttemptID
 			}
-			for _, artifact := range record.Artifacts {
-				if needed[artifact.Name] && !strings.Contains(artifact.Path, "/result/") {
-					refsByName[artifact.Name] = contextpack.AttemptArtifact{
-						Name: artifact.Name, Path: artifact.Path, SHA256: artifact.SHA256,
-					}
+		}
+		if latestAttemptID == "" {
+			continue
+		}
+		var latest stagelifecycle.Record
+		found := false
+		for _, record := range records {
+			if record.AttemptID == latestAttemptID && record.Committed &&
+				lifecycleReached(record.Substate, stagelifecycle.ArtifactsArchived) &&
+				(!found || record.Version > latest.Version) {
+				latest, found = record, true
+			}
+		}
+		if !found {
+			continue
+		}
+		for _, artifact := range latest.Artifacts {
+			if needed[artifact.Name] && !strings.Contains(artifact.Path, "/result/") {
+				refsByName[artifact.Name] = contextpack.AttemptArtifact{
+					Name: artifact.Name, Path: artifact.Path, SHA256: artifact.SHA256,
 				}
 			}
-			break
 		}
 	}
 	var legacy []string
@@ -398,13 +497,15 @@ func validateDurableLifecycleRecord(issueDir string, record stagelifecycle.Recor
 	if record.ResultRef == "" || record.ResultDigest == "" {
 		return "", &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "durable model result is missing"}
 	}
-	body, err := os.ReadFile(filepath.Join(issueDir, filepath.FromSlash(record.ResultRef)))
-	if err != nil {
-		return "", &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "durable model result cannot be read"}
-	}
-	digest := sha256.Sum256(body)
-	if hex.EncodeToString(digest[:]) != record.ResultDigest {
-		return "", &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeIntegrity, Message: "durable model result digest does not validate"}
+	if _, err := contextpack.LoadAttemptResult(issueDir, contextpack.AttemptResult{
+		AttemptID: record.AttemptID, IssueID: record.IssueID, Stage: record.Stage,
+		ResultPath: record.ResultRef, ResultSHA256: record.ResultDigest,
+	}); err != nil {
+		code := stagelifecycle.CodeIntegrity
+		if errors.Is(err, os.ErrNotExist) {
+			code = stagelifecycle.CodeMissingResult
+		}
+		return "", &stagelifecycle.DiagnosticError{Code: code, Message: "durable model result cannot be validated"}
 	}
 	if len(record.Artifacts) > 0 {
 		workdir, err := os.MkdirTemp("", "watchtower-lifecycle-recovery-")

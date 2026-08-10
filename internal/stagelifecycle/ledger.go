@@ -116,11 +116,16 @@ func ValidateRecord(record Record) error {
 	if !validDigest(record.PayloadDigest) {
 		return diagnostic(CodeIntegrity, "checkpoint payload digest is invalid")
 	}
-	if record.ResultDigest != "" && !validDigest(record.ResultDigest) {
+	if !validDigest(record.ResultDigest) {
 		return diagnostic(CodeIntegrity, "checkpoint result digest is invalid")
 	}
 	if record.AttemptID != "" && !safeComponent(record.AttemptID) {
 		return diagnostic(CodeIntegrity, "checkpoint attempt identity is unsafe")
+	}
+	if record.AttemptID != "" && record.ResultRef != path.Join(
+		"artifacts", "attempts", record.AttemptID, "result", "manifest.json",
+	) {
+		return diagnostic(CodeIntegrity, "checkpoint model result reference is outside the attempt slot")
 	}
 	for _, artifact := range record.Artifacts {
 		if err := validateArtifact(record.AttemptID, artifact); err != nil {

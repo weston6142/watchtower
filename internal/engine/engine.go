@@ -2675,6 +2675,12 @@ func (e *Engine) continueArtifactReview(
 			return
 		}
 	}
+	if err := e.commitRehydratedArtifactReviewGate(issueID, stage, target.CheckpointID); err != nil {
+		recordArtifactFailure(fmt.Errorf("artifact review lifecycle handoff: %w", err))
+		e.emit(core.EvStageFailed, issueID, map[string]any{
+			"stage": stage, "error": fmt.Sprintf("artifact review lifecycle handoff: %v", err), "final": true})
+		return
+	}
 	if err := e.cfg.Store.CompleteArtifactReview(target.CheckpointID, target); err != nil {
 		recordArtifactFailure(fmt.Errorf("artifact review handoff: %w", err))
 		e.emit(core.EvStageFailed, issueID, map[string]any{
@@ -3289,20 +3295,33 @@ func (e *Engine) runStageOnce(
 			return err
 		}
 		resumedLifecycle = true
+	} else if storedResult, found, resultErr := e.cfg.Store.StageLifecycleResult(lifecycleAttempt); resultErr != nil {
+		return resultErr
+	} else if found {
+		loadedResult, loadErr := contextpack.LoadAttemptResult(e.issueDir(is.id), storedResult)
+		if loadErr != nil {
+			code := stagelifecycle.CodeIntegrity
+			if errors.Is(loadErr, os.ErrNotExist) {
+				code = stagelifecycle.CodeMissingResult
+			}
+			return &stagelifecycle.DiagnosticError{Code: code, Message: "durable model result cannot be recovered"}
+		}
+		durableRunnerRecord = lifecycleRunnerRecord(loadedResult)
+		if _, restoreErr := e.restoreLifecycleResult(e.issueDir(is.id), durableRunnerRecord, workdir); restoreErr != nil {
+			return restoreErr
+		}
+		lifecycleResult = loadedResult
+		resumedLifecycle = true
 	}
 	var checkpointArtifacts []contextpack.Artifact
 	var sessionIDs []string
-	defer func() {
-		endCommit, _, _ := repositoryState(workdir, contextPaths)
-		if runErr != nil {
-			if checkpoints, checkpointErr := e.cfg.Store.StageCheckpoints(is.id); checkpointErr == nil {
-				for _, checkpoint := range checkpoints {
-					if checkpoint.ID == checkpointID && checkpoint.Status == "revision_required" {
-						return
-					}
-				}
-			}
+	legacyFinalizationAttempted := false
+	finishLegacyCheckpoint := func(stageErr error) error {
+		if legacyFinalizationAttempted {
+			return stageErr
 		}
+		legacyFinalizationAttempted = true
+		endCommit, _, _ := repositoryState(workdir, contextPaths)
 		status, failureMessage := "succeeded", ""
 		durableFailureMessage := func(err error) string {
 			if lifecycleErrorCode(err) != "" {
@@ -3311,12 +3330,12 @@ func (e *Engine) runStageOnce(
 			return err.Error()
 		}
 		switch {
-		case errors.Is(runErr, errDependenciesDiscovered):
+		case errors.Is(stageErr, errDependenciesDiscovered):
 			status = "waiting_dependencies"
-		case runErr != nil && ctx.Err() != nil:
-			status, failureMessage = "killed", durableFailureMessage(runErr)
-		case runErr != nil:
-			status, failureMessage = "failed", durableFailureMessage(runErr)
+		case stageErr != nil && ctx.Err() != nil:
+			status, failureMessage = "killed", durableFailureMessage(stageErr)
+		case stageErr != nil:
+			status, failureMessage = "failed", durableFailureMessage(stageErr)
 		}
 		if err := e.cfg.Store.FinishStageCheckpoint(
 			checkpointID, status, endCommit, strings.Join(sessionIDs, ","),
@@ -3324,10 +3343,27 @@ func (e *Engine) runStageOnce(
 			_ = e.recordBoundaryFailure(context.WithoutCancel(ctx), is.id, st.Name, attempt,
 				failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
 				failure.StateStore, err)
-			if runErr == nil {
-				runErr = fmt.Errorf("checkpoint finalization: %w", err)
+			if stageErr == nil {
+				return &stagelifecycle.DiagnosticError{
+					Code:    stagelifecycle.CodeCheckpointFinalization,
+					Message: "legacy stage checkpoint finalization failed",
+				}
 			}
 		}
+		return stageErr
+	}
+	defer func() {
+		if runErr != nil {
+			if checkpoints, checkpointErr := e.cfg.Store.StageCheckpoints(is.id); checkpointErr == nil {
+				for _, checkpoint := range checkpoints {
+					if checkpoint.ID == checkpointID && checkpoint.Status == "revision_required" {
+						e.refreshDecisionPage(is.id)
+						return
+					}
+				}
+			}
+		}
+		runErr = finishLegacyCheckpoint(runErr)
 		e.refreshDecisionPage(is.id)
 	}()
 	e.emit(core.EvStageStarted, is.id, map[string]any{
@@ -3739,6 +3775,9 @@ func (e *Engine) runStageOnce(
 	}
 	current, currentFound, err = e.cfg.Store.LatestCommittedStageLifecycle(lifecycleAttempt)
 	if err != nil {
+		return err
+	}
+	if err := finishLegacyCheckpoint(nil); err != nil {
 		return err
 	}
 	if !currentFound || !lifecycleReached(current.Substate, stagelifecycle.FinalizationReady) {

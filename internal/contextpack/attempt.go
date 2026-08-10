@@ -99,6 +99,48 @@ func MaterializeAttemptResult(sourceDir, issueDir, attemptID string,
 	return metadata, nil
 }
 
+// LoadAttemptResult reads the immutable result manifest for an attempt and
+// validates its identity and digest before returning the declared outputs.
+func LoadAttemptResult(issueDir string, expected AttemptResult) (AttemptResult, error) {
+	if !safeAttemptID(expected.AttemptID) {
+		return AttemptResult{}, fmt.Errorf("unsafe attempt id %q", expected.AttemptID)
+	}
+	wantPath := filepath.ToSlash(filepath.Join("artifacts", "attempts", expected.AttemptID, "result", "manifest.json"))
+	if expected.ResultPath != wantPath || !validDigest(expected.ResultSHA256) {
+		return AttemptResult{}, fmt.Errorf("invalid attempt result reference")
+	}
+	body, err := os.ReadFile(filepath.Join(issueDir, filepath.FromSlash(expected.ResultPath)))
+	if err != nil {
+		return AttemptResult{}, err
+	}
+	digest := sha256.Sum256(body)
+	if hex.EncodeToString(digest[:]) != expected.ResultSHA256 {
+		return AttemptResult{}, fmt.Errorf("attempt result manifest has a conflicting digest")
+	}
+	var manifest resultManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return AttemptResult{}, fmt.Errorf("decode attempt result manifest: %w", err)
+	}
+	if manifest.AttemptID != expected.AttemptID ||
+		(expected.IssueID != "" && manifest.IssueID != expected.IssueID) ||
+		(expected.Stage != "" && manifest.Stage != expected.Stage) {
+		return AttemptResult{}, fmt.Errorf("attempt result manifest identity conflicts")
+	}
+	for _, artifact := range manifest.Artifacts {
+		if err := validateName(artifact.Name); err != nil ||
+			!validDigest(artifact.SHA256) ||
+			!safeAttemptResultPath(artifact.Path, expected.AttemptID, artifact.Name) {
+			return AttemptResult{}, fmt.Errorf("attempt result manifest contains an unsafe artifact reference")
+		}
+	}
+	return AttemptResult{
+		AttemptID: expected.AttemptID, IssueID: manifest.IssueID, Stage: manifest.Stage,
+		ResultPath: expected.ResultPath, ResultSHA256: expected.ResultSHA256,
+		Artifacts: append([]AttemptArtifact(nil), manifest.Artifacts...),
+		DependsOn: append([]string(nil), manifest.DependsOn...),
+	}, nil
+}
+
 // PublishAttemptArchive promotes result-slot bytes to immutable attempt
 // archive paths and records the transition identity in the attempt manifest.
 func PublishAttemptArchive(issueDir string, result AttemptResult,
@@ -118,6 +160,9 @@ func PublishAttemptArchive(issueDir string, result AttemptResult,
 		}
 		if !validDigest(ref.SHA256) {
 			return nil, fmt.Errorf("artifact %q has invalid sha256", ref.Name)
+		}
+		if !safeAttemptResultPath(ref.Path, result.AttemptID, ref.Name) {
+			return nil, fmt.Errorf("artifact %q has an unsafe result path", ref.Name)
 		}
 		sourcePath := filepath.Join(issueDir, filepath.FromSlash(ref.Path))
 		destinationPath := filepath.Join(issueDir, "artifacts", "attempts", result.AttemptID, filepath.FromSlash(ref.Name))
@@ -356,6 +401,11 @@ func safeStoredPath(value string) bool {
 	}
 	clean := path.Clean(value)
 	return clean == value && !strings.HasPrefix(clean, "../") && strings.HasPrefix(clean, "artifacts/attempts/")
+}
+
+func safeAttemptResultPath(value, attemptID, name string) bool {
+	want := path.Join("artifacts", "attempts", attemptID, "result", name)
+	return safeStoredPath(value) && value == want
 }
 
 func validDigest(value string) bool {
