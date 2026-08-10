@@ -226,11 +226,6 @@ func (r *Runtime) Acquire(ctx context.Context, configs ...Config) (*Lease, error
 		return nil, fmt.Errorf("acquire verification cache lock: %w", err)
 	}
 
-	leaseID, err := newLeaseID()
-	if err != nil {
-		_ = unlock(lock)
-		return nil, err
-	}
 	config := r.config
 	if len(configs) > 0 {
 		config = configs[0]
@@ -241,21 +236,31 @@ func (r *Runtime) Acquire(ctx context.Context, configs ...Config) (*Lease, error
 		_ = unlock(lock)
 		return nil, err
 	}
-	seed, candidates, err := r.selectSeed(config)
+	lease, err := r.createLeaseLocked(lock, config, quarantines)
 	if err != nil {
 		_ = unlock(lock)
 		return nil, err
 	}
-	quarantines = append(quarantines, candidates...)
+	return lease, nil
+}
+
+func (r *Runtime) createLeaseLocked(lock *os.File, config Config, inherited []QuarantineDisposition) (*Lease, error) {
+	leaseID, err := newLeaseID()
+	if err != nil {
+		return nil, err
+	}
+	seed, candidates, err := r.selectSeed(config)
+	if err != nil {
+		return nil, err
+	}
+	quarantines := append(append([]QuarantineDisposition(nil), inherited...), candidates...)
 	activeDir := filepath.Join(r.repoRoot, "active", leaseID)
 	activeRoot := filepath.Join(activeDir, "cache")
 	if err := os.MkdirAll(activeRoot, 0o700); err != nil {
-		_ = unlock(lock)
 		return nil, fmt.Errorf("create active verification cache: %w", err)
 	}
 	if seed != "" {
 		if err := copyTree(seed, activeRoot); err != nil {
-			_ = unlock(lock)
 			return nil, fmt.Errorf("seed active verification cache: %w", err)
 		}
 	}
@@ -268,12 +273,10 @@ func (r *Runtime) Acquire(ctx context.Context, configs ...Config) (*Lease, error
 		activeDir:   activeDir,
 		activeRoot:  activeRoot,
 		seedLeaseID: seedLeaseID(seed),
-		quarantines: append([]QuarantineDisposition(nil), quarantines...),
+		quarantines: quarantines,
 		ownerPID:    os.Getpid(),
 	}
-	manifest := lease.manifest()
-	if err := writeJSONAtomic(filepath.Join(activeDir, manifestName), manifest); err != nil {
-		_ = unlock(lock)
+	if err := writeJSONAtomic(filepath.Join(activeDir, manifestName), lease.manifest()); err != nil {
 		return nil, fmt.Errorf("publish active verification lease: %w", err)
 	}
 	return lease, nil
@@ -459,6 +462,52 @@ func (l *Lease) Quarantines() []QuarantineDisposition {
 	return append([]QuarantineDisposition(nil), l.quarantines...)
 }
 
+// Rebind transfers the held repository lock to a fresh lease for the final
+// observed identity after verifier agents have made accepted repairs. The
+// previous lease remains retained as quarantine evidence and becomes inert.
+func (l *Lease) Rebind(config Config) (*Lease, error) {
+	if l.closed || l.state != StateActive || l.lock == nil {
+		return nil, ErrLeaseInvalid
+	}
+	if config.Repository != "" {
+		repository, err := filepath.Abs(config.Repository)
+		if err != nil {
+			return nil, fmt.Errorf("resolve rebind repository identity: %w", err)
+		}
+		if filepath.Clean(repository) != l.runtime.repository {
+			return nil, fmt.Errorf("rebind repository identity mismatch")
+		}
+	}
+	if config.BaseSHA != l.config.BaseSHA || !slices.Equal(config.Argv, l.config.Argv) {
+		return nil, fmt.Errorf("rebind immutable identity mismatch")
+	}
+	if config.BranchSHA == l.config.BranchSHA && config.TreeSHA == l.config.TreeSHA {
+		return nil, fmt.Errorf("rebind identity is unchanged")
+	}
+	config.Repository = l.runtime.repository
+
+	record := l.runtime.newDisposition(l.config, l.id, "rebound to post-agent identity", l.ownerPID)
+	inherited := append(append([]QuarantineDisposition(nil), l.quarantines...), record)
+	replacement, err := l.runtime.createLeaseLocked(l.lock, config, inherited)
+	if err != nil {
+		return nil, err
+	}
+	if err := l.runtime.writeDisposition(record); err != nil {
+		return nil, err
+	}
+	oldManifest := l.manifest()
+	oldManifest.State = StateQuarantined
+	oldManifest.OwnerPID = 0
+	oldManifest.Quarantine = append(oldManifest.Quarantine, record)
+	if err := writeJSONAtomic(filepath.Join(l.activeDir, manifestName), oldManifest); err != nil {
+		return nil, fmt.Errorf("publish rebound quarantine: %w", err)
+	}
+	l.state = StateQuarantined
+	l.ownerPID = 0
+	l.closed = true
+	return replacement, nil
+}
+
 // ManagedEnvironment returns the replacement overlay for child processes.
 func (l *Lease) ManagedEnvironment() []string {
 	return []string{
@@ -529,10 +578,13 @@ func (l *Lease) Seal() error {
 // Quarantine makes an active attempt permanently ineligible while retaining
 // its files and a machine-readable reason.
 func (l *Lease) Quarantine(reason string) error {
+	if l.closed {
+		return ErrLeaseInvalid
+	}
 	if l.state == StateQuarantined {
 		return nil
 	}
-	if l.state == StateComplete || l.closed {
+	if l.state == StateComplete {
 		return ErrLeaseInvalid
 	}
 	if strings.TrimSpace(reason) == "" {

@@ -199,6 +199,184 @@ func TestLeaseRefusesToStealLiveOwner(t *testing.T) {
 	}
 }
 
+func TestRebindTransfersLockAndBindsFinalIdentity(t *testing.T) {
+	repo := initRepository(t)
+	runtime := newTestRuntime(t, repo)
+	initial := Config{
+		RepoDir: repo, BaseSHA: "base", BranchSHA: "before", TreeSHA: "tree-before",
+		Argv: []string{"go", "test", "./..."},
+	}
+	lease, err := runtime.Acquire(context.Background(), initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rebinder, ok := any(lease).(interface {
+		Rebind(Config) (*Lease, error)
+	})
+	if !ok {
+		_ = lease.Close()
+		t.Fatal("active lease does not expose the lock-preserving rebind behavior")
+	}
+	final := initial
+	final.BranchSHA = "after-repair"
+	final.TreeSHA = "tree-after-repair"
+	rebound, err := rebinder.Rebind(final)
+	if err != nil {
+		_ = lease.Close()
+		t.Fatal(err)
+	}
+	defer rebound.Close()
+
+	if lease.ID() == rebound.ID() {
+		t.Fatal("rebind reused the pre-repair lease identity")
+	}
+	if lease.State() != StateQuarantined {
+		t.Fatalf("old lease state = %q, want quarantined", lease.State())
+	}
+	if rebound.State() != StateActive {
+		t.Fatalf("replacement lease state = %q, want active", rebound.State())
+	}
+	if rebound.BaseSHA() != final.BaseSHA || rebound.BranchSHA() != final.BranchSHA || rebound.TreeSHA() != final.TreeSHA {
+		t.Fatalf("replacement identity = %q/%q/%q, want %q/%q/%q", rebound.BaseSHA(), rebound.BranchSHA(), rebound.TreeSHA(), final.BaseSHA, final.BranchSHA, final.TreeSHA)
+	}
+	if rebound.Repository() != lease.Repository() || rebound.CommandDigest() != lease.CommandDigest() {
+		t.Fatalf("replacement changed repository or command identity: repository=%q/%q command=%q/%q", rebound.Repository(), lease.Repository(), rebound.CommandDigest(), lease.CommandDigest())
+	}
+	if rebound.SeedLeaseID() != "no-seed" {
+		t.Fatalf("replacement seed lease = %q, want no-seed", rebound.SeedLeaseID())
+	}
+	quarantines := rebound.Quarantines()
+	if len(quarantines) != 1 || quarantines[0].LeaseID != lease.ID() || quarantines[0].BranchSHA != initial.BranchSHA {
+		t.Fatalf("replacement quarantine history = %+v, want old identity %q", quarantines, lease.ID())
+	}
+
+	oldManifest, err := readManifest(filepath.Join(lease.activeDir, manifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldManifest.State != StateQuarantined || oldManifest.BranchSHA != initial.BranchSHA || oldManifest.TreeSHA != initial.TreeSHA {
+		t.Fatalf("old manifest = %+v, want retained quarantined pre-repair identity", oldManifest)
+	}
+	newManifest, err := readManifest(filepath.Join(rebound.activeDir, manifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newManifest.State != StateActive || newManifest.BranchSHA != final.BranchSHA || newManifest.TreeSHA != final.TreeSHA {
+		t.Fatalf("new manifest = %+v, want active final identity", newManifest)
+	}
+
+	if _, err := runtime.Acquire(context.Background(), final); !errors.Is(err, ErrLeaseBusy) {
+		t.Fatalf("concurrent acquire error = %v, want ErrLeaseBusy", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("closing inert old lease: %v", err)
+	}
+	if _, err := runtime.Acquire(context.Background(), final); !errors.Is(err, ErrLeaseBusy) {
+		t.Fatalf("acquire after closing inert old lease = %v, want ErrLeaseBusy", err)
+	}
+	if err := lease.Seal(); !errors.Is(err, ErrLeaseInvalid) {
+		t.Fatalf("sealing inert old lease = %v, want ErrLeaseInvalid", err)
+	}
+	if err := lease.Quarantine("late mutation"); !errors.Is(err, ErrLeaseInvalid) {
+		t.Fatalf("quarantining inert old lease = %v, want ErrLeaseInvalid", err)
+	}
+	if _, err := lease.Evidence(); !errors.Is(err, ErrLeaseInvalid) {
+		t.Fatalf("reading inert old lease evidence = %v, want ErrLeaseInvalid", err)
+	}
+
+	if err := rebound.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := rebound.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.BranchSHA != final.BranchSHA || evidence.TreeSHA != final.TreeSHA || evidence.LeaseID != rebound.ID() {
+		t.Fatalf("replacement evidence = %+v, want final identity", evidence)
+	}
+	if err := runtime.ValidateEvidence(evidence); err != nil {
+		t.Fatalf("replacement evidence did not validate: %v", err)
+	}
+}
+
+func TestRebindUsesOnlyFinalObservedIdentity(t *testing.T) {
+	repo := initRepository(t)
+	runtime := newTestRuntime(t, repo)
+	initial := Config{RepoDir: repo, BaseSHA: "base", BranchSHA: "before", TreeSHA: "tree-before", Argv: []string{"go", "test"}}
+	lease, err := runtime.Acquire(context.Background(), initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	rebinder, ok := any(lease).(interface {
+		Rebind(Config) (*Lease, error)
+	})
+	if !ok {
+		t.Fatal("active lease does not expose the lock-preserving rebind behavior")
+	}
+	final := initial
+	final.BranchSHA = "commit-three"
+	final.TreeSHA = "tree-three"
+	rebound, err := rebinder.Rebind(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rebound.Close()
+	if rebound.BranchSHA() != "commit-three" || rebound.TreeSHA() != "tree-three" {
+		t.Fatalf("rebound identity = %q/%q, want only final observed identity", rebound.BranchSHA(), rebound.TreeSHA())
+	}
+	if len(rebound.Quarantines()) != 1 || rebound.Quarantines()[0].BranchSHA != "before" {
+		t.Fatalf("rebound quarantine history = %+v, want only pre-repair identity", rebound.Quarantines())
+	}
+}
+
+func TestRebindInterruptedReplacementIsReconciled(t *testing.T) {
+	repo := initRepository(t)
+	runtime := newTestRuntime(t, repo)
+	initial := Config{RepoDir: repo, BaseSHA: "base", BranchSHA: "before", TreeSHA: "tree-before", Argv: []string{"go", "test"}}
+	lease, err := runtime.Acquire(context.Background(), initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebinder, ok := any(lease).(interface {
+		Rebind(Config) (*Lease, error)
+	})
+	if !ok {
+		_ = lease.Close()
+		t.Fatal("active lease does not expose the lock-preserving rebind behavior")
+	}
+	final := initial
+	final.BranchSHA = "after-repair"
+	final.TreeSHA = "tree-after-repair"
+	rebound, err := rebinder.Rebind(final)
+	if err != nil {
+		_ = lease.Close()
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rebound.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	retry, err := runtime.Acquire(context.Background(), final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retry.Close()
+	quarantines := retry.Quarantines()
+	if len(quarantines) != 1 || quarantines[0].LeaseID != rebound.ID() {
+		t.Fatalf("interrupted replacement quarantine = %+v, want lease %q", quarantines, rebound.ID())
+	}
+	for _, path := range []string{lease.ActiveRoot(), rebound.ActiveRoot()} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("retained cache path %q: %v", path, err)
+		}
+	}
+}
+
 func TestReleasedLeaseWithReusedOwnerPIDIsReconciled(t *testing.T) {
 	repo := initRepository(t)
 	runtime := newTestRuntime(t, repo)
