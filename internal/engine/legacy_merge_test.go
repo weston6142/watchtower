@@ -31,8 +31,22 @@ func TestFoldLegacyMergeEvidence(t *testing.T) {
 			name:   "valid",
 			issue:  store.IssueRow{ID: "GH-101", State: "done"},
 			events: validEvents,
-			want:   legacyMergeEvidence{IssueID: "GH-101", BaseBranch: "main", LandedSHA: "landed-a"},
+			want:   legacyMergeEvidence{IssueID: "GH-101", BaseBranch: "main", LandedSHA: "landed-a", Kind: legacyMergeLanded},
 			valid:  true,
+		},
+		{
+			name:  "branch-only",
+			issue: store.IssueRow{ID: "GH-61", State: "done"},
+			events: func(t *testing.T) []core.Event {
+				return orderedLegacyEventsForIssue(t, "GH-61",
+					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{
+						"branch": "issue/GH-61",
+					}},
+					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{}},
+				)
+			},
+			want:  legacyMergeEvidence{IssueID: "GH-61", BaseBranch: "main", IssueBranch: "issue/GH-61", Kind: legacyMergeBranchOnly},
+			valid: true,
 		},
 		{
 			name:  "missing issue merged",
@@ -173,15 +187,19 @@ type legacyEventSpec struct {
 }
 
 func orderedLegacyEvents(t *testing.T, specs ...legacyEventSpec) []core.Event {
+	return orderedLegacyEventsForIssue(t, "GH-101", specs...)
+}
+
+func orderedLegacyEventsForIssue(t *testing.T, issueID string, specs ...legacyEventSpec) []core.Event {
 	t.Helper()
 	events := make([]core.Event, 0, len(specs))
 	for i, spec := range specs {
 		var event core.Event
 		if spec.raw != nil {
-			event = core.Event{Type: spec.typ, IssueID: "GH-101", Payload: spec.raw}
+			event = core.Event{Type: spec.typ, IssueID: issueID, Payload: spec.raw}
 		} else {
 			var err error
-			event, err = core.NewEvent(spec.typ, "GH-101", spec.payload)
+			event, err = core.NewEvent(spec.typ, issueID, spec.payload)
 			if err != nil {
 				t.Fatal(err)
 			}
