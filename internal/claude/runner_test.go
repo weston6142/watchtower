@@ -11,7 +11,9 @@ import (
 	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/store"
 )
 
 func testPkgs() map[string]pkgs.Package {
@@ -137,6 +139,44 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 		t.Fatal(err)
 	} else if strings.Contains(string(got), sentinel) {
 		t.Fatalf("planner session leaked into child argv: %q", got)
+	}
+}
+
+func TestPlannerArtifactSubprocessDoesNotInheritDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "descriptor")
+	bin := filepath.Join(dir, "claude-stub")
+	script := `#!/bin/sh
+set -eu
+if (printf x >&3) 2>/dev/null; then
+  printf 'attached' > "$CAPTURE"
+else
+  printf 'absent' > "$CAPTURE"
+fi
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-planner"}'
+printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := store.Open(filepath.Join(t.TempDir(), "coordinator.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	authority, err := plannerartifact.CreateOrLoad(coordinator, plannerartifact.Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &CodeRunner{Bin: bin, Packages: testPkgs(), ExtraEnv: []string{"CAPTURE=" + capture}}
+	result := <-r.RunPlanner(runner.WithPlannerArtifactAuthority(context.Background(), authority), "GH-72", "plan", "spec-writer", dir, make(chan runner.Ask), nil)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if got, err := os.ReadFile(capture); err != nil {
+		t.Fatal(err)
+	} else if string(got) != "absent" {
+		t.Fatalf("planner descriptor reached Claude child: %q", got)
 	}
 }
 

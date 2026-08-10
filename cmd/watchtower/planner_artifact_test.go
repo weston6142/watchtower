@@ -1,32 +1,21 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/plannerartifact"
-	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/proto"
 )
 
 func TestPlannerArtifactCommandKeepsPayloadOutOfArgv(t *testing.T) {
-	dir := t.TempDir()
-	coordinator, err := store.Open(filepath.Join(t.TempDir(), "coordinator.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer coordinator.Close()
-	authority, err := plannerartifact.CreateOrLoad(coordinator, plannerartifact.Binding{
-		IssueID: "GH-62", Stage: "plan", Attempt: 1, Worktree: dir,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer authority.Close()
 	manifest := commandManifest()
 	payload := "quotes ' \" backticks ` $()\n```json\n{\"key\":\"value\"}\n```"
 	request := plannerartifact.WriteRequest{
@@ -48,31 +37,47 @@ func TestPlannerArtifactCommandKeepsPayloadOutOfArgv(t *testing.T) {
 	if strings.Contains(strings.Join(args, " "), payload) {
 		t.Fatal("request payload was interpolated into command arguments")
 	}
-	descriptor, err := authority.AttachPlannerArtifactDescriptor()
+	socketDir, err := os.MkdirTemp("/tmp", "g72-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestPlannerArtifactCommandHelper$", "--")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "WATCHTOWER_PLANNER_HELPER=1", "WATCHTOWER_PLANNER_REQUEST="+requestPath, "WATCHTOWER_PLANNER_SESSION=agent-private-session")
-	cmd.ExtraFiles = []*os.File{descriptor}
-	output, err := cmd.CombinedOutput()
-	_ = descriptor.Close()
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socket := filepath.Join(socketDir, "planner.sock")
+	listener, err := net.Listen("unix", socket)
 	if err != nil {
-		t.Fatalf("planner helper: %v: %s", err, output)
+		t.Fatal(err)
 	}
-	if got := string(output); !strings.HasPrefix(got, "section-validated goal\n") {
+	defer listener.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		scanner := bufio.NewScanner(conn)
+		encoder := json.NewEncoder(conn)
+		for scanner.Scan() {
+			var command proto.Command
+			if json.Unmarshal(scanner.Bytes(), &command) != nil {
+				return
+			}
+			if command.Op == "planner_authority_issue" {
+				_ = encoder.Encode(proto.Response{OK: true, PlannerHandle: "opaque"})
+			} else {
+				_ = encoder.Encode(proto.Response{OK: true, SectionKey: command.PlannerRequest.Key})
+			}
+		}
+	}()
+	var output bytes.Buffer
+	err = runPlannerArtifact(append(args, "--socket", socket), strings.NewReader(""), &output)
+	if err != nil {
+		t.Fatalf("planner CLI: %v", err)
+	}
+	if got := output.String(); got != "section-validated goal\n" {
 		t.Fatalf("stdout = %q", got)
 	}
-	if err := authority.VerifyBinding(plannerartifact.Binding{IssueID: "GH-62", Stage: "plan", Attempt: 1, Worktree: dir}); err != nil {
-		t.Fatalf("authority after helper: %v", err)
-	}
-	plan, err := os.ReadFile(filepath.Join(dir, "plan.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(plan), payload) {
-		t.Fatalf("plan does not contain payload byte-for-byte: %q", plan)
+	if strings.Contains(output.String(), payload) || strings.Contains(output.String(), "opaque") {
+		t.Fatal("planner payload or capability appeared in CLI output")
 	}
 }
 
@@ -85,6 +90,77 @@ func TestPlannerArtifactCommandHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func TestPlannerArtifactCLIUsesDaemonRouteWithoutDescriptor(t *testing.T) {
+	workdir := t.TempDir()
+	request := plannerartifact.WriteRequest{Manifest: commandManifest(), Key: "goal", Markdown: "final CLI section", Globs: commandManifest().Sections[0].Globs}
+	requestPath := filepath.Join(t.TempDir(), "request.json")
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(requestPath, requestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socketDir, err := os.MkdirTemp("/tmp", "g72-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socket := filepath.Join(socketDir, "planner.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	commands := make(chan proto.Command, 2)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		scanner := bufio.NewScanner(conn)
+		encoder := json.NewEncoder(conn)
+		for scanner.Scan() {
+			var command proto.Command
+			if json.Unmarshal(scanner.Bytes(), &command) != nil {
+				return
+			}
+			commands <- command
+			switch command.Op {
+			case "planner_authority_issue":
+				_ = encoder.Encode(proto.Response{OK: true, PlannerHandle: "opaque-test-handle"})
+			case "apply_planner_artifact":
+				_ = encoder.Encode(proto.Response{OK: true, SectionKey: command.PlannerRequest.Key})
+			}
+		}
+	}()
+
+	var stdout bytes.Buffer
+	err = runPlannerArtifact([]string{"planner-artifact", "apply", "--request-file", requestPath, "--socket", socket}, strings.NewReader(""), &stdout)
+	if err != nil {
+		t.Fatalf("daemon-backed CLI: %v", err)
+	}
+	if got := stdout.String(); got != "section-validated goal\n" {
+		t.Fatalf("CLI output = %q", got)
+	}
+	close(commands)
+	var got []proto.Command
+	for command := range commands {
+		got = append(got, command)
+	}
+	if len(got) != 2 || got[0].Op != "planner_authority_issue" || got[1].Op != "apply_planner_artifact" {
+		t.Fatalf("daemon commands = %+v", got)
+	}
+	if got[0].PlannerRequest != nil || got[0].PlannerHandle != "" || got[1].PlannerHandle != "opaque-test-handle" || got[1].PlannerRequest == nil {
+		t.Fatalf("CLI did not keep handle/request on daemon channel: %+v", got)
+	}
+	if strings.Contains(stdout.String(), request.Markdown) || strings.Contains(stdout.String(), "opaque-test-handle") {
+		t.Fatal("CLI exposed request body or capability in output")
+	}
+	_ = workdir
 }
 
 func commandManifest() plannerartifact.Manifest {

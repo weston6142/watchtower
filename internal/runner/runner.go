@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"os"
 	"strings"
 
 	"github.com/weston6142/watchtower/internal/levers"
@@ -91,7 +90,6 @@ type Runner interface {
 // accessors.
 type PlannerArtifactAuthority interface {
 	ApplyPlannerArtifact(any) error
-	AttachPlannerArtifactDescriptor() (*os.File, error)
 }
 
 type ToolCall struct {
@@ -136,6 +134,10 @@ type operationIDKey struct{}
 type plannerArtifactAuthorityKey struct{}
 
 const plannerArtifactSessionEnv = "WATCHTOWER_PLANNER_SESSION"
+
+func isPrivatePlannerEnvironmentKey(key string) bool {
+	return strings.HasPrefix(key, "WATCHTOWER_PLANNER_")
+}
 
 type managedEnvironmentKey struct{}
 
@@ -185,7 +187,7 @@ func MergeEnvironment(inherited, extra, managed []string) []string {
 	appendUnmanaged := func(entries []string) {
 		for _, entry := range entries {
 			key, _, ok := strings.Cut(entry, "=")
-			if ok && key == plannerArtifactSessionEnv {
+			if ok && isPrivatePlannerEnvironmentKey(key) {
 				continue
 			}
 			if ok {
@@ -199,7 +201,7 @@ func MergeEnvironment(inherited, extra, managed []string) []string {
 	appendUnmanaged(inherited)
 	appendUnmanaged(extra)
 	for _, key := range order {
-		if key == plannerArtifactSessionEnv {
+		if key == plannerArtifactSessionEnv || isPrivatePlannerEnvironmentKey(key) {
 			continue
 		}
 		result = append(result, key+"="+replacements[key])
