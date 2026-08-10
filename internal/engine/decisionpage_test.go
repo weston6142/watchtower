@@ -343,6 +343,7 @@ func TestArtifactReviewPageBreakdown(t *testing.T) {
 		if checkErr == nil {
 			for _, checkpoint := range checkpoints {
 				if checkpoint.Stage == "spec" && checkpoint.Status == "revision_required" {
+					waitForEvent(t, s, id, core.EvStageFailed)
 					return
 				}
 			}
