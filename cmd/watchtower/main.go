@@ -1160,23 +1160,23 @@ func statusSentence(o *proto.Overview) string {
 	if health.Overall == scaffold.HealthCurrent && !health.ReloadRequired {
 		return workload + " · configuration current"
 	}
-	counts := fmt.Sprintf("current=%d stale=%d customized=%d legacy=%d missing=%d extra=%d invalid=%d",
-		health.Counts[scaffold.FileCurrent], health.Counts[scaffold.FileStale],
-		health.Counts[scaffold.FileCustomized], health.Counts[scaffold.FileLegacy],
-		health.Counts[scaffold.FileMissing], health.Counts[scaffold.FileExtra],
-		health.Counts[scaffold.FileInvalid])
+	counts := configurationHealthCounts(health.Counts)
 	return fmt.Sprintf("%s\nconfiguration: %s (%s), %d affected paths, next: %s\n%s",
 		workload, health.Overall, counts, len(health.AffectedPaths), health.NextAction, health.Diff)
+}
+
+func configurationHealthCounts(counts map[scaffold.FileClass]int) string {
+	return fmt.Sprintf("current=%d stale=%d customized=%d legacy=%d missing=%d extra=%d invalid=%d",
+		counts[scaffold.FileCurrent], counts[scaffold.FileStale],
+		counts[scaffold.FileCustomized], counts[scaffold.FileLegacy],
+		counts[scaffold.FileMissing], counts[scaffold.FileExtra],
+		counts[scaffold.FileInvalid])
 }
 
 func printMigrationPreview(preview scaffold.MigrationPreview) {
 	health := preview.Health
 	fmt.Fprintf(os.Stdout, "configuration: %s (defaults %s)\n", health.Overall, health.DefaultsVersion)
-	fmt.Fprintf(os.Stdout, "counts: current=%d stale=%d customized=%d legacy=%d missing=%d extra=%d invalid=%d\n",
-		health.Counts[scaffold.FileCurrent], health.Counts[scaffold.FileStale],
-		health.Counts[scaffold.FileCustomized], health.Counts[scaffold.FileLegacy],
-		health.Counts[scaffold.FileMissing], health.Counts[scaffold.FileExtra],
-		health.Counts[scaffold.FileInvalid])
+	fmt.Fprintln(os.Stdout, "counts:", configurationHealthCounts(health.Counts))
 	if len(health.AffectedPaths) > 0 {
 		fmt.Fprintln(os.Stdout, "affected paths:", strings.Join(health.AffectedPaths, ", "))
 	}

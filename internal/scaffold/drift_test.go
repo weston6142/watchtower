@@ -113,6 +113,11 @@ func TestInspectRejectsInvalidManifest(t *testing.T) {
 			if health.Overall != HealthInvalid || health.NextAction == "" || health.Diff == "" {
 				t.Fatalf("invalid manifest health = %+v", health)
 			}
+			for _, class := range allFileClasses {
+				if _, ok := health.Counts[class]; !ok {
+					t.Errorf("invalid manifest omitted %s count", class)
+				}
+			}
 		})
 	}
 }

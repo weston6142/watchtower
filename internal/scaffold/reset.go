@@ -160,10 +160,13 @@ func (p *PreparedReplacement) Apply() error {
 		return err
 	}
 	if err := os.Remove(oldPlaceholder); err != nil {
+		_ = os.RemoveAll(oldPlaceholder)
 		return err
 	}
 	p.oldTree = oldPlaceholder
 	if err := p.rename(target, p.oldTree); err != nil {
+		_ = os.RemoveAll(p.oldTree)
+		p.oldTree = ""
 		return fmt.Errorf("preserve current .watchtower: %w", err)
 	}
 	if err := p.rename(p.Staged, target); err != nil {

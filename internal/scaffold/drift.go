@@ -22,6 +22,11 @@ const (
 	FileInvalid    FileClass = "invalid"
 )
 
+var allFileClasses = [...]FileClass{
+	FileCurrent, FileStale, FileCustomized, FileLegacy,
+	FileMissing, FileExtra, FileInvalid,
+}
+
 type HealthState string
 
 const (
@@ -195,10 +200,6 @@ func Inspect(repoRoot string, loadedSnapshot *InputSnapshot) (ConfigurationHealt
 	}
 	slices.SortFunc(statuses, func(left, right FileStatus) int { return strings.Compare(left.Path, right.Path) })
 	health.Files = statuses
-	health.Counts = make(map[FileClass]int, 7)
-	for _, class := range []FileClass{FileCurrent, FileStale, FileCustomized, FileLegacy, FileMissing, FileExtra, FileInvalid} {
-		health.Counts[class] = 0
-	}
 	for _, status := range statuses {
 		health.Counts[status.Class]++
 		if status.Class != FileCurrent {
@@ -261,7 +262,11 @@ func RecognizeLegacyDefaultFlow(body []byte) (LegacyPatch, bool) {
 }
 
 func newHealth() ConfigurationHealth {
-	return ConfigurationHealth{Overall: HealthCurrent, DefaultsVersion: DefaultsVersion, Counts: make(map[FileClass]int)}
+	counts := make(map[FileClass]int, len(allFileClasses))
+	for _, class := range allFileClasses {
+		counts[class] = 0
+	}
+	return ConfigurationHealth{Overall: HealthCurrent, DefaultsVersion: DefaultsVersion, Counts: counts}
 }
 
 func invalidHealth(err error) ConfigurationHealth {
