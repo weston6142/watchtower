@@ -469,12 +469,26 @@ func (l *Lease) Rebind(config Config) (*Lease, error) {
 	if l.closed || l.state != StateActive || l.lock == nil {
 		return nil, ErrLeaseInvalid
 	}
-	if config.Repository != "" {
-		repository, err := filepath.Abs(config.Repository)
+	repository := config.Repository
+	if repository == "" {
+		repoDir := config.RepoDir
+		if repoDir == "" {
+			repoDir = config.RepositoryDir
+		}
+		if repoDir != "" {
+			resolved, err := CanonicalRepositoryIdentity(repoDir)
+			if err != nil {
+				return nil, fmt.Errorf("resolve rebind repository identity: %w", err)
+			}
+			repository = resolved
+		}
+	}
+	if repository != "" {
+		resolved, err := filepath.Abs(repository)
 		if err != nil {
 			return nil, fmt.Errorf("resolve rebind repository identity: %w", err)
 		}
-		if filepath.Clean(repository) != l.runtime.repository {
+		if filepath.Clean(resolved) != l.runtime.repository {
 			return nil, fmt.Errorf("rebind repository identity mismatch")
 		}
 	}

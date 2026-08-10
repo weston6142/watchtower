@@ -331,6 +331,35 @@ func TestRebindUsesOnlyFinalObservedIdentity(t *testing.T) {
 	}
 }
 
+func TestRebindRejectsMismatchedRepositoryDirectory(t *testing.T) {
+	repo := initRepository(t)
+	otherRepo := initRepository(t)
+	runtime := newTestRuntime(t, repo)
+	initial := Config{
+		RepoDir: repo, BaseSHA: "base", BranchSHA: "before", TreeSHA: "tree-before",
+		Argv: []string{"go", "test"},
+	}
+	lease, err := runtime.Acquire(context.Background(), initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+
+	final := initial
+	final.RepoDir = otherRepo
+	final.BranchSHA = "after-repair"
+	final.TreeSHA = "tree-after-repair"
+	if _, err := lease.Rebind(final); err == nil {
+		t.Fatal("rebind accepted a different RepoDir")
+	}
+	if lease.State() != StateActive {
+		t.Fatalf("lease state after rejected rebind = %q, want active", lease.State())
+	}
+	if _, err := runtime.Acquire(context.Background(), initial); !errors.Is(err, ErrLeaseBusy) {
+		t.Fatalf("rejected rebind released the lock: %v", err)
+	}
+}
+
 func TestRebindInterruptedReplacementIsReconciled(t *testing.T) {
 	repo := initRepository(t)
 	runtime := newTestRuntime(t, repo)
