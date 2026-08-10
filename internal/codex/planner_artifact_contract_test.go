@@ -26,7 +26,7 @@ func TestInstalledCodexPlannerBoundary(t *testing.T) {
 	}
 	for _, issueID := range []string{"GH-63", "GH-64"} {
 		t.Run(issueID, func(t *testing.T) {
-			repo, home, coordinator, listener, authority, requestPath := startInstalledDaemon(t, issueID)
+			repo, home, coordinator, authority, requestPath := startInstalledDaemon(t, issueID)
 			requests := installedContractRequests(issueID)
 			for _, request := range requests {
 				data, err := json.Marshal(request)
@@ -71,13 +71,11 @@ func TestInstalledCodexPlannerBoundary(t *testing.T) {
 					t.Fatalf("durable planner state omitted %s: %s", request.Key, sections)
 				}
 			}
-			_ = listener
-			_ = authority
 		})
 	}
 }
 
-func startInstalledDaemon(t *testing.T, issueID string) (repo, home string, coordinator *store.Store, listener net.Listener, authority *plannerartifact.Authority, requestPath string) {
+func startInstalledDaemon(t *testing.T, issueID string) (repo, home string, coordinator *store.Store, authority *plannerartifact.Authority, requestPath string) {
 	t.Helper()
 	var err error
 	repo, err = os.MkdirTemp("/tmp", "g72-repo-")
@@ -98,7 +96,7 @@ func startInstalledDaemon(t *testing.T, issueID string) (repo, home string, coor
 	if err := os.MkdirAll(socketDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	listener, err = net.Listen("unix", filepath.Join(socketDir, "watchtower.sock"))
+	listener, err := net.Listen("unix", filepath.Join(socketDir, "watchtower.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,18 +114,19 @@ func startInstalledDaemon(t *testing.T, issueID string) (repo, home string, coor
 	engineInstance.RegisterPlannerAuthority(authority)
 	go func() { _ = proto.NewServer(engineInstance, coordinator).Serve(listener) }()
 	requestPath = filepath.Join(repo, "request.json")
-	return repo, home, coordinator, listener, authority, requestPath
+	return repo, home, coordinator, authority, requestPath
 }
 
 func installedContractRequests(issueID string) []plannerartifact.WriteRequest {
+	scope := strings.ToLower(issueID)
 	manifest := plannerartifact.Manifest{Sections: []plannerartifact.ManifestEntry{
-		{Key: "goal", Globs: []string{"internal/" + strings.ToLower(issueID) + "/goal/**"}},
-		{Key: "architecture", Globs: []string{"internal/" + strings.ToLower(issueID) + "/architecture/**"}},
-		{Key: "technology-stack", Globs: []string{"internal/" + strings.ToLower(issueID) + "/technology/**"}},
-		{Key: "execution-contract", Globs: []string{"internal/" + strings.ToLower(issueID) + "/contract/**"}},
-		{Key: "file-structure", Globs: []string{"internal/" + strings.ToLower(issueID) + "/files/**"}},
-		{Key: "task-0001", Globs: []string{"internal/" + strings.ToLower(issueID) + "/task/**"}},
-		{Key: "verification", Globs: []string{"internal/" + strings.ToLower(issueID) + "/verification/**"}},
+		{Key: "goal", Globs: []string{"internal/" + scope + "/goal/**"}},
+		{Key: "architecture", Globs: []string{"internal/" + scope + "/architecture/**"}},
+		{Key: "technology-stack", Globs: []string{"internal/" + scope + "/technology/**"}},
+		{Key: "execution-contract", Globs: []string{"internal/" + scope + "/contract/**"}},
+		{Key: "file-structure", Globs: []string{"internal/" + scope + "/files/**"}},
+		{Key: "task-0001", Globs: []string{"internal/" + scope + "/task/**"}},
+		{Key: "verification", Globs: []string{"internal/" + scope + "/verification/**"}},
 	}}
 	requests := make([]plannerartifact.WriteRequest, 0, len(manifest.Sections))
 	for _, section := range manifest.Sections {

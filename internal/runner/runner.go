@@ -133,10 +133,10 @@ type operationIDKey struct{}
 
 type plannerArtifactAuthorityKey struct{}
 
-const plannerArtifactSessionEnv = "WATCHTOWER_PLANNER_SESSION"
+const privatePlannerEnvironmentPrefix = "WATCHTOWER_PLANNER_"
 
 func isPrivatePlannerEnvironmentKey(key string) bool {
-	return strings.HasPrefix(key, "WATCHTOWER_PLANNER_")
+	return strings.HasPrefix(key, privatePlannerEnvironmentPrefix)
 }
 
 type managedEnvironmentKey struct{}
@@ -201,7 +201,7 @@ func MergeEnvironment(inherited, extra, managed []string) []string {
 	appendUnmanaged(inherited)
 	appendUnmanaged(extra)
 	for _, key := range order {
-		if key == plannerArtifactSessionEnv || isPrivatePlannerEnvironmentKey(key) {
+		if isPrivatePlannerEnvironmentKey(key) {
 			continue
 		}
 		result = append(result, key+"="+replacements[key])

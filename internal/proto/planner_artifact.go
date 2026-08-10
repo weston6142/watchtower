@@ -20,6 +20,13 @@ func (sv *Server) plannerCorrelation() string {
 	return fmt.Sprintf("planner-%d", atomic.AddUint64(&sv.plannerCorrelationCounter, 1))
 }
 
+func (sv *Server) requirePlannerEngine() error {
+	if sv.eng == nil {
+		return plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "engine authority is unavailable")
+	}
+	return nil
+}
+
 func (sv *Server) plannerFailure(err error) Response {
 	class := plannerartifact.ErrorClassOf(err)
 	if class == "" {
@@ -40,8 +47,8 @@ func (sv *Server) plannerExec(cmd Command) Response {
 	scope := plannerBinding(cmd)
 	switch cmd.Op {
 	case "planner_authority_issue":
-		if sv.eng == nil {
-			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "engine authority is unavailable"))
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
 		}
 		handle, binding, err := sv.eng.IssuePlannerAuthority(scope)
 		if err != nil {
@@ -57,8 +64,8 @@ func (sv *Server) plannerExec(cmd Command) Response {
 		if request == nil {
 			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorInvalidSection, "", "planner request is missing"))
 		}
-		if sv.eng == nil {
-			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "engine authority is unavailable"))
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
 		}
 		handle := cmd.PlannerHandle
 		if handle == "" {
@@ -70,8 +77,8 @@ func (sv *Server) plannerExec(cmd Command) Response {
 		}
 		return Response{OK: true, SectionKey: key, CorrelationID: sv.plannerCorrelation()}
 	case "planner_authority_retry":
-		if sv.eng == nil {
-			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "engine authority is unavailable"))
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
 		}
 		handle, err := sv.eng.RetryPlannerAuthority(scope)
 		if err != nil {
@@ -79,16 +86,16 @@ func (sv *Server) plannerExec(cmd Command) Response {
 		}
 		return Response{OK: true, PlannerHandle: handle, CorrelationID: sv.plannerCorrelation()}
 	case "planner_authority_validate_complete":
-		if sv.eng == nil {
-			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "engine authority is unavailable"))
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
 		}
 		if err := sv.eng.ValidatePlannerAuthority(scope, cmd.PlannerHandle); err != nil {
 			return sv.plannerFailure(err)
 		}
 		return Response{OK: true, CorrelationID: sv.plannerCorrelation()}
 	case "planner_authority_expire":
-		if sv.eng == nil {
-			return sv.plannerFailure(plannerartifact.NewAuthorityError(plannerartifact.ErrorAuthorityUninitialized, "", "engine authority is unavailable"))
+		if err := sv.requirePlannerEngine(); err != nil {
+			return sv.plannerFailure(err)
 		}
 		if err := sv.eng.ExpirePlannerAuthority(scope); err != nil {
 			return sv.plannerFailure(err)

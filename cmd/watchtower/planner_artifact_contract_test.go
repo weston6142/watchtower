@@ -62,7 +62,8 @@ func TestInstalledPlannerArtifactBoundaryUsesDaemonSocket(t *testing.T) {
 	server := proto.NewServer(engineInstance, coordinator)
 	go func() { _ = server.Serve(listener) }()
 
-	request := plannerartifact.WriteRequest{Manifest: commandManifest(), Key: "goal", Markdown: "final installed boundary section", Globs: commandManifest().Sections[0].Globs}
+	manifest := commandManifest()
+	request := plannerartifact.WriteRequest{Manifest: manifest, Key: "goal", Markdown: "final installed boundary section", Globs: manifest.Sections[0].Globs}
 	requestPath := filepath.Join(repo, "request.json")
 	requestBytes, err := json.Marshal(request)
 	if err != nil {

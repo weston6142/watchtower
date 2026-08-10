@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -81,20 +80,9 @@ func TestPlannerArtifactCommandKeepsPayloadOutOfArgv(t *testing.T) {
 	}
 }
 
-func TestPlannerArtifactCommandHelper(t *testing.T) {
-	if os.Getenv("WATCHTOWER_PLANNER_HELPER") != "1" {
-		return
-	}
-	requestPath := os.Getenv("WATCHTOWER_PLANNER_REQUEST")
-	if err := runPlannerArtifact([]string{"planner-artifact", "apply", "--request-file", requestPath}, os.Stdin, os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-}
-
 func TestPlannerArtifactCLIUsesDaemonRouteWithoutDescriptor(t *testing.T) {
-	workdir := t.TempDir()
-	request := plannerartifact.WriteRequest{Manifest: commandManifest(), Key: "goal", Markdown: "final CLI section", Globs: commandManifest().Sections[0].Globs}
+	manifest := commandManifest()
+	request := plannerartifact.WriteRequest{Manifest: manifest, Key: "goal", Markdown: "final CLI section", Globs: manifest.Sections[0].Globs}
 	requestPath := filepath.Join(t.TempDir(), "request.json")
 	requestBytes, err := json.Marshal(request)
 	if err != nil {
@@ -160,7 +148,6 @@ func TestPlannerArtifactCLIUsesDaemonRouteWithoutDescriptor(t *testing.T) {
 	if strings.Contains(stdout.String(), request.Markdown) || strings.Contains(stdout.String(), "opaque-test-handle") {
 		t.Fatal("CLI exposed request body or capability in output")
 	}
-	_ = workdir
 }
 
 func commandManifest() plannerartifact.Manifest {

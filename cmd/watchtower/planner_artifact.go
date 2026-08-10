@@ -31,15 +31,15 @@ func runPlannerArtifact(args []string, stdin io.Reader, stdout io.Writer) error 
 		return fmt.Errorf("request body must be supplied by file or standard input")
 	}
 	var reader io.Reader = stdin
-	var file *os.File
+	var requestFile *os.File
 	if *requestPath != "" {
 		var err error
-		file, err = os.Open(*requestPath)
+		requestFile, err = os.Open(*requestPath)
 		if err != nil {
 			return fmt.Errorf("read planner request: %w", err)
 		}
-		defer file.Close()
-		reader = file
+		defer requestFile.Close()
+		reader = requestFile
 	}
 	const maxPlannerRequestBytes = plannerartifact.MaxOperationBytes * 2
 	requestBytes, err := io.ReadAll(io.LimitReader(reader, maxPlannerRequestBytes+1))
