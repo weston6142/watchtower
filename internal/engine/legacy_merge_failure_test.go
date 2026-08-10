@@ -159,21 +159,6 @@ func TestRehydrateRejectsBranchOnlyHistoryAndLifecycleEvidence(t *testing.T) {
 				createCanonicalLegacyMergeWithSubject(t, repo, "GH-61", canonicalLegacyMergeSubject("GH-61", "main"), "legacy-merge")
 			},
 		},
-		{
-			name:    "branch-only-with-landed-sha",
-			issueID: "GH-61",
-			setup: func(t *testing.T, repo string) {
-				createCanonicalLegacyMerge(t, repo, "GH-61")
-			},
-			events: func(t *testing.T, s *store.Store, issueID, repo string) {
-				landedSHA := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "main"))
-				appendLegacyEvents(t, s, issueID,
-					legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{"branch": "issue/" + issueID}},
-					legacyEventSpec{typ: core.EvPublishSucceeded, payload: map[string]any{"branch": "main", "commit": landedSHA}},
-					legacyEventSpec{typ: core.EvIssueCompleted, payload: map[string]any{}},
-				)
-			},
-		},
 	}
 
 	for _, tc := range cases {

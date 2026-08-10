@@ -91,6 +91,31 @@ func TestRehydrateProjectsBranchOnlyLegacyMerges(t *testing.T) {
 	}
 }
 
+func TestRehydratePreservesLandedSHAForBranchOnlyMergeEvidence(t *testing.T) {
+	e, s, _, landedSHA := newLegacyFailureEngine(t, []legacyFailureCandidate{
+		{id: "GH-61", state: "done"},
+	})
+	appendLegacyEvents(t, s, "GH-61",
+		legacyEventSpec{typ: core.EvPublishSucceeded, payload: map[string]any{
+			"branch": "main", "commit": landedSHA,
+		}},
+		legacyEventSpec{typ: core.EvIssueMerged, payload: map[string]any{
+			"branch": "issue/GH-61",
+		}},
+		legacyEventSpec{typ: core.EvIssueCompleted, payload: nil},
+	)
+
+	if err := e.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	integration, ok, err := s.IssueIntegration("GH-61")
+	if err != nil || !ok || integration.State != store.IntegrationMerged ||
+		integration.BaseBranch != "main" || integration.LandedSHA != landedSHA {
+		t.Fatalf("integration = %+v ok=%v err=%v", integration, ok, err)
+	}
+	assertLegacyClaimBlockers(t, e, "GH-61-child", nil)
+}
+
 func TestRehydrateProjectsLegacyMergesAfterRestart(t *testing.T) {
 	repo := t.TempDir()
 	initGitRepo(t, repo)
