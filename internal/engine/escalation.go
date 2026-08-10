@@ -57,13 +57,17 @@ func (e *Engine) evaluateDecisionEscalation(stage string, d levers.Decision) (re
 	if evaluation.Err != nil {
 		return ctx, evaluation, review.Binding{}, evaluation.Err
 	}
-	binding := review.Binding{
+	binding := bindingForEvaluation(item, evaluation)
+	return ctx, evaluation, binding, nil
+}
+
+func bindingForEvaluation(item review.ItemBinding, evaluation review.Evaluation) review.Binding {
+	return review.Binding{
 		Item: item, RequiredFloor: evaluation.RequiredFloor, EffectiveFloor: evaluation.EffectiveFloor,
 		PolicyID: evaluation.PolicyID, PolicyVersion: evaluation.PolicyVersion,
 		Evidence:     append([]review.Evidence(nil), evaluation.Evidence...),
 		Dependencies: append([]review.DependencyBinding(nil), evaluation.Dependencies...), Model: evaluation.Model,
 	}
-	return ctx, evaluation, binding, nil
 }
 
 func (e *Engine) evaluateReviewTarget(target review.Target, publicationRisk bool) (review.Evaluation, []review.Binding, []review.EscalationContext, error) {
@@ -95,16 +99,7 @@ func (e *Engine) evaluateReviewTarget(target review.Target, publicationRisk bool
 		if evaluation.Err != nil {
 			return review.Evaluation{}, nil, nil, evaluation.Err
 		}
-		bindings[index] = review.Binding{
-			Item:           item,
-			RequiredFloor:  evaluation.RequiredFloor,
-			EffectiveFloor: evaluation.EffectiveFloor,
-			PolicyID:       evaluation.PolicyID,
-			PolicyVersion:  evaluation.PolicyVersion,
-			Evidence:       append([]review.Evidence(nil), evaluation.Evidence...),
-			Dependencies:   append([]review.DependencyBinding(nil), evaluation.Dependencies...),
-			Model:          evaluation.Model,
-		}
+		bindings[index] = bindingForEvaluation(item, evaluation)
 		if index == 0 {
 			aggregate = evaluation
 		} else {

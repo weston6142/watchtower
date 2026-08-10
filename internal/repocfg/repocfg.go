@@ -115,18 +115,13 @@ type DecisionPathFloorConfig struct {
 	Floor string `yaml:"floor"`
 }
 
+// decisionPolicyDecode is a method-free view of DecisionPolicyConfig used to
+// avoid duplicating the YAML field list in its custom decoder.
+type decisionPolicyDecode DecisionPolicyConfig
+
 func (c *DecisionPolicyConfig) UnmarshalYAML(node *yaml.Node) error {
 	*c = DecisionPolicyConfig{Present: true}
-	var decoded struct {
-		PolicyID         string                    `yaml:"policy_id"`
-		PolicyVersion    string                    `yaml:"policy_version"`
-		DefaultFloor     string                    `yaml:"default_floor"`
-		StageFloors      map[string]string         `yaml:"stage_floors"`
-		OperationFloors  map[string]string         `yaml:"operation_floors"`
-		PathFloors       []DecisionPathFloorConfig `yaml:"path_floors"`
-		DestructiveFloor string                    `yaml:"destructive_floor"`
-		PublicationFloor string                    `yaml:"publication_floor"`
-	}
+	var decoded decisionPolicyDecode
 	if node.Kind != yaml.MappingNode {
 		return nil
 	}
@@ -146,13 +141,9 @@ func (c *DecisionPolicyConfig) UnmarshalYAML(node *yaml.Node) error {
 		}
 		return nil
 	}
-	*c = DecisionPolicyConfig{
-		PolicyID: decoded.PolicyID, PolicyVersion: decoded.PolicyVersion,
-		DefaultFloor: decoded.DefaultFloor, StageFloors: decoded.StageFloors,
-		OperationFloors: decoded.OperationFloors, PathFloors: decoded.PathFloors,
-		DestructiveFloor: decoded.DestructiveFloor, PublicationFloor: decoded.PublicationFloor,
-		Valid: true, Present: true,
-	}
+	*c = DecisionPolicyConfig(decoded)
+	c.Valid = true
+	c.Present = true
 	return nil
 }
 

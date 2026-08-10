@@ -149,22 +149,8 @@ func sameDependencies(left, right []DependencyBinding) bool {
 func sameEvidence(left, right []Evidence) bool {
 	left = append([]Evidence(nil), left...)
 	right = append([]Evidence(nil), right...)
-	less := func(items []Evidence) func(int, int) bool {
-		return func(i, j int) bool {
-			if items[i].Signal != items[j].Signal {
-				return items[i].Signal < items[j].Signal
-			}
-			if items[i].Value != items[j].Value {
-				return items[i].Value < items[j].Value
-			}
-			if items[i].Rule != items[j].Rule {
-				return items[i].Rule < items[j].Rule
-			}
-			return items[i].Floor < items[j].Floor
-		}
-	}
-	sort.Slice(left, less(left))
-	sort.Slice(right, less(right))
+	sort.Slice(left, func(i, j int) bool { return evidenceLess(left[i], left[j]) })
+	sort.Slice(right, func(i, j int) bool { return evidenceLess(right[i], right[j]) })
 	if len(left) != len(right) {
 		return false
 	}

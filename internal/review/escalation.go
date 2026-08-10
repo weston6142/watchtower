@@ -366,33 +366,41 @@ func evaluateEvidence(ctx EscalationContext) []Evidence {
 		add("publication", "true", "publication-risk", ctx.Policy.PublicationFloor)
 	}
 	add("policy", ctx.Policy.ID+"@"+ctx.Policy.Version, "default", ctx.Policy.DefaultFloor)
-	sort.Slice(evidence, func(i, j int) bool {
-		if evidence[i].Signal != evidence[j].Signal {
-			return evidence[i].Signal < evidence[j].Signal
-		}
-		if evidence[i].Value != evidence[j].Value {
-			return evidence[i].Value < evidence[j].Value
-		}
-		if evidence[i].Rule != evidence[j].Rule {
-			return evidence[i].Rule < evidence[j].Rule
-		}
-		return evidence[i].Floor < evidence[j].Floor
-	})
+	sort.Slice(evidence, func(i, j int) bool { return evidenceLess(evidence[i], evidence[j]) })
 	return evidence
 }
 
+const (
+	modelImportanceNoRequest         = 0.0
+	modelImportancePolicyThreshold   = 0.5
+	modelImportanceOperatorThreshold = 1.0
+)
+
 func modelFloor(model ModelMetadata) ApprovalFloor {
 	if model.Importance == nil || math.IsNaN(*model.Importance) || math.IsInf(*model.Importance, 0) ||
-		*model.Importance <= 0 || *model.Importance > 1 {
+		*model.Importance <= modelImportanceNoRequest || *model.Importance > modelImportanceOperatorThreshold {
 		return FloorNone
 	}
-	if *model.Importance >= 1 {
+	if *model.Importance >= modelImportanceOperatorThreshold {
 		return FloorOperator
 	}
-	if *model.Importance >= 0.5 {
+	if *model.Importance >= modelImportancePolicyThreshold {
 		return FloorPolicy
 	}
 	return FloorNone
+}
+
+func evidenceLess(left, right Evidence) bool {
+	if left.Signal != right.Signal {
+		return left.Signal < right.Signal
+	}
+	if left.Value != right.Value {
+		return left.Value < right.Value
+	}
+	if left.Rule != right.Rule {
+		return left.Rule < right.Rule
+	}
+	return left.Floor < right.Floor
 }
 
 func matchesGlob(pattern, candidate string) bool {
