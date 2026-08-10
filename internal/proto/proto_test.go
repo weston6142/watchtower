@@ -18,6 +18,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
@@ -142,6 +143,59 @@ func TestIssueDetailExposesLatestPlannerSnapshot(t *testing.T) {
 	if !response.OK || response.Detail == nil || response.Detail.Planner == nil ||
 		response.Detail.Planner.ChargedTokens != 40 || response.Detail.PlannerOutcome != "warning" {
 		t.Fatalf("issue detail = %+v", response)
+	}
+}
+
+func TestIssueDetailFailureHistoryIsAvailableWhenEmpty(t *testing.T) {
+	s, err := store.Open("file:failure-detail-empty?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.UpsertIssue(store.IssueRow{ID: "GH-63", Title: "failure history", State: "running", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	response := NewServer(nil, s).exec(Command{Op: "issue_detail", IssueID: "GH-63"})
+	if !response.OK || response.Detail == nil || response.Detail.FailureHistory.Status != "available" ||
+		response.Detail.FailureHistory.Records == nil || len(response.Detail.FailureHistory.Records) != 0 {
+		t.Fatalf("empty failure history = %+v", response)
+	}
+}
+
+func TestIssueDetailFailureHistoryUsesCanonicalOrderAndReportsUnavailableReads(t *testing.T) {
+	s, err := store.Open("file:failure-detail-history?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.UpsertIssue(store.IssueRow{ID: "GH-63", Title: "failure history", State: "running", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	input := failure.RecordInput{
+		IssueID: "GH-63", Stage: "execute", StageAttempt: 1, FailureSite: failure.SiteRunner,
+		FailureClass: failure.ClassExecution, RetryDisposition: failure.RetryNow,
+		RequiredStateChange: failure.StateRunnerInput, Fingerprint: "sha256:" + strings.Repeat("a", 64),
+	}
+	first, err := s.AppendFailure(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Fingerprint = "sha256:" + strings.Repeat("b", 64)
+	second, err := s.AppendFailure(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := NewServer(nil, s).exec(Command{Op: "issue_detail", IssueID: "GH-63"})
+	if !response.OK || response.Detail == nil || response.Detail.FailureHistory.Status != "available" ||
+		len(response.Detail.FailureHistory.Records) != 2 || response.Detail.FailureHistory.Records[0] != first ||
+		response.Detail.FailureHistory.Records[1] != second {
+		t.Fatalf("ordered failure history = %+v", response)
+	}
+	s.FailNextFailureHistoryForTest()
+	response = NewServer(nil, s).exec(Command{Op: "issue_detail", IssueID: "GH-63"})
+	if !response.OK || response.Detail == nil || response.Detail.FailureHistory.Status != "unavailable" ||
+		response.Detail.FailureHistory.Records != nil || response.Detail.Issue.ID != "GH-63" {
+		t.Fatalf("unavailable failure history = %+v", response)
 	}
 }
 

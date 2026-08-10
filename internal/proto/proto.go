@@ -1,10 +1,13 @@
 package proto
 
 import (
+	"encoding/json"
+
 	"github.com/weston6142/watchtower/internal/archmap"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
@@ -110,6 +113,28 @@ type IssueDetail struct {
 	Planner          *stageusage.Snapshot `json:"planner,omitempty"`
 	PlannerOutcome   string               `json:"planner_outcome,omitempty"`
 	DecisionPage     string               `json:"decision_page,omitempty"`
+	FailureHistory   FailureHistory       `json:"failure_history"`
+}
+
+type FailureHistory struct {
+	Status  string                  `json:"status"`
+	Records []failure.FailureRecord `json:"records,omitempty"`
+}
+
+func (history FailureHistory) MarshalJSON() ([]byte, error) {
+	if history.Status == "unavailable" {
+		return json.Marshal(struct {
+			Status string `json:"status"`
+		}{Status: history.Status})
+	}
+	records := history.Records
+	if records == nil {
+		records = make([]failure.FailureRecord, 0)
+	}
+	return json.Marshal(struct {
+		Status  string                  `json:"status"`
+		Records []failure.FailureRecord `json:"records"`
+	}{Status: history.Status, Records: records})
 }
 
 // SetupView is the read-only picture of what the daemon is running: repo-level
