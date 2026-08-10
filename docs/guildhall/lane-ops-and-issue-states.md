@@ -88,11 +88,16 @@ integration evidence, and unknown states remain visible so the system fails
 closed. A later status change is reflected on the next backlog read without
 recreating the relationship.
 
-Legacy completed issues may be reconciled during daemon rehydrate only when
-durable `issue_merged` and `issue_completed` evidence identifies one landed
-commit, proves the commit reachable from the configured base branch, and does
-not mark the issue `left-unmerged`. Reconciliation writes the existing merged
-integration checkpoint; invalid candidates remain blocked, write failures fail
+Legacy completed issues may be reconciled during daemon rehydrate when durable
+`issue_merged` and `issue_completed` evidence identifies one landed commit, or
+when the exact branch-only merge shape is followed by a completion. Direct
+landed-commit evidence must prove that commit reachable from the configured
+base branch. Branch-only evidence is accepted only when that base history
+contains exactly one reachable, canonical two-parent merge whose subject is
+`Merge branch 'issue/<issue-id>' into <base-branch>`. Malformed,
+contradictory, ambiguous, unreachable, non-merge, and `left-unmerged` evidence
+remains blocked. Reconciliation writes the existing merged integration
+checkpoint without appending an inferred lifecycle event; write failures fail
 rehydrate, and dependency claims never use lifecycle evidence without current
 integration state.
 
