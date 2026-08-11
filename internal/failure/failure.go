@@ -87,6 +87,18 @@ type RecordInput struct {
 	RetryDisposition    RetryDisposition
 	RequiredStateChange StateChange
 	Fingerprint         string
+	StateVector         *StateVector
+}
+
+// StateVector is the privacy-safe identity of the durable inputs that can
+// make a repeated verification meaningful. Each value is either a SHA-256
+// digest or the fixed unavailable sentinel; raw source values never belong in
+// this contract.
+type StateVector struct {
+	TreeDigest        string `json:"tree_digest"`
+	ConfigDigest      string `json:"config_digest"`
+	EnvironmentDigest string `json:"environment_digest"`
+	DecisionDigest    string `json:"decision_digest"`
 }
 
 // FailureRecord is the canonical occurrence retained by the store and
@@ -159,6 +171,7 @@ type FingerprintInputs struct {
 	WatchtowerIdentity    string
 	ConfigurationIdentity string
 	ConfigIdentity        string
+	EnvironmentIdentity   string
 	Git                   GitIdentity
 	Artifacts             []ContentIdentity
 	ArtifactIdentities    []ContentIdentity
@@ -192,6 +205,7 @@ type fingerprintV1 struct {
 	StageInputs   []fingerprintIdentity   `json:"stage_inputs"`
 	Watchtower    string                  `json:"watchtower"`
 	Configuration string                  `json:"configuration"`
+	Environment   string                  `json:"environment"`
 	Git           fingerprintGit          `json:"git"`
 	Artifacts     []fingerprintIdentity   `json:"artifacts"`
 	Decisions     []fingerprintIdentity   `json:"decisions"`
@@ -285,6 +299,7 @@ func BuildFingerprint(inputs FingerprintInputs) string {
 		StageInputs:   copyIdentities(chooseInputs(inputs.StageInputs, inputs.StageInputIdentities)),
 		Watchtower:    identityName(inputs.WatchtowerIdentity),
 		Configuration: identityName(firstNonEmpty(inputs.ConfigurationIdentity, inputs.ConfigIdentity)),
+		Environment:   identityName(inputs.EnvironmentIdentity),
 		Git:           git,
 		Artifacts:     copyContentIdentities(chooseContent(inputs.Artifacts, inputs.ArtifactIdentities)),
 		Decisions:     copyContentIdentities(chooseContent(inputs.Decisions, inputs.DecisionIdentities)),
@@ -398,6 +413,24 @@ func validFingerprint(value string) bool {
 	return err == nil && len(decoded) == sha256.Size
 }
 
+func validStateDigest(value string) bool {
+	return value == Unavailable || validFingerprint(value)
+}
+
+// ValidateStateVector rejects raw, missing, or otherwise uncontrolled state
+// evidence before it can enter durable retry accounting.
+func ValidateStateVector(vector StateVector) error {
+	for name, value := range map[string]string{
+		"tree": vector.TreeDigest, "config": vector.ConfigDigest,
+		"environment": vector.EnvironmentDigest, "decision": vector.DecisionDigest,
+	} {
+		if !validStateDigest(value) {
+			return fmt.Errorf("invalid %s state digest", name)
+		}
+	}
+	return nil
+}
+
 func ValidateRecordInput(input RecordInput) error {
 	if strings.TrimSpace(input.IssueID) == "" {
 		return fmt.Errorf("failure issue identity is required")
@@ -419,6 +452,11 @@ func ValidateRecordInput(input RecordInput) error {
 	}
 	if !validFingerprint(input.Fingerprint) {
 		return fmt.Errorf("invalid failure fingerprint")
+	}
+	if input.StateVector != nil {
+		if err := ValidateStateVector(*input.StateVector); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -10,7 +10,9 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/review"
 	"gopkg.in/yaml.v3"
 )
@@ -37,6 +39,47 @@ type Config struct {
 	PlanReview     PlanReviewConfig      `yaml:"plan_review"`
 	DecisionPolicy DecisionPolicyConfig  `yaml:"decision_policy"`
 	PlannerBudget  plannerbudget.Profile `yaml:"planner_budget"`
+	RetryPolicy    RetryPolicyConfig     `yaml:"retry_policy"`
+}
+
+type RetryPolicyConfig struct {
+	PolicyID             string   `yaml:"policy_id"`
+	PolicyVersion        string   `yaml:"policy_version"`
+	TransientLimit       int      `yaml:"transient_limit"`
+	DeterministicLimit   int      `yaml:"deterministic_limit"`
+	ModelResampleLimit   int      `yaml:"model_resample_limit"`
+	ModelResampleClasses []string `yaml:"model_resample_classes"`
+	Present              bool     `yaml:"-"`
+}
+
+func (c *RetryPolicyConfig) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("retry_policy must be a mapping")
+	}
+	type decoded RetryPolicyConfig
+	var value decoded
+	if err := node.Decode(&value); err != nil {
+		return err
+	}
+	*c = RetryPolicyConfig(value)
+	c.Present = true
+	return nil
+}
+
+func (c RetryPolicyConfig) Policy() (retry.Policy, error) {
+	classes := make([]failure.Class, 0, len(c.ModelResampleClasses))
+	for _, class := range c.ModelResampleClasses {
+		classes = append(classes, failure.Class(class))
+	}
+	policy := retry.Policy{
+		ID: c.PolicyID, Version: c.PolicyVersion,
+		TransientLimit: c.TransientLimit, DeterministicLimit: c.DeterministicLimit,
+		ModelResampleLimit: c.ModelResampleLimit, ModelResampleClasses: classes,
+	}
+	if err := policy.Validate(); err != nil {
+		return retry.Policy{}, err
+	}
+	return policy, nil
 }
 
 type CodexProfile struct {
@@ -164,6 +207,11 @@ func Default() Config {
 			PolicyID: review.ManualPolicyID, PolicyVersion: review.ManualPolicyVersion, Valid: true,
 		},
 		PlannerBudget: plannerbudget.DefaultProfile(),
+		RetryPolicy: RetryPolicyConfig{
+			PolicyID: "retry-v1", PolicyVersion: "1", TransientLimit: 2,
+			DeterministicLimit: 1, ModelResampleLimit: 1,
+			ModelResampleClasses: []string{"execution", "transport", "protocol"},
+		},
 	}
 }
 
@@ -289,6 +337,9 @@ func Load(repoRoot string) (Config, error) {
 	}
 	if err := cfg.PlannerBudget.Validate(); err != nil {
 		return Config{}, fmt.Errorf("%s planner_budget: %w", ConfigPath(repoRoot), err)
+	}
+	if _, err := cfg.RetryPolicy.Policy(); err != nil {
+		return Config{}, fmt.Errorf("%s retry_policy: %w", ConfigPath(repoRoot), err)
 	}
 	if !filepath.IsAbs(cfg.Flows) {
 		cfg.Flows = filepath.Join(repoRoot, cfg.Flows)

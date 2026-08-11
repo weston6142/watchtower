@@ -31,5 +31,12 @@ decision_policy:
   path_floors: []
   destructive_floor: operator
   publication_floor: operator
+retry_policy:
+  policy_id: retry-v1
+  policy_version: "1"
+  transient_limit: 2
+  deterministic_limit: 1
+  model_resample_limit: 1
+  model_resample_classes: [execution, transport, protocol]
 pull: true            # fast-forward the default branch from origin before an issue starts
 push: false           # push the default branch to origin after a merge lands
