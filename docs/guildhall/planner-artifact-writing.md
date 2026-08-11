@@ -72,10 +72,23 @@ before the pair or authority state changes. The daemon and engine validate the
 entire request before publishing the paired artifacts and durable accepted
 prefix.
 
-The engine initializes both targets before the planner starts. A new session
-starts with a valid plan root and `{"globs":[]}`. Existing sectioned progress
-is adopted without rewriting it. Legacy unanchored plans, malformed targets,
-unsafe paths, and ambiguous or partial markers fail closed without overwrite.
+For a genuinely new stage, the engine initializes both targets before the
+planner starts with a valid plan root and `{"globs":[]}`. A retry is different:
+the exact active authority record, or the newest bounded prior active attempt,
+is selected and validated independently of worktree files. Retry without that
+durable authority fails closed and cannot create a pair, registry row, or
+capability.
+
+After the durable manifest and accepted-section prefix prove internally
+consistent, the engine renders their exact `plan.md` and `touchset.json` bytes.
+Missing or tampered targets are replaced as one rollback-protected pair. The
+normal starting-pair preparation and parser checks run only after recovery;
+capability rotation and durable retry persistence happen only after the
+recovered pair passes those checks. A failed publication, post-recovery check,
+capability generation, or registry write restores the exact pre-recovery bytes
+or absence. Corrupt records, inactive or contradictory attempts, noncanonical
+globs, unsafe targets, and unprovable pairs fail closed without treating the
+workspace as authority.
 
 After each accepted section, both targets pass intermediate validation before
 the next section is requested. A failed transport, decode, size, schema, or
@@ -86,12 +99,12 @@ rewritten. Replaying accepted content is an idempotent no-op; conflicting
 content, duplicate anchors, and out-of-order sections are rejected, while
 exact duplicate globs are deduplicated during structured merge.
 
-Retry rotates the live capability while retaining the same exact scope and
-validated prefix. After daemon recovery, the engine reloads and verifies its
-durable authority record before issuing a new handle; it never reconstructs
-authority from a descriptor, private session, or untrusted client files. If
-the record or pair cannot be proven valid, recovery fails closed and preserves
-the last validated state.
+Retry rotates the live capability only after retaining the same exact scope,
+restoring the validated durable prefix, and proving the recovered pair. After
+daemon recovery, the engine never reconstructs authority from a descriptor,
+private session, request payload, or client/worktree content. Fresh empty
+initialization remains available only to a new engine-owned stage creation;
+daemon restart and retry require durable authority.
 
 Stable failure classes distinguish transport and authority state:
 

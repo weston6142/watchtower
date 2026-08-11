@@ -8,7 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,9 +62,85 @@ type Authority struct {
 
 const capabilityBytes = 32
 
+// CreateOrLoadOption configures authority recovery without changing the
+// production defaults.
+type CreateOrLoadOption func(*createOrLoadConfig)
+
+type createOrLoadConfig struct {
+	requireDurable bool
+	rename         func(string, string) error
+	random         io.Reader
+}
+
+// RequireDurableRecovery rejects a missing exact or bounded-prior durable
+// record. Daemon restart paths use this to prevent a workspace from becoming
+// authority merely because its files exist.
+func RequireDurableRecovery() CreateOrLoadOption {
+	return func(config *createOrLoadConfig) {
+		config.requireDurable = true
+	}
+}
+
+// withRecoveryRename is a deterministic test seam for pair publication. The
+// production path always defaults to os.Rename.
+func withRecoveryRename(rename func(string, string) error) CreateOrLoadOption {
+	return func(config *createOrLoadConfig) {
+		config.rename = rename
+	}
+}
+
+func withCapabilityReader(reader io.Reader) CreateOrLoadOption {
+	return func(config *createOrLoadConfig) {
+		config.random = reader
+	}
+}
+
+type bindingLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+var authorityBindingLocks = struct {
+	sync.Mutex
+	entries map[Binding]*bindingLockEntry
+}{entries: make(map[Binding]*bindingLockEntry)}
+
+// acquireBindingLock counts callers before they wait so an entry is removed
+// only after its final holder or waiter has released it.
+func acquireBindingLock(binding Binding) func() {
+	authorityBindingLocks.Lock()
+	entry := authorityBindingLocks.entries[binding]
+	if entry == nil {
+		entry = &bindingLockEntry{}
+		authorityBindingLocks.entries[binding] = entry
+	}
+	entry.refs++
+	authorityBindingLocks.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		authorityBindingLocks.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(authorityBindingLocks.entries, binding)
+		}
+		authorityBindingLocks.Unlock()
+	}
+}
+
+type durableAuthoritySelection struct {
+	exact    bool
+	status   string
+	digest   []byte
+	manifest []byte
+	sections []byte
+	record   authorityRecord
+}
+
 // CreateOrLoad creates or reloads the exact bound record and issues a fresh
 // opaque capability for the live engine context.
-func CreateOrLoad(registry Registry, binding Binding) (*Authority, error) {
+func CreateOrLoad(registry Registry, binding Binding, options ...CreateOrLoadOption) (*Authority, error) {
 	if registry == nil {
 		return nil, errors.New("planner authority: registry is unavailable")
 	}
@@ -72,75 +148,154 @@ func CreateOrLoad(registry Registry, binding Binding) (*Authority, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := Prepare(normalized.Worktree); err != nil {
+	config := createOrLoadConfig{rename: os.Rename, random: rand.Reader}
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
+	}
+	release := acquireBindingLock(normalized)
+	defer release()
+
+	selection, found, err := loadDurableAuthoritySelection(registry, normalized)
+	if err != nil {
 		return nil, err
 	}
-	capability := make([]byte, capabilityBytes)
-	if _, err := rand.Read(capability); err != nil {
-		return nil, fmt.Errorf("planner authority: generate capability: %w", err)
-	}
-	digest := capabilityDigest(capability)
-	status, storedDigest, manifest, sections, found, err := registry.LoadPlannerArtifact(
-		normalized.IssueID, normalized.Stage, normalized.Attempt, normalized.Worktree)
-	if err != nil {
-		return nil, fmt.Errorf("planner authority: registry read failed")
-	}
-	if found {
-		if status != "active" {
-			return nil, fmt.Errorf("planner authority: record is not active")
+	if !found {
+		if config.requireDurable {
+			return nil, authorityError(ErrorAuthorityState, "", "durable planner authority is unavailable", nil)
 		}
-		record, err := decodeRecord(storedDigest, manifest, sections)
-		if err != nil {
-			return nil, authorityError(ErrorAuthorityState, "", "durable authority record is invalid", err)
-		}
-		if err := validateDurableRecord(record); err != nil {
-			return nil, authorityError(ErrorAuthorityState, "", "durable authority record is invalid", err)
-		}
-		if err := validateDurablePair(normalized.Worktree, record); err != nil {
+		if err := Prepare(normalized.Worktree); err != nil {
 			return nil, err
 		}
-		if err := registry.UpdatePlannerArtifact(normalized.IssueID, normalized.Stage, normalized.Attempt, normalized.Worktree,
-			"active", digest, manifest, normalizeSectionsJSON(sections)); err != nil {
-			return nil, fmt.Errorf("planner authority: registry write failed")
-		}
-	} else {
-		storedManifest := []byte(nil)
-		storedSections := []byte("[]")
-		if retry, ok := registry.(retryRegistry); ok {
-			previousAttempt, previousStatus, previousDigest, previousManifest, previousSections, previousFound, previousErr := retry.LoadLatestPlannerArtifactBefore(
-				normalized.IssueID, normalized.Stage, normalized.Attempt, normalized.Worktree)
-			if previousErr != nil {
-				return nil, authorityError(ErrorAuthorityState, "", "planner retry state is unavailable", previousErr)
-			}
-			if previousFound && previousStatus == "active" && previousAttempt < normalized.Attempt {
-				previousRecord, recordErr := decodeRecord(previousDigest, previousManifest, previousSections)
-				if recordErr != nil {
-					return nil, authorityError(ErrorAuthorityState, "", "planner retry state is invalid", recordErr)
-				}
-				if recordErr := validateDurableRecord(previousRecord); recordErr != nil {
-					return nil, authorityError(ErrorAuthorityState, "", "planner retry state is invalid", recordErr)
-				}
-				if recordErr := validateDurablePair(normalized.Worktree, previousRecord); recordErr != nil {
-					return nil, recordErr
-				}
-				storedManifest = append([]byte(nil), previousManifest...)
-				storedSections = normalizeSectionsJSON(previousSections)
-			}
+		capability, digest, err := generateCapability(config.random)
+		if err != nil {
+			return nil, authorityError(ErrorAuthorityState, "", "capability generation failed", err)
 		}
 		if err := registry.CreatePlannerArtifact(normalized.IssueID, normalized.Stage, normalized.Attempt, normalized.Worktree,
-			"active", digest, storedManifest, storedSections); err != nil {
-			return nil, fmt.Errorf("planner authority: registry write failed")
+			"active", digest, nil, []byte("[]")); err != nil {
+			return nil, authorityError(ErrorAuthorityState, "", "registry write failed", err)
+		}
+		return newAuthority(registry, normalized, digest, capability), nil
+	}
+
+	if len(selection.record.Sections) == 0 {
+		if err := Prepare(normalized.Worktree); err != nil {
+			return nil, err
+		}
+		if err := validateDurablePair(normalized.Worktree, selection.record); err != nil {
+			return nil, authorityError(ErrorAuthorityState, "", "durable planner pair is invalid", err)
+		}
+		capability, digest, err := generateCapability(config.random)
+		if err != nil {
+			return nil, authorityError(ErrorAuthorityState, "", "capability generation failed", err)
+		}
+		if err := persistReloadedAuthority(registry, normalized, selection, digest); err != nil {
+			return nil, authorityError(ErrorAuthorityState, "", "registry write failed", err)
+		}
+		return newAuthority(registry, normalized, digest, capability), nil
+	}
+
+	plan, touchset, err := renderPair(selection.record.Sections)
+	if err != nil {
+		return nil, authorityError(ErrorAuthorityState, "", "durable planner state cannot be rendered", err)
+	}
+	recovery, err := recoverDurablePairWithRename(normalized.Worktree, plan, touchset, config.rename)
+	if err != nil {
+		return nil, authorityError(ErrorAuthorityState, "", "durable planner pair recovery failed", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = recovery.Rollback()
+		}
+	}()
+	if err := Prepare(normalized.Worktree); err != nil {
+		return nil, authorityError(ErrorAuthorityState, "", "recovered planner targets are invalid", err)
+	}
+	if err := validateDurablePair(normalized.Worktree, selection.record); err != nil {
+		return nil, authorityError(ErrorAuthorityState, "", "recovered planner pair is invalid", err)
+	}
+	capability, digest, err := generateCapability(config.random)
+	if err != nil {
+		return nil, authorityError(ErrorAuthorityState, "", "capability generation failed", err)
+	}
+	if err := persistReloadedAuthority(registry, normalized, selection, digest); err != nil {
+		return nil, authorityError(ErrorAuthorityState, "", "registry write failed", err)
+	}
+	recovery.Commit()
+	committed = true
+	return newAuthority(registry, normalized, digest, capability), nil
+}
+
+func loadDurableAuthoritySelection(registry Registry, binding Binding) (durableAuthoritySelection, bool, error) {
+	status, digest, manifest, sections, found, err := registry.LoadPlannerArtifact(
+		binding.IssueID, binding.Stage, binding.Attempt, binding.Worktree)
+	if err != nil {
+		return durableAuthoritySelection{}, false, authorityError(ErrorAuthorityState, "", "registry read failed", err)
+	}
+	selection := durableAuthoritySelection{exact: true, status: status, digest: digest, manifest: manifest, sections: sections}
+	if !found {
+		retry, ok := registry.(retryRegistry)
+		if !ok {
+			return durableAuthoritySelection{}, false, nil
+		}
+		attempt, priorStatus, priorDigest, priorManifest, priorSections, priorFound, priorErr := retry.LoadLatestPlannerArtifactBefore(
+			binding.IssueID, binding.Stage, binding.Attempt, binding.Worktree)
+		if priorErr != nil {
+			return durableAuthoritySelection{}, false, authorityError(ErrorAuthorityState, "", "planner retry state is unavailable", priorErr)
+		}
+		if !priorFound {
+			return durableAuthoritySelection{}, false, nil
+		}
+		selection = durableAuthoritySelection{status: priorStatus, digest: priorDigest, manifest: priorManifest, sections: priorSections}
+		if attempt <= 0 || attempt >= binding.Attempt {
+			return durableAuthoritySelection{}, false, authorityError(ErrorAuthorityState, "", "planner retry state contradicts the requested attempt", nil)
 		}
 	}
-	return &Authority{
-		registry: registry, binding: normalized, digest: digest,
-		capability: base64.RawURLEncoding.EncodeToString(capability),
-	}, nil
+	if selection.status != "active" {
+		return durableAuthoritySelection{}, false, authorityError(ErrorAuthorityState, "", "durable planner authority is not active", nil)
+	}
+	record, err := decodeRecord(selection.digest, selection.manifest, selection.sections)
+	if err != nil {
+		return durableAuthoritySelection{}, false, authorityError(ErrorAuthorityState, "", "durable authority record is invalid", err)
+	}
+	if err := validateDurableRecord(record); err != nil {
+		return durableAuthoritySelection{}, false, authorityError(ErrorAuthorityState, "", "durable authority record is invalid", err)
+	}
+	selection.record = record
+	return selection, true, nil
+}
+
+func persistReloadedAuthority(registry Registry, binding Binding, selection durableAuthoritySelection, digest []byte) error {
+	if selection.exact {
+		return registry.UpdatePlannerArtifact(binding.IssueID, binding.Stage, binding.Attempt, binding.Worktree,
+			"active", digest, selection.manifest, selection.sections)
+	}
+	return registry.CreatePlannerArtifact(binding.IssueID, binding.Stage, binding.Attempt, binding.Worktree,
+		"active", digest, selection.manifest, selection.sections)
+}
+
+func generateCapability(reader io.Reader) (string, []byte, error) {
+	if reader == nil {
+		return "", nil, errors.New("planner authority: capability source is unavailable")
+	}
+	raw := make([]byte, capabilityBytes)
+	if _, err := io.ReadFull(reader, raw); err != nil {
+		return "", nil, err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), capabilityDigest(raw), nil
+}
+
+func newAuthority(registry Registry, binding Binding, digest []byte, capability string) *Authority {
+	return &Authority{registry: registry, binding: binding, digest: append([]byte(nil), digest...), capability: capability}
 }
 
 // CapabilityHandle is available only to the engine/daemon route. Runners and
 // provider interfaces never receive this value, and it is never persisted.
 func (a *Authority) CapabilityHandle() string {
+	release := acquireBindingLock(a.binding)
+	defer release()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.capability
@@ -149,16 +304,22 @@ func (a *Authority) CapabilityHandle() string {
 // VerifyCapability checks a presented opaque handle without exposing the
 // durable digest or the raw value in an error.
 func (a *Authority) VerifyCapability(handle string) error {
+	release := acquireBindingLock(a.binding)
+	defer release()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.verifyCapabilityLocked(handle)
+}
+
+func (a *Authority) verifyCapabilityLocked(handle string) error {
 	capability, err := base64.RawURLEncoding.DecodeString(handle)
 	if err != nil || len(capability) != capabilityBytes {
 		return authorityError(ErrorStaleCapability, "", "capability is not active", nil)
 	}
-	digest := capabilityDigest(capability)
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err := a.verifyLocked(); err != nil {
 		return err
 	}
+	digest := capabilityDigest(capability)
 	if subtle.ConstantTimeCompare(digest, a.digest) != 1 {
 		return authorityError(ErrorStaleCapability, "", "capability is not active", nil)
 	}
@@ -171,10 +332,14 @@ func (a *Authority) ApplyWithCapability(handle string, request WriteRequest) err
 	if strings.Contains(handle, "WATCHTOWER_PLANNER_SESSION") {
 		return authorityError(ErrorPrivateSession, "", "private session is not authoritative", nil)
 	}
-	if err := a.VerifyCapability(handle); err != nil {
+	release := acquireBindingLock(a.binding)
+	defer release()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.verifyCapabilityLocked(handle); err != nil {
 		return err
 	}
-	return a.Apply(request)
+	return a.applyLocked(request, false)
 }
 
 func normalizeBinding(binding Binding) (Binding, error) {
@@ -210,6 +375,8 @@ func (a *Authority) VerifyBinding(binding Binding) error {
 	if err != nil {
 		return err
 	}
+	release := acquireBindingLock(a.binding)
+	defer release()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if normalized != a.binding {
@@ -227,7 +394,7 @@ func (a *Authority) verifyLocked() error {
 	if err != nil {
 		return authorityError(ErrorAuthorityState, "", "registry read failed", err)
 	}
-	if !found || status != "active" || len(storedDigest) == 0 ||
+	if !found || status != "active" || len(storedDigest) != sha256.Size ||
 		subtle.ConstantTimeCompare(storedDigest, a.digest) != 1 {
 		return authorityError(ErrorStaleCapability, "", "authority is not active", nil)
 	}
@@ -236,19 +403,27 @@ func (a *Authority) verifyLocked() error {
 
 // Apply validates and durably advances one provider-neutral planner section.
 func (a *Authority) Apply(request WriteRequest) error {
+	release := acquireBindingLock(a.binding)
+	defer release()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.verifyLocked(); err != nil {
-		return err
+	return a.applyLocked(request, true)
+}
+
+func (a *Authority) applyLocked(request WriteRequest, verify bool) error {
+	if verify {
+		if err := a.verifyLocked(); err != nil {
+			return err
+		}
 	}
 	status, digest, manifestBytes, sectionBytes, found, err := a.registry.LoadPlannerArtifact(
 		a.binding.IssueID, a.binding.Stage, a.binding.Attempt, a.binding.Worktree)
-	if err != nil || !found || status != "active" || subtle.ConstantTimeCompare(digest, a.digest) != 1 {
+	if err != nil || !found || status != "active" || len(digest) != sha256.Size || subtle.ConstantTimeCompare(digest, a.digest) != 1 {
 		return authorityError(ErrorAuthorityState, "", "registry state is unavailable", err)
 	}
 	record, err := decodeRecord(digest, manifestBytes, sectionBytes)
 	if err != nil {
-		return err
+		return authorityError(ErrorAuthorityState, "", "durable authority record is invalid", err)
 	}
 	if err := validateDurableRecord(record); err != nil {
 		return authorityError(ErrorAuthorityState, "", "durable authority record is invalid", err)
@@ -285,7 +460,7 @@ func (a *Authority) Apply(request WriteRequest) error {
 	if err != nil {
 		return errors.New("planner authority: encode section delta")
 	}
-	if observed := len([]byte(request.Markdown)) + len(deltaBytes); observed > MaxOperationBytes {
+	if observed := len([]byte(normalizedMarkdown(request.Markdown))) + len(deltaBytes); observed > MaxOperationBytes {
 		return authorityError(ErrorInvalidSection, sectionKey, "operation exceeds bounded write", nil)
 	}
 	if len(record.Manifest.Sections) == 0 {
@@ -393,12 +568,13 @@ func renderPair(sections []acceptedSection) ([]byte, []byte, error) {
 }
 
 func decodeRecord(digest, manifestBytes, sectionsBytes []byte) (authorityRecord, error) {
-	if len(digest) == 0 {
-		return authorityRecord{}, errors.New("planner authority: record digest is missing")
+	if len(digest) != sha256.Size {
+		return authorityRecord{}, errors.New("planner authority: record digest is invalid")
 	}
 	record := authorityRecord{}
-	if len(manifestBytes) != 0 && string(manifestBytes) != "null" {
-		if err := json.Unmarshal(manifestBytes, &record.Manifest); err != nil {
+	trimmedManifest := bytes.TrimSpace(manifestBytes)
+	if len(trimmedManifest) != 0 && !bytes.Equal(trimmedManifest, []byte("null")) {
+		if err := decodeAuthorityJSON(manifestBytes, &record.Manifest); err != nil {
 			return authorityRecord{}, errors.New("planner authority: record manifest is malformed")
 		}
 		if err := ValidateManifest(record.Manifest); err != nil {
@@ -408,10 +584,22 @@ func decodeRecord(digest, manifestBytes, sectionsBytes []byte) (authorityRecord,
 	if len(sectionsBytes) == 0 {
 		sectionsBytes = []byte("[]")
 	}
-	if err := json.Unmarshal(sectionsBytes, &record.Sections); err != nil {
+	if bytes.Equal(bytes.TrimSpace(sectionsBytes), []byte("null")) {
+		return authorityRecord{}, errors.New("planner authority: record sections are malformed")
+	}
+	if err := decodeAuthorityJSON(sectionsBytes, &record.Sections); err != nil {
 		return authorityRecord{}, errors.New("planner authority: record sections are malformed")
 	}
 	return record, nil
+}
+
+func decodeAuthorityJSON(data []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	return ensureEOF(decoder)
 }
 
 func validateDurableRecord(record authorityRecord) error {
@@ -424,18 +612,55 @@ func validateDurableRecord(record authorityRecord) error {
 	if len(record.Sections) > len(record.Manifest.Sections) {
 		return errors.New("accepted sections exceed the manifest")
 	}
+	for _, entry := range record.Manifest.Sections {
+		canonical, err := canonicalGlobs(entry.Globs)
+		if err != nil || !sameStrings(canonical, entry.Globs) {
+			return errors.New("manifest globs are not canonical")
+		}
+	}
 	for index, section := range record.Sections {
 		entry := record.Manifest.Sections[index]
 		if section.Key != entry.Key || !sameStrings(section.Globs, entry.Globs) {
 			return errors.New("accepted section does not match the manifest")
 		}
+		canonical, err := canonicalGlobs(section.Globs)
+		if err != nil || !sameStrings(canonical, section.Globs) {
+			return errors.New("accepted section globs are not canonical")
+		}
 		if err := validateFinalSection(section.Markdown); err != nil {
 			return errors.New("accepted section content is invalid")
+		}
+		if normalizedMarkdown(section.Markdown) != section.Markdown {
+			return errors.New("accepted section content is not normalized")
 		}
 		delta, err := json.Marshal(entry.Globs)
 		if err != nil || len([]byte(section.Markdown))+len(delta) > MaxOperationBytes {
 			return errors.New("accepted section exceeds the bounded write")
 		}
+	}
+	plan, touchset, err := renderPair(record.Sections)
+	if err != nil {
+		return errors.New("accepted sections cannot be rendered")
+	}
+	document, err := parsePlan(plan)
+	if err != nil || len(document.Sections) != len(record.Sections) {
+		return errors.New("rendered plan is invalid")
+	}
+	if err := validateDocumentAgainstManifest(document, record.Manifest, false); err != nil {
+		return errors.New("rendered plan is not a manifest prefix")
+	}
+	for index := range document.Sections {
+		if document.Sections[index].Markdown != record.Sections[index].Markdown {
+			return errors.New("rendered plan changed accepted content")
+		}
+	}
+	set, err := parseTouchset(touchset)
+	if err != nil {
+		return errors.New("rendered touchset is invalid")
+	}
+	wantGlobs := manifestGlobs(Manifest{Sections: record.Manifest.Sections[:len(record.Sections)]})
+	if !sameStrings(set.Globs, wantGlobs) {
+		return errors.New("rendered pair is inconsistent")
 	}
 	return nil
 }
@@ -456,16 +681,11 @@ func validateDurablePair(worktree string, record authorityRecord) error {
 	return nil
 }
 
-func normalizeSectionsJSON(sections []byte) []byte {
-	if len(sections) == 0 {
-		return []byte("[]")
-	}
-	return sections
-}
-
 // ValidateComplete applies the existing complete-pair gate to the durable
 // manifest associated with this authority.
 func (a *Authority) ValidateComplete() error {
+	release := acquireBindingLock(a.binding)
+	defer release()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := a.verifyLocked(); err != nil {
@@ -513,6 +733,8 @@ func (a *Authority) ValidateComplete() error {
 
 // AcceptedSections reloads the durable validated prefix for retry inspection.
 func (a *Authority) AcceptedSections() ([]WriteRequest, error) {
+	release := acquireBindingLock(a.binding)
+	defer release()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := a.verifyLocked(); err != nil {
@@ -525,6 +747,12 @@ func (a *Authority) AcceptedSections() ([]WriteRequest, error) {
 	}
 	record, err := decodeRecord(digest, manifestBytes, sections)
 	if err != nil {
+		return nil, authorityError(ErrorAuthorityState, "", "durable authority record is invalid", err)
+	}
+	if err := validateDurableRecord(record); err != nil {
+		return nil, authorityError(ErrorAuthorityState, "", "durable authority record is invalid", err)
+	}
+	if err := validateDurablePair(a.binding.Worktree, record); err != nil {
 		return nil, err
 	}
 	requests := make([]WriteRequest, 0, len(record.Sections))
@@ -549,6 +777,8 @@ func ApplyFromFD(fd int, request WriteRequest) error {
 
 // Expire closes the authority and retains the historical registry state.
 func (a *Authority) Expire() error {
+	release := acquireBindingLock(a.binding)
+	defer release()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed {
@@ -564,6 +794,8 @@ func (a *Authority) Expire() error {
 // Close releases the live handle without expiring durable progress. Failed
 // stage attempts can therefore reload the same binding on retry.
 func (a *Authority) Close() error {
+	release := acquireBindingLock(a.binding)
+	defer release()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.closed = true
