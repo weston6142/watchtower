@@ -5,11 +5,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/weston6142/watchtower/internal/touchset"
 	"gopkg.in/yaml.v3"
 )
 
 type Lever string
 type Gate string
+type CapabilityProfile string
 
 const (
 	LeverYolo    Lever = "yolo"
@@ -25,6 +27,14 @@ const (
 	// CompletionAny requires at least one.
 	CompletionAll = "all"
 	CompletionAny = "any"
+
+	ProfileArtifact           CapabilityProfile = "artifact"
+	ProfileInspect            CapabilityProfile = "inspect"
+	ProfileImplementation     CapabilityProfile = "implementation"
+	ProfileReview             CapabilityProfile = "review"
+	ProfileLibrarian          CapabilityProfile = "librarian"
+	ProfileFinalReview        CapabilityProfile = "final-review"
+	ProfileConflictResolution CapabilityProfile = "conflict-resolution"
 )
 
 type AgentRef struct {
@@ -33,16 +43,18 @@ type AgentRef struct {
 }
 
 type Stage struct {
-	Name         string     `yaml:"name"`
-	Agents       []AgentRef `yaml:"agents"`
-	Parallel     bool       `yaml:"parallel"`
-	Completion   string     `yaml:"completion"`
-	Workspace    string     `yaml:"workspace"`
-	Gate         Gate       `yaml:"gate"`
-	Artifacts    []string   `yaml:"artifacts"`
-	Retries      int        `yaml:"retries"`
-	HeavySlot    bool       `yaml:"heavy_slot"`
-	MergeBarrier bool       `yaml:"merge_barrier"`
+	Name               string            `yaml:"name"`
+	Agents             []AgentRef        `yaml:"agents"`
+	Parallel           bool              `yaml:"parallel"`
+	Completion         string            `yaml:"completion"`
+	Workspace          string            `yaml:"workspace"`
+	Gate               Gate              `yaml:"gate"`
+	Artifacts          []string          `yaml:"artifacts"`
+	CapabilityProfile  CapabilityProfile `yaml:"capability_profile"`
+	DocumentationPaths []string          `yaml:"documentation_paths"`
+	Retries            int               `yaml:"retries"`
+	HeavySlot          bool              `yaml:"heavy_slot"`
+	MergeBarrier       bool              `yaml:"merge_barrier"`
 }
 
 type Flow struct {
@@ -107,6 +119,24 @@ func loadBytes(b []byte) (Flow, error) {
 		if len(st.Agents) == 0 {
 			return Flow{}, fmt.Errorf("stage %q has no agents", st.Name)
 		}
+		switch st.CapabilityProfile {
+		case ProfileArtifact, ProfileInspect, ProfileImplementation, ProfileReview,
+			ProfileLibrarian, ProfileFinalReview, ProfileConflictResolution:
+		default:
+			return Flow{}, fmt.Errorf("stage %q capability_profile %q is missing or unknown", st.Name, st.CapabilityProfile)
+		}
+		if st.CapabilityProfile == ProfileLibrarian {
+			if len(st.DocumentationPaths) == 0 {
+				return Flow{}, fmt.Errorf("stage %q librarian capability_profile requires documentation_paths", st.Name)
+			}
+			canonical, err := touchset.CanonicalGlobs(st.DocumentationPaths)
+			if err != nil {
+				return Flow{}, fmt.Errorf("stage %q documentation_paths: %w", st.Name, err)
+			}
+			st.DocumentationPaths = canonical
+		} else if len(st.DocumentationPaths) != 0 {
+			return Flow{}, fmt.Errorf("stage %q documentation_paths are valid only for librarian capability_profile", st.Name)
+		}
 		if st.Completion == "" {
 			st.Completion = CompletionAll
 		}
@@ -120,6 +150,9 @@ func loadBytes(b []byte) (Flow, error) {
 		case "none", "worktree", "readonly":
 		default:
 			return Flow{}, fmt.Errorf("stage %q bad workspace %q", st.Name, st.Workspace)
+		}
+		if st.Workspace == "readonly" && len(st.Artifacts) > 0 {
+			return Flow{}, fmt.Errorf("stage %q readonly workspace contradicts writable artifacts", st.Name)
 		}
 		switch st.Gate {
 		case GateApproveArtifact, GateDecisionQueue, GateAuto, GatePlanReview:

@@ -1,21 +1,25 @@
 name: default
 stages:
   - name: brainstorm
+    capability_profile: artifact
     agents: [{package: brainstorm}]
     workspace: worktree
     gate: auto
     artifacts: [brainstorm.md]
   - name: spec
+    capability_profile: artifact
     agents: [{package: spec-writer}]
     workspace: worktree
     gate: approve_artifact
     artifacts: [spec.md]
   - name: plan
+    capability_profile: artifact
     agents: [{package: planner}]
     workspace: worktree
     gate: plan_review
     artifacts: [plan.md, touchset.json]
   - name: execute
+    capability_profile: implementation
     agents: [{package: executor}]
     workspace: worktree
     gate: auto
@@ -23,22 +27,27 @@ stages:
     retries: 1
     artifacts: []
   - name: correctness-review
+    capability_profile: review
     agents: [{package: correctness-reviewer}]
     workspace: worktree
     gate: auto
     heavy_slot: true
     artifacts: []
   - name: clean-code-review
+    capability_profile: review
     agents: [{package: clean-code-reviewer}]
     workspace: worktree
     gate: auto
     artifacts: []
   - name: librarian
+    capability_profile: librarian
+    documentation_paths: ["docs/**", "docs-draft-*"]
     agents: [{package: librarian}]
     workspace: worktree
     gate: auto
     artifacts: []
   - name: merge-verification
+    capability_profile: final-review
     agents: [{package: merge-verifier}]
     workspace: worktree
     merge_barrier: true

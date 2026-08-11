@@ -70,6 +70,38 @@ func TestLoadDirRejectsUnsafeIncludes(t *testing.T) {
 	}
 }
 
+func TestLegacyAllowedToolsCanOnlyRestrict(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "packages", "agent", "prompt.md"), "agent")
+	base := "identity:\n  name: Test Agent\n  color: gray\n  symbol: X\n"
+
+	writeTestFile(t, filepath.Join(root, "packages", "agent", "package.yaml"), base+
+		"allowed_tools: [Read, Glob, Grep]\n")
+	loaded, err := LoadDir(filepath.Join(root, "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restrictions := loaded["agent"].LegacyRestrictions
+	if !restrictions.Declared || restrictions.DenyWorkspaceRead || !restrictions.DenyWorkspaceMutate || !restrictions.DenyLocalProcess {
+		t.Fatalf("read-only legacy restrictions = %+v", restrictions)
+	}
+
+	writeTestFile(t, filepath.Join(root, "packages", "agent", "package.yaml"), base+
+		"allowed_tools: [Read, Publish]\n")
+	if _, err := LoadDir(filepath.Join(root, "packages")); err == nil || !strings.Contains(err.Error(), "Publish") {
+		t.Fatalf("unknown legacy tool error = %v", err)
+	}
+
+	writeTestFile(t, filepath.Join(root, "packages", "agent", "package.yaml"), base)
+	loaded, err = LoadDir(filepath.Join(root, "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded["agent"].LegacyRestrictions; got.Declared || got.DenyWorkspaceRead || got.DenyWorkspaceMutate || got.DenyLocalProcess {
+		t.Fatalf("absent legacy declaration restricted authority: %+v", got)
+	}
+}
+
 func writeTestFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
