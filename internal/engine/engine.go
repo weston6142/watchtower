@@ -41,7 +41,6 @@ import (
 	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
-	"github.com/weston6142/watchtower/internal/verificationcache"
 	"github.com/weston6142/watchtower/internal/workspace"
 )
 
@@ -182,6 +181,7 @@ type issueState struct {
 	externalSession     bool
 	budgetWaived        bool
 	activeTouchset      *touchset.Set
+	conflictPaths       []string
 	dependsOn           []string
 	waitingDependencies bool
 	planReview          review.ResolvedPolicy
@@ -3438,53 +3438,6 @@ func (e *Engine) runStageOnce(
 		emitPlannerSnapshot(plannerbudget.OutcomeNormal, plannerController.Snapshot())
 	}
 
-	var verificationLease *verificationcache.Lease
-	verificationLeaseSealed := false
-	if st.MergeBarrier && e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 {
-		branchSHA, err := gitRevision(workdir, "HEAD")
-		if err != nil {
-			return fmt.Errorf("verification branch identity: %w", err)
-		}
-		treeSHA, err := gitRevision(workdir, "HEAD^{tree}")
-		if err != nil {
-			return fmt.Errorf("verification tree identity: %w", err)
-		}
-		cacheRoot := e.cfg.CacheRoot
-		if cacheRoot == "" {
-			cacheRoot = e.cfg.DataDir
-		}
-		runtime, err := verificationcache.New(verificationcache.Config{
-			CacheRoot: cacheRoot, RepoDir: e.cfg.Train.Repo,
-		})
-		if err != nil {
-			return fmt.Errorf("initialize verification cache: %w", err)
-		}
-		verificationLease, err = runtime.Acquire(ctx, verificationcache.Config{
-			RepoDir: e.cfg.Train.Repo, BaseSHA: is.baseRef, BranchSHA: branchSHA,
-			TreeSHA: treeSHA, Argv: append([]string(nil), e.cfg.Train.TestCmd...),
-		})
-		if err != nil {
-			return fmt.Errorf("acquire verification cache lease: %w", err)
-		}
-	}
-	defer func() {
-		if verificationLease == nil {
-			return
-		}
-		if !verificationLeaseSealed {
-			reason := "verification stage did not complete"
-			if runErr != nil {
-				reason = runErr.Error()
-			}
-			if err := verificationLease.Quarantine(reason); err != nil {
-				_ = e.recordBoundaryFailure(context.WithoutCancel(ctx), is.id, st.Name, attempt,
-					failure.SiteCache, failure.ClassUnavailable, failure.RetryAfterStateChange,
-					failure.StateCache, err)
-			}
-		}
-		_ = verificationLease.Close()
-	}()
-
 	capabilityIdentity := capability.AttemptIdentity{IssueID: is.id, Stage: st.Name, AttemptID: lifecycleAttempt.AttemptID}
 	var compiledContract capability.CompiledContract
 	var enforcementPlan capability.EnforcementPlan
@@ -3496,7 +3449,7 @@ func (e *Engine) runStageOnce(
 		for _, row := range rows {
 			materializedInputs = append(materializedInputs, filepath.ToSlash(filepath.Join("attachments", row.Name)))
 		}
-		authority, authorityErr := e.resolveCapabilityAuthority(is, st, lifecycleAttempt, materializedInputs, nil)
+		authority, authorityErr := e.resolveCapabilityAuthority(is, st, lifecycleAttempt, materializedInputs, is.conflictPaths)
 		if authorityErr != nil {
 			e.emit(core.EvCapabilityRejected, is.id, map[string]any{"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "reason": capability.ReasonContractInvalid})
 			return &capability.PolicyError{Phase: "compile", Reason: capability.ReasonContractInvalid, Diagnostic: "durable stage authority is unavailable"}
@@ -3592,9 +3545,6 @@ func (e *Engine) runStageOnce(
 			return
 		}
 		runCtx := runner.WithOperationID(agentCtx, strconv.FormatInt(runID, 10))
-		if verificationLease != nil {
-			runCtx = runner.WithManagedEnvironment(runCtx, verificationLease.ManagedEnvironment())
-		}
 		if artifactAuthority != nil {
 			runCtx = runner.WithPlannerArtifactAuthority(runCtx, artifactAuthority)
 		}
@@ -3783,61 +3733,8 @@ func (e *Engine) runStageOnce(
 			return fmt.Errorf("structured stage result: recovered result does not match %s", expectedResultKind)
 		}
 	}
-	if st.MergeBarrier {
-		if verificationLease != nil {
-			branchSHA, treeSHA, err := verificationIdentity(workdir)
-			if err != nil {
-				return fmt.Errorf("verification post-agent identity: %w", err)
-			}
-			if branchSHA != verificationLease.BranchSHA() || treeSHA != verificationLease.TreeSHA() {
-				verificationLease, err = verificationLease.Rebind(verificationcache.Config{
-					RepoDir: e.cfg.Train.Repo, BaseSHA: is.baseRef, BranchSHA: branchSHA,
-					TreeSHA: treeSHA, Argv: append([]string(nil), e.cfg.Train.TestCmd...),
-				})
-				if err != nil {
-					return fmt.Errorf("rebind verification cache lease: %w", err)
-				}
-			}
-		}
-		if err := e.writeVerificationReceipt(ctx, is, workdir, verificationLease); err != nil {
-			return err
-		}
-		verificationLeaseSealed = verificationLease != nil
-		if e.cfg.Store != nil {
-			receiptJSON, err := verificationReceiptBytes(workdir)
-			if err != nil {
-				return fmt.Errorf("read verification receipt: %w", err)
-			}
-			if _, err := loadVerificationBytes(receiptJSON); err != nil {
-				return fmt.Errorf("validate verification receipt: %w", err)
-			}
-			currentAttempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
-			if err != nil {
-				return fmt.Errorf("load verification attempt: %w", err)
-			}
-			if found {
-				if currentAttempt.Status == store.VerificationAttemptPending {
-					if _, err := e.cfg.Store.FinishVerificationAttempt(
-						is.id, currentAttempt.ID, store.VerificationAttemptPassed, receiptJSON, "",
-					); err != nil {
-						return fmt.Errorf("finish verification attempt: %w", err)
-					}
-				} else if _, err := e.cfg.Store.RecordVerificationAttempt(store.VerificationAttempt{
-					IssueID: is.id, Stage: st.Name, ParentID: currentAttempt.ID,
-					Status: store.VerificationAttemptPassed, Reason: "explicit verification rerun",
-					ReceiptJSON: receiptJSON,
-				}); err != nil {
-					return fmt.Errorf("record verification attempt: %w", err)
-				}
-			} else if _, err := e.cfg.Store.RecordVerificationAttempt(store.VerificationAttempt{
-				IssueID: is.id, Stage: st.Name, Status: store.VerificationAttemptPassed,
-				ReceiptJSON: receiptJSON,
-			}); err != nil {
-				return fmt.Errorf("record verification attempt: %w", err)
-			}
-		}
-	}
-	for _, name := range st.Artifacts {
+	agentArtifacts := agentOwnedArtifacts(st.Artifacts)
+	for _, name := range agentArtifacts {
 		if _, err := os.Stat(filepath.Join(workdir, name)); err != nil {
 			return fmt.Errorf("stage %s missing artifact %s", st.Name, name)
 		}
@@ -3867,7 +3764,7 @@ func (e *Engine) runStageOnce(
 			validatedStageResult = &validated
 		}
 		lifecycleResult, err = contextpack.MaterializeAttemptResult(
-			workdir, e.issueDir(is.id), lifecycleAttempt.AttemptID, st.Artifacts,
+			workdir, e.issueDir(is.id), lifecycleAttempt.AttemptID, agentArtifacts,
 			contextpack.AttemptResult{IssueID: is.id, Stage: st.Name, DependsOn: append([]string(nil), discovered...), StageResult: validatedStageResult},
 		)
 		if err != nil {
@@ -3901,6 +3798,11 @@ func (e *Engine) runStageOnce(
 		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.RunnerSucceeded,
 			lifecyclePayloadDigest(stagelifecycle.RunnerSucceeded, lifecycleResult, lifecycleResult.Artifacts),
 			lifecycleResult, lifecycleResult.Artifacts); err != nil {
+			return err
+		}
+	}
+	if st.MergeBarrier {
+		if err := (lifecycleExecutor{engine: e}).verify(ctx, is, st.Name, lifecycleAttempt.AttemptID, workdir); err != nil {
 			return err
 		}
 	}
@@ -3996,7 +3898,7 @@ func (e *Engine) runStageOnce(
 		return errDependenciesDiscovered
 	}
 	if st.MergeBarrier {
-		prepared, err := e.prepareFinalization(is, verificationLease)
+		prepared, err := e.prepareFinalization(is, nil)
 		if err != nil {
 			return err
 		}
@@ -4964,25 +4866,106 @@ func (e *Engine) landWithEscalation(
 func (e *Engine) resolveConflict(
 	ctx context.Context, is *issueState, conflict *marshal.ConflictError,
 ) (string, error) {
+	controller, err := marshal.NewConflictController(is.wsPath)
+	if err != nil {
+		return "", err
+	}
+	state, err := controller.Start(conflict.BaseSHA)
+	if err != nil {
+		return "", err
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = controller.Abort()
+		}
+	}()
+	approved, _, _, err := e.archivedApprovedTouchset(is)
+	if err != nil {
+		return "", err
+	}
+	for !state.Done {
+		if err := e.writeConflictContext(is, conflict, state.Paths); err != nil {
+			return "", err
+		}
+		for _, name := range state.Paths {
+			if !matchesAny(approved.Globs, name) {
+				e.emit(core.EvMergeConflict, is.id, map[string]any{
+					"base_sha": conflict.BaseSHA, "files": state.Paths, "decision": "hold",
+					"reason": "conflict path is outside approved touchset",
+				})
+				if err := controller.Abort(); err != nil {
+					return "", err
+				}
+				complete = true
+				return "hold", nil
+			}
+		}
+		e.mu.Lock()
+		is.conflictPaths = append([]string(nil), state.Paths...)
+		e.mu.Unlock()
+		stage := flow.Stage{
+			Name: "conflict-resolution", Agents: []flow.AgentRef{{Package: "conflict-resolver"}},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+			CapabilityProfile: flow.ProfileConflictResolution,
+			Artifacts:         []string{"conflict-report.md", "conflict-decision.json"},
+		}
+		runErr := e.runStage(ctx, is, stage, nil)
+		e.mu.Lock()
+		is.conflictPaths = nil
+		e.mu.Unlock()
+		if runErr != nil {
+			return "", runErr
+		}
+		decision, err := loadConflictDecision(filepath.Join(is.wsPath, "conflict-decision.json"))
+		if err != nil {
+			return "", err
+		}
+		if decision == "hold" {
+			if err := controller.Abort(); err != nil {
+				return "", err
+			}
+			complete = true
+			return decision, nil
+		}
+		if decision != "resolved" {
+			return "", fmt.Errorf("invalid conflict decision %q: want resolved or hold", decision)
+		}
+		state, err = controller.Continue(state.Paths)
+		if err != nil {
+			return "", err
+		}
+	}
+	if output, err := exec.Command("git", "-C", is.wsPath, "merge-base", "--is-ancestor", conflict.BaseSHA, "HEAD").CombinedOutput(); err != nil {
+		return "", fmt.Errorf("resolved issue branch is not rebased onto %s: %v: %s", conflict.BaseSHA, err, strings.TrimSpace(string(output)))
+	}
+	changed, err := gitCommandOutput(is.wsPath, "diff", "--name-only", conflict.BaseSHA+"..HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, name := range strings.Fields(changed) {
+		if !matchesAny(approved.Globs, filepath.ToSlash(name)) {
+			return "", fmt.Errorf("rebased path %q is outside approved touchset", name)
+		}
+	}
+	complete = true
+	return "resolved", nil
+}
+
+func (e *Engine) writeConflictContext(is *issueState, conflict *marshal.ConflictError, paths []string) error {
 	body := fmt.Sprintf(
-		"# Merge conflict\n\n"+
-			"- Issue branch: `%s`\n"+
-			"- Current base branch: `%s`\n"+
-			"- Current base SHA: `%s`\n"+
-			"- Original base SHA: `%s`\n"+
-			"- Error: `%s`\n"+
-			"- Conflicting files:\n",
-		is.branch, conflict.BaseBranch, conflict.BaseSHA, is.baseRef, conflict.Error())
-	for _, name := range conflict.Files {
+		"# Merge conflict\n\n- Issue branch: `%s`\n- Current base branch: `%s`\n- Current base SHA: `%s`\n- Original base SHA: `%s`\n- Error: merge conflict requires bounded resolution\n- Conflicting files:\n",
+		is.branch, conflict.BaseBranch, conflict.BaseSHA, is.baseRef)
+	for _, name := range paths {
 		body += fmt.Sprintf("  - `%s`\n", name)
 	}
-	body += "\n## Merge output\n\n```\n" + conflict.Output + "\n```\n"
+	body += "\nThe engine owns rebase start, add, continue, and abort. Edit only the listed files.\n"
 	if err := os.WriteFile(filepath.Join(is.wsPath, "CONFLICT.md"), []byte(body), 0o644); err != nil {
-		return "", err
+		return err
 	}
 	artifacts, err := contextpack.Archive(is.wsPath, e.issueDir(is.id), []string{"CONFLICT.md"})
 	if err != nil {
-		return "", fmt.Errorf("archive conflict context: %w", err)
+		return fmt.Errorf("archive conflict context: %w", err)
 	}
 	for _, artifact := range artifacts {
 		e.emit(core.EvArtifactProduced, is.id, map[string]string{
@@ -4990,42 +4973,7 @@ func (e *Engine) resolveConflict(
 			"path": filepath.Join(e.issueDir(is.id), "artifacts", artifact.Name),
 		})
 	}
-	stage := flow.Stage{
-		Name: "conflict-resolution",
-		Agents: []flow.AgentRef{{
-			Package: "conflict-resolver",
-		}},
-		Workspace:  "worktree",
-		Gate:       flow.GateAuto,
-		Completion: flow.CompletionAll,
-		Artifacts:  []string{"conflict-report.md", "conflict-decision.json"},
-	}
-	if err := e.runStage(ctx, is, stage, nil); err != nil {
-		return "", err
-	}
-	decision, err := loadConflictDecision(filepath.Join(is.wsPath, "conflict-decision.json"))
-	if err != nil {
-		return "", err
-	}
-	if decision == "hold" {
-		return decision, nil
-	}
-	if decision != "resolved" {
-		return "", fmt.Errorf("invalid conflict decision %q: want resolved or hold", decision)
-	}
-	if status, err := gitCommandOutput(is.wsPath, "status", "--porcelain", "--untracked-files=no"); err != nil {
-		return "", err
-	} else if status != "" {
-		return "", fmt.Errorf("resolved issue branch is dirty: %s", status)
-	}
-	if output, err := exec.Command(
-		"git", "-C", is.wsPath, "merge-base", "--is-ancestor", conflict.BaseSHA, "HEAD",
-	).CombinedOutput(); err != nil {
-		return "", fmt.Errorf(
-			"resolved issue branch is not rebased onto %s: %v: %s",
-			conflict.BaseSHA, err, strings.TrimSpace(string(output)))
-	}
-	return decision, nil
+	return nil
 }
 
 func loadConflictDecision(path string) (string, error) {

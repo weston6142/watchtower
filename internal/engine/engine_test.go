@@ -3247,12 +3247,19 @@ func TestRetryBriefUsesCheckpointHeadDirtyStateAndFailure(t *testing.T) {
 }
 
 func verificationFlow() flow.Flow {
-	return flow.Flow{Name: "default", Stages: []flow.Stage{{
-		Name: "merge-verification", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
-		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
-		MergeBarrier: true,
-		Artifacts:    []string{"merge-report.md", "merge-decision.json", "verification.json"},
-	}}}
+	return flow.Flow{Name: "default", Stages: []flow.Stage{
+		{
+			Name: "approval", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "isolated",
+			Gate: flow.GatePlanReview, Completion: flow.CompletionAll, CapabilityProfile: flow.ProfileArtifact,
+			Artifacts: []string{"touchset.json"},
+		},
+		{
+			Name: "merge-verification", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+			MergeBarrier: true, CapabilityProfile: flow.ProfileFinalReview,
+			Artifacts: []string{"merge-report.md", "merge-decision.json", "verification.json"},
+		},
+	}}
 }
 
 func verificationEngine(
@@ -3273,12 +3280,8 @@ func verificationEngineForFlow(
 	if treeOverride != "" {
 		tree = treeOverride
 	}
-	receipt, err := json.Marshal(marshal.Verification{
-		BaseSHA: base, BranchSHA: base, TreeSHA: tree, Passed: true, Commands: commands,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	_ = commands
+	_ = tree
 	decisionReceipt := marshal.MergeDecision{Decision: decision}
 	if decision == "merge" {
 		decisionReceipt.BranchCommit = base
@@ -3301,13 +3304,16 @@ func verificationEngineForFlow(
 	finalKey := integrationStage.Name + "/" + integrationStage.Agents[0].Package
 	scripts[finalKey] = runner.Script{Artifacts: map[string]string{
 		"merge-report.md": "verified\n", "merge-decision.json": string(decisionBody),
-		"verification.json": string(receipt),
 	}}
 	for _, stage := range f.Stages {
 		if stage.DeclaresArtifact("touchset.json") {
 			key := stage.Name + "/" + stage.Agents[0].Package
 			script := scripts[key]
-			script.Artifacts = map[string]string{"touchset.json": `{"globs":["feature.txt"]}`}
+			script.Artifacts = map[string]string{}
+			for _, artifact := range stage.Artifacts {
+				script.Artifacts[artifact] = ""
+			}
+			script.Artifacts["touchset.json"] = `{"globs":["feature.txt","repair-*"]}`
 			scripts[key] = script
 		}
 	}
@@ -3322,11 +3328,12 @@ func verificationEngineForFlow(
 		Train:              &marshal.Train{Repo: repo, TestCmd: []string{"true"}},
 		Runner:             &runner.FakeRunner{Scripts: scripts},
 		DecisionIdentities: testDecisionIdentities(),
+		PlanReview:         review.PolicySettings{ID: "verification-test", Version: "1", AutoApproveRegular: true, Valid: true},
 	})
 	return e, s, repo
 }
 
-func TestVerificationCacheAgentAndDaemonReplayShareLeaseEnvironment(t *testing.T) {
+func TestFinalVerificationStartsAfterCapabilityValidation(t *testing.T) {
 	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
 	cacheRoot := t.TempDir()
 	capture := filepath.Join(t.TempDir(), "daemon-cache")
@@ -3349,22 +3356,15 @@ func TestVerificationCacheAgentAndDaemonReplayShareLeaseEnvironment(t *testing.T
 	if err := e.StartIssue(context.Background(), id); err != nil {
 		t.Fatalf("cache-managed merge barrier failed: %v", err)
 	}
-	if len(agentEnvironment) == 0 {
-		t.Fatal("agent did not observe a managed lease environment")
+	if len(agentEnvironment) != 0 {
+		t.Fatalf("agent observed engine-managed verification environment: %v", agentEnvironment)
 	}
 	observed, err := os.ReadFile(capture)
 	if err != nil {
 		t.Fatalf("daemon replay did not observe the managed environment: %v", err)
 	}
-	agentValues := make(map[string]string)
-	for _, entry := range agentEnvironment {
-		key, value, ok := strings.Cut(entry, "=")
-		if ok {
-			agentValues[key] = value
-		}
-	}
-	if got, want := strings.TrimSpace(string(observed)), agentValues["GOCACHE"]; got != want {
-		t.Fatalf("daemon GOCACHE = %q, agent GOCACHE = %q", got, want)
+	if got := strings.TrimSpace(string(observed)); got == "" {
+		t.Fatal("engine verification did not receive its managed cache environment")
 	}
 	archived, err := marshal.LoadVerification(filepath.Join(e.issueDir(id), "artifacts", "verification.json"))
 	if err != nil {
@@ -3381,7 +3381,6 @@ func TestVerificationCacheAgentAndDaemonReplayShareLeaseEnvironment(t *testing.T
 func dynamicVerificationArtifacts(fake *runner.FakeRunner) {
 	script := fake.Scripts["merge-verification/merge-verifier"]
 	script.Artifacts["merge-decision.json"] = ""
-	script.Artifacts["verification.json"] = ""
 	fake.Scripts["merge-verification/merge-verifier"] = script
 }
 
@@ -3613,12 +3612,12 @@ func renamedVerificationFlow() flow.Flow {
 	return flow.Flow{Name: "custom", Stages: []flow.Stage{
 		{
 			Name: "scope-files", Agents: []flow.AgentRef{{Package: "planner"}},
-			Workspace: "worktree", Gate: flow.GateAuto,
+			Workspace: "isolated", Gate: flow.GatePlanReview, CapabilityProfile: flow.ProfileArtifact,
 			Artifacts: []string{"touchset.json"},
 		},
 		{
 			Name: "integrate-safely", Agents: []flow.AgentRef{{Package: "verifier"}},
-			Workspace: "worktree", Gate: flow.GateAuto, MergeBarrier: true,
+			Workspace: "worktree", Gate: flow.GateAuto, MergeBarrier: true, CapabilityProfile: flow.ProfileFinalReview,
 			Artifacts: append([]string(nil), flow.FinalizationArtifacts...),
 		},
 	}}
@@ -3852,7 +3851,7 @@ func TestMergeVerificationRequiresMachineDecision(t *testing.T) {
 	}
 }
 
-func TestMergeVerificationAcceptsMatchingPassingReceipt(t *testing.T) {
+func TestEngineLifecycleRegressionAfterCompliantAttempt(t *testing.T) {
 	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
 	id, err := e.CreateIssue("merge", "", "default", levers.Matrix{}, 0, nil)
 	if err != nil {
@@ -3896,7 +3895,7 @@ func TestPushFailurePersistsAndRetryPublishesWithoutRerunningStage(t *testing.T)
 		t.Fatalf("integration = %+v ok %v err %v", integration, ok, err)
 	}
 	runs, err := s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("stage runs before retry = %+v err %v", runs, err)
 	}
 	if out, err := exec.Command(
@@ -3912,7 +3911,7 @@ func TestPushFailurePersistsAndRetryPublishesWithoutRerunningStage(t *testing.T)
 		t.Fatal(err)
 	}
 	runs, err = s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("publish retry reran stage: %+v err %v", runs, err)
 	}
 	integration, ok, err = s.IssueIntegration(id)
@@ -3965,7 +3964,7 @@ func TestFinalizationFailureRetriesIntegrationWithoutRerunningVerifier(t *testin
 		t.Fatalf("integration = %+v ok %v err %v", integration, ok, err)
 	}
 	runs, err := s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("stage runs before retry = %+v err %v", runs, err)
 	}
 	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
@@ -3976,7 +3975,7 @@ func TestFinalizationFailureRetriesIntegrationWithoutRerunningVerifier(t *testin
 		t.Fatal(err)
 	}
 	runs, err = s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("finalization retry reran verifier: %+v err %v", runs, err)
 	}
 	integration, ok, err = s.IssueIntegration(id)
@@ -4114,17 +4113,16 @@ func TestMatchingProofRetryDoesNotReverify(t *testing.T) {
 	}
 }
 
-func TestRehydrateAutomaticallyResumesVerifiedFinalization(t *testing.T) {
+func TestLifecycleRestartReplaysOnlyEngineCheckpoints(t *testing.T) {
 	e, s, repo := verificationEngineForFlow(
 		t, renamedVerificationFlow(), "merge", [][]string{{"true"}}, "",
 	)
-	fake := e.cfg.Runner.(*runner.FakeRunner)
-	fake.OnStart = func(_, stage, _, _ string) error {
-		if stage != "integrate-safely" {
-			return nil
-		}
-		return os.WriteFile(filepath.Join(repo, "diff"), []byte("dirty base\n"), 0o644)
+	dirtyGate := filepath.Join(t.TempDir(), "dirty-gate")
+	dirtyMarker := filepath.Join(t.TempDir(), "dirty-once")
+	if err := os.WriteFile(dirtyGate, []byte("#!/bin/sh\nset -eu\nif [ ! -e \"$1\" ]; then touch \"$1\"; printf 'dirty base\\n' > \"$2\"; fi\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
+	e.cfg.Train.TestCmd = []string{dirtyGate, dirtyMarker, filepath.Join(repo, "diff")}
 	id, err := e.CreateIssue("restart finalization", "", "custom", levers.Matrix{}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -4135,24 +4133,21 @@ func TestRehydrateAutomaticallyResumesVerifiedFinalization(t *testing.T) {
 	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
 		t.Fatalf("repair base: %v: %s", err, out)
 	}
-	fake.OnStart = nil
 	restarted := New(e.cfg)
-	if err := restarted.Rehydrate(); err != nil {
+	integration, ok, err := s.IssueIntegration(id)
+	if err != nil || !ok {
+		t.Fatalf("verification checkpoint = %+v ok=%v err=%v", integration, ok, err)
+	}
+	restored := &issueState{
+		id: id, title: "restart finalization", flowName: "custom",
+		matrix: levers.Matrix{},
+	}
+	if err := restarted.retryVerifiedFinalization(context.Background(), restored, integration); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		integration, ok, err := s.IssueIntegration(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ok && integration.State == store.IntegrationMerged {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("integration did not resume: %+v", integration)
-		}
-		time.Sleep(10 * time.Millisecond)
+	integration, ok, err = s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationMerged {
+		t.Fatalf("integration did not resume: %+v ok=%v err=%v", integration, ok, err)
 	}
 	runs, err := s.StageRuns(id)
 	if err != nil {
@@ -4321,6 +4316,7 @@ type conflictFlowRunner struct {
 	conflictWorkdir          string
 	conflictContext          string
 	currentBase              string
+	outsideTouchset          bool
 }
 
 func commandIn(dir string, args ...string) (string, error) {
@@ -4335,8 +4331,21 @@ func (r *conflictFlowRunner) Run(
 	var result runner.Result
 	stage, workdir := request.Stage, request.Workdir
 	switch stage {
+	case "approval":
+		glob := "diff"
+		if r.outsideTouchset {
+			glob = "allowed.txt"
+		}
+		if err := os.WriteFile(filepath.Join(workdir, "touchset.json"), []byte(fmt.Sprintf(`{"globs":[%q]}`, glob)), 0o644); err != nil {
+			result.Err = err
+		}
 	case "execute":
 		r.originalWorkdir = workdir
+		if r.outsideTouchset {
+			evidence := executeStageEvidence(stageresult.OutcomeCompleted)
+			result.StageEvidence = &evidence
+			break
+		}
 		if err := os.WriteFile(filepath.Join(workdir, "diff"), []byte("issue\n"), 0o644); err != nil {
 			result.Err = err
 			break
@@ -4351,31 +4360,16 @@ func (r *conflictFlowRunner) Run(
 	case "integrate-safely":
 		base, _ := commandIn(workdir, "merge-base", "main", "HEAD")
 		branch, _ := commandIn(workdir, "rev-parse", "HEAD")
-		tree, _ := commandIn(workdir, "rev-parse", "HEAD^{tree}")
-		receipt, _ := json.Marshal(marshal.Verification{
-			BaseSHA: base, BranchSHA: branch, TreeSHA: tree, Passed: true,
-			Commands: [][]string{r.gate},
-		})
 		decision, _ := json.Marshal(marshal.MergeDecision{
 			Decision: "merge", BranchCommit: branch, BaseCommit: base,
 		})
 		for name, body := range map[string][]byte{
 			"merge-report.md":     []byte("verified\n"),
 			"merge-decision.json": decision,
-			"verification.json":   receipt,
 		} {
 			if err := os.WriteFile(filepath.Join(workdir, name), body, 0o644); err != nil {
 				result.Err = err
 				break
-			}
-		}
-		if result.Err == nil {
-			if err := os.WriteFile(filepath.Join(r.repo, "diff"), []byte("base advanced\n"), 0o644); err != nil {
-				result.Err = err
-			} else if output, err := commandIn(r.repo, "commit", "-qam", "advance base"); err != nil {
-				result.Err = fmt.Errorf("advance base: %v: %s", err, output)
-			} else {
-				r.currentBase, _ = commandIn(r.repo, "rev-parse", "HEAD")
 			}
 		}
 	case "conflict-resolution":
@@ -4387,17 +4381,8 @@ func (r *conflictFlowRunner) Run(
 		}
 		r.conflictContext = string(contextBody)
 		if r.decision == "resolved" {
-			_, _ = commandIn(workdir, "rebase", "main")
 			if err := os.WriteFile(filepath.Join(workdir, "diff"), []byte("resolved\n"), 0o644); err != nil {
 				result.Err = err
-				break
-			}
-			if output, err := commandIn(workdir, "add", "diff"); err != nil {
-				result.Err = fmt.Errorf("add resolution: %v: %s", err, output)
-				break
-			}
-			if output, err := commandIn(workdir, "-c", "core.editor=true", "rebase", "--continue"); err != nil {
-				result.Err = fmt.Errorf("continue rebase: %v: %s", err, output)
 				break
 			}
 		}
@@ -4421,6 +4406,27 @@ func (r *conflictFlowRunner) Run(
 }
 
 func (r *conflictFlowRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	if request.Stage == "execute" && r.outsideTouchset {
+		r.originalWorkdir = request.Workdir
+		if err := os.WriteFile(filepath.Join(request.Workdir, "diff"), []byte("issue\n"), 0o644); err != nil {
+			return capability.EnforcementPlan{}, err
+		}
+		if output, err := commandIn(request.Workdir, "add", "diff"); err != nil {
+			return capability.EnforcementPlan{}, fmt.Errorf("add issue change: %v: %s", err, output)
+		}
+		if output, err := commandIn(request.Workdir, "commit", "-qm", "pre-existing issue change"); err != nil {
+			return capability.EnforcementPlan{}, fmt.Errorf("commit issue change: %v: %s", err, output)
+		}
+	}
+	if request.Stage == "integrate-safely" && r.currentBase == "" {
+		if err := os.WriteFile(filepath.Join(r.repo, "diff"), []byte("base advanced\n"), 0o644); err != nil {
+			return capability.EnforcementPlan{}, err
+		}
+		if output, err := commandIn(r.repo, "commit", "-qam", "advance base"); err != nil {
+			return capability.EnforcementPlan{}, fmt.Errorf("advance base: %v: %s", err, output)
+		}
+		r.currentBase, _ = commandIn(r.repo, "rev-parse", "HEAD")
+	}
 	return testRunnerPreflight(request)
 }
 
@@ -4503,12 +4509,16 @@ func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, strin
 	run := &conflictFlowRunner{repo: repo, decision: decision, gate: []string{gate, marker}}
 	ws := &countingGitWorktree{repo: repo}
 	f := flow.Flow{Name: "default", Stages: []flow.Stage{
+		{Name: "approval", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "isolated",
+			Gate: flow.GatePlanReview, Completion: flow.CompletionAll, CapabilityProfile: flow.ProfileArtifact,
+			Artifacts: []string{"touchset.json"}},
 		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
-			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+			CapabilityProfile: flow.ProfileImplementation},
 		{Name: "integrate-safely", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
 			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
-			MergeBarrier: true,
-			Artifacts:    []string{"merge-report.md", "merge-decision.json", "verification.json"}},
+			MergeBarrier: true, CapabilityProfile: flow.ProfileFinalReview,
+			Artifacts: []string{"merge-report.md", "merge-decision.json", "verification.json"}},
 	}}
 	s, err := store.Open("file:" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
 	if err != nil {
@@ -4520,11 +4530,12 @@ func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, strin
 		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(), Workspace: ws,
 		Train:              &marshal.Train{Repo: repo, TestCmd: run.gate},
 		DecisionIdentities: testDecisionIdentities(),
+		PlanReview:         review.PolicySettings{ID: "conflict-test", Version: "1", AutoApproveRegular: true, Valid: true},
 	})
 	return e, s, repo, run, ws, originalBase
 }
 
-func TestConflictResolutionUsesOriginalIssueWorktree(t *testing.T) {
+func TestEngineOwnsConflictRebaseLoop(t *testing.T) {
 	tests := []struct {
 		decision string
 		wantErr  string
@@ -4592,6 +4603,33 @@ func TestConflictResolutionUsesOriginalIssueWorktree(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConflictOutsideApprovedTouchsetHoldsWithoutBroaderAuthority(t *testing.T) {
+	e, s, _, run, _, _ := conflictEngine(t, "resolved")
+	run.outsideTouchset = true
+	id, err := e.CreateIssue("outside conflict", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if run.conflictWorkdir != "" {
+		t.Fatalf("resolver launched for outside-touchset conflict in %s", run.conflictWorkdir)
+	}
+	if _, err := os.Stat(filepath.Join(e.issueDir(id), "artifacts", "CONFLICT.md")); err != nil {
+		t.Fatalf("outside conflict evidence was not preserved: %v", err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stageRun := range runs {
+		if stageRun.Stage == "conflict-resolution" {
+			t.Fatal("outside-touchset conflict launched a resolver")
+		}
 	}
 }
 

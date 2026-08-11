@@ -263,10 +263,11 @@ func snapshotFiles(root string) (map[string]FileIdentity, error) {
 }
 
 func snapshotGit(root string) (GitIdentity, string, error) {
-	branch, err := gitOutput(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	branchBytes, err := gitOutputBytesAllowExitOne(root, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return GitIdentity{}, "", err
 	}
+	branch := strings.TrimSpace(string(branchBytes))
 	head, err := gitOutput(root, "rev-parse", "HEAD")
 	if err != nil {
 		return GitIdentity{}, "", err

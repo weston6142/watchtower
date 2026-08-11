@@ -60,8 +60,11 @@ func VerificationExample() string {
 
 func FinalizationContractMarkdown() string {
 	return "## Finalization artifact contract\n\n" +
-		"Write rich evidence only to `merge-report.md`. The two JSON receipts " +
-		"must contain exactly the fields shown; unknown fields are rejected.\n\n" +
-		"### merge-decision.json\n\n```json\n" + MergeDecisionExample() +
-		"```\n\n### verification.json\n\n```json\n" + VerificationExample() + "```\n"
+		"Write rich evidence only to `merge-report.md`. `merge-decision.json` is " +
+		"the agent's recommendation and must contain exactly the fields shown; " +
+		"unknown fields are rejected.\n\n" +
+		"### Agent recommendation: merge-decision.json\n\n```json\n" + MergeDecisionExample() +
+		"```\n\n### Engine-authored evidence: verification.json\n\n" +
+		"The engine creates this receipt after capability validation. Agents must not create or modify it.\n\n" +
+		"```json\n" + VerificationExample() + "```\n"
 }

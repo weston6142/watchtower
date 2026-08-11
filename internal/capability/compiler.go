@@ -104,6 +104,12 @@ func Compile(input CompileInput) (CompiledContract, error) {
 		}
 		contract.Writes = grants(paths)
 	}
+	// Declared agent outputs are bounded protocol paths, independent of the
+	// product touchset. Every mutable profile must be able to create or replace
+	// those exact outputs without broadening product-file authority.
+	if input.Profile != flow.ProfileArtifact {
+		contract.Writes = append(contract.Writes, outputGrants(outputs)...)
+	}
 
 	if len(contract.Writes) > 0 {
 		contract.Operations = append(contract.Operations, OpWorkspaceMutate)

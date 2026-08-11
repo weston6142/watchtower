@@ -13,13 +13,12 @@ import (
 
 // writeVerificationReceipt runs the configured verification command in the
 // issue worktree and records the receipt itself, so merge verification never
-// depends on an agent-authored verification.json. Without a configured
-// test_cmd the agent's receipt (or the fake runner's) remains authoritative.
+// depends on an agent-authored verification.json.
 func (e *Engine) writeVerificationReceipt(
 	ctx context.Context, is *issueState, workdir string, lease *verificationcache.Lease,
 ) error {
 	if e.cfg.Train == nil || len(e.cfg.Train.TestCmd) == 0 {
-		return nil
+		return fmt.Errorf("engine verification requires test_cmd")
 	}
 	commands := [][]string{append([]string(nil), e.cfg.Train.TestCmd...)}
 	if lease != nil {
@@ -69,7 +68,32 @@ func (e *Engine) writeVerificationReceipt(
 	if err != nil {
 		return fmt.Errorf("encode verification receipt: %w", err)
 	}
-	return os.WriteFile(filepath.Join(workdir, "verification.json"), document, 0o644)
+	return writeFileAtomic(workdir, "verification.json", document)
+}
+
+func writeFileAtomic(dir, name string, document []byte) error {
+	temporary, err := os.CreateTemp(dir, "."+name+"-*")
+	if err != nil {
+		return fmt.Errorf("create temporary %s: %w", name, err)
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o644); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(document); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, filepath.Join(dir, name))
 }
 
 func verificationIdentity(workdir string) (branchSHA, treeSHA string, err error) {
