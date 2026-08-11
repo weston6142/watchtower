@@ -11,6 +11,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/capability"
+	capruntime "github.com/weston6142/watchtower/internal/capability/runtime"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/plannerartifact"
@@ -23,6 +24,28 @@ func testPkgs() map[string]pkgs.Package {
 		"spec-writer": {Name: "spec-writer", Prompt: "write specs"},
 		"executor":    {Name: "executor", Prompt: "execute plan"},
 	}
+}
+
+func testCodeRunner(bin string) *CodeRunner {
+	return &CodeRunner{Bin: bin, Packages: testPkgs(), Backend: passthroughTestBackend{}}
+}
+
+// passthroughTestBackend keeps stream, continuation, and invocation fixtures
+// focused on their observable adapter behavior. Provider-boundary tests use
+// NewPlatformBackend directly and therefore still exercise real containment.
+type passthroughTestBackend struct{}
+
+func (passthroughTestBackend) Preflight(contract capability.CompiledContract) (capability.EnforcementPlan, error) {
+	controls := runner.RequiredControls(contract)
+	proofs := make([]capability.ControlProof, 0, len(controls))
+	for _, control := range controls {
+		proofs = append(proofs, capability.ControlProof{Control: control, Proven: true})
+	}
+	return runner.NewEnforcementPlan(contract, "test-runtime", "passthrough", "1", proofs)
+}
+
+func (passthroughTestBackend) Wrap(request capruntime.ProcessRequest) (capruntime.ProcessRequest, error) {
+	return request, nil
 }
 
 func claudeStageRequest(r *CodeRunner, issueID, stage, agent, workdir string) runner.StageRequest {
@@ -49,7 +72,7 @@ func claudeStageRequest(r *CodeRunner, issueID, stage, agent, workdir string) ru
 
 func TestCodeRunnerReturnsStageResultEvidence(t *testing.T) {
 	bin := writeClaudeStageResultStub(t, claudeStageResultMarker("implemented"))
-	r := &CodeRunner{Bin: bin, Packages: testPkgs()}
+	r := testCodeRunner(bin)
 	res := <-r.Run(context.Background(), claudeStageRequest(r, "GH-67", "execute", "executor", t.TempDir()), make(chan runner.Ask))
 	if res.Err != nil || res.StageEvidence == nil {
 		t.Fatalf("result = %+v", res)
@@ -61,7 +84,7 @@ func TestCodeRunnerReturnsStageResultEvidence(t *testing.T) {
 
 func TestCodeRunnerRejectsConflictingStageResultMarkers(t *testing.T) {
 	bin := writeClaudeStageResultStub(t, claudeStageResultMarker("first"), claudeStageResultMarker("different"))
-	r := &CodeRunner{Bin: bin, Packages: testPkgs()}
+	r := testCodeRunner(bin)
 	res := <-r.Run(context.Background(), claudeStageRequest(r, "GH-67", "execute", "executor", t.TempDir()), make(chan runner.Ask))
 	if res.Err == nil || res.FailureClass != runner.FailureProtocol || res.StageEvidence != nil {
 		t.Fatalf("result = %+v", res)
@@ -71,7 +94,7 @@ func TestCodeRunnerRejectsConflictingStageResultMarkers(t *testing.T) {
 func TestCodeRunnerRejectsStageResultBeforeFinalTurn(t *testing.T) {
 	decision := `{"watchtower_decision":{"kind":"choice","question":"Apply the repair?","options":["Apply","Hold"],"recommended":0,"why":"The repair closes the gap.","consequences":["The repair is applied.","The stage remains incomplete."],"reversible":"Before the repair is committed."}}`
 	bin := writeClaudeDecisionStageResultStub(t, claudeStageResultMarker("before decision")+"\n"+decision)
-	r := &CodeRunner{Bin: bin, Packages: testPkgs()}
+	r := testCodeRunner(bin)
 	asks := make(chan runner.Ask, 1)
 	done := r.Run(context.Background(), claudeStageRequest(r, "GH-67", "execute", "executor", t.TempDir()), asks)
 	select {
@@ -147,7 +170,8 @@ func claudeJSONLine(value any) string {
 
 func run(t *testing.T, bin string, dir string) (<-chan runner.Result, chan runner.Ask) {
 	t.Helper()
-	c := &CodeRunner{Bin: bin, Packages: testPkgs()}
+	c := testCodeRunner(bin)
+	c.ExtraEnv = []string{"TEST_WORKDIR=" + dir}
 	asks := make(chan runner.Ask, 1)
 	return c.Run(context.Background(), claudeStageRequest(c, "GH-1", "spec", "spec-writer", dir), asks), asks
 }
@@ -157,9 +181,11 @@ func run(t *testing.T, bin string, dir string) (<-chan runner.Result, chan runne
 func runLines(t *testing.T, bin, dir string) ([]string, runner.Result) {
 	t.Helper()
 	var lines []string
-	c := &CodeRunner{Bin: bin, Packages: testPkgs(), OnLine: func(_, _, line string) {
+	c := testCodeRunner(bin)
+	c.ExtraEnv = []string{"TEST_WORKDIR=" + dir}
+	c.OnLine = func(_, _, line string) {
 		lines = append(lines, line)
-	}}
+	}
 	asks := make(chan runner.Ask, 1)
 	res := <-c.Run(context.Background(), claudeStageRequest(c, "GH-1", "spec", "spec-writer", dir), asks)
 	return lines, res
@@ -243,10 +269,8 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r := &CodeRunner{
-		Bin: bin, Packages: testPkgs(),
-		ExtraEnv: []string{"CAPTURE_ENV=" + envCapture, "CAPTURE_ARGV=" + argvCapture},
-	}
+	r := testCodeRunner(bin)
+	r.ExtraEnv = []string{"CAPTURE_ENV=" + envCapture, "CAPTURE_ARGV=" + argvCapture}
 	t.Setenv("WATCHTOWER_PLANNER_SESSION", sentinel)
 	ctx := context.Background()
 	res := <-r.RunPlanner(ctx, claudeStageRequest(r, "GH-1", "plan", "spec-writer", dir), make(chan runner.Ask), nil)
@@ -291,7 +315,8 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &CodeRunner{Bin: bin, Packages: testPkgs(), ExtraEnv: []string{"CAPTURE=" + capture}}
+	r := testCodeRunner(bin)
+	r.ExtraEnv = []string{"CAPTURE=" + capture}
 	result := <-r.RunPlanner(runner.WithPlannerArtifactAuthority(context.Background(), authority), claudeStageRequest(r, "GH-72", "plan", "spec-writer", dir), make(chan runner.Ask), nil)
 	if result.Err != nil {
 		t.Fatal(result.Err)
@@ -319,10 +344,8 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 	t.Setenv("GOCACHE", "inherited-cache")
 	t.Setenv("GOMODCACHE", "inherited-mod")
 	t.Setenv("GOPATH", "inherited-path")
-	r := &CodeRunner{
-		Bin: bin, Packages: testPkgs(),
-		ExtraEnv: []string{"GOCACHE=extra-cache", "GOMODCACHE=extra-mod", "GOPATH=extra-path", "SENTINEL=keep", "CAPTURE=" + capture},
-	}
+	r := testCodeRunner(bin)
+	r.ExtraEnv = []string{"GOCACHE=extra-cache", "GOMODCACHE=extra-mod", "GOPATH=extra-path", "SENTINEL=keep", "CAPTURE=" + capture}
 	ctx := runner.WithManagedEnvironment(context.Background(), []string{
 		"GOCACHE=lease-cache", "GOMODCACHE=lease-mod", "GOPATH=lease-path",
 	})
@@ -384,7 +407,7 @@ func TestRunnerCoachesIncompleteDecision(t *testing.T) {
 
 func TestRunnerStopsAfterTwoIncompleteRetries(t *testing.T) {
 	gate := &recordingGate{}
-	c := &CodeRunner{Bin: abs(t, "testdata/coaching-exhausted.sh"), Packages: testPkgs()}
+	c := testCodeRunner(abs(t, "testdata/coaching-exhausted.sh"))
 	res := <-c.RunPlanner(
 		context.Background(), claudeStageRequest(c, "GH-1", "spec", "spec-writer", t.TempDir()), make(chan runner.Ask, 1), gate,
 	)

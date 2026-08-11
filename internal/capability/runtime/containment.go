@@ -4,14 +4,24 @@ import (
 	"github.com/weston6142/watchtower/internal/capability"
 )
 
+type ProcessMode string
+
+const (
+	ModeAgentOperation    ProcessMode = "agent-operation"
+	ModeProviderTransport ProcessMode = "provider-transport"
+)
+
 type ProcessRequest struct {
-	Contract capability.CompiledContract
-	Plan     capability.EnforcementPlan
-	Path     string
-	Args     []string
-	Dir      string
-	Env      []string
-	Scratch  string
+	Contract            capability.CompiledContract
+	Plan                capability.EnforcementPlan
+	Mode                ProcessMode
+	Path                string
+	Args                []string
+	Dir                 string
+	Env                 []string
+	Scratch             string
+	ProviderReads       []string
+	ProviderExecutables []string
 }
 
 type Backend interface {

@@ -1,8 +1,10 @@
 package runtime_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"github.com/weston6142/watchtower/internal/capability"
 	capruntime "github.com/weston6142/watchtower/internal/capability/runtime"
 	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/runner"
 )
 
 func TestGatewayEnforcesArtifactAndReadonlyPaths(t *testing.T) {
@@ -76,6 +79,9 @@ func TestGatewayCommitIsLinearScopedAndHookFree(t *testing.T) {
 	runtimeGit(t, repo, "commit", "-m", "source")
 	start := runtimeGit(t, repo, "rev-parse", "HEAD")
 	branch := runtimeGit(t, repo, "symbolic-ref", "--short", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "ISSUE.md"), []byte("materialized control\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	hookMarker := filepath.Join(t.TempDir(), "hook-ran")
 	hook := filepath.Join(repo, ".git", "hooks", "pre-commit")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch \""+hookMarker+"\"\nexit 1\n"), 0o755); err != nil {
@@ -83,7 +89,7 @@ func TestGatewayCommitIsLinearScopedAndHookFree(t *testing.T) {
 	}
 	contract := compileRuntimeContract(t, capability.CompileInput{
 		IssueID: "GH-68", Stage: "execute", AttemptID: "checkpoint-1", Profile: flow.ProfileImplementation,
-		WorkspaceRoot: repo, ReadableRepositoryPaths: []string{"README.md", "src/file.txt"},
+		WorkspaceRoot: repo, MaterializedInputs: []string{"ISSUE.md"}, ReadableRepositoryPaths: []string{"README.md", "src/file.txt"},
 		Repository:       capability.RepositoryIdentity{IssueID: "GH-68", Canonical: repo, Branch: branch, BaseCommit: start, StartCommit: start},
 		Approval:         capability.ApprovalBinding{Approved: true, TouchsetDigest: strings.Repeat("a", 64), DecisionID: "1", ArtifactID: "touchset-v1"},
 		ApprovedTouchset: []string{"src/**"},
@@ -105,6 +111,38 @@ func TestGatewayCommitIsLinearScopedAndHookFree(t *testing.T) {
 	}
 	if changed := runtimeGit(t, repo, "diff", "--name-only", start+".."+commit); changed != "src/file.txt" {
 		t.Fatalf("committed paths=%q", changed)
+	}
+}
+
+func TestGatewayVCSReadCannotExecuteExternalDiffHelpers(t *testing.T) {
+	repo := runtimeGitRepo(t)
+	marker := filepath.Join(t.TempDir(), "external-diff-ran")
+	helper := filepath.Join(t.TempDir(), "external-diff")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\ntouch \""+marker+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtimeGit(t, repo, "config", "diff.external", helper)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	contract := compileRuntimeContract(t, capability.CompileInput{
+		IssueID: "GH-68", Stage: "inspect", AttemptID: "checkpoint-vcs-read", Profile: flow.ProfileInspect,
+		WorkspaceRoot: repo, Readonly: true, ReadableRepositoryPaths: []string{"README.md"},
+	})
+	session := startRuntimeSession(t, repo, contract)
+	defer session.Close()
+	if _, err := session.VCSRead(context.Background(), "diff", "--ext-diff"); err == nil {
+		t.Fatal("external diff execution option was accepted")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("VCS read executed an external diff helper: %v", err)
+	}
+	output := filepath.Join(t.TempDir(), "diff-output")
+	if _, err := session.VCSRead(context.Background(), "diff", "--output="+output); err == nil {
+		t.Fatal("VCS read output option was accepted")
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("VCS read wrote an output file: %v", err)
 	}
 }
 
@@ -166,6 +204,174 @@ func TestSessionRunsContainedArgv(t *testing.T) {
 	body, err := session.Run(context.Background(), []string{"/usr/bin/printf", "contained"})
 	if err != nil || string(body) != "contained" {
 		t.Fatalf("contained argv body=%q err=%v", body, err)
+	}
+}
+
+func TestSessionStartsProviderInsideContainment(t *testing.T) {
+	workdir := t.TempDir()
+	contract := compileRuntimeContract(t, capability.CompileInput{
+		IssueID: "GH-68", Stage: "inspect", AttemptID: "checkpoint-provider", Profile: flow.ProfileInspect,
+		WorkspaceRoot: workdir,
+	})
+	session := startRuntimeSession(t, workdir, contract)
+	defer session.Close()
+	plan, err := capruntime.NewPlatformBackend().Preflight(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	process, err := session.StartProvider(context.Background(), capruntime.ProviderProcessRequest{
+		Path: "/usr/bin/printf", Args: []string{"contained-provider"}, Plan: plan, PipeStdout: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(process.StdoutPipe())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err != nil || string(body) != "contained-provider" {
+		t.Fatalf("provider output=%q err=%v", body, err)
+	}
+
+	declared := filepath.Join(workdir, "declared.txt")
+	if err := os.WriteFile(declared, []byte("workspace-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	process, err = session.StartProvider(context.Background(), capruntime.ProviderProcessRequest{
+		Path: "/bin/sh", Args: []string{"-c", `IFS= read -r line < "$PROVIDER_DECLARED"; printf '%s' "$line"`},
+		Plan: plan, Environment: []string{"PATH=/usr/bin:/bin", "PROVIDER_DECLARED=" + declared}, PipeStdout: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(process.StdoutPipe())
+	waitErr := process.Wait()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if waitErr == nil || len(body) != 0 {
+		t.Fatalf("provider read workspace directly: output=%q err=%v", body, waitErr)
+	}
+
+	script := filepath.Join(t.TempDir(), "provider-script")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf script-provider\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var scriptStderr bytes.Buffer
+	process, err = session.StartProvider(context.Background(), capruntime.ProviderProcessRequest{
+		Path: script, Plan: plan, PipeStdout: true, Stderr: &scriptStderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err = io.ReadAll(process.StdoutPipe())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err != nil || string(body) != "script-provider" {
+		t.Fatalf("provider script output=%q err=%v stderr=%q", body, err, scriptStderr.String())
+	}
+
+	escaped := filepath.Join(t.TempDir(), "provider-escaped")
+	process, err = session.StartProvider(context.Background(), capruntime.ProviderProcessRequest{
+		Path: "/bin/sh", Args: []string{"-c", `printf escaped > "$PROVIDER_ESCAPE"`},
+		Plan: plan, Environment: []string{"PATH=/usr/bin:/bin", "PROVIDER_ESCAPE=" + escaped},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err == nil {
+		t.Fatal("contained provider wrote outside its compiled workspace")
+	}
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Fatalf("provider escaped containment: %v", err)
+	}
+}
+
+func TestSessionRejectsProviderLaunchWithDifferentPlan(t *testing.T) {
+	workdir := t.TempDir()
+	contract := compileRuntimeContract(t, capability.CompileInput{
+		IssueID: "GH-68", Stage: "inspect", AttemptID: "checkpoint-plan", Profile: flow.ProfileInspect,
+		WorkspaceRoot: workdir,
+	})
+	session := startRuntimeSession(t, workdir, contract)
+	defer session.Close()
+	plan, err := capruntime.NewPlatformBackend().Preflight(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.PlanID = "different"
+	if _, err := session.StartProvider(context.Background(), capruntime.ProviderProcessRequest{
+		Path: "/usr/bin/printf", Args: []string{"should-not-start"}, Plan: plan,
+	}); err == nil {
+		t.Fatal("provider launched with a different plan")
+	}
+}
+
+type providerEnvironmentBackend struct{ provider string }
+
+func (b providerEnvironmentBackend) Preflight(contract capability.CompiledContract) (capability.EnforcementPlan, error) {
+	controls := runner.RequiredControls(contract)
+	proofs := make([]capability.ControlProof, 0, len(controls))
+	for _, control := range controls {
+		proofs = append(proofs, capability.ControlProof{Control: control, Proven: true})
+	}
+	return runner.NewEnforcementPlan(contract, b.provider, "provider-environment-test", "1", proofs)
+}
+
+func (providerEnvironmentBackend) Wrap(request capruntime.ProcessRequest) (capruntime.ProcessRequest, error) {
+	return request, nil
+}
+
+func TestProviderTransportRetainsOnlyItsOwnCredential(t *testing.T) {
+	for _, test := range []struct {
+		provider string
+		allowed  string
+		denied   string
+	}{
+		{provider: "codex", allowed: "OPENAI_API_KEY=openai-test", denied: "ANTHROPIC_API_KEY="},
+		{provider: "claude", allowed: "ANTHROPIC_API_KEY=anthropic-test", denied: "OPENAI_API_KEY="},
+	} {
+		t.Run(test.provider, func(t *testing.T) {
+			workdir := t.TempDir()
+			contract := compileRuntimeContract(t, capability.CompileInput{
+				IssueID: "GH-68", Stage: "inspect", AttemptID: "checkpoint-credential-" + test.provider,
+				Profile: flow.ProfileInspect, WorkspaceRoot: workdir,
+			})
+			backend := providerEnvironmentBackend{provider: test.provider}
+			plan, err := backend.Preflight(contract)
+			if err != nil {
+				t.Fatal(err)
+			}
+			environment := []string{
+				"PATH=/usr/bin:/bin", "OPENAI_API_KEY=openai-test", "ANTHROPIC_API_KEY=anthropic-test", "GITHUB_TOKEN=publish-test",
+			}
+			session, err := capruntime.Start(context.Background(), capruntime.StartRequest{
+				Contract: contract, Plan: plan, Worktree: workdir, Backend: backend, Environment: environment,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			process, err := session.StartProvider(context.Background(), capruntime.ProviderProcessRequest{
+				Path: "/usr/bin/env", Plan: plan, Environment: environment, PipeStdout: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(process.StdoutPipe())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := process.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			text := string(body)
+			if !strings.Contains(text, test.allowed) || strings.Contains(text, test.denied) || strings.Contains(text, "GITHUB_TOKEN=") {
+				t.Fatalf("%s provider environment did not preserve credential separation: %q", test.provider, text)
+			}
+		})
 	}
 }
 

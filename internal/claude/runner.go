@@ -3,9 +3,11 @@ package claude
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
@@ -86,17 +88,22 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 		return runner.Result{Err: err, FailureClass: runner.FailureConfiguration}
 	}
 	var runtimeAudit []capability.AuditRecord
+	var runtimeAuditMu sync.Mutex
 	session, err := conformance.StartSession(ctx, request, c.backend(), func(record capability.AuditRecord) {
+		runtimeAuditMu.Lock()
 		runtimeAudit = append(runtimeAudit, record)
+		runtimeAuditMu.Unlock()
 	})
 	if err != nil {
 		return runner.Result{Err: err, FailureClass: runner.FailureConfiguration}
 	}
 	defer func() {
 		_ = session.Close()
+		runtimeAuditMu.Lock()
+		defer runtimeAuditMu.Unlock()
 		result.RuntimeAudit = append(result.RuntimeAudit, runtimeAudit...)
 	}()
-	issueID, stage, agentPkg, workdir := request.IssueID, request.Stage, request.Agent, request.Workdir
+	issueID, stage, agentPkg := request.IssueID, request.Stage, request.Agent
 	pkg, ok := c.Packages[agentPkg]
 	if !ok {
 		return runner.Result{Err: fmt.Errorf("unknown agent package %q", agentPkg)}
@@ -107,6 +114,13 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 		"--verbose",
 		"--append-system-prompt", pkg.Prompt,
 	}
+	gatewayConfig, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
+		"watchtower": map[string]any{"type": "http", "url": session.GatewayEndpoint()},
+	}})
+	if err != nil {
+		return runner.Result{Err: fmt.Errorf("encode gateway configuration: %w", err)}
+	}
+	args = append(args, "--mcp-config", string(gatewayConfig), "--strict-mcp-config", "--bare", "--tools", "")
 	if tools := conformance.GatewayTools(request.Contract); len(tools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(tools, ","))
 	}
@@ -119,10 +133,10 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 	if env := EffortEnv(pkg.Effort); env != "" {
 		extraEnv = append(extraEnv, env)
 	}
-	process, err := runner.StartProcessTree(ctx, runner.ProcessSpec{
-		Path: c.Bin, Args: args, Dir: workdir,
-		Env:    runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx)),
-		Stderr: os.Stderr, PipeStdin: true, PipeStdout: true,
+	process, err := session.StartProvider(ctx, capruntime.ProviderProcessRequest{
+		Path: c.Bin, Args: args, Plan: request.Plan,
+		Environment: runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx)),
+		Stderr:      os.Stderr, PipeStdin: true, PipeStdout: true,
 	})
 	if err != nil {
 		return runner.Result{Err: err}
@@ -181,7 +195,9 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 				continue
 			}
 			if policy, record := deniedProviderTool(request, ev.ToolCalls); policy != nil {
+				runtimeAuditMu.Lock()
 				runtimeAudit = append(runtimeAudit, record)
+				runtimeAuditMu.Unlock()
 				return abort(policy)
 			}
 			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
@@ -247,7 +263,9 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 				continue
 			}
 			if policy, record := deniedProviderTool(request, ev.ToolCalls); policy != nil {
+				runtimeAuditMu.Lock()
 				runtimeAudit = append(runtimeAudit, record)
+				runtimeAuditMu.Unlock()
 				return abort(policy)
 			}
 			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
@@ -353,7 +371,7 @@ func (c *CodeRunner) backend() capruntime.Backend {
 
 func deniedProviderTool(request runner.StageRequest, calls []runner.ToolCall) (*capability.PolicyError, capability.AuditRecord) {
 	for _, call := range calls {
-		if !conformance.IsGatewayTool(call.Name) {
+		if !conformance.IsGatewayTool(request.Contract, call.Name) {
 			return conformance.RuntimeDenial(request, "claude", call)
 		}
 	}

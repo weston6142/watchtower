@@ -42,6 +42,14 @@ func TestGatewayToolsComeOnlyFromContract(t *testing.T) {
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("gateway tools = %v, want %v", got, want)
 	}
+	if !IsGatewayTool(contract, "mcp__watchtower__workspace_read") {
+		t.Fatal("contract tool was rejected")
+	}
+	for _, name := range []string{"mcp__watchtower__workspace_destroy", "mcp__watchtower__workspace_read_extra", "mcp__other__workspace_read"} {
+		if IsGatewayTool(contract, name) {
+			t.Fatalf("unregistered gateway tool %q was accepted", name)
+		}
+	}
 }
 
 func testPreflightRequest(root, profile string, operations []capability.OperationClass) runner.PreflightRequest {

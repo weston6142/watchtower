@@ -475,6 +475,7 @@ func TestVerificationCacheDaemonUsesRepositoryDataRoot(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: merge-verification
+    capability_profile: artifact
     agents: [{package: merge-verifier}]
     workspace: worktree
     gate: auto
@@ -516,6 +517,20 @@ func TestFinishClaimMergesPushesMarksDoneAndCleansWorkspace(t *testing.T) {
 	run(t, "git", repo, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "config.yaml"),
 		[]byte("runner: fake\ntest_cmd: true\npull: false\npush: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flowBody := `name: default
+stages:
+  - name: merge-verification
+    capability_profile: artifact
+    agents: [{package: merge-verifier}]
+    workspace: worktree
+    gate: auto
+    completion: all
+    merge_barrier: true
+    artifacts: [merge-report.md, merge-decision.json, verification.json]
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	run(t, "git", repo, "add", "-A")
@@ -1560,7 +1575,7 @@ func TestDependencyWorkflowUsesIsolatedSessionsAndLandedBase(t *testing.T) {
 		).CombinedOutput(); err != nil || strings.TrimSpace(string(output)) != "" {
 			t.Fatalf("%s branch remains: %q err %v", issueID, output, err)
 		}
-		if body, err := os.ReadFile(filepath.Join(repo, "watchtower-fake", issueID+".txt")); err != nil || strings.TrimSpace(string(body)) != issueID {
+		if body, err := os.ReadFile(filepath.Join(repo, "src", "gh40", "task-0001", issueID+".txt")); err != nil || strings.TrimSpace(string(body)) != issueID {
 			t.Fatalf("%s landed file = %q err %v", issueID, body, err)
 		}
 	}
@@ -1601,11 +1616,19 @@ func TestFakeRunnerChangesFirstMutableStageRegardlessOfName(t *testing.T) {
 	}
 	flowBody := `name: synthetic
 stages:
+  - name: plan
+    capability_profile: artifact
+    agents: [{package: planner}]
+    workspace: worktree
+    gate: plan_review
+    artifacts: [plan.md, touchset.json]
   - name: shape-change
+    capability_profile: implementation
     agents: [{package: executor}]
     workspace: worktree
     gate: auto
   - name: ship-safely
+    capability_profile: final-review
     agents: [{package: merge-verifier}]
     workspace: worktree
     gate: auto
@@ -1619,16 +1642,38 @@ stages:
 		"--flow", "synthetic", "--title", "custom fake flow")))
 	deadline := time.Now().Add(10 * time.Second)
 	for {
+		var pending []engine.PendingDecision
+		if err := json.Unmarshal([]byte(run(t, bin, repo, "decisions", "--data", base, "--json")), &pending); err != nil {
+			t.Fatalf("decisions --json: %v", err)
+		}
+		for _, decision := range pending {
+			run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(decision.ID, 10), "0")
+		}
 		issues := run(t, bin, repo, "issues", "--data", base)
 		if strings.Contains(issues, id+"  done") {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("custom fake flow did not finish:\n%s", issues)
+			logPaths, _ := filepath.Glob(filepath.Join(base, "repos", "*", "daemon.log"))
+			var logs strings.Builder
+			for _, path := range logPaths {
+				body, _ := os.ReadFile(path)
+				fmt.Fprintf(&logs, "\n%s:\n%s", path, body)
+			}
+			dbs, dbErr := filepath.Glob(filepath.Join(base, "repos", "*", "watchtower.db"))
+			var history any
+			if dbErr == nil && len(dbs) == 1 {
+				if st, openErr := store.Open(dbs[0]); openErr == nil {
+					history, _ = st.FailureHistory(context.Background(), id)
+					_ = st.Close()
+				}
+			}
+			t.Fatalf("custom fake flow did not finish:\n%s\n%s%sfailures=%+v", issues,
+				run(t, bin, repo, "tail", "--data", base), logs.String(), history)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	body, err := os.ReadFile(filepath.Join(repo, "watchtower-fake", id+".txt"))
+	body, err := os.ReadFile(filepath.Join(repo, "src", "gh40", "task-0001", id+".txt"))
 	if err != nil || strings.TrimSpace(string(body)) != id {
 		t.Fatalf("landed fake change = %q err %v", body, err)
 	}

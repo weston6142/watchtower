@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
@@ -82,14 +83,19 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 		return runner.Result{Err: err, FailureClass: runner.FailureConfiguration}
 	}
 	var runtimeAudit []capability.AuditRecord
+	var runtimeAuditMu sync.Mutex
 	session, err := conformance.StartSession(ctx, request, c.backend(), func(record capability.AuditRecord) {
+		runtimeAuditMu.Lock()
 		runtimeAudit = append(runtimeAudit, record)
+		runtimeAuditMu.Unlock()
 	})
 	if err != nil {
 		return runner.Result{Err: err, FailureClass: runner.FailureConfiguration}
 	}
 	defer func() {
 		_ = session.Close()
+		runtimeAuditMu.Lock()
+		defer runtimeAuditMu.Unlock()
 		providerAudit := append([]capability.AuditRecord(nil), result.RuntimeAudit...)
 		result.RuntimeAudit = result.RuntimeAudit[:0]
 		if len(runtimeAudit) > 0 {
@@ -133,7 +139,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 	if err := c.recordAttempt(ctx, primaryAttempt); err != nil {
 		return runner.Result{Err: fmt.Errorf("record primary Codex attempt: %w", err), FailureClass: runner.FailureUnknown, Attempt: primaryAttempt}
 	}
-	primaryResult, continuation := c.runProfile(ctx, request, pkg, primary, nil, asks, gate)
+	primaryResult, continuation := c.runProfile(ctx, session, request, pkg, primary, nil, asks, gate)
 	primaryAttempt = updateAttempt(primaryAttempt, primaryResult, runner.AttemptRunning)
 	if primaryResult.Err == nil {
 		primaryAttempt.State = runner.AttemptSucceeded
@@ -190,7 +196,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 	if err := c.recordAttempt(ctx, fallbackAttempt); err != nil {
 		return terminalResult(primaryResult, primaryAttempt, &fallbackAttempt, true, fmt.Errorf("start Codex fallback: %w", err))
 	}
-	fallbackResult, _ := c.runProfile(ctx, fallbackRequest, pkg, *fallback, &continuation, asks, gate)
+	fallbackResult, _ := c.runProfile(ctx, session, fallbackRequest, pkg, *fallback, &continuation, asks, gate)
 	fallbackAttempt = updateAttempt(fallbackAttempt, fallbackResult, runner.AttemptRunning)
 	fallbackAttempt.FailureClass = fallbackResult.FailureClass
 	fallbackResult.FallbackConsumed = true
@@ -230,7 +236,7 @@ type runContinuation struct {
 	decisionAccepted bool
 }
 
-func (c *CodeRunner) runProfile(ctx context.Context, request runner.StageRequest, pkg pkgs.Package,
+func (c *CodeRunner) runProfile(ctx context.Context, session *capruntime.Session, request runner.StageRequest, pkg pkgs.Package,
 	profile repocfg.CodexProfile, start *runContinuation,
 	asks chan<- runner.Ask, gate runner.ExplorationGate) (runner.Result, runContinuation) {
 	issueID, stage := request.IssueID, request.Stage
@@ -251,7 +257,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, request runner.StageRequest
 
 	for {
 		var stageResults agentprotocol.StageResultCollector
-		turn := c.runTurn(ctx, request, pkg, profile, threadID, prompt, gate)
+		turn := c.runTurn(ctx, session, request, pkg, profile, threadID, prompt, gate)
 		res.Attempt.RedactedArgv = turn.invocation.RedactedArgv
 		if turn.threadID != "" {
 			if threadID != "" && turn.threadID != threadID {
@@ -379,28 +385,29 @@ func (c *CodeRunner) runProfile(ctx context.Context, request runner.StageRequest
 	}
 }
 
-func (c *CodeRunner) runTurn(ctx context.Context, request runner.StageRequest, pkg pkgs.Package,
+func (c *CodeRunner) runTurn(ctx context.Context, session *capruntime.Session, request runner.StageRequest, pkg pkgs.Package,
 	profile repocfg.CodexProfile, threadID, prompt string, gate runner.ExplorationGate) turnResult {
-	workdir := request.Workdir
+	workdir := session.ProviderWorkdir()
 	kind := turnInitial
 	if threadID != "" {
 		kind = turnResumed
 	}
 	invocation := buildInvocation(profile, turnDescriptor{
-		Workdir:       workdir,
-		Kind:          kind,
-		ResumeID:      threadID,
-		PackagePrompt: pkg.Prompt,
-		Prompt:        prompt,
-		GatewayTools:  conformance.GatewayTools(request.Contract),
+		Workdir:         workdir,
+		Kind:            kind,
+		ResumeID:        threadID,
+		PackagePrompt:   pkg.Prompt,
+		Prompt:          prompt,
+		GatewayEndpoint: session.GatewayEndpoint(),
+		GatewayTools:    conformance.GatewayTools(request.Contract),
 	})
 
 	extraEnv := append([]string(nil), c.ExtraEnv...)
 	var stderrTail tailBuffer
-	process, err := runner.StartProcessTree(ctx, runner.ProcessSpec{
-		Path: profile.Bin, Args: invocation.Argv, Dir: workdir,
-		Env:    runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx)),
-		Stderr: io.MultiWriter(os.Stderr, &stderrTail), PipeStdout: true,
+	process, err := session.StartProvider(ctx, capruntime.ProviderProcessRequest{
+		Path: profile.Bin, Args: invocation.Argv, Plan: request.Plan,
+		Environment: runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx)),
+		Stderr:      io.MultiWriter(os.Stderr, &stderrTail), PipeStdout: true,
 	})
 	if err != nil {
 		return turnResult{failed: fmt.Errorf("codex start: %w", err), failureClass: runner.FailureLaunch, invocation: invocation}
@@ -433,7 +440,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, request runner.StageRequest, p
 		case KindThread:
 			result.threadID = event.ThreadID
 		case KindToolRequest:
-			if !conformance.IsGatewayTool(event.ToolCall.Name) {
+			if !conformance.IsGatewayTool(request.Contract, event.ToolCall.Name) {
 				policy, record := conformance.RuntimeDenial(request, "codex", event.ToolCall)
 				result.runtimeAudit = append(result.runtimeAudit, record)
 				result.failed = policy

@@ -157,7 +157,7 @@ func ValidateStageRequest(request StageRequest) error {
 
 func RequiredControls(contract capability.CompiledContract) []capability.EnforcementControl {
 	controls := []capability.EnforcementControl{
-		capability.ControlDescendants, capability.ControlEngineState, capability.ControlGitCommonDir,
+		capability.ControlCredentials, capability.ControlDescendants, capability.ControlEngineState, capability.ControlGateway, capability.ControlGitCommonDir,
 		capability.ControlNetwork, capability.ControlProcessGroup, capability.ControlScratch,
 	}
 	for _, operation := range contract.Contract.Operations {

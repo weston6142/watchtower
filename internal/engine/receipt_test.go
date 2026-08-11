@@ -470,12 +470,12 @@ func TestWriteVerificationReceiptFailingCommand(t *testing.T) {
 	}
 }
 
-func TestWriteVerificationReceiptNoTestCmd(t *testing.T) {
+func TestWriteVerificationReceiptRequiresTestCmd(t *testing.T) {
 	dir, head := initReceiptRepo(t)
 	e := &Engine{cfg: Config{}}
 	is := &issueState{id: "GH-T", baseRef: head, wsPath: dir}
-	if err := e.writeVerificationReceipt(context.Background(), is, dir, nil); err != nil {
-		t.Fatalf("expected nil for missing test_cmd, got %v", err)
+	if err := e.writeVerificationReceipt(context.Background(), is, dir, nil); err == nil {
+		t.Fatal("missing test_cmd was accepted")
 	}
 	if _, err := marshal.LoadVerification(filepath.Join(dir, "verification.json")); err == nil {
 		t.Fatal("receipt must not be written without test_cmd")

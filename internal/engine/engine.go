@@ -333,6 +333,14 @@ func (e *Engine) rehydrateArtifactReview(
 	if err != nil {
 		return false, false, err
 	}
+	for _, candidate := range checkpoints {
+		if candidate.ID > row.Review.CheckpointID {
+			// A later stage attempt can exist only after this review handed off.
+			// Treat the row as history instead of revalidating it against a
+			// checkpoint that has since completed and risking a false stale hold.
+			return false, false, nil
+		}
+	}
 	var checkpoint *store.StageCheckpoint
 	for i := range checkpoints {
 		if checkpoints[i].ID == row.Review.CheckpointID {
@@ -4215,7 +4223,13 @@ func (e *Engine) planReviewAuthorization(is *issueState) (store.DecisionRow, []c
 		return store.DecisionRow{}, nil, fmt.Errorf("plan review approval is missing")
 	}
 	if !sameResolvedPlanReviewPolicy(is.planReview, *found.ReviewPolicy) {
-		return store.DecisionRow{}, nil, fmt.Errorf("plan review policy snapshot is inconsistent")
+		if is.planReview.Reason != "invalid_policy" {
+			return store.DecisionRow{}, nil, fmt.Errorf("plan review policy snapshot is inconsistent")
+		}
+		// Drafts created before the daemon resolves repository policy retain a
+		// fail-closed placeholder. Once a review has durable approval evidence,
+		// its exact policy snapshot is the authority restored after restart.
+		is.planReview = *found.ReviewPolicy
 	}
 	if found.Status != "answered" && found.Status != "auto" {
 		return store.DecisionRow{}, nil, fmt.Errorf("plan review is not approved")

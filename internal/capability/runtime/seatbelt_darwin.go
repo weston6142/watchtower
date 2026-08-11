@@ -61,27 +61,43 @@ func seatbeltProfile(request ProcessRequest) (string, error) {
 	if request.Scratch != "" {
 		reads = append(reads, request.Scratch)
 	}
-	for _, path := range request.Contract.Contract.Reads {
-		reads = append(reads, filepath.Join(request.Contract.Contract.WorkspaceRoot, filepath.FromSlash(path)))
-	}
 	writes := []string{}
 	if request.Scratch != "" {
 		writes = append(writes, request.Scratch)
 	}
-	for _, grant := range request.Contract.Contract.Writes {
-		prefix := touchset.PrefixOf(grant.Path)
-		if prefix == "" {
-			return "", unsupported("write grant has no safe containment prefix")
+	if request.Mode == ModeProviderTransport {
+		reads = append(reads, request.ProviderReads...)
+	} else {
+		for _, path := range request.Contract.Contract.Reads {
+			reads = append(reads, filepath.Join(request.Contract.Contract.WorkspaceRoot, filepath.FromSlash(path)))
 		}
-		writes = append(writes, filepath.Join(request.Contract.Contract.WorkspaceRoot, filepath.FromSlash(prefix)))
+		for _, grant := range request.Contract.Contract.Writes {
+			prefix := touchset.PrefixOf(grant.Path)
+			if prefix == "" {
+				return "", unsupported("write grant has no safe containment prefix")
+			}
+			writes = append(writes, filepath.Join(request.Contract.Contract.WorkspaceRoot, filepath.FromSlash(prefix)))
+		}
 	}
 	sort.Strings(reads)
 	sort.Strings(writes)
 	var profile strings.Builder
-	profile.WriteString("(version 1)\n(deny default)\n(import \"system.sb\")\n(deny network*)\n")
-	profile.WriteString("(allow process-exec (literal \"")
-	profile.WriteString(seatbeltEscape(request.Path))
-	profile.WriteString("\"))\n(allow process-fork process-info*)\n(allow signal (target self))\n")
+	profile.WriteString("(version 1)\n(deny default)\n(import \"system.sb\")\n")
+	if request.Mode == ModeProviderTransport {
+		profile.WriteString("(allow network*)\n")
+	} else {
+		profile.WriteString("(deny network*)\n")
+	}
+	executables := []string{request.Path}
+	if request.Mode == ModeProviderTransport {
+		executables = append([]string(nil), request.ProviderExecutables...)
+	}
+	for _, executable := range executables {
+		profile.WriteString("(allow process-exec* (literal \"")
+		profile.WriteString(seatbeltEscape(executable))
+		profile.WriteString("\"))\n")
+	}
+	profile.WriteString("(allow process-fork process-info*)\n(allow signal (target self))\n")
 	profile.WriteString("(allow syscall*)\n(allow sysctl-read)\n(allow mach*)\n(allow ipc*)\n(allow system*)\n")
 	profile.WriteString("(allow file-read-metadata file-test-existence file-map-executable file-ioctl)\n")
 	for _, path := range reads {

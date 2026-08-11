@@ -28,8 +28,8 @@ func (s *Session) Run(ctx context.Context, argv []string) ([]byte, error) {
 		path = resolved
 	}
 	request, err := s.backend.Wrap(ProcessRequest{
-		Contract: s.contract, Plan: s.plan, Path: path, Args: append([]string(nil), argv[1:]...),
-		Dir: s.worktree, Env: append([]string(nil), s.environment...), Scratch: s.scratch,
+		Contract: s.contract, Plan: s.plan, Mode: ModeAgentOperation, Path: path, Args: append([]string(nil), argv[1:]...),
+		Dir: s.worktree, Env: append([]string(nil), s.environment...), Scratch: s.agentScratch,
 	})
 	if err != nil {
 		return nil, err

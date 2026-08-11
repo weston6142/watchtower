@@ -2,6 +2,7 @@ package codex
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/weston6142/watchtower/internal/repocfg"
@@ -15,12 +16,13 @@ const (
 )
 
 type turnDescriptor struct {
-	Workdir       string
-	Kind          turnKind
-	ResumeID      string
-	PackagePrompt string
-	Prompt        string
-	GatewayTools  []string
+	Workdir         string
+	Kind            turnKind
+	ResumeID        string
+	PackagePrompt   string
+	Prompt          string
+	GatewayEndpoint string
+	GatewayTools    []string
 }
 
 type invocation struct {
@@ -47,6 +49,7 @@ func buildInvocation(profile repocfg.CodexProfile, descriptor turnDescriptor) in
 		prefix = []string{"exec", "--json", "-C", descriptor.Workdir}
 	}
 	args := append([]string(nil), prefix...)
+	args = append(args, "--strict-config", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check")
 	args = append(args,
 		"-m", profile.Model,
 		"-c", configString("model_reasoning_effort", profile.Effort),
@@ -56,8 +59,11 @@ func buildInvocation(profile repocfg.CodexProfile, descriptor turnDescriptor) in
 		"-c", "features.shell_tool=false",
 		"-c", configString("developer_instructions", descriptor.PackagePrompt),
 	)
-	if len(descriptor.GatewayTools) > 0 {
-		args = append(args, "-c", configString("watchtower_gateway_tools", strings.Join(descriptor.GatewayTools, ",")))
+	if descriptor.GatewayEndpoint != "" && len(descriptor.GatewayTools) > 0 {
+		args = append(args,
+			"-c", configString("mcp_servers.watchtower.url", descriptor.GatewayEndpoint),
+			"-c", configStringList("mcp_servers.watchtower.enabled_tools", gatewayLocalToolNames(descriptor.GatewayTools)),
+		)
 	}
 	if value, ok := profile.FeatureOverrides["unified_exec"]; ok {
 		args = append(args, "-c", "features.unified_exec="+boolString(value))
@@ -105,9 +111,29 @@ func redactInvocation(args []string, descriptor turnDescriptor) []string {
 			redacted[index] = "[redacted turn prompt]"
 		case strings.HasPrefix(redacted[index], "developer_instructions="):
 			redacted[index] = "developer_instructions=\"[redacted developer instructions]\""
+		case strings.HasPrefix(redacted[index], "mcp_servers.watchtower.url="):
+			redacted[index] = "mcp_servers.watchtower.url=\"[redacted gateway endpoint]\""
 		}
 	}
 	return redacted
+}
+
+func gatewayLocalToolNames(tools []string) []string {
+	result := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if name, ok := strings.CutPrefix(tool, "mcp__watchtower__"); ok && name != "" {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+func configStringList(key string, values []string) string {
+	quoted := make([]string, len(values))
+	for index, value := range values {
+		quoted[index] = strconv.Quote(value)
+	}
+	return key + "=[" + strings.Join(quoted, ",") + "]"
 }
 
 func redactText(value string, secrets ...string) string {

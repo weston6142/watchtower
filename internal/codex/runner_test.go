@@ -13,6 +13,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/capability"
+	capruntime "github.com/weston6142/watchtower/internal/capability/runtime"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/plannerartifact"
@@ -125,7 +126,26 @@ func testRunner(bin string) *CodeRunner {
 		},
 		DefaultModel:  "gpt-5.6-luna",
 		DefaultEffort: "xhigh",
+		Backend:       passthroughTestBackend{},
 	}
+}
+
+// passthroughTestBackend keeps parser, continuation, and invocation fixtures
+// focused on their observable adapter behavior. Provider-boundary tests use
+// NewPlatformBackend directly and therefore still exercise real containment.
+type passthroughTestBackend struct{}
+
+func (passthroughTestBackend) Preflight(contract capability.CompiledContract) (capability.EnforcementPlan, error) {
+	controls := runner.RequiredControls(contract)
+	proofs := make([]capability.ControlProof, 0, len(controls))
+	for _, control := range controls {
+		proofs = append(proofs, capability.ControlProof{Control: control, Proven: true})
+	}
+	return runner.NewEnforcementPlan(contract, "test-runtime", "passthrough", "1", proofs)
+}
+
+func (passthroughTestBackend) Wrap(request capruntime.ProcessRequest) (capruntime.ProcessRequest, error) {
+	return request, nil
 }
 
 func testStageRequest(r *CodeRunner, issueID, stage, agent, workdir string) runner.StageRequest {
@@ -209,7 +229,8 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE"; done`))
 	args := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
 	joined := strings.Join(args, "\n")
 	for _, want := range []string{
-		"exec", "--json", "-C", workdir, "-m", "gpt-5.6-luna",
+		"exec", "--json", "-C", "-m", "gpt-5.6-luna",
+		"--strict-config", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
 		`model_reasoning_effort="xhigh"`,
 		`sandbox_mode="read-only"`,
 		`approval_policy="never"`,
@@ -221,7 +242,7 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE"; done`))
 			t.Errorf("argv missing %q:\n%s", want, joined)
 		}
 	}
-	for _, forbidden := range []string{"--ignore-user-config", "--ignore-rules", "--ephemeral"} {
+	for _, forbidden := range []string{workdir, "--ephemeral"} {
 		if strings.Contains(joined, forbidden) {
 			t.Errorf("argv contains %q:\n%s", forbidden, joined)
 		}
@@ -796,7 +817,14 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	r := testRunner(bin)
 	r.ExtraEnv = []string{"STATE=" + state}
 	done, asks := stageRun(r, "executor", "execute")
-	ask := <-asks
+	var ask runner.Ask
+	select {
+	case ask = <-asks:
+	case res := <-done:
+		t.Fatalf("runner ended before emitting the repaired decision: %+v", res)
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner neither emitted the repaired decision nor completed")
+	}
 	if ask.Decision.Why != "Safe." || ask.Decision.Briefing == nil ||
 		len(ask.Decision.Briefing.Proof) != 1 || ask.Decision.Briefing.Proof[0].Cite != "go test ./internal/decisionpage" {
 		t.Fatalf("ask was not repaired: %+v", ask.Decision)

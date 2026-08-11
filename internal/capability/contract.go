@@ -106,6 +106,8 @@ const (
 	ControlEngineState    EnforcementControl = "engine-state"
 	ControlScratch        EnforcementControl = "scratch"
 	ControlProcessGroup   EnforcementControl = "process-group"
+	ControlGateway        EnforcementControl = "gateway-mediation"
+	ControlCredentials    EnforcementControl = "credential-separation"
 )
 
 type ControlProof struct {

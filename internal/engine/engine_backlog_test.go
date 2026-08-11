@@ -900,10 +900,14 @@ func prepareFinishClaim(t *testing.T) (*Engine, *store.Store, Claim) {
 	t.Helper()
 	e, st, _, _ := newClaimTestEngine(t)
 	f := verificationFlow()
+	// FinishClaim exercises an externally prepared branch with no prior plan
+	// review. Keep this synthetic verifier artifact-scoped so the test remains
+	// about claim finalization rather than approval-bound repair authority.
+	f.Stages[len(f.Stages)-1].CapabilityProfile = flow.ProfileArtifact
 	e.cfg.Flows = map[string]flow.Flow{"default": f}
 	e.cfg.Runner = &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"merge-verification/merge-verifier": {Artifacts: map[string]string{
-			"merge-report.md": "", "merge-decision.json": "", "verification.json": "",
+			"merge-report.md": "", "merge-decision.json": "",
 		}},
 	}}
 	e.cfg.Train.TestCmd = []string{"true"}

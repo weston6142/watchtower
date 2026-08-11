@@ -46,8 +46,13 @@ func GatewayTools(contract capability.CompiledContract) []string {
 	return tools
 }
 
-func IsGatewayTool(name string) bool {
-	return strings.HasPrefix(name, "mcp__watchtower__")
+func IsGatewayTool(contract capability.CompiledContract, name string) bool {
+	for _, allowed := range GatewayTools(contract) {
+		if name == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func RuntimeDenial(request runner.StageRequest, provider string, call runner.ToolCall) (*capability.PolicyError, capability.AuditRecord) {
@@ -95,9 +100,13 @@ func Verify(ctx context.Context, adapter runner.Runner, requests []runner.Prefli
 }
 
 func StartSession(ctx context.Context, request runner.StageRequest, backend capruntime.Backend, audit func(capability.AuditRecord)) (*capruntime.Session, error) {
+	var plannerArtifact func(any) error
+	if authority := runner.PlannerArtifactAuthorityFromContext(ctx); authority != nil {
+		plannerArtifact = authority.ApplyPlannerArtifact
+	}
 	return capruntime.Start(ctx, capruntime.StartRequest{
 		Contract: request.Contract, Plan: request.Plan, Worktree: request.Workdir,
-		Backend: backend, Audit: audit,
+		Backend: backend, Environment: runner.ManagedEnvironment(ctx), PlannerArtifact: plannerArtifact, Audit: audit,
 	})
 }
 

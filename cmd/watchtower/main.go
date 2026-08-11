@@ -938,7 +938,8 @@ func runDaemon(args []string) {
 			changed := sync.Map{}
 			fake.OnStart = func(issueID, stage, _, workdir string) error {
 				stageConfig, ok := stagesByName[stage]
-				if !ok || stageConfig.MergeBarrier || stageConfig.Workspace == "none" {
+				if !ok || stageConfig.CapabilityProfile != flow.ProfileImplementation ||
+					stageConfig.MergeBarrier || stageConfig.Workspace == "none" {
 					return nil
 				}
 				if _, loaded := changed.LoadOrStore(issueID, true); loaded {
@@ -1105,7 +1106,7 @@ func runStop(args []string) error {
 }
 
 func commitFakeChange(issueID, workdir string) error {
-	dir := filepath.Join(workdir, "watchtower-fake")
+	dir := filepath.Join(workdir, "src", "gh40", "task-0001")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -1302,6 +1303,11 @@ func fakeForFlows(flows map[string]flow.Flow) *runner.FakeRunner {
 				if plannerRequests != nil {
 					continue
 				}
+				if a == "verification.json" {
+					// Final verification is engine-owned and is created only after
+					// the provider result passes capability validation.
+					continue
+				}
 				content := ""
 				if a == "touchset.json" {
 					content = `{"globs":["src/**"]}`
@@ -1328,7 +1334,7 @@ func fakePlannerRequests() []plannerartifact.WriteRequest {
 		{Key: "technology-stack", Globs: []string{"src/gh40/technology/**"}},
 		{Key: "execution-contract", Globs: []string{"src/gh40/contract/**"}},
 		{Key: "file-structure", Globs: []string{"src/gh40/files/**"}},
-		{Key: "task-0001", Globs: []string{"src/gh40/task-0001/**"}},
+		{Key: "task-0001", Globs: []string{"docs/guildhall/**", "src/gh40/task-0001/**"}},
 		{Key: "verification", Globs: []string{"src/gh40/verification/**"}},
 	}}
 	requests := make([]plannerartifact.WriteRequest, 0, len(manifest.Sections))

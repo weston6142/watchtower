@@ -84,9 +84,6 @@ func (x lifecycleExecutor) verify(
 		_ = lease.Close()
 	}()
 	if err := x.engine.writeVerificationReceipt(ctx, is, workdir, lease); err != nil {
-		if currentFound && current.Status == store.VerificationAttemptPending {
-			_, _ = x.engine.cfg.Store.FinishVerificationAttempt(is.id, current.ID, store.VerificationAttemptFailed, nil, err.Error())
-		}
 		return err
 	}
 	sealed = true

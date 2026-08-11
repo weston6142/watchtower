@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -26,11 +25,15 @@ func TestClaudeCapabilityConformance(t *testing.T) {
 
 func TestProviderUsesGatewayInsteadOfLegacyTools(t *testing.T) {
 	root := t.TempDir()
-	capture := filepath.Join(root, "argv")
 	bin := filepath.Join(t.TempDir(), "claude-argv-stub")
 	script := `#!/bin/sh
 set -eu
-printf '%s\n' "$@" > "$CAPTURE"
+joined="$*"
+case "$joined" in
+  *--mcp-config*watchtower*--strict-mcp-config*--bare*--tools*mcp__watchtower__workspace_read*) ;;
+  *) exit 41 ;;
+esac
+case "$joined" in *legacy-escalation*) exit 42 ;; esac
 read _task
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"gateway"}'
 printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}'
@@ -39,7 +42,7 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 		t.Fatal(err)
 	}
 	adapter := &CodeRunner{
-		Bin: bin, Backend: capruntime.NewPlatformBackend(), ExtraEnv: []string{"CAPTURE=" + capture},
+		Bin: bin, Backend: capruntime.NewPlatformBackend(),
 		Packages: map[string]pkgs.Package{"executor": {Name: "executor", AllowedTools: []string{"Bash", "Read", "legacy-escalation"}}},
 	}
 	request := claudeCapabilityRequests(root)[0]
@@ -53,17 +56,6 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 	}, make(chan runner.Ask))
 	if result.Err != nil {
 		t.Fatal(result.Err)
-	}
-	body, err := os.ReadFile(capture)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := string(body)
-	if !strings.Contains(joined, "mcp__watchtower__workspace_read") || !strings.Contains(joined, "--disallowedTools") {
-		t.Fatalf("Claude gateway invocation = %q", joined)
-	}
-	if strings.Contains(joined, "legacy-escalation") || strings.Contains(joined, "\nBash\n") {
-		t.Fatalf("legacy package tools reached Claude authority: %q", joined)
 	}
 }
 

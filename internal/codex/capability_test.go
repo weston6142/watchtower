@@ -28,16 +28,19 @@ func TestCodexCapabilityConformance(t *testing.T) {
 func TestProviderUsesGatewayInsteadOfLegacyTools(t *testing.T) {
 	got := buildInvocation(repocfg.CodexProfile{Model: "model", Effort: "high"}, turnDescriptor{
 		Workdir: t.TempDir(), Kind: turnInitial, PackagePrompt: "legacy Bash Read Write",
-		Prompt: "task", GatewayTools: []string{"mcp__watchtower__workspace_read"},
+		Prompt: "task", GatewayEndpoint: "http://127.0.0.1/private", GatewayTools: []string{"mcp__watchtower__workspace_read"},
 	})
 	joined := strings.Join(got.Argv, "\n")
-	for _, want := range []string{`sandbox_mode="read-only"`, "tools.web_search=false", "features.shell_tool=false", "mcp__watchtower__workspace_read"} {
+	for _, want := range []string{`sandbox_mode="read-only"`, "tools.web_search=false", "features.shell_tool=false", "mcp_servers.watchtower.url", "enabled_tools", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--strict-config"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("Codex invocation missing %q: %s", want, joined)
 		}
 	}
 	if strings.Contains(joined, "danger-full-access") {
 		t.Fatalf("Codex retained unrestricted sandbox authority: %s", joined)
+	}
+	if strings.Contains(strings.Join(got.RedactedArgv, "\n"), "http://127.0.0.1/private") {
+		t.Fatalf("Codex recorded the private gateway endpoint: %v", got.RedactedArgv)
 	}
 }
 
@@ -56,6 +59,7 @@ sleep 10
 		t.Fatal(err)
 	}
 	adapter := testRunner(bin)
+	adapter.Backend = capruntime.NewPlatformBackend()
 	adapter.ExtraEnv = []string{"SIDE_EFFECT=" + sideEffect}
 	result := <-adapter.Run(context.Background(), testStageRequest(adapter, "GH-68", "execute", "executor", root), make(chan runner.Ask))
 	var policy *capability.PolicyError

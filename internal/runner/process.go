@@ -92,6 +92,9 @@ func (p *ProcessTree) TerminateAndWait(grace time.Duration) error {
 		return p.waitErr
 	default:
 	}
+	if p.stdin != nil {
+		_ = p.stdin.Close()
+	}
 	if p.terminate != nil {
 		_ = p.terminate(false)
 	}
