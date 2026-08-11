@@ -345,6 +345,122 @@ func TestVerificationCacheFinalizationRejectsEvidenceFromAnotherLease(t *testing
 	}
 }
 
+func TestFinalizationIdentityClassification(t *testing.T) {
+	dir, head := initReceiptRepo(t)
+	tree := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^{tree}"))
+	e := &Engine{}
+	is := &issueState{id: "GH-79", baseRef: head, wsPath: dir}
+	decision := marshal.MergeDecision{Decision: "merge", BranchCommit: head, BaseCommit: head}
+	receipt := marshal.Verification{
+		BaseSHA: head, BranchSHA: head, TreeSHA: tree, Passed: true,
+		Commands: [][]string{{"true"}},
+	}
+	if err := e.validateFinalIdentity(is, decision, receipt, nil); err != nil {
+		t.Fatalf("matching proof rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*marshal.Verification)
+		want   StaleVerificationIdentityKind
+	}{
+		{name: "branch", mutate: func(value *marshal.Verification) { value.BranchSHA = "stale-branch" }, want: StaleVerificationBranch},
+		{name: "tree", mutate: func(value *marshal.Verification) { value.TreeSHA = "stale-tree" }, want: StaleVerificationTree},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := receipt
+			test.mutate(&candidate)
+			err := e.validateFinalIdentity(is, decision, candidate, nil)
+			kind, _, stale := StaleVerificationIdentity(err)
+			if err == nil || !stale || kind != test.want {
+				t.Fatalf("identity result = kind=%q stale=%v err=%v, want %q", kind, stale, err, test.want)
+			}
+		})
+	}
+
+	baseMismatch := receipt
+	baseMismatch.BaseSHA = "stale-base"
+	if err := e.validateFinalIdentity(is, decision, baseMismatch, nil); err == nil {
+		t.Fatal("base mismatch was accepted")
+	} else if _, _, stale := StaleVerificationIdentity(err); stale {
+		t.Fatalf("base mismatch was classified as stale identity: %v", err)
+	}
+	decisionMismatch := decision
+	decisionMismatch.BranchCommit = "stale-decision"
+	if err := e.validateFinalIdentity(is, decisionMismatch, receipt, nil); err == nil {
+		t.Fatal("merge decision mismatch was accepted")
+	} else if _, _, stale := StaleVerificationIdentity(err); stale {
+		t.Fatalf("merge decision mismatch was classified as stale identity: %v", err)
+	}
+}
+
+func TestFinalizationLegacyReceiptClassification(t *testing.T) {
+	dir, head := initReceiptRepo(t)
+	tree := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^{tree}"))
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: cacheRoot, RepoDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := runtime.Acquire(context.Background(), verificationcache.Config{
+		RepoDir: dir, BaseSHA: head, BranchSHA: head, TreeSHA: tree, Argv: []string{"true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{cfg: Config{
+		CacheRoot: cacheRoot,
+		Train:     &marshal.Train{Repo: dir, CacheRoot: cacheRoot, TestCmd: []string{"true"}},
+	}}
+	is := &issueState{id: "GH-79", baseRef: head, wsPath: dir}
+	decision := marshal.MergeDecision{Decision: "merge", BranchCommit: head, BaseCommit: head}
+	legacy := marshal.Verification{
+		BaseSHA: head, BranchSHA: head, TreeSHA: tree, Passed: true,
+		Commands: [][]string{{"true"}},
+	}
+	if err := e.validateFinalIdentity(is, decision, legacy, lease); err == nil {
+		t.Fatal("legacy cache-less receipt was accepted")
+	} else if kind, _, stale := StaleVerificationIdentity(err); !stale || kind != StaleVerificationCache {
+		t.Fatalf("legacy receipt result = kind=%q stale=%v err=%v", kind, stale, err)
+	}
+	evidence, err := lease.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := legacy
+	receipt.CacheEvidence = marshal.NewCacheEvidence(evidence)
+	if err := e.validateFinalIdentity(is, decision, receipt, lease); err != nil {
+		t.Fatalf("matching cache proof rejected: %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*marshal.CacheEvidence)
+		want   StaleVerificationIdentityKind
+	}{
+		{name: "lease", mutate: func(value *marshal.CacheEvidence) { value.LeaseID = "other-lease" }, want: StaleVerificationLease},
+		{name: "cache", mutate: func(value *marshal.CacheEvidence) { value.ManagedScope = filepath.Join(cacheRoot, "other") }, want: StaleVerificationCache},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := receipt
+			copyEvidence := *receipt.CacheEvidence
+			test.mutate(&copyEvidence)
+			candidate.CacheEvidence = &copyEvidence
+			err := e.validateFinalIdentity(is, decision, candidate, lease)
+			kind, _, stale := StaleVerificationIdentity(err)
+			if err == nil || !stale || kind != test.want {
+				t.Fatalf("cache result = kind=%q stale=%v err=%v, want %q", kind, stale, err, test.want)
+			}
+		})
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWriteVerificationReceiptFailingCommand(t *testing.T) {
 	dir, head := initReceiptRepo(t)
 	e := &Engine{cfg: Config{Train: &marshal.Train{Repo: dir, TestCmd: []string{"false"}}}}

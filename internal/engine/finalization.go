@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,8 +21,48 @@ import (
 )
 
 type preparedFinalization struct {
-	Decision     marshal.MergeDecision
-	Verification marshal.Verification
+	Decision              marshal.MergeDecision
+	Verification          marshal.Verification
+	VerificationAttemptID int64
+}
+
+// StaleVerificationIdentityKind is the narrowly scoped identity mismatch
+// that permits an explicit finalization retry to re-enter verification.
+type StaleVerificationIdentityKind string
+
+const (
+	StaleVerificationBranch StaleVerificationIdentityKind = "branch"
+	StaleVerificationTree   StaleVerificationIdentityKind = "tree"
+	StaleVerificationLease  StaleVerificationIdentityKind = "lease"
+	StaleVerificationCache  StaleVerificationIdentityKind = "cache"
+)
+
+type staleVerificationIdentityError struct {
+	kind      StaleVerificationIdentityKind
+	attemptID int64
+	cause     error
+}
+
+func (e *staleVerificationIdentityError) Error() string {
+	return fmt.Sprintf("stale verification %s identity: %v", e.kind, e.cause)
+}
+
+func (e *staleVerificationIdentityError) Unwrap() error { return e.cause }
+
+func staleVerificationIdentity(
+	kind StaleVerificationIdentityKind, attemptID int64, cause error,
+) error {
+	return &staleVerificationIdentityError{kind: kind, attemptID: attemptID, cause: cause}
+}
+
+// StaleVerificationIdentity extracts the safe retry classification and the
+// journal attempt it affected, without exposing receipt contents.
+func StaleVerificationIdentity(err error) (StaleVerificationIdentityKind, int64, bool) {
+	var stale *staleVerificationIdentityError
+	if !errors.As(err, &stale) {
+		return "", 0, false
+	}
+	return stale.kind, stale.attemptID, true
 }
 
 func (e *Engine) prepareFinalization(
@@ -30,19 +73,55 @@ func (e *Engine) prepareFinalization(
 	if err != nil {
 		return preparedFinalization{}, fmt.Errorf("load merge decision: %w", err)
 	}
-	verification, err := marshal.LoadVerification(filepath.Join(artifactDir, "verification.json"))
-	if err != nil {
-		return preparedFinalization{}, fmt.Errorf("load verification receipt: %w", err)
+	verificationPath := filepath.Join(artifactDir, "verification.json")
+	var verification marshal.Verification
+	var verificationAttemptID int64
+	if e.cfg.Store != nil {
+		attempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
+		if err != nil {
+			return preparedFinalization{}, fmt.Errorf("load verification attempt: %w", err)
+		}
+		if found {
+			verificationAttemptID = attempt.ID
+			if len(attempt.ReceiptJSON) == 0 {
+				return preparedFinalization{}, fmt.Errorf("active verification attempt %d has no receipt", attempt.ID)
+			}
+			verification, err = loadVerificationBytes(attempt.ReceiptJSON)
+			if err != nil {
+				return preparedFinalization{}, fmt.Errorf("load journal verification receipt: %w", err)
+			}
+		} else {
+			verification, err = marshal.LoadVerification(verificationPath)
+			if err != nil {
+				return preparedFinalization{}, fmt.Errorf("load verification receipt: %w", err)
+			}
+		}
+	} else {
+		var err error
+		verification, err = marshal.LoadVerification(verificationPath)
+		if err != nil {
+			return preparedFinalization{}, fmt.Errorf("load verification receipt: %w", err)
+		}
 	}
-	if err := e.validateFinalIdentity(is, decision, verification, verificationLease); err != nil {
+	if err := e.validateFinalIdentityForAttempt(is, decision, verification, verificationLease, verificationAttemptID); err != nil {
 		return preparedFinalization{}, err
 	}
-	return preparedFinalization{Decision: decision, Verification: verification}, nil
+	return preparedFinalization{
+		Decision: decision, Verification: verification,
+		VerificationAttemptID: verificationAttemptID,
+	}, nil
 }
 
 func (e *Engine) validateFinalIdentity(
 	is *issueState, decision marshal.MergeDecision, receipt marshal.Verification,
 	verificationLease *verificationcache.Lease,
+) error {
+	return e.validateFinalIdentityForAttempt(is, decision, receipt, verificationLease, 0)
+}
+
+func (e *Engine) validateFinalIdentityForAttempt(
+	is *issueState, decision marshal.MergeDecision, receipt marshal.Verification,
+	verificationLease *verificationcache.Lease, attemptID int64,
 ) error {
 	branchSHA, err := gitRevision(is.wsPath, "HEAD")
 	if err != nil {
@@ -57,12 +136,14 @@ func (e *Engine) validateFinalIdentity(
 			receipt.BaseSHA, is.baseRef)
 	}
 	if receipt.BranchSHA != branchSHA {
-		return fmt.Errorf("verification branch %s does not match current branch %s",
-			receipt.BranchSHA, branchSHA)
+		return staleVerificationIdentity(StaleVerificationBranch, attemptID,
+			fmt.Errorf("verification branch %s does not match current branch %s",
+				receipt.BranchSHA, branchSHA))
 	}
 	if !receipt.AppliesTo(treeSHA) {
-		return fmt.Errorf("verified tree %s does not match current tree %s",
-			receipt.TreeSHA, treeSHA)
+		return staleVerificationIdentity(StaleVerificationTree, attemptID,
+			fmt.Errorf("verified tree %s does not match current tree %s",
+				receipt.TreeSHA, treeSHA))
 	}
 	if decision.BranchCommit != "" && decision.BranchCommit != branchSHA {
 		return fmt.Errorf("merge decision branch %s does not match current branch %s",
@@ -80,7 +161,8 @@ func (e *Engine) validateFinalIdentity(
 	}
 	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 {
 		if receipt.CacheEvidence == nil {
-			return fmt.Errorf("cache-managed verification receipt is missing cache evidence")
+			return staleVerificationIdentity(StaleVerificationCache, attemptID,
+				fmt.Errorf("cache-managed verification receipt is missing cache evidence"))
 		}
 		repository, err := verificationcache.CanonicalRepositoryIdentity(e.cfg.Train.Repo)
 		if err != nil {
@@ -94,12 +176,14 @@ func (e *Engine) validateFinalIdentity(
 		}
 		if verificationLease != nil {
 			if verificationLease.State() != verificationcache.StateComplete {
-				return fmt.Errorf("current verification cache lease is not complete")
+				return staleVerificationIdentity(StaleVerificationLease, attemptID,
+					fmt.Errorf("current verification cache lease is not complete"))
 			}
 			if verificationLease.Repository() != repository || verificationLease.BaseSHA() != is.baseRef ||
 				verificationLease.BranchSHA() != branchSHA || verificationLease.TreeSHA() != treeSHA ||
 				verificationLease.CommandDigest() != verificationcache.CommandDigest(e.cfg.Train.TestCmd) {
-				return fmt.Errorf("current verification cache lease does not match live identity")
+				return staleVerificationIdentity(StaleVerificationLease, attemptID,
+					fmt.Errorf("current verification cache lease does not match live identity"))
 			}
 			current = marshal.CacheIdentity{
 				LeaseID: verificationLease.ID(), Repository: repository,
@@ -109,7 +193,12 @@ func (e *Engine) validateFinalIdentity(
 			}
 		}
 		if err := receipt.CacheEvidence.ValidateAgainst(current); err != nil {
-			return fmt.Errorf("validate verification cache identity: %w", err)
+			kind := StaleVerificationCache
+			if receipt.CacheEvidence.LeaseID != current.LeaseID {
+				kind = StaleVerificationLease
+			}
+			return staleVerificationIdentity(kind, attemptID,
+				fmt.Errorf("validate verification cache identity: %w", err))
 		}
 		cacheRoot := e.cfg.CacheRoot
 		if cacheRoot == "" {
@@ -122,10 +211,31 @@ func (e *Engine) validateFinalIdentity(
 			return fmt.Errorf("initialize verification cache validation: %w", err)
 		}
 		if err := runtime.ValidateEvidence(receipt.CacheEvidence.RuntimeEvidence()); err != nil {
-			return fmt.Errorf("validate durable verification cache evidence: %w", err)
+			return staleVerificationIdentity(StaleVerificationCache, attemptID,
+				fmt.Errorf("validate durable verification cache evidence: %w", err))
 		}
 	}
 	return nil
+}
+
+func loadVerificationBytes(data []byte) (marshal.Verification, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var verification marshal.Verification
+	if err := decoder.Decode(&verification); err != nil {
+		return marshal.Verification{}, fmt.Errorf("decode verification: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return marshal.Verification{}, fmt.Errorf("decode verification: trailing JSON value")
+		}
+		return marshal.Verification{}, fmt.Errorf("decode verification: %w", err)
+	}
+	if err := verification.Validate(); err != nil {
+		return marshal.Verification{}, err
+	}
+	return verification, nil
 }
 
 func (e *Engine) checkpointVerificationReady(is *issueState) error {
