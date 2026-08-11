@@ -16,7 +16,10 @@ copy-on-write so a known-good snapshot is never opened for writes. A live lease
 is never stolen. Failed, interrupted, malformed, corrupt, stale, or
 identity-mismatched state is retained as machine-readable quarantine evidence;
 retries acquire a fresh lease and do not delete or repair the prior complete
-snapshot. There is no automatic cache cleanup or retention policy.
+snapshot. When finalization detects stale lease or cache identity in a
+verification receipt, the explicit retry must follow that same fresh-lease
+path; it must not relabel the old receipt or retry automatically. There is no
+automatic cache cleanup or retention policy.
 
 For cache-managed verification, daemon-authored `verification.json` includes
 strict `cache_evidence` bound to the repository, base/branch/tree SHAs, lease

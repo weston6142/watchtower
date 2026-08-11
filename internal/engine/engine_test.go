@@ -3971,6 +3971,121 @@ func TestFinalizationFailureRetriesIntegrationWithoutRerunningVerifier(t *testin
 	}
 }
 
+func TestExplicitRetryReverifiesStaleReceipt(t *testing.T) {
+	e, s, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	fake.OnStart = func(_, stage, _, _ string) error {
+		if stage != "merge-verification" {
+			return nil
+		}
+		return os.WriteFile(filepath.Join(repo, "diff"), []byte("dirty base\n"), 0o644)
+	}
+	id, err := e.CreateIssue("reverify stale receipt", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("dirty base unexpectedly finalized")
+	}
+	integration, ok, err := s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationVerificationReady {
+		t.Fatalf("integration after failed finalization = %+v ok=%v err=%v", integration, ok, err)
+	}
+	attempts, err := s.VerificationAttempts(id)
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("verification attempts before retry = %+v err=%v", attempts, err)
+	}
+	oldReceipt := append([]byte(nil), attempts[0].ReceiptJSON...)
+	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
+		t.Fatalf("repair base: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(integration.Worktree, "stale-proof"), []byte("changed after proof\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "stale-proof"}, {"commit", "-qm", "change after verification"}} {
+		if out, err := exec.Command("git", append([]string{"-C", integration.Worktree}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	currentHead := strings.TrimSpace(gitOutput(t, integration.Worktree, "rev-parse", "HEAD"))
+	currentTree := strings.TrimSpace(gitOutput(t, integration.Worktree, "rev-parse", "HEAD^{tree}"))
+	script := fake.Scripts["merge-verification/merge-verifier"]
+	script.Artifacts["merge-decision.json"] = ""
+	fake.Scripts["merge-verification/merge-verifier"] = script
+	fake.OnStart = nil
+	if err := e.RetryStage(context.Background(), id); err != nil {
+		t.Fatalf("explicit stale-proof retry: %v", err)
+	}
+	attempts, err = s.VerificationAttempts(id)
+	if err != nil || len(attempts) != 2 {
+		t.Fatalf("verification attempts after retry = %+v err=%v", attempts, err)
+	}
+	if attempts[0].Status != store.VerificationAttemptQuarantined ||
+		string(attempts[0].ReceiptJSON) != string(oldReceipt) ||
+		attempts[1].Status != store.VerificationAttemptPassed {
+		t.Fatalf("attempt history after retry = %+v", attempts)
+	}
+	var fresh marshal.Verification
+	if err := json.Unmarshal(attempts[1].ReceiptJSON, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.BranchSHA != currentHead || fresh.TreeSHA != currentTree || fresh.BaseSHA != integration.PreSHA ||
+		fresh.CacheEvidence == nil || fresh.CacheEvidence.BranchSHA != currentHead ||
+		fresh.CacheEvidence.TreeSHA != currentTree {
+		t.Fatalf("fresh receipt = %+v, head=%s tree=%s integration=%+v", fresh, currentHead, currentTree, integration)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("stage runs after stale retry = %+v err=%v", runs, err)
+	}
+	integration, ok, err = s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationMerged {
+		t.Fatalf("integration after stale retry = %+v ok=%v err=%v", integration, ok, err)
+	}
+}
+
+func TestMatchingProofRetryDoesNotReverify(t *testing.T) {
+	e, s, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	fake.OnStart = func(_, stage, _, _ string) error {
+		if stage != "merge-verification" {
+			return nil
+		}
+		return os.WriteFile(filepath.Join(repo, "diff"), []byte("dirty base\n"), 0o644)
+	}
+	id, err := e.CreateIssue("reuse matching proof", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("dirty base unexpectedly finalized")
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("stage runs before matching retry = %+v err=%v", runs, err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
+		t.Fatalf("repair base: %v: %s", err, out)
+	}
+	fake.OnStart = func(_, stage, _, _ string) error {
+		if stage == "merge-verification" {
+			t.Fatal("matching proof retry reran merge-verification")
+		}
+		return nil
+	}
+	if err := e.RetryStage(context.Background(), id); err != nil {
+		t.Fatalf("matching proof retry: %v", err)
+	}
+	runs, err = s.StageRuns(id)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("stage runs after matching retry = %+v err=%v", runs, err)
+	}
+	attempts, err := s.VerificationAttempts(id)
+	if err != nil || len(attempts) != 1 || attempts[0].Status != store.VerificationAttemptPassed {
+		t.Fatalf("matching proof attempts = %+v err=%v", attempts, err)
+	}
+}
+
 func TestRehydrateAutomaticallyResumesVerifiedFinalization(t *testing.T) {
 	e, s, repo := verificationEngineForFlow(
 		t, renamedVerificationFlow(), "merge", [][]string{{"true"}}, "",

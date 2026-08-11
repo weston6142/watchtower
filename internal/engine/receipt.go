@@ -93,3 +93,7 @@ func rejectVerificationIdentity(lease *verificationcache.Lease, cause error, rea
 	}
 	return cause
 }
+
+func verificationReceiptBytes(workdir string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(workdir, "verification.json"))
+}
