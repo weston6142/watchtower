@@ -13,6 +13,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 // maxLineBytes bounds a single stream-json line; the CLI can emit large
@@ -131,6 +132,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 	sessionDone := false
 	coachCount := 0
 	decisionAccepted := false
+	var stageEvidence *stageresult.Evidence
 	var pendingTools []runner.ToolDecision
 	// Replies to the agent (decision answers, coaching) are deferred until the
 	// current turn's result event. A message written mid-turn is absorbed into
@@ -168,6 +170,10 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 			}
 			pendingTools = append(pendingTools, decisions...)
 			emit(ev)
+			if err := collectStageEvidence(&stageEvidence, ev.Text); err != nil {
+				res.FailureClass = runner.FailureProtocol
+				return abort(err)
+			}
 			if d, found := agentprotocol.ExtractDecision(ev.Text); found {
 				incomplete := agentprotocol.DecisionNeedsCoaching(d)
 				if incomplete {
@@ -284,7 +290,29 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 	if res.Err == nil && !gotResult {
 		res.Err = fmt.Errorf("claude session %s ended without result event", res.SessionID)
 	}
+	if res.Err == nil {
+		res.StageEvidence = stageEvidence
+	}
 	return res
+}
+
+func collectStageEvidence(current **stageresult.Evidence, text string) error {
+	evidence, found, err := agentprotocol.ExtractStageResult(text)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if *current == nil {
+		copied := evidence
+		*current = &copied
+		return nil
+	}
+	if !agentprotocol.StageResultEvidenceEqual(**current, evidence) {
+		return fmt.Errorf("conflicting watchtower_stage_result markers")
+	}
+	return nil
 }
 
 func admitTools(ctx context.Context, gate runner.ExplorationGate, calls []runner.ToolCall) ([]runner.ToolDecision, error) {

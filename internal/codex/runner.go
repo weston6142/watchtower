@@ -17,6 +17,7 @@ import (
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 const (
@@ -197,6 +198,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 	prompt := agentprotocol.TaskMessage(stage, issueID)
 	coachCount := 0
 	decisionAccepted := false
+	var stageEvidence *stageresult.Evidence
 	if start != nil {
 		threadID = start.threadID
 		prompt = start.prompt
@@ -235,6 +237,11 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			switch event.Kind {
 			case KindText:
 				c.emitText(issueID, stage, event.Text)
+				if err := collectStageEvidence(&stageEvidence, event.Text); err != nil {
+					res.Err = err
+					res.FailureClass = runner.FailureProtocol
+					return res, continuation()
+				}
 				if decision == nil {
 					if parsed, found := agentprotocol.ExtractDecision(event.Text); found {
 						decision = &parsed
@@ -274,6 +281,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			continue
 		}
 		if decision == nil {
+			res.StageEvidence = stageEvidence
 			return res, continuation()
 		}
 		d := *decision
@@ -322,6 +330,25 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 		}
 		prompt = "Human decision: " + answer
 	}
+}
+
+func collectStageEvidence(current **stageresult.Evidence, text string) error {
+	evidence, found, err := agentprotocol.ExtractStageResult(text)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if *current == nil {
+		copied := evidence
+		*current = &copied
+		return nil
+	}
+	if !agentprotocol.StageResultEvidenceEqual(**current, evidence) {
+		return fmt.Errorf("conflicting watchtower_stage_result markers")
+	}
+	return nil
 }
 
 func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Package,

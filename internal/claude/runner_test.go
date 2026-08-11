@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,65 @@ import (
 func testPkgs() map[string]pkgs.Package {
 	return map[string]pkgs.Package{
 		"spec-writer": {Name: "spec-writer", Prompt: "write specs"},
+		"executor":    {Name: "executor", Prompt: "execute plan"},
 	}
+}
+
+func TestCodeRunnerReturnsStageResultEvidence(t *testing.T) {
+	bin := writeClaudeStageResultStub(t, claudeStageResultMarker("implemented"))
+	r := &CodeRunner{Bin: bin, Packages: testPkgs()}
+	res := <-r.Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	if res.Err != nil || res.StageEvidence == nil {
+		t.Fatalf("result = %+v", res)
+	}
+	if got := res.StageEvidence.Execute.PlanTasks[0].Summary; got != "implemented" {
+		t.Fatalf("task summary = %q", got)
+	}
+}
+
+func TestCodeRunnerRejectsConflictingStageResultMarkers(t *testing.T) {
+	bin := writeClaudeStageResultStub(t, claudeStageResultMarker("first"), claudeStageResultMarker("different"))
+	r := &CodeRunner{Bin: bin, Packages: testPkgs()}
+	res := <-r.Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	if res.Err == nil || res.FailureClass != runner.FailureProtocol || res.StageEvidence != nil {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func writeClaudeStageResultStub(t *testing.T, markers ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-result-stub")
+	lines := []string{"#!/bin/sh", "set -eu", "cat > /dev/null &", claudeJSONLine(map[string]any{"type": "system", "subtype": "init", "session_id": "s-result"})}
+	for _, marker := range markers {
+		lines = append(lines, claudeJSONLine(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "text", "text": marker}}}}))
+	}
+	lines = append(lines, claudeJSONLine(map[string]any{"type": "result", "is_error": false, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}))
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func claudeStageResultMarker(summary string) string {
+	evidence := map[string]any{
+		"schema_version": 1, "stage_kind": "execute", "outcome": "completed",
+		"remaining_work": []any{}, "remaining_concerns": []any{},
+		"execute": map[string]any{
+			"plan_tasks": []any{map[string]any{"id": "task-0001", "outcome": "completed", "summary": summary}},
+			"commits":    []any{}, "checks": []any{},
+			"skips": []any{
+				map[string]any{"activity": "commits", "explanation": "the fixture makes no repository change"},
+				map[string]any{"activity": "checks", "explanation": "provider transport is the behavior under test"},
+			},
+		},
+	}
+	body, _ := json.Marshal(map[string]any{"watchtower_stage_result": evidence})
+	return string(body)
+}
+
+func claudeJSONLine(value any) string {
+	body, _ := json.Marshal(value)
+	return "printf '%s\\n' '" + string(body) + "'"
 }
 
 func run(t *testing.T, bin string, dir string) (<-chan runner.Result, chan runner.Ask) {

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 type Ask struct {
@@ -69,6 +70,7 @@ type Attempt struct {
 type Result struct {
 	Artifacts        map[string]string
 	DependsOn        []string
+	StageEvidence    *stageresult.Evidence
 	SessionID        string
 	Tokens           int
 	TokensKnown      bool
