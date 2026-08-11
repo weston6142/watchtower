@@ -59,18 +59,18 @@ func (s *Store) ActivePlannerArtifactBindings(worktree string) ([]plannerartifac
 	return bindings, nil
 }
 
-// LoadLatestPlannerArtifact returns the newest active planner record for one
-// issue/stage/worktree. A retry uses this durable prefix to initialize its
-// next exact attempt without trusting client or worktree content.
-func (s *Store) LoadLatestPlannerArtifact(issueID, stage, worktree string) (attempt int, status string, digest, manifest, sections []byte, found bool, err error) {
+// LoadLatestPlannerArtifactBefore returns the newest active planner record in
+// one exact issue/stage/worktree scope before the given attempt. A retry uses
+// this durable prefix without trusting client or worktree content.
+func (s *Store) LoadLatestPlannerArtifactBefore(issueID, stage string, beforeAttempt int, worktree string) (attempt int, status string, digest, manifest, sections []byte, found bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err = s.db.QueryRow(`
 		SELECT attempt, status, capability_digest, manifest, sections
 		FROM planner_artifacts
-		WHERE issue_id=? AND stage=? AND worktree=? AND status=?
+		WHERE issue_id=? AND stage=? AND worktree=? AND status=? AND attempt < ?
 		ORDER BY attempt DESC LIMIT 1`,
-		issueID, stage, worktree, "active").Scan(&attempt, &status, &digest, &manifest, &sections)
+		issueID, stage, worktree, "active", beforeAttempt).Scan(&attempt, &status, &digest, &manifest, &sections)
 	if err == sql.ErrNoRows {
 		return 0, "", nil, nil, nil, false, nil
 	}

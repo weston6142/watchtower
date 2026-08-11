@@ -34,7 +34,7 @@ type Registry interface {
 }
 
 type retryRegistry interface {
-	LoadLatestPlannerArtifact(issueID, stage, worktree string) (attempt int, status string, digest, manifest, sections []byte, found bool, err error)
+	LoadLatestPlannerArtifactBefore(issueID, stage string, beforeAttempt int, worktree string) (attempt int, status string, digest, manifest, sections []byte, found bool, err error)
 }
 
 type acceptedSection struct {
@@ -107,8 +107,8 @@ func CreateOrLoad(registry Registry, binding Binding) (*Authority, error) {
 		storedManifest := []byte(nil)
 		storedSections := []byte("[]")
 		if retry, ok := registry.(retryRegistry); ok {
-			previousAttempt, previousStatus, previousDigest, previousManifest, previousSections, previousFound, previousErr := retry.LoadLatestPlannerArtifact(
-				normalized.IssueID, normalized.Stage, normalized.Worktree)
+			previousAttempt, previousStatus, previousDigest, previousManifest, previousSections, previousFound, previousErr := retry.LoadLatestPlannerArtifactBefore(
+				normalized.IssueID, normalized.Stage, normalized.Attempt, normalized.Worktree)
 			if previousErr != nil {
 				return nil, authorityError(ErrorAuthorityState, "", "planner retry state is unavailable", previousErr)
 			}
