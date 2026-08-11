@@ -49,6 +49,8 @@ type Brief struct {
 	Branch               string
 	RequiredInputs       []string
 	ExpectedOutputs      []string
+	AgentOwnedOutputs    []string
+	EngineOwnedOutputs   []string
 	ProhibitedActions    []string
 	VerificationOwner    string
 	FinalizationContract string
@@ -190,7 +192,12 @@ func WriteStageBrief(workdir string, brief Brief) error {
 	body.WriteString("- Base commit: " + valueOrUnknown(brief.BaseCommit) + "\n")
 	body.WriteString("- Branch: " + valueOrUnknown(brief.Branch) + "\n")
 	writeList(&body, "Required inputs", brief.RequiredInputs)
-	writeList(&body, "Expected outputs", brief.ExpectedOutputs)
+	agentOutputs := brief.AgentOwnedOutputs
+	if len(agentOutputs) == 0 {
+		agentOutputs = brief.ExpectedOutputs
+	}
+	writeList(&body, "Agent-owned outputs", agentOutputs)
+	writeList(&body, "Engine-owned outputs", brief.EngineOwnedOutputs)
 	writeList(&body, "Prohibited actions", brief.ProhibitedActions)
 	body.WriteString("\n## Verification ownership\n\n")
 	body.WriteString(valueOrUnknown(brief.VerificationOwner) + "\n")

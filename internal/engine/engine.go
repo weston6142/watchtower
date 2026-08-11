@@ -3251,6 +3251,7 @@ func (e *Engine) runStageOnce(
 	if len(expectedOutputs) == 0 {
 		expectedOutputs = []string{"committed repository changes or a stage result"}
 	}
+	agentOutputs, engineOutputs := stageOutputOwnership(st, expectedOutputs)
 	prohibited := []string{
 		"do not merge or publish the issue branch",
 		"do not commit ISSUE.md, STAGE.md, decisions.md, or materialized workflow artifacts",
@@ -3269,7 +3270,8 @@ func (e *Engine) runStageOnce(
 	if err := contextpack.WriteStageBrief(workdir, contextpack.Brief{
 		IssueID: is.id, Stage: st.Name, StartCommit: startCommit,
 		BaseCommit: is.baseRef, Branch: branch, RequiredInputs: requiredInputs,
-		ExpectedOutputs: expectedOutputs, ProhibitedActions: prohibited,
+		ExpectedOutputs: expectedOutputs, AgentOwnedOutputs: agentOutputs, EngineOwnedOutputs: engineOutputs,
+		ProhibitedActions: prohibited,
 		VerificationOwner: verificationOwner(f), FinalizationContract: finalizationContract,
 		Recovery: recovery,
 	}); err != nil {
