@@ -59,18 +59,18 @@ func (s *Store) ActivePlannerArtifactBindings(worktree string) ([]plannerartifac
 	return bindings, nil
 }
 
-// LoadLatestPlannerArtifact returns the newest active planner record for one
-// issue/stage/worktree. A retry uses this durable prefix to initialize its
-// next exact attempt without trusting client or worktree content.
-func (s *Store) LoadLatestPlannerArtifact(issueID, stage, worktree string) (attempt int, status string, digest, manifest, sections []byte, found bool, err error) {
+// LoadLatestPlannerArtifactBefore returns the newest active planner record in
+// one exact issue/stage/worktree scope before the given attempt. A retry uses
+// this durable prefix without trusting client or worktree content.
+func (s *Store) LoadLatestPlannerArtifactBefore(issueID, stage string, beforeAttempt int, worktree string) (attempt int, status string, digest, manifest, sections []byte, found bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err = s.db.QueryRow(`
 		SELECT attempt, status, capability_digest, manifest, sections
 		FROM planner_artifacts
-		WHERE issue_id=? AND stage=? AND worktree=? AND status=?
+		WHERE issue_id=? AND stage=? AND worktree=? AND status=? AND attempt < ?
 		ORDER BY attempt DESC LIMIT 1`,
-		issueID, stage, worktree, "active").Scan(&attempt, &status, &digest, &manifest, &sections)
+		issueID, stage, worktree, "active", beforeAttempt).Scan(&attempt, &status, &digest, &manifest, &sections)
 	if err == sql.ErrNoRows {
 		return 0, "", nil, nil, nil, false, nil
 	}
@@ -97,6 +97,48 @@ func (s *Store) CreatePlannerArtifact(issueID, stage string, attempt int, worktr
 		issueID, stage, attempt, worktree, status, append([]byte(nil), digest...),
 		string(manifest), string(sections), now, now)
 	return err
+}
+
+// PromotePlannerArtifact atomically retires the selected prior attempt and
+// creates the recovered current attempt. This prevents a live prior handle
+// from mutating the shared planner pair after cross-attempt recovery.
+func (s *Store) PromotePlannerArtifact(issueID, stage string, priorAttempt, attempt int, worktree string, digest, manifest, sections []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failNextPlannerArtifactWrite {
+		s.failNextPlannerArtifactWrite = false
+		return fmt.Errorf("injected planner artifact registry write failure")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.Exec(`
+		UPDATE planner_artifacts SET status=?, updated_at=?
+		WHERE issue_id=? AND stage=? AND attempt=? AND worktree=? AND status=?`,
+		"expired", now, issueID, stage, priorAttempt, worktree, "active")
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return sql.ErrNoRows
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO planner_artifacts(
+			issue_id, stage, attempt, worktree, status, capability_digest,
+			manifest, sections, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		issueID, stage, attempt, worktree, "active", append([]byte(nil), digest...),
+		string(manifest), string(sections), now, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdatePlannerArtifact replaces only the exact bound record. The caller has

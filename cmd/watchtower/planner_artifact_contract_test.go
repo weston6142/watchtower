@@ -53,17 +53,32 @@ func TestInstalledPlannerArtifactBoundaryUsesDaemonSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer coordinator.Close()
-	engineInstance := engine.New(engine.Config{Store: coordinator, DataDir: filepath.Join(socketDir, "issues")})
+	manifest := commandManifest()
 	authority, err := plannerartifact.CreateOrLoad(coordinator, plannerartifact.Binding{IssueID: "GH-72", Stage: "plan", Attempt: 1, Worktree: repo})
 	if err != nil {
 		t.Fatal(err)
 	}
-	engineInstance.RegisterPlannerAuthority(authority)
+	goal := plannerartifact.WriteRequest{Manifest: manifest, Key: "goal", Markdown: "durable installed goal request", Globs: manifest.Sections[0].Globs}
+	if err := authority.Apply(goal); err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(repo, "plan.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "touchset.json"), []byte("tampered installed touchset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A restarted daemon has the same file-backed coordinator but no old live
+	// authority. It must rebuild authority from durable state before the CLI can
+	// apply the next section.
+	engineInstance := engine.New(engine.Config{Store: coordinator, DataDir: filepath.Join(socketDir, "issues")})
 	server := proto.NewServer(engineInstance, coordinator)
 	go func() { _ = server.Serve(listener) }()
 
-	manifest := commandManifest()
-	request := plannerartifact.WriteRequest{Manifest: manifest, Key: "goal", Markdown: "final installed boundary section", Globs: manifest.Sections[0].Globs}
+	request := plannerartifact.WriteRequest{Manifest: manifest, Key: "architecture", Markdown: "final installed architecture request", Globs: manifest.Sections[1].Globs}
 	requestPath := filepath.Join(repo, "request.json")
 	requestBytes, err := json.Marshal(request)
 	if err != nil {
@@ -82,18 +97,30 @@ func TestInstalledPlannerArtifactBoundaryUsesDaemonSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("installed CLI: %v output=%q", err, output)
 	}
-	if string(output) != "section-validated goal\n" {
+	if string(output) != "section-validated architecture\n" {
 		t.Fatalf("installed CLI output = %q", output)
 	}
 	if strings.Contains(string(output), request.Markdown) || strings.Contains(string(output), "private-installed-session") {
 		t.Fatalf("installed output disclosed request or private session: %q", output)
 	}
 	plan, err := os.ReadFile(filepath.Join(repo, "plan.md"))
-	if err != nil || !strings.Contains(string(plan), request.Markdown) {
+	if err != nil || !strings.Contains(string(plan), goal.Markdown) || !strings.Contains(string(plan), request.Markdown) {
 		t.Fatalf("installed daemon route did not publish plan: err=%v plan=%q", err, plan)
 	}
+	if strings.Count(string(plan), "key=goal") != 2 || strings.Count(string(plan), "key=architecture") != 2 {
+		t.Fatalf("installed recovery did not retain exactly one goal and architecture anchor pair: %q", plan)
+	}
+	touchset, err := os.ReadFile(filepath.Join(repo, "touchset.json"))
+	if err != nil || !strings.Contains(string(touchset), manifest.Sections[0].Globs[0]) || !strings.Contains(string(touchset), manifest.Sections[1].Globs[0]) {
+		t.Fatalf("installed recovery touchset omitted durable union: err=%v touchset=%q", err, touchset)
+	}
 	status, _, storedManifest, storedSections, found, err := coordinator.LoadPlannerArtifact("GH-72", "plan", 1, authority.Binding().Worktree)
-	if err != nil || !found || status != "active" || !strings.Contains(string(storedManifest), `"goal"`) || !strings.Contains(string(storedSections), request.Markdown) {
+	if err != nil || !found || status != "active" || !strings.Contains(string(storedManifest), `"goal"`) || !strings.Contains(string(storedSections), goal.Markdown) || !strings.Contains(string(storedSections), request.Markdown) {
 		t.Fatalf("durable installed authority state = status=%q found=%v manifest=%s sections=%s err=%v", status, found, storedManifest, storedSections, err)
+	}
+	for _, forbidden := range []string{goal.Markdown, request.Markdown, authority.CapabilityHandle(), "private-installed-session"} {
+		if strings.Contains(strings.Join(cmd.Args, " "), forbidden) || strings.Contains(string(output), forbidden) {
+			t.Fatalf("installed argv/output disclosed planner-private content: argv=%q output=%q", cmd.Args, output)
+		}
 	}
 }
