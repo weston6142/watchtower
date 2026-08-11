@@ -159,10 +159,7 @@ func (p Policy) Rule(class failure.Class, disposition failure.RetryDisposition) 
 		return Rule{}, fmt.Errorf("unsupported durable failure class %q", class)
 	}
 
-	rule := Rule{
-		ModelResampleEligible: slices.Contains(p.ModelResampleClasses, class),
-		ModelResampleCap:      p.ModelResampleLimit,
-	}
+	rule := Rule{}
 	switch disposition {
 	case failure.RetryNow:
 		rule.Behavior = BehaviorTransient
@@ -175,6 +172,10 @@ func (p Policy) Rule(class failure.Class, disposition failure.RetryDisposition) 
 		rule.Behavior = BehaviorNonRetryable
 	default:
 		return Rule{}, fmt.Errorf("unsupported durable retry disposition %q", disposition)
+	}
+	if rule.Behavior != BehaviorNonRetryable {
+		rule.ModelResampleEligible = slices.Contains(p.ModelResampleClasses, class)
+		rule.ModelResampleCap = p.ModelResampleLimit
 	}
 	rule.Evidence = PolicyEvidence{
 		PolicyID: p.ID, PolicyVersion: p.Version, Behavior: rule.Behavior,

@@ -37,6 +37,11 @@ func TestPolicyMapsTypedDispositionAndRejectsUnsupportedEvidence(t *testing.T) {
 	if err != nil || nonRetryable.Behavior != retry.BehaviorNonRetryable || nonRetryable.SharedCap != 0 {
 		t.Fatalf("non-retryable rule = %+v, err=%v", nonRetryable, err)
 	}
+	configuredNonRetryable, err := policy.Rule(failure.ClassExecution, failure.DoNotRetry)
+	if err != nil || configuredNonRetryable.Behavior != retry.BehaviorNonRetryable ||
+		configuredNonRetryable.ModelResampleEligible {
+		t.Fatalf("configured non-retryable rule = %+v, err=%v", configuredNonRetryable, err)
+	}
 
 	for name, tc := range map[string]struct {
 		class       failure.Class
