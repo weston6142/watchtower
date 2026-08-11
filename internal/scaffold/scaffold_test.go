@@ -388,6 +388,77 @@ func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 	}
 }
 
+func TestShippedMutatingStagesRequireStructuredResults(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+
+	generated, err := pkgs.LoadDir(filepath.Join(root, ".watchtower", "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shipped, err := pkgs.LoadDir(filepath.Join("..", "..", "dist", "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stageKinds := map[string]string{
+		"executor":             "execute",
+		"correctness-reviewer": "correctness_review",
+		"clean-code-reviewer":  "clean_code_review",
+		"librarian":            "librarian",
+	}
+	for label, packages := range map[string]map[string]pkgs.Package{
+		"generated": generated,
+		"shipped":   shipped,
+	} {
+		for name, kind := range stageKinds {
+			pkg, ok := packages[name]
+			if !ok {
+				t.Fatalf("%s packages omit %s", label, name)
+			}
+			if !slices.Contains(pkg.Includes, "stage-result-protocol") {
+				t.Errorf("%s package %s does not include stage-result-protocol", label, name)
+			}
+			for _, required := range []string{
+				"# Shared include: stage-result-protocol",
+				"watchtower_stage_result",
+				`"stage_kind":"` + kind + `"`,
+				"schema_version",
+				"outcome",
+				"remaining_work",
+				"remaining_concerns",
+				"skips",
+				"exactly one marker in your final response",
+				"Do not supply `issue_id`, `attempt_id`, `predecessor_attempt_id`, or `validation_status`",
+			} {
+				if !strings.Contains(pkg.Prompt, required) {
+					t.Errorf("%s package %s prompt missing %q", label, name, required)
+				}
+			}
+		}
+
+		planner := packages["planner"]
+		if slices.Contains(planner.Includes, "stage-result-protocol") ||
+			strings.Contains(planner.Prompt, "# Shared include: stage-result-protocol") {
+			t.Errorf("%s planner unexpectedly includes stage-result-protocol", label)
+		}
+	}
+
+	sourceProtocol, err := os.ReadFile(filepath.Join("defaults", "shared", "stage-result-protocol.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shippedProtocol, err := os.ReadFile(filepath.Join("..", "..", "dist", "shared", "stage-result-protocol.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(sourceProtocol, shippedProtocol) {
+		t.Fatal("embedded and shipped stage result protocols differ")
+	}
+}
+
 func TestScaffoldDefaultIdentityMetadata(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := Init(root); err != nil {
