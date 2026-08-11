@@ -6,17 +6,19 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
+	"github.com/weston6142/watchtower/internal/capability"
+	capruntime "github.com/weston6142/watchtower/internal/capability/runtime"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/runner/conformance"
 )
 
 const (
@@ -38,22 +40,26 @@ type CodeRunner struct {
 	OnProposal      func(string, runner.Proposal)
 	OnProposalBatch func(string, []runner.Proposal)
 	OnLine          func(issueID, stage, line string)
+	Backend         capruntime.Backend
 }
 
-func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	asks chan<- runner.Ask) <-chan runner.Result {
+func (c *CodeRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	return conformance.Preflight(request, c.backend(), "codex", "codex-cli-gateway")
+}
+
+func (c *CodeRunner) Run(ctx context.Context, request runner.StageRequest, asks chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
-		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, nil)
+		done <- c.runWithGate(ctx, request, asks, nil)
 	}()
 	return done
 }
 
-func (c *CodeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, workdir string,
+func (c *CodeRunner) RunPlanner(ctx context.Context, request runner.StageRequest,
 	asks chan<- runner.Ask, gate runner.ExplorationGate) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
-		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, gate)
+		done <- c.runWithGate(ctx, request, asks, gate)
 	}()
 	return done
 }
@@ -67,10 +73,34 @@ type turnResult struct {
 	failed       error
 	failureClass runner.FailureClass
 	invocation   invocation
+	runtimeAudit []capability.AuditRecord
 }
 
-func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	asks chan<- runner.Ask, gate runner.ExplorationGate) runner.Result {
+func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageRequest,
+	asks chan<- runner.Ask, gate runner.ExplorationGate) (result runner.Result) {
+	if err := conformance.ValidateRequest(request, "codex"); err != nil {
+		return runner.Result{Err: err, FailureClass: runner.FailureConfiguration}
+	}
+	var runtimeAudit []capability.AuditRecord
+	session, err := conformance.StartSession(ctx, request, c.backend(), func(record capability.AuditRecord) {
+		runtimeAudit = append(runtimeAudit, record)
+	})
+	if err != nil {
+		return runner.Result{Err: err, FailureClass: runner.FailureConfiguration}
+	}
+	defer func() {
+		_ = session.Close()
+		providerAudit := append([]capability.AuditRecord(nil), result.RuntimeAudit...)
+		result.RuntimeAudit = result.RuntimeAudit[:0]
+		if len(runtimeAudit) > 0 {
+			result.RuntimeAudit = append(result.RuntimeAudit, runtimeAudit[:len(runtimeAudit)-1]...)
+		}
+		result.RuntimeAudit = append(result.RuntimeAudit, providerAudit...)
+		if len(runtimeAudit) > 0 {
+			result.RuntimeAudit = append(result.RuntimeAudit, runtimeAudit[len(runtimeAudit)-1])
+		}
+	}()
+	issueID, stage, agentPkg, workdir := request.IssueID, request.Stage, request.Agent, request.Workdir
 	pkg, ok := c.Packages[agentPkg]
 	if !ok {
 		return runner.Result{Err: fmt.Errorf("unknown agent package %q", agentPkg), FailureClass: runner.FailureConfiguration}
@@ -103,7 +133,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 	if err := c.recordAttempt(ctx, primaryAttempt); err != nil {
 		return runner.Result{Err: fmt.Errorf("record primary Codex attempt: %w", err), FailureClass: runner.FailureUnknown, Attempt: primaryAttempt}
 	}
-	primaryResult, continuation := c.runProfile(ctx, issueID, stage, pkg, workdir, primary, nil, asks, gate)
+	primaryResult, continuation := c.runProfile(ctx, request, pkg, primary, nil, asks, gate)
 	primaryAttempt = updateAttempt(primaryAttempt, primaryResult, runner.AttemptRunning)
 	if primaryResult.Err == nil {
 		primaryAttempt.State = runner.AttemptSucceeded
@@ -136,6 +166,17 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 		primaryResult.Err = fmt.Errorf("Codex primary attempt failed (%s): %w; next action: %s", primaryClass, primaryResult.Err, primaryResult.NextAction)
 		return primaryResult
 	}
+	fallbackPlan, preflightErr := c.Preflight(ctx, runner.PreflightRequest{
+		IssueID: issueID, Stage: stage, Agent: agentPkg, Workdir: workdir, Contract: request.Contract,
+	})
+	if preflightErr != nil || fallbackPlan.ContractID != request.Contract.ContractID {
+		if preflightErr == nil {
+			preflightErr = fmt.Errorf("Codex fallback enforcement plan identity mismatch")
+		}
+		return terminalResult(primaryResult, primaryAttempt, nil, false, preflightErr)
+	}
+	fallbackRequest := request
+	fallbackRequest.Plan = fallbackPlan
 
 	fallbackAttempt := runner.Attempt{
 		OperationID: operationID, IssueID: issueID, Stage: stage, AgentPackage: agentPkg,
@@ -149,7 +190,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 	if err := c.recordAttempt(ctx, fallbackAttempt); err != nil {
 		return terminalResult(primaryResult, primaryAttempt, &fallbackAttempt, true, fmt.Errorf("start Codex fallback: %w", err))
 	}
-	fallbackResult, _ := c.runProfile(ctx, issueID, stage, pkg, workdir, *fallback, &continuation, asks, gate)
+	fallbackResult, _ := c.runProfile(ctx, fallbackRequest, pkg, *fallback, &continuation, asks, gate)
 	fallbackAttempt = updateAttempt(fallbackAttempt, fallbackResult, runner.AttemptRunning)
 	fallbackAttempt.FailureClass = fallbackResult.FailureClass
 	fallbackResult.FallbackConsumed = true
@@ -189,9 +230,10 @@ type runContinuation struct {
 	decisionAccepted bool
 }
 
-func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg pkgs.Package,
-	workdir string, profile repocfg.CodexProfile, start *runContinuation,
+func (c *CodeRunner) runProfile(ctx context.Context, request runner.StageRequest, pkg pkgs.Package,
+	profile repocfg.CodexProfile, start *runContinuation,
 	asks chan<- runner.Ask, gate runner.ExplorationGate) (runner.Result, runContinuation) {
+	issueID, stage := request.IssueID, request.Stage
 	var res runner.Result
 	threadID := ""
 	prompt := agentprotocol.TaskMessage(stage, issueID)
@@ -209,7 +251,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 
 	for {
 		var stageResults agentprotocol.StageResultCollector
-		turn := c.runTurn(ctx, workdir, pkg, profile, threadID, prompt, gate)
+		turn := c.runTurn(ctx, request, pkg, profile, threadID, prompt, gate)
 		res.Attempt.RedactedArgv = turn.invocation.RedactedArgv
 		if turn.threadID != "" {
 			if threadID != "" && turn.threadID != threadID {
@@ -224,6 +266,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 		}
 		res.Tokens += turn.tokens
 		res.TokensKnown = res.TokensKnown || turn.tokensKnown
+		res.RuntimeAudit = append(res.RuntimeAudit, turn.runtimeAudit...)
 		if turn.failed != nil {
 			res.Err = turn.failed
 			res.FailureClass = turn.failureClass
@@ -336,8 +379,9 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 	}
 }
 
-func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Package,
+func (c *CodeRunner) runTurn(ctx context.Context, request runner.StageRequest, pkg pkgs.Package,
 	profile repocfg.CodexProfile, threadID, prompt string, gate runner.ExplorationGate) turnResult {
+	workdir := request.Workdir
 	kind := turnInitial
 	if threadID != "" {
 		kind = turnResumed
@@ -348,24 +392,20 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 		ResumeID:      threadID,
 		PackagePrompt: pkg.Prompt,
 		Prompt:        prompt,
+		GatewayTools:  conformance.GatewayTools(request.Contract),
 	})
 
-	cmd := exec.CommandContext(ctx, profile.Bin, invocation.Argv...)
-	cmd.Dir = workdir
 	extraEnv := append([]string(nil), c.ExtraEnv...)
-	cmd.Env = runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx))
-	// If a shell wrapper leaves a child holding the JSONL pipe open after
-	// cancellation, do not let that child defeat CommandContext cancellation.
-	cmd.WaitDelay = 250 * time.Millisecond
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return turnResult{failed: fmt.Errorf("codex stdout: %w", err), failureClass: runner.FailureTransport, invocation: invocation}
-	}
 	var stderrTail tailBuffer
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrTail)
-	if err := cmd.Start(); err != nil {
+	process, err := runner.StartProcessTree(ctx, runner.ProcessSpec{
+		Path: profile.Bin, Args: invocation.Argv, Dir: workdir,
+		Env:    runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx)),
+		Stderr: io.MultiWriter(os.Stderr, &stderrTail), PipeStdout: true,
+	})
+	if err != nil {
 		return turnResult{failed: fmt.Errorf("codex start: %w", err), failureClass: runner.FailureLaunch, invocation: invocation}
 	}
+	stdout := process.StdoutPipe()
 
 	result := turnResult{invocation: invocation}
 	reconcile := func() {
@@ -393,13 +433,22 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 		case KindThread:
 			result.threadID = event.ThreadID
 		case KindToolRequest:
+			if !conformance.IsGatewayTool(event.ToolCall.Name) {
+				policy, record := conformance.RuntimeDenial(request, "codex", event.ToolCall)
+				result.runtimeAudit = append(result.runtimeAudit, record)
+				result.failed = policy
+				result.failureClass = runner.FailureAuthorization
+				_ = process.TerminateAndWait(250 * time.Millisecond)
+				stopReading = true
+				continue
+			}
 			if gate == nil {
 				continue
 			}
 			decision, err := gate.Admit(ctx, event.ToolCall)
 			if err != nil {
 				result.failed = err
-				_ = cmd.Process.Kill()
+				_ = process.TerminateAndWait(250 * time.Millisecond)
 				stopReading = true
 				continue
 			}
@@ -425,9 +474,11 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		if ctx.Err() != nil {
+		_ = process.TerminateAndWait(250 * time.Millisecond)
+		if result.failed != nil {
+			// A policy denial deliberately tears down the process tree and may
+			// close the JSONL pipe. Preserve the policy outcome as the cause.
+		} else if ctx.Err() != nil {
 			result.failed = c.withStderr(fmt.Errorf("codex: %w", ctx.Err()), stderrTail.String(), pkg.Prompt, prompt, threadID)
 			result.failureClass = runner.FailureCancellation
 		} else {
@@ -437,7 +488,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Packa
 		reconcile()
 		return result
 	}
-	waitErr := cmd.Wait()
+	waitErr := process.Wait()
 	if ctx.Err() != nil {
 		result.failed = fmt.Errorf("codex: %w", ctx.Err())
 		result.failureClass = runner.FailureCancellation
@@ -643,3 +694,10 @@ func (b *tailBuffer) Write(p []byte) (int, error) {
 func (b *tailBuffer) String() string { return strings.TrimSpace(string(b.data)) }
 
 func (c *CodeRunner) SetOnLine(fn func(issueID, stage, line string)) { c.OnLine = fn }
+
+func (c *CodeRunner) backend() capruntime.Backend {
+	if c.Backend != nil {
+		return c.Backend
+	}
+	return capruntime.NewPlatformBackend()
+}

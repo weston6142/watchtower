@@ -20,6 +20,7 @@ type turnDescriptor struct {
 	ResumeID      string
 	PackagePrompt string
 	Prompt        string
+	GatewayTools  []string
 }
 
 type invocation struct {
@@ -49,10 +50,15 @@ func buildInvocation(profile repocfg.CodexProfile, descriptor turnDescriptor) in
 	args = append(args,
 		"-m", profile.Model,
 		"-c", configString("model_reasoning_effort", profile.Effort),
-		"-c", configString("sandbox_mode", "danger-full-access"),
+		"-c", configString("sandbox_mode", "read-only"),
 		"-c", configString("approval_policy", "never"),
+		"-c", "tools.web_search=false",
+		"-c", "features.shell_tool=false",
 		"-c", configString("developer_instructions", descriptor.PackagePrompt),
 	)
+	if len(descriptor.GatewayTools) > 0 {
+		args = append(args, "-c", configString("watchtower_gateway_tools", strings.Join(descriptor.GatewayTools, ",")))
+	}
 	if value, ok := profile.FeatureOverrides["unified_exec"]; ok {
 		args = append(args, "-c", "features.unified_exec="+boolString(value))
 	}

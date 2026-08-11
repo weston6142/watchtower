@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/weston6142/watchtower/internal/attach"
+	capruntime "github.com/weston6142/watchtower/internal/capability/runtime"
 	"github.com/weston6142/watchtower/internal/claude"
 	"github.com/weston6142/watchtower/internal/codex"
 	"github.com/weston6142/watchtower/internal/core"
@@ -914,6 +915,7 @@ func runDaemon(args []string) {
 	}
 	var run runner.Runner
 	var ws workspace.Provider
+	runtimeBackend := capruntime.NewPlatformBackend()
 	primaryCodex := cfg.Codex.Primary
 	primaryCodex.Bin, primaryCodex.Model, primaryCodex.Effort = *codexBin, *codexModel, *codexEffort
 	var fallbackCodex *repocfg.CodexProfile
@@ -947,13 +949,13 @@ func runDaemon(args []string) {
 		}
 		run = fake
 	case "claude":
-		run = &claude.CodeRunner{Bin: *claudeBin, Packages: packages}
+		run = &claude.CodeRunner{Bin: *claudeBin, Packages: packages, Backend: runtimeBackend}
 		ws = workspace.Detect(repo)
 	case "codex":
 		run = &codex.CodeRunner{
 			Bin: *codexBin, Packages: packages,
 			DefaultModel: *codexModel, DefaultEffort: *codexEffort,
-			PrimaryProfile: primaryCodex, FallbackProfile: fallbackCodex,
+			PrimaryProfile: primaryCodex, FallbackProfile: fallbackCodex, Backend: runtimeBackend,
 		}
 		ws = workspace.Detect(repo)
 	default:

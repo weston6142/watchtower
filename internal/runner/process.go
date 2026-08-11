@@ -9,17 +9,21 @@ import (
 )
 
 type ProcessSpec struct {
-	Path   string
-	Args   []string
-	Dir    string
-	Env    []string
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
+	Path       string
+	Args       []string
+	Dir        string
+	Env        []string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+	PipeStdin  bool
+	PipeStdout bool
 }
 
 type ProcessTree struct {
 	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    io.ReadCloser
 	done      chan struct{}
 	waitErr   error
 	waitOnce  sync.Once
@@ -49,6 +53,24 @@ func newProcessTree(cmd *exec.Cmd, terminate func(force bool) error) *ProcessTre
 		close(tree.done)
 	}()
 	return tree
+}
+
+// StdinPipe returns the provider input stream requested by ProcessSpec. The
+// pipe belongs to the complete process tree and must be closed before waiting
+// for a provider that consumes streaming input.
+func (p *ProcessTree) StdinPipe() io.WriteCloser {
+	if p == nil {
+		return nil
+	}
+	return p.stdin
+}
+
+// StdoutPipe returns the provider output stream requested by ProcessSpec.
+func (p *ProcessTree) StdoutPipe() io.ReadCloser {
+	if p == nil {
+		return nil
+	}
+	return p.stdout
 }
 
 func (p *ProcessTree) Wait() error {

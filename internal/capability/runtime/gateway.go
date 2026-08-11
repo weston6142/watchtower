@@ -52,7 +52,7 @@ func Start(_ context.Context, request StartRequest) (*Session, error) {
 	if request.Plan.PlanID == "" {
 		request.Plan = backendPlan
 	}
-	if request.Plan.PlanID != backendPlan.PlanID || request.Plan.ContractID != request.Contract.ContractID {
+	if request.Plan.ContractID != request.Contract.ContractID || !equivalentControls(request.Plan, backendPlan) {
 		return nil, unsupported("containment plan identity mismatch")
 	}
 	if err := runner.ValidateEnforcementPlan(request.Contract, request.Plan); err != nil {
@@ -92,6 +92,22 @@ func Start(_ context.Context, request StartRequest) (*Session, error) {
 	session.environment = append(session.environment, "TMPDIR="+scratch)
 	session.record("launch", "passed", "", "", nil)
 	return session, nil
+}
+
+func equivalentControls(adapter, backend capability.EnforcementPlan) bool {
+	if len(adapter.Controls) != len(backend.Controls) {
+		return false
+	}
+	proofs := make(map[capability.EnforcementControl]bool, len(backend.Controls))
+	for _, proof := range backend.Controls {
+		proofs[proof.Control] = proof.Proven
+	}
+	for _, proof := range adapter.Controls {
+		if !proof.Proven || !proofs[proof.Control] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Session) ScratchRoot() string {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/plannerartifact"
@@ -24,10 +25,32 @@ func testPkgs() map[string]pkgs.Package {
 	}
 }
 
+func claudeStageRequest(r *CodeRunner, issueID, stage, agent, workdir string) runner.StageRequest {
+	contract := capability.CompiledContract{
+		ContractID: "contract-" + issueID + "-" + stage, AuthorityDigest: "authority-test",
+		Contract: capability.Contract{
+			Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
+			IssueID: issueID, Stage: stage, AttemptID: "attempt-test", Profile: "implementation",
+			WorkspaceRoot: workdir,
+			Operations: []capability.OperationClass{
+				capability.OpWorkspaceRead, capability.OpWorkspaceMutate, capability.OpLocalProcess,
+				capability.OpVCSRead, capability.OpVCSCommit, capability.OpPlannerArtifactApply,
+			},
+		},
+	}
+	plan, err := r.Preflight(context.Background(), runner.PreflightRequest{
+		IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return runner.StageRequest{IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract, Plan: plan}
+}
+
 func TestCodeRunnerReturnsStageResultEvidence(t *testing.T) {
 	bin := writeClaudeStageResultStub(t, claudeStageResultMarker("implemented"))
 	r := &CodeRunner{Bin: bin, Packages: testPkgs()}
-	res := <-r.Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	res := <-r.Run(context.Background(), claudeStageRequest(r, "GH-67", "execute", "executor", t.TempDir()), make(chan runner.Ask))
 	if res.Err != nil || res.StageEvidence == nil {
 		t.Fatalf("result = %+v", res)
 	}
@@ -39,7 +62,7 @@ func TestCodeRunnerReturnsStageResultEvidence(t *testing.T) {
 func TestCodeRunnerRejectsConflictingStageResultMarkers(t *testing.T) {
 	bin := writeClaudeStageResultStub(t, claudeStageResultMarker("first"), claudeStageResultMarker("different"))
 	r := &CodeRunner{Bin: bin, Packages: testPkgs()}
-	res := <-r.Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	res := <-r.Run(context.Background(), claudeStageRequest(r, "GH-67", "execute", "executor", t.TempDir()), make(chan runner.Ask))
 	if res.Err == nil || res.FailureClass != runner.FailureProtocol || res.StageEvidence != nil {
 		t.Fatalf("result = %+v", res)
 	}
@@ -50,7 +73,7 @@ func TestCodeRunnerRejectsStageResultBeforeFinalTurn(t *testing.T) {
 	bin := writeClaudeDecisionStageResultStub(t, claudeStageResultMarker("before decision")+"\n"+decision)
 	r := &CodeRunner{Bin: bin, Packages: testPkgs()}
 	asks := make(chan runner.Ask, 1)
-	done := r.Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), asks)
+	done := r.Run(context.Background(), claudeStageRequest(r, "GH-67", "execute", "executor", t.TempDir()), asks)
 	select {
 	case ask := <-asks:
 		ask.Reply <- levers.ChoiceResponse(0)
@@ -126,7 +149,7 @@ func run(t *testing.T, bin string, dir string) (<-chan runner.Result, chan runne
 	t.Helper()
 	c := &CodeRunner{Bin: bin, Packages: testPkgs()}
 	asks := make(chan runner.Ask, 1)
-	return c.Run(context.Background(), "GH-1", "spec", "spec-writer", dir, asks), asks
+	return c.Run(context.Background(), claudeStageRequest(c, "GH-1", "spec", "spec-writer", dir), asks), asks
 }
 
 // runLines is run() with OnLine wired, for tests that assert on transcript
@@ -138,7 +161,7 @@ func runLines(t *testing.T, bin, dir string) ([]string, runner.Result) {
 		lines = append(lines, line)
 	}}
 	asks := make(chan runner.Ask, 1)
-	res := <-c.Run(context.Background(), "GH-1", "spec", "spec-writer", dir, asks)
+	res := <-c.Run(context.Background(), claudeStageRequest(c, "GH-1", "spec", "spec-writer", dir), asks)
 	return lines, res
 }
 
@@ -176,7 +199,7 @@ func TestOnLineReceivesToolCalls(t *testing.T) {
 	if !strings.Contains(joined, "looking at the engine") {
 		t.Fatalf("prose missing: %q", joined)
 	}
-	if !strings.Contains(joined, "↳ Bash go test ./...") {
+	if !strings.Contains(joined, "↳ mcp__watchtower__local_process go test ./...") {
 		t.Fatalf("tool line missing: %q", joined)
 	}
 	for _, line := range lines {
@@ -226,7 +249,7 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 	}
 	t.Setenv("WATCHTOWER_PLANNER_SESSION", sentinel)
 	ctx := context.Background()
-	res := <-r.RunPlanner(ctx, "GH-1", "plan", "spec-writer", dir, make(chan runner.Ask), nil)
+	res := <-r.RunPlanner(ctx, claudeStageRequest(r, "GH-1", "plan", "spec-writer", dir), make(chan runner.Ask), nil)
 	if res.Err != nil {
 		t.Fatal(res.Err)
 	}
@@ -269,7 +292,7 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 		t.Fatal(err)
 	}
 	r := &CodeRunner{Bin: bin, Packages: testPkgs(), ExtraEnv: []string{"CAPTURE=" + capture}}
-	result := <-r.RunPlanner(runner.WithPlannerArtifactAuthority(context.Background(), authority), "GH-72", "plan", "spec-writer", dir, make(chan runner.Ask), nil)
+	result := <-r.RunPlanner(runner.WithPlannerArtifactAuthority(context.Background(), authority), claudeStageRequest(r, "GH-72", "plan", "spec-writer", dir), make(chan runner.Ask), nil)
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
@@ -303,7 +326,7 @@ printf '%s\n' '{"type":"result","is_error":false,"usage":{"input_tokens":1,"outp
 	ctx := runner.WithManagedEnvironment(context.Background(), []string{
 		"GOCACHE=lease-cache", "GOMODCACHE=lease-mod", "GOPATH=lease-path",
 	})
-	res := <-r.Run(ctx, "GH-48", "execute", "spec-writer", dir, make(chan runner.Ask))
+	res := <-r.Run(ctx, claudeStageRequest(r, "GH-48", "execute", "spec-writer", dir), make(chan runner.Ask))
 	if res.Err != nil {
 		t.Fatal(res.Err)
 	}
@@ -363,7 +386,7 @@ func TestRunnerStopsAfterTwoIncompleteRetries(t *testing.T) {
 	gate := &recordingGate{}
 	c := &CodeRunner{Bin: abs(t, "testdata/coaching-exhausted.sh"), Packages: testPkgs()}
 	res := <-c.RunPlanner(
-		context.Background(), "GH-1", "spec", "spec-writer", t.TempDir(), make(chan runner.Ask, 1), gate,
+		context.Background(), claudeStageRequest(c, "GH-1", "spec", "spec-writer", t.TempDir()), make(chan runner.Ask, 1), gate,
 	)
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "claude decision remained incomplete after 2 coaching attempts") {
 		t.Fatalf("result: %+v", res)

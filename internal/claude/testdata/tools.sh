@@ -4,5 +4,5 @@
 cat > /dev/null &
 echo '{"type":"system","subtype":"init","session_id":"s-tools"}'
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"looking at the engine"}]}}'
-echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"go test ./..."}}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__watchtower__local_process","input":{"command":"go test ./..."}}]}}'
 echo '{"type":"result","is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}'
