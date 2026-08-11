@@ -194,11 +194,34 @@ func UnavailableDimensions(vector StateVector) []string {
 		{"tree", vector.TreeDigest}, {"config", vector.ConfigDigest},
 		{"environment", vector.EnvironmentDigest}, {"decision", vector.DecisionDigest},
 	} {
-		if dimension.value == failure.Unavailable || strings.TrimSpace(dimension.value) == "" {
+		if !stateDimensionAvailable(dimension.name, dimension.value) {
 			unavailable = append(unavailable, dimension.name)
 		}
 	}
 	return unavailable
+}
+
+func stateDimensionAvailable(name, value string) bool {
+	if value == failure.Unavailable || strings.TrimSpace(value) == "" {
+		return false
+	}
+	valid := "sha256:" + strings.Repeat("0", 64)
+	candidate := StateVector{
+		TreeDigest: valid, ConfigDigest: valid, EnvironmentDigest: valid, DecisionDigest: valid,
+	}
+	switch name {
+	case "tree":
+		candidate.TreeDigest = value
+	case "config":
+		candidate.ConfigDigest = value
+	case "environment":
+		candidate.EnvironmentDigest = value
+	case "decision":
+		candidate.DecisionDigest = value
+	default:
+		return false
+	}
+	return failure.ValidateStateVector(candidate) == nil
 }
 
 func ChangedDimensions(previous, current StateVector) (changed, unchanged []string) {

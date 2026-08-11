@@ -15,7 +15,7 @@ import (
 const retryContextSelect = `
 	SELECT context_key,schema_version,latest_record_id,issue_id,stage,failure_site,failure_class,
 	       retry_disposition,failure_fingerprint,state_vector,shared_used,shared_cap,
-	       model_resample_used,model_resample_cap,policy_evidence,lifecycle,version,updated_at
+	       model_resample_used,model_resample_cap,decision_identity,policy_evidence,lifecycle,version,updated_at
 	FROM retry_contexts`
 
 func scanRetryContext(row *sql.Row) (retry.Context, error) {
@@ -25,7 +25,7 @@ func scanRetryContext(row *sql.Row) (retry.Context, error) {
 		&stored.ContextKey, &stored.SchemaVersion, &stored.LatestRecordID,
 		&stored.IssueID, &stored.Stage, &site, &class, &disposition,
 		&stored.FailureFingerprint, &stateJSON, &stored.SharedUsed, &stored.SharedCap,
-		&stored.ModelResampleUsed, &stored.ModelResampleCap, &policyJSON,
+		&stored.ModelResampleUsed, &stored.ModelResampleCap, &stored.DecisionIdentity, &policyJSON,
 		&stored.Lifecycle, &stored.Version, &stored.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -72,6 +72,13 @@ func validateRetryContext(stored retry.Context) error {
 	}); err != nil {
 		return err
 	}
+	if stored.DecisionIdentity != "" {
+		selected := stored.State
+		selected.DecisionDigest = stored.DecisionIdentity
+		if err := failure.ValidateStateVector(selected); err != nil {
+			return fmt.Errorf("invalid selected model decision identity: %w", err)
+		}
+	}
 	switch stored.Lifecycle {
 	case retry.ContextActive, retry.ContextClosed, retry.ContextUnavailable:
 	default:
@@ -109,6 +116,13 @@ func (s *Store) AuthorizeRetry(ctx context.Context, update retry.AuthorizationUp
 	if err := failure.ValidateStateVector(update.Current); err != nil {
 		return retry.Context{}, err
 	}
+	if update.Kind == retry.KindModelResample {
+		selected := update.Current
+		selected.DecisionDigest = update.DecisionIdentity
+		if err := failure.ValidateStateVector(selected); err != nil {
+			return retry.Context{}, fmt.Errorf("invalid selected model decision identity: %w", err)
+		}
+	}
 	stateJSON, err := json.Marshal(update.Current)
 	if err != nil {
 		return retry.Context{}, err
@@ -133,11 +147,13 @@ func (s *Store) AuthorizeRetry(ctx context.Context, update retry.AuthorizationUp
 		UPDATE retry_contexts SET
 		  state_vector=?, shared_used=shared_used+1, shared_cap=?,
 		  model_resample_used=model_resample_used+?, model_resample_cap=?,
+		  decision_identity=CASE WHEN ?=1 THEN ? ELSE decision_identity END,
 		  policy_evidence=?, version=version+1, updated_at=?
 		WHERE context_key=? AND version=? AND lifecycle=?
 		  AND shared_used < ?
 		  AND (?=0 OR model_resample_used < ?)`,
 		string(stateJSON), update.SharedCap, modelIncrement, update.ModelResampleCap,
+		modelRequired, update.DecisionIdentity,
 		string(policyJSON), updatedAt, update.ContextKey, update.ExpectedVersion,
 		retry.ContextActive, update.SharedCap, modelRequired, update.ModelResampleCap)
 	if err != nil {

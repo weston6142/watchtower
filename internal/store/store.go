@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS retry_contexts(
   shared_cap INTEGER NOT NULL DEFAULT 0,
   model_resample_used INTEGER NOT NULL DEFAULT 0,
   model_resample_cap INTEGER NOT NULL DEFAULT 0,
+	decision_identity TEXT NOT NULL DEFAULT '',
   policy_evidence TEXT NOT NULL DEFAULT '{}',
   lifecycle TEXT NOT NULL,
   version INTEGER NOT NULL,
@@ -470,6 +471,10 @@ func Open(path string) (*Store, error) {
 		if err := ensureColumn(db, "stage_lifecycle_attempts", migration.column, migration.alter); err != nil {
 			return nil, err
 		}
+	}
+	if err := ensureColumn(db, "retry_contexts", "decision_identity",
+		`ALTER TABLE retry_contexts ADD COLUMN decision_identity TEXT NOT NULL DEFAULT ''`); err != nil {
+		return nil, err
 	}
 	if err := ensureColumn(db, "issues", "plan_review_policy",
 		`ALTER TABLE issues ADD COLUMN plan_review_policy TEXT NOT NULL DEFAULT '{}'`); err != nil {

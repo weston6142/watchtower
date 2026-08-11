@@ -7,11 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/core"
@@ -97,6 +97,7 @@ func (e *Engine) recordRunnerFailure(
 func stageFailureFingerprintInputs(
 	e *Engine, is *issueState, stage flow.Stage, site failure.Site, workdir string,
 ) failure.FingerprintInputs {
+	var contextPaths []string
 	inputs := failure.FingerprintInputs{
 		IssueID:            is.id,
 		Stage:              stage.Name,
@@ -138,6 +139,7 @@ func stageFailureFingerprintInputs(
 	if e.cfg.Store != nil {
 		if required, _, err := e.stageContext(is.id); err == nil {
 			for _, name := range required {
+				contextPaths = append(contextPaths, name)
 				digest := fileDigest(filepath.Join(workdir, name))
 				if digest == failure.Unavailable {
 					digest = fileDigest(filepath.Join(e.issueDir(is.id), "artifacts", name))
@@ -168,20 +170,8 @@ func stageFailureFingerprintInputs(
 				if row.IssueID != is.id {
 					continue
 				}
-				canonical, _ := json.Marshal(struct {
-					ID        int64    `json:"id"`
-					Stage     string   `json:"stage"`
-					Question  string   `json:"question"`
-					Options   []string `json:"options"`
-					Status    string   `json:"status"`
-					Response  any      `json:"response"`
-					CreatedAt string   `json:"created_at"`
-				}{
-					ID: row.ID, Stage: row.Stage, Question: row.Question, Options: row.Options,
-					Status: row.Status, Response: row.Response, CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339Nano),
-				})
 				inputs.Decisions = append(inputs.Decisions, failure.ContentIdentity{
-					Identity: strconv.FormatInt(row.ID, 10), ContentHash: digestFailureIdentity(string(canonical)),
+					Identity: strconv.FormatInt(row.ID, 10), ContentHash: durableDecisionIdentity(row),
 				})
 			}
 		} else {
@@ -212,17 +202,58 @@ func stageFailureFingerprintInputs(
 			Artifacts []failure.ContentIdentity `json:"artifacts"`
 		}{Inputs: inputs.StageInputs, Artifacts: inputs.Artifacts})
 		inputs.Git.Repository = digestFailureIdentity("workspace:none")
+		inputs.Git.BaseCommit = digestFailureIdentity("workspace:none:base")
 		inputs.Git.BranchCommit = digestFailureIdentity("workspace:none:" + is.id)
 		inputs.Git.TreeIdentity = digestFailureIdentity(string(canonical))
 	}
-	if head, branch, _ := repositoryState(workdir, nil); head != "" {
+	if head, branch, _ := repositoryState(workdir, contextPaths); head != "" {
 		inputs.Git.BranchCommit = digestFailureIdentity(head)
 		inputs.Git.Branch = digestFailureIdentity(branch)
-		if tree, err := gitRevision(workdir, "HEAD^{tree}"); err == nil {
-			inputs.Git.TreeIdentity = digestFailureIdentity(tree)
-		}
+		inputs.Git.TreeIdentity = gitWorktreeIdentity(workdir, contextPaths)
 	}
 	return inputs
+}
+
+// gitWorktreeIdentity binds retry evidence to both HEAD and non-context
+// tracked or untracked changes. Only the resulting digest leaves this helper;
+// paths, status records, and file contents remain transient.
+func gitWorktreeIdentity(workdir string, contextPaths []string) string {
+	tree, err := gitRevision(workdir, "HEAD^{tree}")
+	if err != nil {
+		return failure.Unavailable
+	}
+	args := []string{"-C", workdir, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".",
+		":(exclude)ISSUE.md", ":(exclude)STAGE.md", ":(exclude)decisions.md", ":(exclude)attachments/**"}
+	for _, name := range contextPaths {
+		if clean := filepath.ToSlash(filepath.Clean(name)); clean != "." && clean != "" {
+			args = append(args, ":(exclude)"+clean)
+		}
+	}
+	status, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return failure.Unavailable
+	}
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(tree))
+	for _, record := range strings.Split(string(status), "\x00") {
+		if record == "" {
+			continue
+		}
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(record))
+		path := record
+		if len(record) >= 4 && record[2] == ' ' {
+			path = record[3:]
+		}
+		body, readErr := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(path)))
+		if readErr != nil {
+			_, _ = hash.Write([]byte("\x00missing"))
+			continue
+		}
+		content := sha256.Sum256(body)
+		_, _ = hash.Write(content[:])
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func fileDigest(path string) string {
@@ -369,6 +400,9 @@ func (e *Engine) recordFailure(ctx context.Context, failureCtx failureContext) e
 	inputs.FailureSite = site
 	fingerprint := failureCtx.Fingerprint
 	if fingerprint == "" {
+		fingerprint = e.authorizedFailureFingerprint(failureCtx.IssueID, failureCtx.Stage, site, class)
+	}
+	if fingerprint == "" {
 		fingerprint = failure.BuildFingerprint(inputs)
 	}
 	stateVector := retry.BuildStateVector(inputs)
@@ -387,4 +421,14 @@ func (e *Engine) recordFailure(ctx context.Context, failureCtx failureContext) e
 		}
 	}
 	return primary
+}
+
+func (e *Engine) authorizedFailureFingerprint(issueID, stage string, site failure.Site, class failure.Class) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	is, ok := e.issues[issueID]
+	if !ok || is.retryStage != stage || is.retryFailureSite != site || is.retryFailureClass != class {
+		return ""
+	}
+	return is.retryFingerprint
 }

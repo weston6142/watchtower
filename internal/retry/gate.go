@@ -41,6 +41,7 @@ type Context struct {
 	SharedCap          int                      `json:"shared_cap"`
 	ModelResampleUsed  int                      `json:"model_resample_used"`
 	ModelResampleCap   int                      `json:"model_resample_cap"`
+	DecisionIdentity   string                   `json:"decision_identity,omitempty"`
 	Policy             PolicyEvidence           `json:"policy"`
 	Lifecycle          string                   `json:"lifecycle"`
 	Version            int64                    `json:"version"`
@@ -54,6 +55,7 @@ type AuthorizationUpdate struct {
 	Current          StateVector
 	SharedCap        int
 	ModelResampleCap int
+	DecisionIdentity string
 	Policy           PolicyEvidence
 }
 
@@ -110,11 +112,6 @@ func (g *Gate) Authorize(ctx context.Context, request Request) (Decision, error)
 		return rejectionDecision(request, Context{}, Rule{}, ReasonKindNotAllowed, nil, nil,
 			"request automatic, explicit, or model-resample retry"), nil
 	}
-	if err := availabilityError(request.Current); err != nil {
-		return rejectionDecision(request, Context{}, Rule{}, ReasonFingerprintUnavailable, nil, nil,
-			"restore the unavailable tree, config, environment, or decision evidence"), nil
-	}
-
 	var last evaluatedRetry
 	for conflict := 0; conflict < 2; conflict++ {
 		stored, err := g.store.LoadRetryContext(ctx, request.IssueID, request.Stage)
@@ -136,15 +133,18 @@ func (g *Gate) Authorize(ctx context.Context, request Request) (Decision, error)
 		updated, err := g.store.AuthorizeRetry(ctx, AuthorizationUpdate{
 			ContextKey: evaluated.context.ContextKey, ExpectedVersion: evaluated.context.Version,
 			Kind: request.Kind, Current: request.Current, SharedCap: evaluated.rule.SharedCap,
-			ModelResampleCap: evaluated.rule.ModelResampleCap, Policy: evaluated.rule.Evidence,
+			ModelResampleCap: evaluated.rule.ModelResampleCap, DecisionIdentity: request.DecisionIdentity,
+			Policy: evaluated.rule.Evidence,
 		})
 		if err == nil {
 			authorization := &Authorization{
 				ContextKey: updated.ContextKey, IssueID: updated.IssueID, Stage: updated.Stage, Kind: request.Kind,
-				FailureClass: updated.FailureClass, FailureFingerprint: updated.FailureFingerprint,
-				Attempt: updated.SharedUsed, SharedUsed: updated.SharedUsed, SharedCap: evaluated.rule.SharedCap,
+				FailureSite: updated.FailureSite, FailureClass: updated.FailureClass,
+				FailureFingerprint: updated.FailureFingerprint,
+				Attempt:            updated.SharedUsed, SharedUsed: updated.SharedUsed, SharedCap: evaluated.rule.SharedCap,
 				ModelResampleUsed: updated.ModelResampleUsed, ModelResampleCap: evaluated.rule.ModelResampleCap,
-				Current: updated.State, ChangedDimensions: evaluated.changed, Policy: evaluated.rule.Evidence,
+				DecisionIdentity: updated.DecisionIdentity,
+				Current:          updated.State, ChangedDimensions: evaluated.changed, Policy: evaluated.rule.Evidence,
 			}
 			return Decision{Authorized: true, Authorization: authorization}, nil
 		}
@@ -164,15 +164,24 @@ func (g *Gate) evaluate(request Request, stored Context) (evaluatedRetry, *Decis
 			"record a fresh durable failure context before retrying")
 		return evaluatedRetry{}, &rejected
 	}
-	if err := availabilityError(stored.State); err != nil {
-		rejected := rejectionDecision(request, stored, Rule{}, ReasonFingerprintUnavailable, nil, nil,
-			"record fresh failure evidence with all state dimensions available")
-		return evaluatedRetry{}, &rejected
-	}
 	rule, err := g.policy.Rule(stored.FailureClass, stored.RetryDisposition)
 	if err != nil {
 		rejected := rejectionDecision(request, stored, Rule{}, ReasonInvalidContext, nil, nil,
 			"record a supported durable failure classification before retrying")
+		return evaluatedRetry{}, &rejected
+	}
+	if err := availabilityError(stored.State); err != nil {
+		dimensions := UnavailableDimensions(stored.State)
+		rejected := rejectionDecision(request, stored, rule, ReasonFingerprintUnavailable, nil, nil,
+			"record fresh failure evidence with available "+strings.Join(dimensions, ", ")+" state")
+		rejected.Rejection.UnavailableDimensions = append([]string(nil), dimensions...)
+		return evaluatedRetry{}, &rejected
+	}
+	if err := availabilityError(request.Current); err != nil {
+		dimensions := UnavailableDimensions(request.Current)
+		rejected := rejectionDecision(request, stored, rule, ReasonFingerprintUnavailable, nil, nil,
+			"restore the unavailable "+strings.Join(dimensions, ", ")+" state evidence")
+		rejected.Rejection.UnavailableDimensions = append([]string(nil), dimensions...)
 		return evaluatedRetry{}, &rejected
 	}
 	changed, unchanged := ChangedDimensions(stored.State, request.Current)
@@ -182,7 +191,8 @@ func (g *Gate) evaluate(request Request, stored Context) (evaluatedRetry, *Decis
 		return evaluatedRetry{}, &rejected
 	}
 	if request.Kind == KindModelResample {
-		if !rule.ModelResampleEligible || strings.TrimSpace(request.DecisionIdentity) == "" {
+		if !rule.ModelResampleEligible || !stateDimensionAvailable("decision", request.DecisionIdentity) ||
+			request.DecisionIdentity == stored.DecisionIdentity {
 			rejected := rejectionDecision(request, stored, rule, ReasonKindNotAllowed, changed, unchanged,
 				"select a newer durable decision for an eligible explicit model resample")
 			return evaluatedRetry{}, &rejected

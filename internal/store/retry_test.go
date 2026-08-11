@@ -84,6 +84,39 @@ func TestRetryContextPersistsAuthorizationAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestRetryContextPersistsSelectedModelDecisionAcrossReopen(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "model-retry.db")
+	s, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := retryTestVector("a")
+	appendRetryFailure(t, s, retryTestDigest("f"), prior)
+	current := prior
+	current.DecisionDigest = retryTestDigest("e")
+	selected := retryTestDigest("1")
+	result, err := retry.MustNewGate(s, retryStorePolicy(2)).Authorize(context.Background(), retry.Request{
+		IssueID: "GH-65", Stage: "execute", Kind: retry.KindModelResample,
+		Current: current, DecisionIdentity: selected,
+	})
+	if err != nil || result.Authorization == nil || result.Authorization.DecisionIdentity != selected {
+		t.Fatalf("model authorization = %+v, err=%v", result, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	stored, err := s.LoadRetryContext(context.Background(), "GH-65", "execute")
+	if err != nil || stored.DecisionIdentity != selected || stored.ModelResampleUsed != 1 {
+		t.Fatalf("reopened model context = %+v, err=%v", stored, err)
+	}
+}
+
 func TestRetryContextPreservesDuplicateOccurrencesInOneAggregate(t *testing.T) {
 	s, err := Open("file:retry-duplicates?mode=memory&cache=shared")
 	if err != nil {

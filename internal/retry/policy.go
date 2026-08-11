@@ -85,6 +85,7 @@ type Authorization struct {
 	IssueID            string         `json:"issue_id"`
 	Stage              string         `json:"stage"`
 	Kind               Kind           `json:"retry_kind"`
+	FailureSite        failure.Site   `json:"failure_site"`
 	FailureClass       failure.Class  `json:"failure_class"`
 	FailureFingerprint string         `json:"failure_fingerprint"`
 	Attempt            int            `json:"attempt"`
@@ -92,26 +93,28 @@ type Authorization struct {
 	SharedCap          int            `json:"shared_cap"`
 	ModelResampleUsed  int            `json:"model_resample_used,omitempty"`
 	ModelResampleCap   int            `json:"model_resample_cap,omitempty"`
+	DecisionIdentity   string         `json:"decision_identity,omitempty"`
 	Current            StateVector    `json:"current"`
 	ChangedDimensions  []string       `json:"changed_dimensions,omitempty"`
 	Policy             PolicyEvidence `json:"policy"`
 }
 
 type Rejection struct {
-	Reason              Reason         `json:"reason"`
-	IssueID             string         `json:"issue_id"`
-	Stage               string         `json:"stage"`
-	Kind                Kind           `json:"retry_kind"`
-	FailureClass        failure.Class  `json:"failure_class"`
-	FailureFingerprint  string         `json:"failure_fingerprint"`
-	SharedUsed          int            `json:"shared_used"`
-	SharedCap           int            `json:"shared_cap"`
-	ModelResampleUsed   int            `json:"model_resample_used,omitempty"`
-	ModelResampleCap    int            `json:"model_resample_cap,omitempty"`
-	ChangedDimensions   []string       `json:"changed_dimensions,omitempty"`
-	UnchangedDimensions []string       `json:"unchanged_dimensions,omitempty"`
-	Policy              PolicyEvidence `json:"policy"`
-	NextAction          string         `json:"next_action"`
+	Reason                Reason         `json:"reason"`
+	IssueID               string         `json:"issue_id"`
+	Stage                 string         `json:"stage"`
+	Kind                  Kind           `json:"retry_kind"`
+	FailureClass          failure.Class  `json:"failure_class"`
+	FailureFingerprint    string         `json:"failure_fingerprint"`
+	SharedUsed            int            `json:"shared_used"`
+	SharedCap             int            `json:"shared_cap"`
+	ModelResampleUsed     int            `json:"model_resample_used,omitempty"`
+	ModelResampleCap      int            `json:"model_resample_cap,omitempty"`
+	ChangedDimensions     []string       `json:"changed_dimensions,omitempty"`
+	UnchangedDimensions   []string       `json:"unchanged_dimensions,omitempty"`
+	UnavailableDimensions []string       `json:"unavailable_dimensions,omitempty"`
+	Policy                PolicyEvidence `json:"policy"`
+	NextAction            string         `json:"next_action"`
 }
 
 func (p Policy) Validate() error {

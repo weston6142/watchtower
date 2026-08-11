@@ -2584,8 +2584,11 @@ func TestResumeRestartsKilledLane(t *testing.T) {
 		t.Fatal("expected killed run to return an error")
 	}
 
-	// Unblock the stage, then resume. brainstorm must run a second time.
-	fr.Scripts["brainstorm/brainstorm"] = runner.Script{}
+	// Resume into another blocking decision so the second kill observes a
+	// running stage instead of racing a zero-work fake runner.
+	fr.Scripts["brainstorm/brainstorm"] = runner.Script{Asks: []levers.Decision{
+		{Question: "block again?", Options: []string{"a"}, Recommended: 0, Importance: 1.0},
+	}}
 	if err := e.Resume(id); err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/store"
@@ -107,6 +108,82 @@ func TestAutomaticAndExplicitRetriesShareOneAllowance(t *testing.T) {
 	}
 }
 
+func TestMultiAgentRetryFailurePreservesOneConsumedAllowance(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	f := flow.Flow{Name: "retry", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "agent-a"}, {Package: "agent-b"}},
+		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/agent-a": {Fail: true},
+		"execute/agent-b": {Fail: true},
+	}}
+	var calls atomic.Int32
+	r.OnStart = func(_, _, _, _ string) error {
+		calls.Add(1)
+		return nil
+	}
+	e, _ := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.Workspace = &fakeWS{dir: repo}
+		cfg.RetryPolicy = retryEnginePolicy(1, 1, 1, failure.ClassExecution)
+	})
+	id := prepareRetryEngineBranch(t, e, "multi-agent allowance")
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("multi-agent failure unexpectedly succeeded")
+	}
+	changed := e.cfg.Flows[f.Name]
+	changed.Stages[0].Parallel = true
+	e.cfg.Flows[f.Name] = changed
+	if err := e.RetryStage(context.Background(), id); err == nil {
+		t.Fatal("multi-agent retry unexpectedly succeeded")
+	}
+	if calls.Load() != 4 {
+		t.Fatalf("runner calls after one retry = %d, want 4", calls.Load())
+	}
+	if err := e.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), string(retry.ReasonCapExhausted)) {
+		t.Fatalf("second multi-agent retry = %v, want exhausted allowance", err)
+	}
+	if calls.Load() != 4 {
+		t.Fatalf("exhausted multi-agent retry started runner; calls=%d", calls.Load())
+	}
+}
+
+func TestRetryFailureAtNewSiteGetsNewStableFingerprint(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	f := retryEngineFlow(0, "required.out")
+	f.Stages[0].MergeBarrier = true
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/agent": {}}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.Workspace = &fakeWS{dir: repo}
+		cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassValidation)
+	})
+	id := prepareRetryEngineBranch(t, e, "new failure site")
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("missing artifact unexpectedly succeeded")
+	}
+	before, err := s.FailureHistory(context.Background(), id)
+	if err != nil || len(before) != 1 || before[0].FailureSite != failure.SiteArtifact {
+		t.Fatalf("initial failure history = %+v, err=%v", before, err)
+	}
+
+	r.Scripts["execute/agent"] = runner.Script{Artifacts: map[string]string{"required.out": "repaired\n"}}
+	e.cfg.Train = &marshal.Train{Repo: repo, TestCmd: []string{"false"}}
+	if err := e.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), "verification") {
+		t.Fatalf("retry failure = %v, want verification failure", err)
+	}
+	after, err := s.FailureHistory(context.Background(), id)
+	if err != nil || len(after) != 2 || after[1].FailureSite != failure.SiteVerification {
+		t.Fatalf("retry failure history = %+v, err=%v", after, err)
+	}
+	if after[0].Fingerprint == after[1].Fingerprint {
+		t.Fatalf("artifact and verification failures shared fingerprint %s", after[0].Fingerprint)
+	}
+}
+
 func TestUnchangedDeterministicRetryIsRejectedBeforeVerification(t *testing.T) {
 	repo := t.TempDir()
 	initGitRepo(t, repo)
@@ -136,6 +213,49 @@ func TestUnchangedDeterministicRetryIsRejectedBeforeVerification(t *testing.T) {
 	}
 }
 
+func TestExplicitRetryObserversCanReenterEngine(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	f := retryEngineFlow(0, "required.out")
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/agent": {}}}
+	e, _ := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.Workspace = &fakeWS{dir: repo}
+		cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassValidation)
+	})
+	id := prepareRetryEngineBranch(t, e, "reentrant retry observer")
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("missing artifact unexpectedly succeeded")
+	}
+	changed := e.cfg.Flows[f.Name]
+	changed.Stages[0].Parallel = true
+	e.cfg.Flows[f.Name] = changed
+
+	observed := make(chan struct{}, 1)
+	e.cfg.Observers = append(e.cfg.Observers, func(event core.Event) {
+		if event.Type == core.EvRetryAuthorized {
+			_ = e.PendingDecisions()
+			observed <- struct{}{}
+		}
+	})
+	retried := make(chan error, 1)
+	go func() { retried <- e.RetryStage(context.Background(), id) }()
+
+	select {
+	case <-observed:
+	case <-time.After(time.Second):
+		t.Fatal("retry authorization observer deadlocked while reentering engine")
+	}
+	select {
+	case err := <-retried:
+		if err == nil {
+			t.Fatal("missing artifact after retry unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("explicit retry did not return after observer completed")
+	}
+}
+
 func TestEachStateDimensionUnlocksWithoutResettingBudget(t *testing.T) {
 	for _, dimension := range []string{"tree", "config", "environment", "decision"} {
 		t.Run(dimension, func(t *testing.T) {
@@ -160,11 +280,6 @@ func TestEachStateDimensionUnlocksWithoutResettingBudget(t *testing.T) {
 			case "tree":
 				if err := os.WriteFile(filepath.Join(repo, "repair"), []byte("repair\n"), 0o644); err != nil {
 					t.Fatal(err)
-				}
-				for _, args := range [][]string{{"add", "repair"}, {"commit", "-qm", "repair"}} {
-					if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-						t.Fatalf("git %v: %v: %s", args, err, out)
-					}
 				}
 			case "config":
 				changed := e.cfg.Flows[f.Name]
@@ -191,7 +306,65 @@ func TestEachStateDimensionUnlocksWithoutResettingBudget(t *testing.T) {
 				!strings.Contains(string(authorized[0].Payload), `"shared_used":1`) {
 				t.Fatalf("authorization after %s change = %+v", dimension, authorized)
 			}
+			switch dimension {
+			case "tree":
+				if err := os.WriteFile(filepath.Join(repo, "repair"), []byte("repair again\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "config":
+				changed := e.cfg.Flows[f.Name]
+				changed.Stages[0].Parallel = false
+				e.cfg.Flows[f.Name] = changed
+			case "environment":
+				e.cfg.CacheRoot = t.TempDir()
+			case "decision":
+				if _, err := s.InsertDecision(store.DecisionRow{
+					IssueID: id, Stage: "execute", Question: "Use another repaired state?", Status: "answered",
+					Response: levers.FreeformResponse("approved again"), CreatedAt: time.Now().UTC().Add(2 * time.Second),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := e.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), string(retry.ReasonCapExhausted)) {
+				t.Fatalf("second retry after %s change = %v, want exhausted allowance", dimension, err)
+			}
+			if calls.Load() != 2 {
+				t.Fatalf("runner calls after exhausted %s retry = %d, want 2", dimension, calls.Load())
+			}
 		})
+	}
+}
+
+func TestDeclaredArtifactChangeUpdatesRetryTreeState(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	f := retryEngineFlow(0, "required.out", "repair.out")
+	var calls atomic.Int32
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/agent": {}}, OnStart: func(_, _, _, _ string) error {
+		calls.Add(1)
+		return nil
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.Workspace = &fakeWS{dir: repo}
+		cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassValidation)
+	})
+	id := prepareRetryEngineBranch(t, e, "declared artifact repair")
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("missing artifacts unexpectedly succeeded")
+	}
+	if err := os.WriteFile(filepath.Join(repo, "repair.out"), []byte("repair\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RetryStage(context.Background(), id); err == nil {
+		t.Fatal("remaining missing artifact unexpectedly succeeded")
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("declared artifact repair started runner %d times, want 2", calls.Load())
+	}
+	authorized := retryEvents(t, s, id, core.EvRetryAuthorized)
+	if len(authorized) != 1 || !strings.Contains(string(authorized[0].Payload), `"changed_dimensions":["tree"]`) {
+		t.Fatalf("declared artifact authorization = %+v", authorized)
 	}
 }
 
@@ -210,6 +383,13 @@ func TestModelResampleIsExplicitAndUsesNewerDurableDecision(t *testing.T) {
 		cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassValidation)
 	})
 	id := prepareRetryEngineBranch(t, e, "model resample")
+	decisionID, err := s.InsertDecision(store.DecisionRow{
+		IssueID: id, Stage: "execute", Question: "Try a new sample?", Status: "pending",
+		CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := e.StartIssue(context.Background(), id); err == nil {
 		t.Fatal("missing artifact unexpectedly succeeded")
 	}
@@ -220,11 +400,7 @@ func TestModelResampleIsExplicitAndUsesNewerDurableDecision(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("invalid model resample started runner; calls=%d", calls.Load())
 	}
-	decisionID, err := s.InsertDecision(store.DecisionRow{
-		IssueID: id, Stage: "execute", Question: "Try a new sample?", Status: "answered",
-		Response: levers.FreeformResponse("new sample"), CreatedAt: time.Now().UTC().Add(time.Second),
-	})
-	if err != nil {
+	if err := s.AnswerDecision(decisionID, levers.FreeformResponse("new sample"), "answered"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.RetryStageWithKind(context.Background(), id, retry.KindModelResample, decisionID); err == nil {
@@ -235,7 +411,8 @@ func TestModelResampleIsExplicitAndUsesNewerDurableDecision(t *testing.T) {
 	}
 	authorized := retryEvents(t, s, id, core.EvRetryAuthorized)
 	if len(authorized) != 1 || !strings.Contains(string(authorized[0].Payload), `"retry_kind":"model-resample"`) ||
-		!strings.Contains(string(authorized[0].Payload), `"model_resample_used":1`) {
+		!strings.Contains(string(authorized[0].Payload), `"model_resample_used":1`) ||
+		!strings.Contains(string(authorized[0].Payload), `"decision_identity":"sha256:`) {
 		t.Fatalf("model-resample authorization = %+v", authorized)
 	}
 }
@@ -259,8 +436,18 @@ func TestMissingEvidenceFailsClosedWithoutStartingRunner(t *testing.T) {
 	if err := e.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), string(retry.ReasonFingerprintUnavailable)) {
 		t.Fatalf("missing-evidence retry error = %v", err)
 	}
-	if r.calls.Load() != 1 || len(retryEvents(t, s, id, core.EvRetryRejected)) != 1 {
-		t.Fatalf("missing-evidence calls=%d rejected=%d", r.calls.Load(), len(retryEvents(t, s, id, core.EvRetryRejected)))
+	rejected := retryEvents(t, s, id, core.EvRetryRejected)
+	if r.calls.Load() != 1 || len(rejected) != 1 {
+		t.Fatalf("missing-evidence calls=%d rejected=%d", r.calls.Load(), len(rejected))
+	}
+	payload := string(rejected[0].Payload)
+	for _, want := range []string{
+		`"failure_class":"execution"`, `"failure_fingerprint":"sha256:`,
+		`"shared_cap":2`, `"unavailable_dimensions":["tree"]`, `"policy_id":"test"`,
+	} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("missing-evidence rejection omitted %q: %s", want, payload)
+		}
 	}
 }
 

@@ -64,6 +64,7 @@ func (s *memoryContextStore) AuthorizeRetry(_ context.Context, update retry.Auth
 	s.context.SharedUsed++
 	if update.Kind == retry.KindModelResample {
 		s.context.ModelResampleUsed++
+		s.context.DecisionIdentity = update.DecisionIdentity
 	}
 	s.context.SharedCap = update.SharedCap
 	s.context.ModelResampleCap = update.ModelResampleCap
@@ -159,7 +160,11 @@ func TestAuthorizeRetryFailsClosedAndReloadsOnlyOnce(t *testing.T) {
 	result, err := unavailableGate.Authorize(context.Background(), retry.Request{
 		IssueID: "GH-65", Stage: "execute", Kind: retry.KindAutomatic, Current: unavailable,
 	})
-	if err != nil || result.Rejection == nil || result.Rejection.Reason != retry.ReasonFingerprintUnavailable || unavailableStore.context.SharedUsed != 0 {
+	if err != nil || result.Rejection == nil || result.Rejection.Reason != retry.ReasonFingerprintUnavailable ||
+		result.Rejection.FailureClass != failure.ClassExecution || result.Rejection.FailureFingerprint != testDigest("f") ||
+		result.Rejection.SharedCap != 1 || result.Rejection.Policy.PolicyID != "test" ||
+		len(result.Rejection.UnavailableDimensions) != 1 || result.Rejection.UnavailableDimensions[0] != "environment" ||
+		unavailableStore.context.SharedUsed != 0 {
 		t.Fatalf("unavailable result = %+v, context=%+v, err=%v", result, unavailableStore.context, err)
 	}
 

@@ -43,6 +43,7 @@ func (s *verificationStore) AuthorizeRetry(_ context.Context, update retry.Autho
 	s.stored.SharedUsed++
 	if update.Kind == retry.KindModelResample {
 		s.stored.ModelResampleUsed++
+		s.stored.DecisionIdentity = update.DecisionIdentity
 	}
 	s.stored.SharedCap = update.SharedCap
 	s.stored.ModelResampleCap = update.ModelResampleCap
@@ -144,17 +145,23 @@ func TestVerificationModelResampleIsExplicitOnlyAndCapped(t *testing.T) {
 	missingDecision := authorizeVerification(t, gate, retry.KindModelResample, initial, "")
 	changed := initial
 	changed.DecisionDigest = verificationDigest("decision-2")
-	accepted := authorizeVerification(t, gate, retry.KindModelResample, changed, verificationDigest("sample-2"))
+	selected := verificationDigest("sample-2")
+	accepted := authorizeVerification(t, gate, retry.KindModelResample, changed, selected)
 	again := changed
 	again.DecisionDigest = verificationDigest("decision-3")
-	exhausted := authorizeVerification(t, gate, retry.KindModelResample, again, verificationDigest("sample-3"))
+	reused := authorizeVerification(t, gate, retry.KindModelResample, again, selected)
+	newer := again
+	newer.DecisionDigest = verificationDigest("decision-4")
+	exhausted := authorizeVerification(t, gate, retry.KindModelResample, newer, verificationDigest("sample-3"))
 
 	if missingDecision.Rejection == nil || missingDecision.Rejection.Reason != retry.ReasonKindNotAllowed ||
 		accepted.Authorization == nil || accepted.Authorization.ModelResampleUsed != 1 ||
+		accepted.Authorization.DecisionIdentity != selected || store.stored.DecisionIdentity != selected ||
+		reused.Rejection == nil || reused.Rejection.Reason != retry.ReasonKindNotAllowed ||
 		exhausted.Rejection == nil || exhausted.Rejection.Reason != retry.ReasonModelResampleExhausted ||
 		store.stored.SharedUsed != 1 || store.stored.ModelResampleUsed != 1 {
-		t.Fatalf("model-resample accounting: missing=%+v accepted=%+v exhausted=%+v context=%+v",
-			missingDecision, accepted, exhausted, store.stored)
+		t.Fatalf("model-resample binding: missing=%+v accepted=%+v reused=%+v exhausted=%+v context=%+v",
+			missingDecision, accepted, reused, exhausted, store.stored)
 	}
 }
 
