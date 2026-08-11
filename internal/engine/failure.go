@@ -17,6 +17,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/verificationcache"
@@ -95,6 +96,9 @@ func stageFailureFingerprintInputs(
 		Stage:              stage.Name,
 		FailureSite:        site,
 		WatchtowerIdentity: digestFailureIdentity("watchtower:" + runtime.Version()),
+		EnvironmentIdentity: digestFailureIdentity(strings.Join([]string{
+			runtime.GOOS, runtime.GOARCH, runtime.Version(), e.cfg.DataDir, e.cfg.CacheRoot,
+		}, "\x00")),
 		Git: failure.GitIdentity{
 			Repository: digestFailureIdentity(workdir),
 			BaseCommit: digestFailureIdentity(is.baseRef),
@@ -322,10 +326,12 @@ func (e *Engine) recordFailure(ctx context.Context, failureCtx failureContext) e
 	if fingerprint == "" {
 		fingerprint = failure.BuildFingerprint(inputs)
 	}
+	stateVector := retry.BuildStateVector(inputs)
 	record, err := e.cfg.FailureRecorder.AppendFailure(diagnosticCtx, failure.RecordInput{
 		IssueID: failureCtx.IssueID, Stage: failureCtx.Stage, StageAttempt: failureCtx.StageAttempt,
 		FailureSite: site, FailureClass: class, RetryDisposition: disposition,
 		RequiredStateChange: stateChange, Fingerprint: fingerprint,
+		StateVector: &stateVector,
 	})
 	if err != nil {
 		return primary

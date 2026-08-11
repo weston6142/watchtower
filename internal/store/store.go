@@ -21,6 +21,7 @@ import (
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/stageusage"
@@ -45,6 +46,28 @@ CREATE TABLE IF NOT EXISTS failure_records(
 );
 CREATE INDEX IF NOT EXISTS failure_records_issue_order
   ON failure_records(issue_id, record_id);
+CREATE TABLE IF NOT EXISTS retry_contexts(
+  context_key TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  latest_record_id INTEGER NOT NULL,
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  failure_site TEXT NOT NULL,
+  failure_class TEXT NOT NULL,
+  retry_disposition TEXT NOT NULL,
+  failure_fingerprint TEXT NOT NULL,
+  state_vector TEXT NOT NULL,
+  shared_used INTEGER NOT NULL DEFAULT 0,
+  shared_cap INTEGER NOT NULL DEFAULT 0,
+  model_resample_used INTEGER NOT NULL DEFAULT 0,
+  model_resample_cap INTEGER NOT NULL DEFAULT 0,
+  policy_evidence TEXT NOT NULL DEFAULT '{}',
+  lifecycle TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS retry_contexts_issue_stage
+  ON retry_contexts(issue_id, stage, latest_record_id DESC);
 CREATE TABLE IF NOT EXISTS issues(
   id TEXT PRIMARY KEY, title TEXT, body TEXT, state TEXT,
   flow TEXT, levers TEXT, priority INTEGER, links TEXT,
@@ -236,6 +259,7 @@ type Store struct {
 	failNextAppendType               core.EventType
 	failNextFailureAppend            bool
 	failNextFailureHistory           bool
+	failNextRetryAuthorizations      int
 	failNextArtifactReviewResolution bool
 	failNextDecisionPageSnapshot     bool
 	failNextPausePersistence         bool
@@ -523,7 +547,12 @@ func (s *Store) AppendFailure(ctx context.Context, input failure.RecordInput) (f
 		return failure.FailureRecord{}, err
 	}
 	occurredAt := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return failure.FailureRecord{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO failure_records(
 		  schema_version,issue_id,stage,stage_attempt,failure_site,failure_class,
 		  retry_disposition,required_state_change,fingerprint,occurred_at
@@ -546,6 +575,40 @@ func (s *Store) AppendFailure(ctx context.Context, input failure.RecordInput) (f
 		Fingerprint: input.Fingerprint, OccurredAt: occurredAt,
 	}
 	if err := failure.ValidateRecord(record); err != nil {
+		return failure.FailureRecord{}, err
+	}
+	state := failure.StateVector{
+		TreeDigest: failure.Unavailable, ConfigDigest: failure.Unavailable,
+		EnvironmentDigest: failure.Unavailable, DecisionDigest: failure.Unavailable,
+	}
+	lifecycle := retry.ContextUnavailable
+	if input.StateVector != nil {
+		state = *input.StateVector
+		lifecycle = retry.ContextActive
+	}
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		return failure.FailureRecord{}, err
+	}
+	contextKey := retry.BuildContextKey(input.IssueID, input.Stage, input.FailureSite, input.FailureClass, input.Fingerprint)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO retry_contexts(
+		  context_key,schema_version,latest_record_id,issue_id,stage,failure_site,failure_class,
+		  retry_disposition,failure_fingerprint,state_vector,lifecycle,version,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(context_key) DO UPDATE SET
+		  latest_record_id=excluded.latest_record_id,
+		  retry_disposition=excluded.retry_disposition,
+		  state_vector=excluded.state_vector,
+		  lifecycle=excluded.lifecycle,
+		  version=retry_contexts.version+1,
+		  updated_at=excluded.updated_at`,
+		contextKey, retry.ContextSchemaVersion, recordID, input.IssueID, input.Stage,
+		string(input.FailureSite), string(input.FailureClass), string(input.RetryDisposition),
+		input.Fingerprint, string(stateJSON), lifecycle, 1, occurredAt.Format(time.RFC3339Nano)); err != nil {
+		return failure.FailureRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return failure.FailureRecord{}, err
 	}
 	return record, nil
