@@ -49,18 +49,21 @@ func (e *Engine) resolveCapabilityAuthority(
 	if err != nil {
 		return resolvedCapabilityAuthority{}, err
 	}
-	head, err := gitRevision(root, "HEAD")
-	if err != nil {
-		return resolvedCapabilityAuthority{}, fmt.Errorf("resolve trusted HEAD: %w", err)
-	}
-	tree, err := gitRevision(root, "HEAD^{tree}")
-	if err != nil {
-		return resolvedCapabilityAuthority{}, fmt.Errorf("resolve trusted tree: %w", err)
-	}
 	branch := is.branch
-	if branch == "" {
-		if branch, err = gitCommandOutput(root, "symbolic-ref", "--quiet", "--short", "HEAD"); err != nil {
-			return resolvedCapabilityAuthority{}, fmt.Errorf("resolve issue branch: %w", err)
+	head, tree := is.baseRef, ""
+	if stage.CapabilityProfile != flow.ProfileArtifact {
+		head, err = gitRevision(root, "HEAD")
+		if err != nil {
+			return resolvedCapabilityAuthority{}, fmt.Errorf("resolve trusted HEAD: %w", err)
+		}
+		tree, err = gitRevision(root, "HEAD^{tree}")
+		if err != nil {
+			return resolvedCapabilityAuthority{}, fmt.Errorf("resolve trusted tree: %w", err)
+		}
+		if branch == "" {
+			if branch, err = gitCommandOutput(root, "symbolic-ref", "--quiet", "--short", "HEAD"); err != nil {
+				return resolvedCapabilityAuthority{}, fmt.Errorf("resolve issue branch: %w", err)
+			}
 		}
 	}
 	outputs, agentOutputPaths, err := capabilityOutputOwnership(stage)

@@ -9,10 +9,72 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/plannerartifact"
 )
+
+func TestRunnerRejectsMismatchedContractAndPlan(t *testing.T) {
+	started := false
+	r := &FakeRunner{
+		Scripts: map[string]Script{"execute/executor": {}},
+		OnStart: func(_, _, _, _ string) error { started = true; return nil },
+	}
+	contract := capability.CompiledContract{
+		ContractID: strings.Repeat("a", 64), AuthorityDigest: strings.Repeat("b", 64),
+		Contract: capability.Contract{Version: capability.ContractVersion, IssueID: "GH-68", Stage: "execute", AttemptID: "checkpoint-1"},
+	}
+	plan, err := r.Preflight(context.Background(), PreflightRequest{
+		IssueID: "GH-68", Stage: "execute", Agent: "executor", Workdir: t.TempDir(), Contract: contract,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := contract
+	changed.ContractID = strings.Repeat("c", 64)
+	result := <-r.Run(context.Background(), StageRequest{
+		IssueID: "GH-68", Stage: "execute", Agent: "executor", Workdir: t.TempDir(),
+		Contract: changed, Plan: plan,
+	}, make(chan Ask))
+	if result.Err == nil || started {
+		t.Fatalf("mismatched request result=%+v started=%t", result, started)
+	}
+}
+
+func TestFakeRunnerScriptsPermittedAndDeniedOperations(t *testing.T) {
+	workdir := t.TempDir()
+	r := &FakeRunner{Scripts: map[string]Script{
+		"execute/executor": {OperationAttempts: []OperationAttempt{
+			{Operation: capability.OpWorkspaceMutate, Mutation: capability.MutationCreate, Path: "allowed.txt", Content: "allowed\n"},
+			{Operation: capability.OpWorkspaceMutate, Mutation: capability.MutationCreate, Path: "outside.txt", Content: "denied\n"},
+		}},
+	}}
+	contract := capability.CompiledContract{
+		ContractID: strings.Repeat("d", 64), AuthorityDigest: strings.Repeat("e", 64),
+		Contract: capability.Contract{
+			Version: capability.ContractVersion, IssueID: "GH-68", Stage: "execute", AttemptID: "checkpoint-1", WorkspaceRoot: workdir,
+			Operations: []capability.OperationClass{capability.OpWorkspaceMutate},
+			Writes:     []capability.PathGrant{{Path: "allowed.txt", Mutations: []capability.MutationClass{capability.MutationCreate}}},
+		},
+	}
+	plan, err := r.Preflight(context.Background(), PreflightRequest{IssueID: "GH-68", Stage: "execute", Agent: "executor", Workdir: workdir, Contract: contract})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := <-r.Run(context.Background(), StageRequest{
+		IssueID: "GH-68", Stage: "execute", Agent: "executor", Workdir: workdir, Contract: contract, Plan: plan,
+	}, make(chan Ask))
+	if result.Err == nil || len(result.RuntimeAudit) != 2 || result.RuntimeAudit[1].Reason != capability.ReasonRuntimeDenied {
+		t.Fatalf("result=%+v", result)
+	}
+	if body, err := os.ReadFile(filepath.Join(workdir, "allowed.txt")); err != nil || string(body) != "allowed\n" {
+		t.Fatalf("permitted effect body=%q err=%v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "outside.txt")); !os.IsNotExist(err) {
+		t.Fatalf("denied operation had a side effect: %v", err)
+	}
+}
 
 type scriptedGate struct {
 	Started   int
@@ -43,7 +105,8 @@ func TestPlannerRunnerStopsAfterDeniedToolAndKeepsSynthesisResult(t *testing.T) 
 		},
 	}}
 	g := &scriptedGate{denyAfter: 1}
-	result := <-fr.RunPlanner(context.Background(), "GH-39", "plan", "planner", t.TempDir(), make(chan Ask), g)
+	workdir := t.TempDir()
+	result := <-fr.RunPlanner(context.Background(), fakeStageRequest(t, fr, "GH-39", "plan", "planner", workdir), make(chan Ask), g)
 	if result.Err != nil || len(result.Artifacts) != 2 || g.Started != 1 {
 		t.Fatalf("result=%+v gate=%+v", result, g)
 	}
@@ -58,7 +121,8 @@ func TestManagedEnvironmentOverlayReachesFakeRunner(t *testing.T) {
 		},
 	}
 	ctx := WithManagedEnvironment(context.Background(), []string{"GOCACHE=lease-cache", "GOMODCACHE=lease-mod"})
-	if result := <-fr.Run(ctx, "GH-48", "run", "agent", t.TempDir(), make(chan Ask)); result.Err != nil {
+	workdir := t.TempDir()
+	if result := <-fr.Run(ctx, fakeStageRequest(t, fr, "GH-48", "run", "agent", workdir), make(chan Ask)); result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	if strings.Join(observed, "|") != "GOCACHE=lease-cache|GOMODCACHE=lease-mod" {
@@ -85,12 +149,13 @@ func TestFakePlannerAppliesSectionRequestsAndRetriesPendingKey(t *testing.T) {
 		"plan/planner": {PlannerRequests: requests, PlannerFailureAt: 1, PlannerFailure: errors.New("stop at architecture")},
 	}}
 	ctx := WithPlannerArtifactAuthority(context.Background(), authority)
-	first := <-fr.RunPlanner(ctx, "GH-40", "plan", "planner", dir, make(chan Ask), &scriptedGate{})
+	request := fakeStageRequest(t, fr, "GH-40", "plan", "planner", dir)
+	first := <-fr.RunPlanner(ctx, request, make(chan Ask), &scriptedGate{})
 	if first.Err == nil || !strings.Contains(first.Err.Error(), "stop at architecture") {
 		t.Fatalf("first result = %+v", first)
 	}
 	fr.Scripts["plan/planner"] = Script{PlannerRequests: requests}
-	second := <-fr.RunPlanner(ctx, "GH-40", "plan", "planner", dir, make(chan Ask), &scriptedGate{})
+	second := <-fr.RunPlanner(ctx, request, make(chan Ask), &scriptedGate{})
 	if second.Err != nil {
 		t.Fatal(second.Err)
 	}
@@ -126,7 +191,8 @@ func TestFakeRunnerPropagatesAskFailure(t *testing.T) {
 		"ask/agent": {Asks: []levers.Decision{{Question: "Proceed?", Options: []string{"yes"}, Recommended: 0}}},
 	}}
 	asks := make(chan Ask)
-	done := r.Run(context.Background(), "GH-1", "ask", "agent", t.TempDir(), asks)
+	workdir := t.TempDir()
+	done := r.Run(context.Background(), fakeStageRequest(t, r, "GH-1", "ask", "agent", workdir), asks)
 	a := <-asks
 	want := errors.New("invalid decision context: agent_color")
 	a.Error <- want
@@ -189,7 +255,7 @@ func TestFakeRunnerAsksThenProduces(t *testing.T) {
 		got = response
 	}}
 	asks := make(chan Ask, 1)
-	done := fr.Run(context.Background(), "GH-1", "spec", "spec-writer", dir, asks)
+	done := fr.Run(context.Background(), fakeStageRequest(t, fr, "GH-1", "spec", "spec-writer", dir), asks)
 
 	a := <-asks
 	if a.Decision.Question != "REST or GraphQL?" {
@@ -211,4 +277,20 @@ func TestFakeRunnerAsksThenProduces(t *testing.T) {
 	if got.Kind != levers.DecisionChoice || got.Option == nil || *got.Option != 0 {
 		t.Fatalf("response = %#v", got)
 	}
+}
+
+func fakeStageRequest(t *testing.T, r *FakeRunner, issueID, stage, agent, workdir string) StageRequest {
+	t.Helper()
+	contract := capability.CompiledContract{
+		ContractID: strings.Repeat("a", 64), AuthorityDigest: strings.Repeat("b", 64),
+		Contract: capability.Contract{
+			Version: capability.ContractVersion, IssueID: issueID, Stage: stage, AttemptID: "checkpoint-1",
+			WorkspaceRoot: workdir, Operations: []capability.OperationClass{capability.OpWorkspaceRead, capability.OpWorkspaceMutate},
+		},
+	}
+	plan, err := r.Preflight(context.Background(), PreflightRequest{IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return StageRequest{IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract, Plan: plan}
 }

@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/attach"
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
@@ -3482,6 +3485,91 @@ func (e *Engine) runStageOnce(
 		_ = verificationLease.Close()
 	}()
 
+	capabilityIdentity := capability.AttemptIdentity{IssueID: is.id, Stage: st.Name, AttemptID: lifecycleAttempt.AttemptID}
+	var compiledContract capability.CompiledContract
+	var enforcementPlan capability.EnforcementPlan
+	var capabilityBaseline capability.Baseline
+	var capabilityValidation capability.ValidationResult
+	var runtimeAudit []capability.AuditRecord
+	if !resumedLifecycle {
+		materializedInputs := append([]string(nil), requiredInputs...)
+		for _, row := range rows {
+			materializedInputs = append(materializedInputs, filepath.ToSlash(filepath.Join("attachments", row.Name)))
+		}
+		authority, authorityErr := e.resolveCapabilityAuthority(is, st, lifecycleAttempt, materializedInputs, nil)
+		if authorityErr != nil {
+			e.emit(core.EvCapabilityRejected, is.id, map[string]any{"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "reason": capability.ReasonContractInvalid})
+			return &capability.PolicyError{Phase: "compile", Reason: capability.ReasonContractInvalid, Diagnostic: "durable stage authority is unavailable"}
+		}
+		compiledContract, err = capability.Compile(capability.CompileInput{
+			IssueID: is.id, Stage: st.Name, AttemptID: lifecycleAttempt.AttemptID,
+			Profile: authority.Profile, WorkspaceRoot: authority.WorkspaceRoot, Readonly: st.Workspace == "readonly",
+			Repository: authority.Repository, MaterializedInputs: authority.MaterializedReadablePaths,
+			ReadableRepositoryPaths: authority.ReadableRepositoryPaths, Outputs: authority.RequiredOutputs,
+			Approval: authority.ApprovalBinding, ApprovedTouchset: authority.ApprovedTouchset,
+			DocumentationPaths: authority.DocumentationPaths, ConflictPaths: authority.ConflictPaths,
+			PlannerArtifactRequired: artifactAuthority != nil,
+		})
+		if err != nil {
+			e.emit(core.EvCapabilityRejected, is.id, map[string]any{"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "reason": capability.ReasonContractInvalid})
+			return err
+		}
+		if err := e.cfg.Store.CreateCapabilityAttempt(capability.AttemptRecord{
+			Identity: capabilityIdentity, SchemaVersion: capability.ContractVersion, Contract: compiledContract,
+		}); err != nil {
+			return err
+		}
+		if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+			Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "compile", Outcome: "passed",
+		}); err != nil {
+			return err
+		}
+		e.emit(core.EvCapabilityCompiled, is.id, map[string]any{
+			"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
+			"authority_digest": compiledContract.AuthorityDigest,
+		})
+		if e.cfg.Runner == nil {
+			return &capability.PolicyError{Phase: "preflight", Reason: capability.ReasonProviderUnsupported, Diagnostic: "runner adapter is unavailable"}
+		}
+		preflightAgent := "stage"
+		if len(st.Agents) > 0 {
+			preflightAgent = st.Agents[0].Package
+		}
+		enforcementPlan, err = e.cfg.Runner.Preflight(ctx, runner.PreflightRequest{
+			IssueID: is.id, Stage: st.Name, Agent: preflightAgent, Workdir: workdir, Contract: compiledContract,
+		})
+		if err != nil {
+			_ = e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+				Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "preflight", Outcome: "failed",
+				Reason: capability.ReasonProviderUnsupported,
+			})
+			e.emit(core.EvCapabilityRejected, is.id, map[string]any{"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID, "reason": capability.ReasonProviderUnsupported})
+			return err
+		}
+		if err := runner.ValidateEnforcementPlan(compiledContract, enforcementPlan); err != nil {
+			return err
+		}
+		if err := e.cfg.Store.RecordCapabilityPreflight(capabilityIdentity, enforcementPlan); err != nil {
+			return err
+		}
+		if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+			Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "preflight", Outcome: "passed",
+			Provider: enforcementPlan.Provider, Implementation: enforcementPlan.Implementation,
+		}); err != nil {
+			return err
+		}
+		e.emit(core.EvCapabilityPreflighted, is.id, map[string]any{
+			"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID, "plan_id": enforcementPlan.PlanID,
+		})
+		capabilityBaseline, err = (capability.Observer{}).Capture(workdir, nil)
+		if err != nil {
+			return fmt.Errorf("capture capability baseline: %w", err)
+		}
+		if err := e.cfg.Store.RecordCapabilityBaseline(capabilityIdentity, capability.BaselineIdentity{Digest: capabilityBaseline.Digest}); err != nil {
+			return err
+		}
+	}
+
 	type agentDone struct {
 		pkg string
 		res runner.Result
@@ -3493,6 +3581,8 @@ func (e *Engine) runStageOnce(
 	succeeded := 0
 	var discovered []string
 	var stageEvidence *stageresult.Evidence
+	agentCtx, cancelAgents := context.WithCancel(ctx)
+	defer cancelAgents()
 	runAgent := func(a flow.AgentRef) {
 		runID, insErr := e.cfg.Store.InsertStageRun(store.StageRun{
 			IssueID: is.id, Stage: st.Name, Agent: a.Package,
@@ -3501,23 +3591,27 @@ func (e *Engine) runStageOnce(
 			dones <- agentDone{pkg: a.Package, res: runner.Result{Err: fmt.Errorf("insert stage run: %w", insErr)}}
 			return
 		}
-		agentCtx := runner.WithOperationID(ctx, strconv.FormatInt(runID, 10))
+		runCtx := runner.WithOperationID(agentCtx, strconv.FormatInt(runID, 10))
 		if verificationLease != nil {
-			agentCtx = runner.WithManagedEnvironment(agentCtx, verificationLease.ManagedEnvironment())
+			runCtx = runner.WithManagedEnvironment(runCtx, verificationLease.ManagedEnvironment())
 		}
 		if artifactAuthority != nil {
-			agentCtx = runner.WithPlannerArtifactAuthority(agentCtx, artifactAuthority)
+			runCtx = runner.WithPlannerArtifactAuthority(runCtx, artifactAuthority)
 		}
 		asks := make(chan runner.Ask)
 		var resc <-chan runner.Result
+		request := runner.StageRequest{
+			IssueID: is.id, Stage: st.Name, Agent: a.Package, Workdir: workdir,
+			Contract: compiledContract, Plan: enforcementPlan,
+		}
 		if plannerGate != nil {
 			if plannerRunner != nil {
-				resc = plannerRunner.RunPlanner(agentCtx, is.id, st.Name, a.Package, workdir, asks, plannerGate)
+				resc = plannerRunner.RunPlanner(runCtx, request, asks, plannerGate)
 			} else {
-				resc = e.cfg.Runner.Run(agentCtx, is.id, st.Name, a.Package, workdir, asks)
+				resc = e.cfg.Runner.Run(runCtx, request, asks)
 			}
 		} else {
-			resc = e.cfg.Runner.Run(agentCtx, is.id, st.Name, a.Package, workdir, asks)
+			resc = e.cfg.Runner.Run(runCtx, request, asks)
 		}
 		for {
 			select {
@@ -3562,33 +3656,49 @@ func (e *Engine) runStageOnce(
 			for _, a := range st.Agents {
 				go runAgent(a)
 			}
+			for range st.Agents {
+				d := <-dones
+				runtimeAudit = append(runtimeAudit, d.res.RuntimeAudit...)
+				if d.res.SessionID != "" {
+					sessionIDs = append(sessionIDs, d.res.SessionID)
+				}
+				if d.res.Err != nil {
+					if firstErr == nil {
+						firstErr = &runnerStageError{Agent: d.pkg, Result: d.res}
+					}
+					continue
+				}
+				succeeded++
+				if producesResult && d.pkg == resultProducer {
+					stageEvidence = d.res.StageEvidence
+				}
+				discovered = append(discovered, d.res.DependsOn...)
+				if st.Completion == flow.CompletionAny {
+					cancelAgents()
+				}
+			}
 		} else {
-			go func() {
-				for _, a := range st.Agents {
-					runAgent(a)
+			for _, agent := range st.Agents {
+				go runAgent(agent)
+				d := <-dones
+				runtimeAudit = append(runtimeAudit, d.res.RuntimeAudit...)
+				if d.res.SessionID != "" {
+					sessionIDs = append(sessionIDs, d.res.SessionID)
 				}
-			}()
-		}
-
-		need := len(st.Agents)
-		for i := 0; i < need; i++ {
-			d := <-dones
-			if d.res.SessionID != "" {
-				sessionIDs = append(sessionIDs, d.res.SessionID)
-			}
-			if d.res.Err != nil {
-				if firstErr == nil {
-					firstErr = &runnerStageError{Agent: d.pkg, Result: d.res}
+				if d.res.Err != nil {
+					if firstErr == nil {
+						firstErr = &runnerStageError{Agent: d.pkg, Result: d.res}
+					}
+					continue
 				}
-				continue
-			}
-			succeeded++
-			if producesResult && d.pkg == resultProducer {
-				stageEvidence = d.res.StageEvidence
-			}
-			discovered = append(discovered, d.res.DependsOn...)
-			if st.Completion == flow.CompletionAny {
-				break
+				succeeded++
+				if producesResult && d.pkg == resultProducer {
+					stageEvidence = d.res.StageEvidence
+				}
+				discovered = append(discovered, d.res.DependsOn...)
+				if st.Completion == flow.CompletionAny {
+					break
+				}
 			}
 		}
 	} else {
@@ -3597,6 +3707,23 @@ func (e *Engine) runStageOnce(
 	if plannerController != nil {
 		outcome := plannerController.Finish(firstErr)
 		emitPlannerSnapshot(outcome, plannerController.Snapshot())
+	}
+	if !resumedLifecycle {
+		for _, audit := range runtimeAudit {
+			audit.Attempt = capabilityIdentity
+			if audit.ContractID == "" {
+				audit.ContractID = compiledContract.ContractID
+			}
+			if err := e.cfg.Store.AppendCapabilityAudit(audit); err != nil {
+				return err
+			}
+			if audit.Outcome == "denied" {
+				e.emit(core.EvCapabilityDenied, is.id, map[string]any{
+					"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
+					"reason": capability.ReasonRuntimeDenied, "operation": audit.Operation, "paths": audit.Paths,
+				})
+			}
+		}
 	}
 	if st.Completion == flow.CompletionAll && firstErr != nil {
 		return firstErr
@@ -3607,6 +3734,38 @@ func (e *Engine) runStageOnce(
 	if artifactAuthority != nil {
 		if err := artifactAuthority.ValidateComplete(); err != nil {
 			return fmt.Errorf("validate planner artifacts: %w", err)
+		}
+	}
+	if !resumedLifecycle {
+		cancelAgents()
+		engineWrites, engineWriteErr := observeCapabilityEngineWrites(workdir)
+		if engineWriteErr != nil {
+			return engineWriteErr
+		}
+		capabilityBaseline.EngineWrites = engineWrites
+		delta, compareErr := (capability.Observer{DescendantsReaped: func() bool { return true }}).Compare(capabilityBaseline)
+		if compareErr != nil {
+			return fmt.Errorf("compare capability workspace: %w", compareErr)
+		}
+		observedOutputs, observeErr := observeCapabilityOutputs(workdir, compiledContract)
+		if observeErr != nil {
+			return observeErr
+		}
+		capabilityValidation, err = capability.Validate(compiledContract, capabilityBaseline, delta, runtimeAudit, observedOutputs)
+		if err != nil {
+			failed := capability.ValidationResult{Passed: false, DeltaDigest: delta.Digest}
+			if bindErr := e.cfg.Store.BindCapabilityValidation(capabilityIdentity, "", failed); bindErr != nil {
+				return bindErr
+			}
+			_ = e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+				Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "post-stage", Outcome: "failed",
+				Reason: capability.ReasonPostStageViolation,
+			})
+			e.emit(core.EvCapabilityRejected, is.id, map[string]any{
+				"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
+				"reason": capability.ReasonPostStageViolation,
+			})
+			return err
 		}
 	}
 	if resumedLifecycle && producesResult {
@@ -3704,6 +3863,19 @@ func (e *Engine) runStageOnce(
 		if err != nil {
 			return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "model result materialization failed"}
 		}
+		capabilityValidation.ResultDigest = lifecycleResult.ResultSHA256
+		if err := e.cfg.Store.BindCapabilityValidation(capabilityIdentity, lifecycleResult.ResultSHA256, capabilityValidation); err != nil {
+			return err
+		}
+		if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+			Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "post-stage", Outcome: "passed",
+		}); err != nil {
+			return err
+		}
+		e.emit(core.EvCapabilityValidated, is.id, map[string]any{
+			"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
+			"result_digest": lifecycleResult.ResultSHA256, "delta_digest": capabilityValidation.DeltaDigest,
+		})
 		if err := e.cfg.Store.PutStageLifecycleResult(lifecycleAttempt, lifecycleResult); err != nil {
 			return err
 		}
@@ -3850,6 +4022,69 @@ func (e *Engine) runStageOnce(
 		}
 	}
 	return nil
+}
+
+func observeCapabilityOutputs(workdir string, contract capability.CompiledContract) (map[string]capability.ObservedOutput, error) {
+	result := make(map[string]capability.ObservedOutput)
+	for _, output := range contract.Contract.Outputs {
+		if output.Owner != capability.OwnerAgent {
+			continue
+		}
+		path := filepath.Join(workdir, filepath.FromSlash(output.Path))
+		info, err := os.Lstat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		observed := capability.ObservedOutput{Path: output.Path, Regular: info.Mode().IsRegular()}
+		if observed.Regular {
+			body, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, readErr
+			}
+			digest := sha256.Sum256(body)
+			observed.SHA256 = hex.EncodeToString(digest[:])
+		}
+		result[output.Path] = observed
+	}
+	return result, nil
+}
+
+func observeCapabilityEngineWrites(workdir string) (map[string]string, error) {
+	result := make(map[string]string)
+	candidates := []string{"decision.html"}
+	decisionDir := filepath.Join(workdir, "decisions")
+	if entries, err := os.ReadDir(decisionDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".html") {
+				candidates = append(candidates, filepath.ToSlash(filepath.Join("decisions", entry.Name())))
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, relative := range candidates {
+		path := filepath.Join(workdir, filepath.FromSlash(relative))
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("engine capability output %q is not regular", relative)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		digest := sha256.Sum256(body)
+		result[relative] = hex.EncodeToString(digest[:])
+	}
+	return result, nil
 }
 
 type stageResultRetryableError struct {

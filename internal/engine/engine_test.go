@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
@@ -306,7 +307,20 @@ func newEngineCfg(t *testing.T, r runner.Runner, adjust func(*Config)) (*Engine,
 	if adjust != nil {
 		adjust(&cfg)
 	}
+	cfg.Flows = capabilityTestFlows(cfg.Flows)
 	return New(cfg), s
+}
+
+func capabilityTestFlows(flows map[string]flow.Flow) map[string]flow.Flow {
+	for name, configured := range flows {
+		for index := range configured.Stages {
+			if configured.Stages[index].CapabilityProfile == "" {
+				configured.Stages[index].CapabilityProfile = flow.ProfileArtifact
+			}
+		}
+		flows[name] = configured
+	}
+	return flows
 }
 
 func testDecisionIdentities() map[string]decision.AgentIdentity {
@@ -334,16 +348,29 @@ func newEngine(t *testing.T, r runner.Runner) (*Engine, *store.Store) {
 	return newEngineCfg(t, r, nil)
 }
 
+func testRunnerPreflight(request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	controls := runner.RequiredControls(request.Contract)
+	proofs := make([]capability.ControlProof, 0, len(controls))
+	for _, control := range controls {
+		proofs = append(proofs, capability.ControlProof{Control: control, Proven: true})
+	}
+	return runner.NewEnforcementPlan(request.Contract, "engine-test", "test-runner", "1", proofs)
+}
+
 type typedStageRunner struct {
 	result  runner.Result
 	results map[string]runner.Result
 	sink    runner.AttemptSink
 }
 
-func (r *typedStageRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	_ chan<- runner.Ask) <-chan runner.Result {
+func (r *typedStageRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	return testRunnerPreflight(request)
+}
+
+func (r *typedStageRunner) Run(ctx context.Context, request runner.StageRequest, _ chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
+		issueID, stage, agentPkg := request.IssueID, request.Stage, request.Agent
 		result := r.result
 		if configured, ok := r.results[agentPkg]; ok {
 			result = configured
@@ -4302,10 +4329,11 @@ func commandIn(dir string, args ...string) (string, error) {
 }
 
 func (r *conflictFlowRunner) Run(
-	_ context.Context, _, stage, _ string, workdir string, _ chan<- runner.Ask,
+	_ context.Context, request runner.StageRequest, _ chan<- runner.Ask,
 ) <-chan runner.Result {
 	results := make(chan runner.Result, 1)
 	var result runner.Result
+	stage, workdir := request.Stage, request.Workdir
 	switch stage {
 	case "execute":
 		r.originalWorkdir = workdir
@@ -4390,6 +4418,10 @@ func (r *conflictFlowRunner) Run(
 	results <- result
 	close(results)
 	return results
+}
+
+func (r *conflictFlowRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	return testRunnerPreflight(request)
 }
 
 func TestRetryFinalizesResolvedConflictWithoutRerunningAgents(t *testing.T) {
@@ -4574,7 +4606,7 @@ func newEngineOnFileWithFlow(t *testing.T, s *store.Store, r runner.Runner, data
 	t.Helper()
 	return New(Config{
 		Store: s, Runner: r, Pool: slots.NewPool(2),
-		Flows:   map[string]flow.Flow{f.Name: f},
+		Flows:   capabilityTestFlows(map[string]flow.Flow{f.Name: f}),
 		DataDir: dataDir, DecisionIdentities: testDecisionIdentities(),
 	})
 }
@@ -6318,11 +6350,11 @@ func TestDraftIssueStoresAttachmentsWithoutAStageRun(t *testing.T) {
 // noneStage and worktreeStage are minimal stages that exercise the two
 // stageWorkdir branches without declaring artifacts.
 func noneStage() flow.Stage {
-	return flow.Stage{Name: "spec", Workspace: "none", Agents: []flow.AgentRef{{Package: "spec-writer"}}}
+	return flow.Stage{Name: "spec", Workspace: "none", Agents: []flow.AgentRef{{Package: "spec-writer"}}, CapabilityProfile: flow.ProfileArtifact}
 }
 
 func worktreeStage() flow.Stage {
-	return flow.Stage{Name: "spec", Workspace: "worktree", Agents: []flow.AgentRef{{Package: "spec-writer"}}}
+	return flow.Stage{Name: "spec", Workspace: "worktree", Agents: []flow.AgentRef{{Package: "spec-writer"}}, CapabilityProfile: flow.ProfileArtifact}
 }
 
 func TestAttachmentsMaterializeForNoneWorkspace(t *testing.T) {

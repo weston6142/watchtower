@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
@@ -41,13 +42,17 @@ type recordingPlannerRunner struct {
 	UnchangedSourceReused bool
 }
 
-func (r *recordingPlannerRunner) Run(context.Context, string, string, string, string, chan<- runner.Ask) <-chan runner.Result {
+func (r *recordingPlannerRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	return testRunnerPreflight(request)
+}
+
+func (r *recordingPlannerRunner) Run(context.Context, runner.StageRequest, chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	done <- runner.Result{Err: fmt.Errorf("non-planner run requested")}
 	return done
 }
 
-func (r *recordingPlannerRunner) RunPlanner(ctx context.Context, _ string, _ string, _ string, workdir string,
+func (r *recordingPlannerRunner) RunPlanner(ctx context.Context, request runner.StageRequest,
 	_ chan<- runner.Ask, gate runner.ExplorationGate) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {

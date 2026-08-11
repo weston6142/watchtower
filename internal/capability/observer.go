@@ -101,7 +101,11 @@ func (o Observer) Capture(workspace string, engineWrites []EngineWrite) (Baselin
 	}
 	git, commonDigest, err := snapshotGit(root)
 	if err != nil {
-		return Baseline{}, err
+		if _, statErr := os.Lstat(filepath.Join(root, ".git")); !errors.Is(statErr, os.ErrNotExist) {
+			return Baseline{}, err
+		}
+		git = GitIdentity{}
+		commonDigest = hashObserverBytes([]byte("no-git-workspace"))
 	}
 	exclusions := make(map[string]string, len(engineWrites))
 	for _, write := range engineWrites {
@@ -129,7 +133,10 @@ func (o Observer) Compare(baseline Baseline) (Delta, error) {
 	}
 	git, _, err := snapshotGit(baseline.Workspace)
 	if err != nil {
-		return Delta{}, err
+		if _, statErr := os.Lstat(filepath.Join(baseline.Workspace, ".git")); !errors.Is(statErr, os.ErrNotExist) {
+			return Delta{}, err
+		}
+		git = GitIdentity{}
 	}
 	delta := Delta{Workspace: baseline.Workspace}
 	deleted := make(map[string]FileIdentity)

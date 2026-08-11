@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -73,11 +74,15 @@ func (e *Engine) recordRunnerFailure(
 	if result.Err == nil {
 		return nil
 	}
+	site, class, disposition, stateChange := failure.SiteRunner, failure.NormalizeClass(failure.Class(result.FailureClass)), failure.RetryNow, failure.StateRunnerInput
+	var policyErr *capability.PolicyError
+	if errors.As(result.Err, &policyErr) {
+		site, class, disposition, stateChange = classifyFailure(result.Err)
+	}
 	return e.recordFailure(ctx, failureContext{
 		IssueID: is.id, Stage: stage.Name, StageAttempt: attempt,
-		Site: failure.SiteRunner, Class: failure.NormalizeClass(failure.Class(result.FailureClass)),
-		Disposition: failure.RetryNow, StateChange: failure.StateRunnerInput,
-		FingerprintInputs: stageFailureFingerprintInputs(e, is, stage, failure.SiteRunner, workdir),
+		Site: site, Class: class, Disposition: disposition, StateChange: stateChange,
+		FingerprintInputs: stageFailureFingerprintInputs(e, is, stage, site, workdir),
 		Primary:           result.Err,
 	})
 }
@@ -217,6 +222,17 @@ func digestFailureIdentity(value string) string {
 }
 
 func classifyFailure(err error) (failure.Site, failure.Class, failure.RetryDisposition, failure.StateChange) {
+	var policyErr *capability.PolicyError
+	if errors.As(err, &policyErr) {
+		switch policyErr.Reason {
+		case capability.ReasonContractInvalid, capability.ReasonProviderUnsupported:
+			return failure.SiteRunner, failure.ClassConfiguration, failure.RetryAfterStateChange, failure.StateConfiguration
+		case capability.ReasonRuntimeDenied:
+			return failure.SiteWorkspace, failure.ClassAuthorization, failure.RetryAfterStateChange, failure.StateWorkspace
+		case capability.ReasonPostStageViolation:
+			return failure.SiteWorkspace, failure.ClassValidation, failure.RetryAfterStateChange, failure.StateWorkspace
+		}
+	}
 	var lifecycleErr *stagelifecycle.DiagnosticError
 	if errors.As(err, &lifecycleErr) {
 		switch lifecycleErr.Code {

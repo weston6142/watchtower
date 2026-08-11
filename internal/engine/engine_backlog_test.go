@@ -39,7 +39,7 @@ func newEngineOver(t *testing.T, st *store.Store) *Engine {
 		Store:              st,
 		Runner:             &runner.FakeRunner{Scripts: scripts()},
 		Pool:               slots.NewPool(2),
-		Flows:              map[string]flow.Flow{"default": testFlow()},
+		Flows:              capabilityTestFlows(map[string]flow.Flow{"default": testFlow()}),
 		DataDir:            t.TempDir(),
 		DecisionIdentities: testDecisionIdentities(),
 		Observers:          []func(core.Event){sw.Observe},
@@ -92,10 +92,11 @@ func useAutoLaunchFlow(e *Engine) {
 		"default": {
 			Name: "default",
 			Stages: []flow.Stage{{
-				Name:       "run",
-				Agents:     []flow.AgentRef{{Package: "agent"}},
-				Gate:       flow.GateAuto,
-				Completion: flow.CompletionAll,
+				Name:              "run",
+				CapabilityProfile: flow.ProfileArtifact,
+				Agents:            []flow.AgentRef{{Package: "agent"}},
+				Gate:              flow.GateAuto,
+				Completion:        flow.CompletionAll,
 			}},
 		},
 	}
@@ -533,7 +534,7 @@ func TestCanResetRefusesActiveExecutionAndPendingDecision(t *testing.T) {
 		}}}}
 		e.cfg.Flows = map[string]flow.Flow{"default": {
 			Name: "default", Stages: []flow.Stage{{
-				Name: "ask", Agents: []flow.AgentRef{{Package: "agent"}}, Gate: flow.GateAuto,
+				Name: "ask", Agents: []flow.AgentRef{{Package: "agent"}}, Gate: flow.GateAuto, CapabilityProfile: flow.ProfileArtifact,
 			}},
 		}}
 		e.cfg.Runner = &runner.FakeRunner{Scripts: scripts}

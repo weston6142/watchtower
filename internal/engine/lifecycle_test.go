@@ -191,7 +191,7 @@ func TestCompletedStructuredResultResumesLifecycleWithoutRunner(t *testing.T) {
 }
 
 func structuredStage(name, agent string, retries int) flow.Stage {
-	return flow.Stage{Name: name, Agents: []flow.AgentRef{{Package: agent}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll, Retries: retries}
+	return flow.Stage{Name: name, Agents: []flow.AgentRef{{Package: agent}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll, Retries: retries, CapabilityProfile: flow.ProfileArtifact}
 }
 
 func structuredLifecycleEngine(t *testing.T, r runner.Runner, stages []flow.Stage) (*Engine, *store.Store) {

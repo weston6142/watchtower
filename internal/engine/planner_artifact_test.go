@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
@@ -30,15 +31,19 @@ type plannerArtifactEngineRunner struct {
 	callCount int
 }
 
-func (r *plannerArtifactEngineRunner) Run(_ context.Context, _ string, stage string, _ string, workdir string, _ chan<- runner.Ask) <-chan runner.Result {
+func (r *plannerArtifactEngineRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	return testRunnerPreflight(request)
+}
+
+func (r *plannerArtifactEngineRunner) Run(_ context.Context, request runner.StageRequest, _ chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
-	if artifacts, ok := r.artifacts[stage]; ok {
+	if artifacts, ok := r.artifacts[request.Stage]; ok {
 		if r.stageRuns == nil {
 			r.stageRuns = make(map[string]int)
 		}
-		r.stageRuns[stage]++
+		r.stageRuns[request.Stage]++
 		for name, content := range artifacts {
-			if err := os.WriteFile(filepath.Join(workdir, name), []byte(content), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(request.Workdir, name), []byte(content), 0o644); err != nil {
 				done <- runner.Result{Err: err}
 				return done
 			}
@@ -50,10 +55,11 @@ func (r *plannerArtifactEngineRunner) Run(_ context.Context, _ string, stage str
 	return done
 }
 
-func (r *plannerArtifactEngineRunner) RunPlanner(ctx context.Context, _ string, _ string, _ string, workdir string,
+func (r *plannerArtifactEngineRunner) RunPlanner(ctx context.Context, request runner.StageRequest,
 	_ chan<- runner.Ask, _ runner.ExplorationGate) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
+		workdir := request.Workdir
 		r.started = true
 		r.callCount++
 		authority := runner.PlannerArtifactAuthorityFromContext(ctx)
@@ -86,7 +92,8 @@ func plannerArtifactEngineFlow() flow.Flow {
 	return flow.Flow{Name: "planner-artifact-engine", Stages: []flow.Stage{{
 		Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "none",
 		Completion: flow.CompletionAll, Gate: flow.GatePlanReview, Retries: 1,
-		Artifacts: []string{"plan.md", "touchset.json"},
+		CapabilityProfile: flow.ProfileArtifact,
+		Artifacts:         []string{"plan.md", "touchset.json"},
 	}}}
 }
 
@@ -94,15 +101,17 @@ func plannerArtifactRecoveryFlow() flow.Flow {
 	return flow.Flow{Name: "planner-artifact-recovery", Stages: []flow.Stage{
 		{
 			Name: "brainstorm", Agents: []flow.AgentRef{{Package: "brainstorm"}}, Workspace: "none",
-			Completion: flow.CompletionAll, Gate: flow.GateAuto, Artifacts: []string{"brainstorm.md"},
+			Completion: flow.CompletionAll, Gate: flow.GateAuto, CapabilityProfile: flow.ProfileArtifact,
+			Artifacts: []string{"brainstorm.md"},
 		},
 		{
 			Name: "spec", Agents: []flow.AgentRef{{Package: "spec-writer"}}, Workspace: "none",
-			Completion: flow.CompletionAll, Gate: flow.GateAuto, Artifacts: []string{"spec.md"},
+			Completion: flow.CompletionAll, Gate: flow.GateAuto, CapabilityProfile: flow.ProfileArtifact,
+			Artifacts: []string{"spec.md"},
 		},
 		{
 			Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "none",
-			Completion: flow.CompletionAll, Gate: flow.GatePlanReview,
+			Completion: flow.CompletionAll, Gate: flow.GatePlanReview, CapabilityProfile: flow.ProfileArtifact,
 			Artifacts: []string{"plan.md", "touchset.json"},
 		},
 	}}
