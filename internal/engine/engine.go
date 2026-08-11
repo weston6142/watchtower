@@ -3277,9 +3277,13 @@ func (e *Engine) runStageOnce(
 	}
 	var artifactAuthority *plannerartifact.Authority
 	if st.DeclaresArtifact("plan.md") && st.DeclaresArtifact("touchset.json") {
+		var authorityOptions []plannerartifact.CreateOrLoadOption
+		if recovery != nil {
+			authorityOptions = append(authorityOptions, plannerartifact.RequireDurableRecovery())
+		}
 		artifactAuthority, err = plannerartifact.CreateOrLoad(e.cfg.Store, plannerartifact.Binding{
 			IssueID: is.id, Stage: st.Name, Attempt: attempt, Worktree: workdir,
-		})
+		}, authorityOptions...)
 		if err != nil {
 			return fmt.Errorf("initialize planner authority: %w", err)
 		}

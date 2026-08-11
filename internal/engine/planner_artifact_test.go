@@ -23,12 +23,28 @@ type plannerArtifactEngineRunner struct {
 	failAt    int
 	failOnce  bool
 	mutate    func(string) error
+	artifacts map[string]map[string]string
+	stageRuns map[string]int
 	started   bool
 	callCount int
 }
 
-func (r *plannerArtifactEngineRunner) Run(context.Context, string, string, string, string, chan<- runner.Ask) <-chan runner.Result {
+func (r *plannerArtifactEngineRunner) Run(_ context.Context, _ string, stage string, _ string, workdir string, _ chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
+	if artifacts, ok := r.artifacts[stage]; ok {
+		if r.stageRuns == nil {
+			r.stageRuns = make(map[string]int)
+		}
+		r.stageRuns[stage]++
+		for name, content := range artifacts {
+			if err := os.WriteFile(filepath.Join(workdir, name), []byte(content), 0o644); err != nil {
+				done <- runner.Result{Err: err}
+				return done
+			}
+		}
+		done <- runner.Result{Artifacts: artifacts}
+		return done
+	}
 	done <- runner.Result{Err: fmt.Errorf("non-planner run requested")}
 	return done
 }
@@ -71,6 +87,24 @@ func plannerArtifactEngineFlow() flow.Flow {
 		Completion: flow.CompletionAll, Gate: flow.GatePlanReview, Retries: 1,
 		Artifacts: []string{"plan.md", "touchset.json"},
 	}}}
+}
+
+func plannerArtifactRecoveryFlow() flow.Flow {
+	return flow.Flow{Name: "planner-artifact-recovery", Stages: []flow.Stage{
+		{
+			Name: "brainstorm", Agents: []flow.AgentRef{{Package: "brainstorm"}}, Workspace: "none",
+			Completion: flow.CompletionAll, Gate: flow.GateAuto, Artifacts: []string{"brainstorm.md"},
+		},
+		{
+			Name: "spec", Agents: []flow.AgentRef{{Package: "spec-writer"}}, Workspace: "none",
+			Completion: flow.CompletionAll, Gate: flow.GateAuto, Artifacts: []string{"spec.md"},
+		},
+		{
+			Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "none",
+			Completion: flow.CompletionAll, Gate: flow.GatePlanReview,
+			Artifacts: []string{"plan.md", "touchset.json"},
+		},
+	}}
 }
 
 func plannerArtifactRequests() []plannerartifact.WriteRequest {
@@ -271,6 +305,7 @@ func mustReadEngine(t *testing.T, path string) []byte {
 
 func TestPlannerArtifactInitializationFailsBeforeRunner(t *testing.T) {
 	f := plannerArtifactEngineFlow()
+	f.Stages[0].Retries = 0
 	r := &plannerArtifactEngineRunner{requests: plannerArtifactRequests()}
 	e, s := newEngineCfg(t, r, func(cfg *Config) {
 		cfg.Flows = map[string]flow.Flow{f.Name: f}
@@ -359,5 +394,81 @@ func TestEnginePlannerAuthorityRecoversFromDurableStoreAfterRestart(t *testing.T
 		Manifest: manifest, Key: "architecture", Markdown: "next section after restart", Globs: manifest.Sections[1].Globs,
 	}); err != nil {
 		t.Fatalf("apply after restart: %v", err)
+	}
+}
+
+func TestPlannerArtifactExplicitRetryAfterRestartRestoresDurablePrefix(t *testing.T) {
+	f := plannerArtifactRecoveryFlow()
+	first := &plannerArtifactEngineRunner{
+		requests: plannerArtifactRequests(), failAt: 1, failOnce: true,
+		artifacts: map[string]map[string]string{
+			"brainstorm": {"brainstorm.md": "durable brainstorm\n"},
+			"spec":       {"spec.md": "durable spec\n"},
+		},
+	}
+	e, s := newEngineCfg(t, first, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = review.PolicySettings{ID: "planner-artifact-test", Version: "1", AutoApproveRegular: true, Valid: true}
+	})
+	id, err := e.CreateIssue("retry planner after restart", "", f.Name, levers.Preset(f, flow.LeverRegular), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil || !strings.Contains(err.Error(), "transport failure") {
+		t.Fatalf("StartIssue error = %v, want planner transport failure", err)
+	}
+	workdir := filepath.Join(e.cfg.DataDir, id)
+	if err := os.Remove(filepath.Join(workdir, "plan.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "touchset.json"), []byte(`{"globs":["tampered/**"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	retry := &plannerArtifactEngineRunner{requests: plannerArtifactRequests(), artifacts: first.artifacts}
+	restarted := newEngineOnFileWithFlow(t, s, retry, e.cfg.DataDir, f)
+	restarted.cfg.PlanReview = e.cfg.PlanReview
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.RetryStage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if retry.stageRuns["brainstorm"] != 0 || retry.stageRuns["spec"] != 0 {
+		t.Fatalf("successful prior stages reran after retry: %+v", retry.stageRuns)
+	}
+	plan := string(mustReadEngine(t, filepath.Join(workdir, "plan.md")))
+	for _, request := range plannerArtifactRequests() {
+		anchor := "<!-- watchtower-section: key=" + request.Key + " -->"
+		if got := strings.Count(plan, anchor); got != 1 {
+			t.Fatalf("anchor %s count = %d after recovery", request.Key, got)
+		}
+	}
+}
+
+func TestPlannerArtifactExplicitRetryWithoutDurableRecordFailsClosed(t *testing.T) {
+	f := plannerArtifactEngineFlow()
+	f.Stages[0].Retries = 0
+	r := &plannerArtifactEngineRunner{requests: plannerArtifactRequests()}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.PlanReview = review.PolicySettings{ID: "planner-artifact-test", Version: "1", AutoApproveRegular: true, Valid: true}
+	})
+	id, err := e.CreateIssue("retry planner without durable state", "", f.Name, levers.Preset(f, flow.LeverRegular), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextPlannerArtifactReadForTest()
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("initial planner authority read failure unexpectedly succeeded")
+	}
+	if r.started {
+		t.Fatal("planner runner started before the failed authority read")
+	}
+	if err := e.RetryStage(context.Background(), id); plannerartifact.ErrorClassOf(err) != plannerartifact.ErrorAuthorityState {
+		t.Fatalf("RetryStage error = %v, want %s", err, plannerartifact.ErrorAuthorityState)
+	}
+	if r.started {
+		t.Fatal("planner runner started without durable retry authority")
 	}
 }
