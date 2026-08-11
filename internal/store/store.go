@@ -128,6 +128,21 @@ CREATE TABLE IF NOT EXISTS issue_integration(
   branch TEXT NOT NULL DEFAULT '',
   cleanup TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS verification_attempts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  parent_id INTEGER NOT NULL DEFAULT 0,
+  retry_key TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  receipt_json BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS verification_attempts_issue_order
+  ON verification_attempts(issue_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS verification_attempts_retry_key
+  ON verification_attempts(issue_id, retry_key) WHERE retry_key <> '';
 `
 
 type Store struct {
@@ -143,6 +158,7 @@ type Store struct {
 	failNextPlannerArtifactRead      bool
 	failNextPlannerArtifactWrite     bool
 	failIssueIntegrationWriteAfter   int
+	failNextVerificationRetry        bool
 }
 
 type StageRun struct {
@@ -253,12 +269,13 @@ type RunState struct {
 }
 
 const (
-	IntegrationClaimed           = "claimed"
-	IntegrationVerificationReady = "verification_ready"
-	IntegrationPublishPending    = "publish_pending"
-	IntegrationCleanupNeeded     = "cleanup_needed"
-	IntegrationMerged            = "merged"
-	IntegrationPreserved         = "preserved"
+	IntegrationClaimed               = "claimed"
+	IntegrationVerificationReady     = "verification_ready"
+	IntegrationPendingReverification = "pending_reverification"
+	IntegrationPublishPending        = "publish_pending"
+	IntegrationCleanupNeeded         = "cleanup_needed"
+	IntegrationMerged                = "merged"
+	IntegrationPreserved             = "preserved"
 )
 
 type IssueIntegration struct {

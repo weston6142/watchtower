@@ -718,6 +718,160 @@ func TestClaimedIssueIntegrationPreservesWorkspaceIdentity(t *testing.T) {
 	}
 }
 
+func TestVerificationAttemptRetryTransition(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "verification-attempts.db")
+	s, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	originalReceipt := []byte(`{"base_sha":"old","tree_sha":"old-tree"}`)
+	if err := s.SetIssueIntegration(IssueIntegration{
+		IssueID: "GH-79", State: IntegrationVerificationReady, BaseBranch: "develop",
+		PreSHA: "base", Worktree: "/tmp/GH-79", Branch: "issue/GH-79",
+		Cleanup: []string{"delete:issue/GH-79"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := s.RecordVerificationAttempt(VerificationAttempt{
+		IssueID: "GH-79", Stage: "integration", Status: VerificationAttemptCurrent,
+		ReceiptJSON: originalReceipt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalReceipt[0] = 'X'
+
+	failureInput := failure.RecordInput{
+		IssueID: "GH-79", Stage: "integration", StageAttempt: 1,
+		FailureSite: failure.SiteFinalization, FailureClass: failure.ClassStateMismatch,
+		RetryDisposition: failure.RetryAfterStateChange, RequiredStateChange: failure.StateVerification,
+		Fingerprint: failure.BuildFingerprint(failure.FingerprintInputs{
+			IssueID: "GH-79", Stage: "integration", FailureSite: failure.SiteFinalization,
+		}),
+	}
+	child, err := s.BeginVerificationRetry(context.Background(), VerificationRetry{
+		IssueID: "GH-79", ParentID: parent.ID, RetryKey: "retry-1",
+		Reason: "stale tree identity", Failure: failureInput,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Status != VerificationAttemptPending || child.ParentID != parent.ID || child.RetryKey != "retry-1" {
+		t.Fatalf("child attempt = %+v", child)
+	}
+
+	attempts, err := s.VerificationAttempts("GH-79")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 2 || attempts[0].Status != VerificationAttemptQuarantined ||
+		string(attempts[0].ReceiptJSON) != `{"base_sha":"old","tree_sha":"old-tree"}` ||
+		attempts[1].Status != VerificationAttemptPending {
+		t.Fatalf("attempt history = %+v", attempts)
+	}
+	current, ok, err := s.CurrentVerificationAttempt("GH-79")
+	if err != nil || !ok || current.ID != child.ID {
+		t.Fatalf("current attempt = %+v ok=%v err=%v", current, ok, err)
+	}
+	integration, ok, err := s.IssueIntegration("GH-79")
+	if err != nil || !ok || integration.State != IntegrationPendingReverification ||
+		integration.Worktree != "/tmp/GH-79" || integration.Branch != "issue/GH-79" ||
+		integration.PreSHA != "base" || len(integration.Cleanup) != 1 {
+		t.Fatalf("pending integration = %+v ok=%v err=%v", integration, ok, err)
+	}
+	history, err := s.FailureHistory(context.Background(), "GH-79")
+	if err != nil || len(history) != 1 || history[0].FailureClass != failure.ClassStateMismatch {
+		t.Fatalf("failure history = %+v err=%v", history, err)
+	}
+
+	duplicate, err := s.BeginVerificationRetry(context.Background(), VerificationRetry{
+		IssueID: "GH-79", ParentID: parent.ID, RetryKey: "retry-1",
+		Reason: "duplicate delivery", Failure: failureInput,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.ID != child.ID {
+		t.Fatalf("duplicate child ID = %d, want %d", duplicate.ID, child.ID)
+	}
+	attempts, err = s.VerificationAttempts("GH-79")
+	if err != nil || len(attempts) != 2 {
+		t.Fatalf("duplicate attempt history = %+v err=%v", attempts, err)
+	}
+	history, err = s.FailureHistory(context.Background(), "GH-79")
+	if err != nil || len(history) != 1 {
+		t.Fatalf("duplicate failure history = %+v err=%v", history, err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	attempts, err = s.VerificationAttempts("GH-79")
+	if err != nil || len(attempts) != 2 || attempts[0].ID != parent.ID || attempts[1].ID != child.ID {
+		t.Fatalf("reopened attempts = %+v err=%v", attempts, err)
+	}
+	if string(attempts[0].ReceiptJSON) != `{"base_sha":"old","tree_sha":"old-tree"}` {
+		t.Fatalf("reopened receipt = %s", attempts[0].ReceiptJSON)
+	}
+}
+
+func TestVerificationAttemptRetryRollback(t *testing.T) {
+	s, err := Open("file:verification-attempt-retry-rollback?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.SetIssueIntegration(IssueIntegration{
+		IssueID: "GH-79", State: IntegrationVerificationReady, PreSHA: "base",
+		Worktree: "/tmp/GH-79", Branch: "issue/GH-79",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := s.RecordVerificationAttempt(VerificationAttempt{
+		IssueID: "GH-79", Stage: "integration", Status: VerificationAttemptCurrent,
+		ReceiptJSON: []byte(`{"receipt":"old"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextVerificationRetryForTest()
+	_, err = s.BeginVerificationRetry(context.Background(), VerificationRetry{
+		IssueID: "GH-79", ParentID: parent.ID, RetryKey: "retry-rollback",
+		Reason: "stale branch identity", Failure: failure.RecordInput{
+			IssueID: "GH-79", Stage: "integration", StageAttempt: 1,
+			FailureSite: failure.SiteFinalization, FailureClass: failure.ClassStateMismatch,
+			RetryDisposition: failure.RetryAfterStateChange, RequiredStateChange: failure.StateVerification,
+			Fingerprint: failure.BuildFingerprint(failure.FingerprintInputs{
+				IssueID: "GH-79", Stage: "integration", FailureSite: failure.SiteFinalization,
+			}),
+		},
+	})
+	if err == nil {
+		t.Fatal("injected retry transition unexpectedly succeeded")
+	}
+	attempts, err := s.VerificationAttempts("GH-79")
+	if err != nil || len(attempts) != 1 || attempts[0].ID != parent.ID ||
+		attempts[0].Status != VerificationAttemptCurrent || string(attempts[0].ReceiptJSON) != `{"receipt":"old"}` {
+		t.Fatalf("rolled-back attempts = %+v err=%v", attempts, err)
+	}
+	history, err := s.FailureHistory(context.Background(), "GH-79")
+	if err != nil || len(history) != 0 {
+		t.Fatalf("rolled-back failure history = %+v err=%v", history, err)
+	}
+	integration, ok, err := s.IssueIntegration("GH-79")
+	if err != nil || !ok || integration.State != IntegrationVerificationReady ||
+		integration.Worktree != "/tmp/GH-79" || integration.Branch != "issue/GH-79" {
+		t.Fatalf("rolled-back integration = %+v ok=%v err=%v", integration, ok, err)
+	}
+}
+
 func TestAppendAssignsSeqAndReplays(t *testing.T) {
 	s, err := Open("file:t1?mode=memory&cache=shared")
 	if err != nil {
