@@ -186,9 +186,10 @@ func TestFingerprintBuildsIndependentCanonicalDimensions(t *testing.T) {
 	inputs := failure.FingerprintInputs{
 		IssueID: "GH-65", Stage: "execute", FailureSite: failure.SiteVerification,
 		ConfigurationIdentity: testDigest("a"), EnvironmentIdentity: testDigest("b"),
-		Git:          failure.GitIdentity{Repository: testDigest("c"), BaseCommit: testDigest("d"), BranchCommit: testDigest("e"), TreeIdentity: testDigest("f")},
-		Decisions:    []failure.ContentIdentity{{Identity: "2", ContentHash: testDigest("a")}, {Identity: "1", ContentHash: testDigest("b")}},
-		Verification: failure.VerificationIdentity{CommandIdentity: testDigest("c"), CacheIdentity: testDigest("d")},
+		WatchtowerIdentity: testDigest("1"),
+		Git:                failure.GitIdentity{Repository: testDigest("c"), BaseCommit: testDigest("d"), BranchCommit: testDigest("e"), TreeIdentity: testDigest("f")},
+		Decisions:          []failure.ContentIdentity{{Identity: "2", ContentHash: testDigest("a")}, {Identity: "1", ContentHash: testDigest("b")}},
+		Verification:       failure.VerificationIdentity{CommandIdentity: testDigest("c"), CacheIdentity: testDigest("d")},
 	}
 	first := retry.BuildStateVector(inputs)
 	inputs.Decisions[0], inputs.Decisions[1] = inputs.Decisions[1], inputs.Decisions[0]
@@ -201,6 +202,49 @@ func TestFingerprintBuildsIndependentCanonicalDimensions(t *testing.T) {
 	dimensions, unchanged := retry.ChangedDimensions(first, changed)
 	if len(dimensions) != 1 || dimensions[0] != "environment" || len(unchanged) != 3 {
 		t.Fatalf("dimensions = changed=%v unchanged=%v", dimensions, unchanged)
+	}
+}
+
+func TestFingerprintMarksIncompleteDimensionInputsUnavailable(t *testing.T) {
+	complete := failure.FingerprintInputs{
+		IssueID: "GH-65", Stage: "execute", FailureSite: failure.SiteVerification,
+		ConfigurationIdentity: testDigest("a"), EnvironmentIdentity: testDigest("b"),
+		WatchtowerIdentity: testDigest("c"),
+		Git: failure.GitIdentity{
+			Repository: testDigest("d"), BaseCommit: testDigest("e"),
+			BranchCommit: testDigest("f"), TreeIdentity: testDigest("1"),
+		},
+		Decisions: []failure.ContentIdentity{{Identity: "1", ContentHash: testDigest("2")}},
+		Verification: failure.VerificationIdentity{
+			CommandIdentity: testDigest("3"), CacheIdentity: testDigest("4"),
+		},
+	}
+
+	for name, tc := range map[string]struct {
+		dimension string
+		mutate    func(*failure.FingerprintInputs)
+	}{
+		"tree repository":     {"tree", func(inputs *failure.FingerprintInputs) { inputs.Git.Repository = "" }},
+		"config verification": {"config", func(inputs *failure.FingerprintInputs) { inputs.Verification.CommandIdentity = "" }},
+		"environment runtime": {"environment", func(inputs *failure.FingerprintInputs) { inputs.WatchtowerIdentity = "" }},
+		"decision digest":     {"decision", func(inputs *failure.FingerprintInputs) { inputs.Decisions[0].ContentHash = "" }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inputs := complete
+			inputs.Decisions = append([]failure.ContentIdentity(nil), complete.Decisions...)
+			tc.mutate(&inputs)
+			vector := retry.BuildStateVector(inputs)
+			unavailable := retry.UnavailableDimensions(vector)
+			if len(unavailable) != 1 || unavailable[0] != tc.dimension {
+				t.Fatalf("unavailable dimensions = %v, want [%s]; vector=%+v", unavailable, tc.dimension, vector)
+			}
+		})
+	}
+
+	withoutDecisions := complete
+	withoutDecisions.Decisions = nil
+	if vector := retry.BuildStateVector(withoutDecisions); vector.DecisionDigest == failure.Unavailable {
+		t.Fatalf("empty durable decision set was marked unavailable: %+v", vector)
 	}
 }
 

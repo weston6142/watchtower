@@ -105,6 +105,10 @@ func stageFailureFingerprintInputs(
 		EnvironmentIdentity: digestFailureIdentity(strings.Join([]string{
 			runtime.GOOS, runtime.GOARCH, runtime.Version(), e.cfg.DataDir, e.cfg.CacheRoot,
 		}, "\x00")),
+		Verification: failure.VerificationIdentity{
+			CommandIdentity: digestFailureIdentity("verification:none"),
+			CacheIdentity:   digestFailureIdentity("verification-cache:none"),
+		},
 		Git: failure.GitIdentity{
 			Repository: digestFailureIdentity(workdir),
 			BaseCommit: digestFailureIdentity(is.baseRef),
@@ -134,11 +138,23 @@ func stageFailureFingerprintInputs(
 	if e.cfg.Store != nil {
 		if required, _, err := e.stageContext(is.id); err == nil {
 			for _, name := range required {
+				digest := fileDigest(filepath.Join(workdir, name))
+				if digest == failure.Unavailable {
+					digest = fileDigest(filepath.Join(e.issueDir(is.id), "artifacts", name))
+				}
 				inputs.StageInputs = append(inputs.StageInputs, failure.InputIdentity{
-					Identity: name, SHA256: fileDigest(filepath.Join(workdir, name)),
+					Identity: name, SHA256: digest,
 				})
 			}
+		} else {
+			inputs.StageInputs = []failure.InputIdentity{{
+				Identity: failure.Unavailable, SHA256: failure.Unavailable,
+			}}
 		}
+	} else {
+		inputs.StageInputs = []failure.InputIdentity{{
+			Identity: failure.Unavailable, SHA256: failure.Unavailable,
+		}}
 	}
 	for _, name := range stage.Artifacts {
 		inputs.Artifacts = append(inputs.Artifacts, failure.ContentIdentity{
@@ -168,7 +184,15 @@ func stageFailureFingerprintInputs(
 					Identity: strconv.FormatInt(row.ID, 10), ContentHash: digestFailureIdentity(string(canonical)),
 				})
 			}
+		} else {
+			inputs.Decisions = []failure.ContentIdentity{{
+				Identity: failure.Unavailable, ContentHash: failure.Unavailable,
+			}}
 		}
+	} else {
+		inputs.Decisions = []failure.ContentIdentity{{
+			Identity: failure.Unavailable, ContentHash: failure.Unavailable,
+		}}
 	}
 
 	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 {

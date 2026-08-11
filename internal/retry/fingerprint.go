@@ -78,32 +78,64 @@ func firstDimensionValue(values ...string) string {
 	return failure.Unavailable
 }
 
+func dimensionValuesAvailable(values ...string) bool {
+	for _, value := range values {
+		if firstDimensionValue(value) == failure.Unavailable {
+			return false
+		}
+	}
+	return true
+}
+
+func inputIdentitiesAvailable(values []failure.InputIdentity) bool {
+	for _, value := range values {
+		if !dimensionValuesAvailable(value.Identity, firstDimensionValue(value.SHA256, value.Digest)) {
+			return false
+		}
+	}
+	return true
+}
+
+func contentIdentitiesAvailable(values []failure.ContentIdentity) bool {
+	for _, value := range values {
+		if !dimensionValuesAvailable(value.Identity, firstDimensionValue(value.SHA256, value.ContentHash)) {
+			return false
+		}
+	}
+	return true
+}
+
 // BuildStateVector converts transient sanitized identities into four stable,
 // independently comparable digests. A missing authoritative tree,
 // configuration, or environment identity remains unavailable and cannot be
 // mistaken for a state change. An empty decision set is a stable decision
 // state and receives its own digest.
 func BuildStateVector(inputs failure.FingerprintInputs) StateVector {
+	repositoryIdentity := firstDimensionValue(inputs.Git.Repository)
+	baseIdentity := firstDimensionValue(inputs.Git.BaseCommit, inputs.Git.Base)
 	treeIdentity := firstDimensionValue(inputs.Git.TreeIdentity, inputs.Git.Tree)
 	branchIdentity := firstDimensionValue(inputs.Git.BranchCommit, inputs.Git.Branch)
 	tree := failure.Unavailable
-	if treeIdentity != failure.Unavailable && branchIdentity != failure.Unavailable {
+	if dimensionValuesAvailable(repositoryIdentity, baseIdentity, branchIdentity, treeIdentity) {
 		tree = digestCanonical(struct {
 			Repository string `json:"repository"`
 			Base       string `json:"base"`
 			Branch     string `json:"branch"`
 			Tree       string `json:"tree"`
 		}{
-			Repository: firstDimensionValue(inputs.Git.Repository),
-			Base:       firstDimensionValue(inputs.Git.BaseCommit, inputs.Git.Base),
+			Repository: repositoryIdentity,
+			Base:       baseIdentity,
 			Branch:     branchIdentity,
 			Tree:       treeIdentity,
 		})
 	}
 
 	configurationIdentity := firstDimensionValue(inputs.ConfigurationIdentity, inputs.ConfigIdentity)
+	verificationIdentity := firstDimensionValue(inputs.Verification.CommandIdentity, inputs.Verification.Command)
+	stageInputs := firstInputs(inputs.StageInputs, inputs.StageInputIdentities)
 	configuration := failure.Unavailable
-	if configurationIdentity != failure.Unavailable {
+	if dimensionValuesAvailable(inputs.Stage, configurationIdentity, verificationIdentity) &&
+		inputIdentitiesAvailable(stageInputs) {
 		configuration = digestCanonical(struct {
 			Stage         string              `json:"stage"`
 			Configuration string              `json:"configuration"`
@@ -111,25 +143,31 @@ func BuildStateVector(inputs failure.FingerprintInputs) StateVector {
 			Verification  string              `json:"verification"`
 		}{
 			Stage: inputs.Stage, Configuration: configurationIdentity,
-			StageInputs:  canonicalInputs(firstInputs(inputs.StageInputs, inputs.StageInputIdentities)),
-			Verification: firstDimensionValue(inputs.Verification.CommandIdentity, inputs.Verification.Command),
+			StageInputs:  canonicalInputs(stageInputs),
+			Verification: verificationIdentity,
 		})
 	}
 
+	runtimeIdentity := firstDimensionValue(inputs.WatchtowerIdentity)
+	cacheIdentity := firstDimensionValue(inputs.Verification.CacheIdentity, inputs.Verification.Cache)
 	environment := failure.Unavailable
-	if inputs.EnvironmentIdentity != "" && inputs.EnvironmentIdentity != failure.Unavailable {
+	if dimensionValuesAvailable(inputs.EnvironmentIdentity, runtimeIdentity, cacheIdentity) {
 		environment = digestCanonical(struct {
 			Environment string `json:"environment"`
 			Runtime     string `json:"runtime"`
 			Cache       string `json:"cache"`
 		}{
 			Environment: inputs.EnvironmentIdentity,
-			Runtime:     firstDimensionValue(inputs.WatchtowerIdentity),
-			Cache:       firstDimensionValue(inputs.Verification.CacheIdentity, inputs.Verification.Cache),
+			Runtime:     runtimeIdentity,
+			Cache:       cacheIdentity,
 		})
 	}
 
-	decision := digestCanonical(canonicalContents(firstContents(inputs.Decisions, inputs.DecisionIdentities)))
+	decisionInputs := firstContents(inputs.Decisions, inputs.DecisionIdentities)
+	decision := failure.Unavailable
+	if contentIdentitiesAvailable(decisionInputs) {
+		decision = digestCanonical(canonicalContents(decisionInputs))
+	}
 	return StateVector{TreeDigest: tree, ConfigDigest: configuration, EnvironmentDigest: environment, DecisionDigest: decision}
 }
 

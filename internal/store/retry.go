@@ -56,6 +56,11 @@ func validateRetryContext(stored retry.Context) error {
 		stored.LatestRecordID <= 0 || stored.IssueID == "" || stored.Stage == "" || stored.Version <= 0 {
 		return fmt.Errorf("invalid retry context identity")
 	}
+	if expected := retry.BuildContextKey(
+		stored.IssueID, stored.Stage, stored.FailureSite, stored.FailureClass, stored.FailureFingerprint,
+	); stored.ContextKey != expected {
+		return fmt.Errorf("retry context key does not match durable identity")
+	}
 	if stored.SharedUsed < 0 || stored.SharedCap < 0 || stored.ModelResampleUsed < 0 || stored.ModelResampleCap < 0 {
 		return fmt.Errorf("invalid retry context counters")
 	}

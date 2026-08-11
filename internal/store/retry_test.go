@@ -104,6 +104,21 @@ func TestRetryContextPreservesDuplicateOccurrencesInOneAggregate(t *testing.T) {
 	}
 }
 
+func TestRetryContextRejectsMismatchedDurableIdentity(t *testing.T) {
+	s, err := Open("file:retry-mismatched-identity?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	appendRetryFailure(t, s, retryTestDigest("f"), retryTestVector("a"))
+	if _, err := s.db.Exec(`UPDATE retry_contexts SET context_key=?`, retryTestDigest("e")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LoadRetryContext(context.Background(), "GH-65", "execute"); err == nil {
+		t.Fatal("retry context with mismatched durable identity was accepted")
+	}
+}
+
 func TestAuthorizeRetryConcurrentRequestsCannotExceedCap(t *testing.T) {
 	s, err := Open("file:retry-concurrent?mode=memory&cache=shared")
 	if err != nil {
