@@ -617,7 +617,7 @@ func (e *Engine) Rehydrate() error {
 				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
 				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
 				dependsOn: append([]string(nil), row.DependsOn...), running: true,
-				stageIdx: finalIdx, planReview: row.PlanReviewPolicy,
+				stageIdx: finalIdx, retryUnmerged: true, planReview: row.PlanReviewPolicy,
 			}
 			e.mu.Lock()
 			e.issues[row.ID] = is
@@ -4404,6 +4404,7 @@ func (e *Engine) retryStaleVerification(
 	e.mu.Lock()
 	is.stageIdx = stageIdx
 	is.terminal = false
+	is.retryUnmerged = true
 	e.mu.Unlock()
 	return true, e.runFromOwned(ctx, is, stageIdx, plannerOverride)
 }

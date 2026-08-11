@@ -95,6 +95,14 @@ func (e *Engine) prepareFinalization(
 		}
 	}
 	verificationPath := filepath.Join(workdir, "verification.json")
+	loadVerificationFile := func(path string) ([]byte, marshal.Verification, error) {
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, marshal.Verification{}, readErr
+		}
+		value, loadErr := marshal.LoadVerification(path)
+		return body, value, loadErr
+	}
 	var verification marshal.Verification
 	var verificationReceiptJSON []byte
 	var verificationAttemptID int64
@@ -114,19 +122,20 @@ func (e *Engine) prepareFinalization(
 				return preparedFinalization{}, fmt.Errorf("load journal verification receipt: %w", err)
 			}
 		} else {
-			verificationReceiptJSON, err = os.ReadFile(verificationPath)
-			if err == nil {
-				verification, err = marshal.LoadVerification(verificationPath)
+			verificationReceiptJSON, verification, err = loadVerificationFile(verificationPath)
+			if err != nil && workdir != artifactDir {
+				verificationReceiptJSON, verification, err = loadVerificationFile(
+					filepath.Join(artifactDir, "verification.json"))
 			}
 			if err != nil {
 				return preparedFinalization{}, fmt.Errorf("load verification receipt: %w", err)
 			}
 		}
 	} else {
-		var err error
-		verificationReceiptJSON, err = os.ReadFile(verificationPath)
-		if err == nil {
-			verification, err = marshal.LoadVerification(verificationPath)
+		verificationReceiptJSON, verification, err = loadVerificationFile(verificationPath)
+		if err != nil && workdir != artifactDir {
+			verificationReceiptJSON, verification, err = loadVerificationFile(
+				filepath.Join(artifactDir, "verification.json"))
 		}
 		if err != nil {
 			return preparedFinalization{}, fmt.Errorf("load verification receipt: %w", err)
