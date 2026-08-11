@@ -337,17 +337,17 @@ func validateResult(result Result) error {
 		if result.Execute == nil {
 			return invalid("execute", "payload must match stage_kind")
 		}
-		return validateExecute(result.Execute)
+		return validateExecute(result.Outcome, result.RemainingWork, result.Execute)
 	case KindCorrectnessReview:
 		if result.CorrectnessReview == nil {
 			return invalid("correctness_review", "payload must match stage_kind")
 		}
-		return validateReview("correctness_review", result.CorrectnessReview.Findings, result.CorrectnessReview.Fixes, result.CorrectnessReview.Checks, result.CorrectnessReview.ReviewedPaths, result.CorrectnessReview.Skips, result.CorrectnessReview.NoChange)
+		return validateReview("correctness_review", result.Outcome, result.CorrectnessReview.Findings, result.CorrectnessReview.Fixes, result.CorrectnessReview.Checks, result.CorrectnessReview.ReviewedPaths, result.CorrectnessReview.Skips, result.CorrectnessReview.NoChange)
 	case KindCleanCodeReview:
 		if result.CleanCodeReview == nil {
 			return invalid("clean_code_review", "payload must match stage_kind")
 		}
-		return validateReview("clean_code_review", result.CleanCodeReview.Findings, result.CleanCodeReview.Fixes, result.CleanCodeReview.Checks, result.CleanCodeReview.ReviewedPaths, result.CleanCodeReview.Skips, result.CleanCodeReview.NoChange)
+		return validateReview("clean_code_review", result.Outcome, result.CleanCodeReview.Findings, result.CleanCodeReview.Fixes, result.CleanCodeReview.Checks, result.CleanCodeReview.ReviewedPaths, result.CleanCodeReview.Skips, result.CleanCodeReview.NoChange)
 	case KindLibrarian:
 		if result.Librarian == nil {
 			return invalid("librarian", "payload must match stage_kind")
@@ -357,11 +357,12 @@ func validateResult(result Result) error {
 	return invalid("stage_kind", "unsupported stage kind")
 }
 
-func validateExecute(payload *ExecutePayload) error {
+func validateExecute(outcome Outcome, remainingWork []WorkItem, payload *ExecutePayload) error {
 	if len(payload.PlanTasks) == 0 {
 		return invalid("execute.plan_tasks", "must record task outcomes")
 	}
 	taskIDs := make(map[string]struct{}, len(payload.PlanTasks))
+	hasRemainingTask := false
 	for i, task := range payload.PlanTasks {
 		prefix := fmt.Sprintf("execute.plan_tasks[%d]", i)
 		if strings.TrimSpace(task.ID) == "" {
@@ -374,9 +375,16 @@ func validateExecute(payload *ExecutePayload) error {
 		if task.Outcome != TaskCompleted && task.Outcome != TaskRemaining && task.Outcome != TaskSkipped {
 			return invalid(prefix+".outcome", "must be completed, remaining, or skipped")
 		}
+		if outcome == OutcomeCompleted && task.Outcome == TaskRemaining {
+			return invalid(prefix+".outcome", "remaining task requires a retryable result")
+		}
+		hasRemainingTask = hasRemainingTask || task.Outcome == TaskRemaining
 		if strings.TrimSpace(task.Summary) == "" {
 			return invalid(prefix+".summary", "must not be blank")
 		}
+	}
+	if hasRemainingTask && !hasWorkKind(remainingWork, WorkPlanTask) {
+		return invalid("remaining_work", "remaining plan tasks require an actionable plan_task work item")
 	}
 	if err := validateSkips("execute.skips", payload.Skips); err != nil {
 		return err
@@ -401,12 +409,26 @@ func validateExecute(payload *ExecutePayload) error {
 	return validateChecks("execute.checks", payload.Checks)
 }
 
-func validateReview(prefix string, findings []Finding, fixes []Fix, checks []Check, reviewedPaths []string, skips []Skip, noChange *NoChangeConclusion) error {
+func validateReview(prefix string, outcome Outcome, findings []Finding, fixes []Fix, checks []Check, reviewedPaths []string, skips []Skip, noChange *NoChangeConclusion) error {
 	if err := validateFindings(prefix+".findings", findings); err != nil {
 		return err
 	}
 	if err := validateFixes(prefix+".fixes", findings, fixes); err != nil {
 		return err
+	}
+	fixed := make(map[string]bool, len(findings))
+	for _, fix := range fixes {
+		for _, findingID := range fix.FindingIDs {
+			fixed[findingID] = true
+		}
+	}
+	for i, finding := range findings {
+		if outcome == OutcomeCompleted && finding.Status == FindingOpen {
+			return invalid(fmt.Sprintf("%s.findings[%d].status", prefix, i), "open finding requires a retryable result")
+		}
+		if finding.Status == FindingFixed && !fixed[finding.ID] {
+			return invalid(fmt.Sprintf("%s.findings[%d].status", prefix, i), "fixed finding requires a recorded fix")
+		}
 	}
 	if err := validateChecks(prefix+".checks", checks); err != nil {
 		return err
@@ -416,6 +438,12 @@ func validateReview(prefix string, findings []Finding, fixes []Fix, checks []Che
 	}
 	if err := validateSkips(prefix+".skips", skips); err != nil {
 		return err
+	}
+	if len(checks) == 0 && !hasSkip(skips, "checks") {
+		return invalid(prefix+".checks", "must record checks or an explained checks skip")
+	}
+	if len(reviewedPaths) == 0 && !hasSkip(skips, "reviewed_paths") {
+		return invalid(prefix+".reviewed_paths", "must record reviewed paths or an explained reviewed-paths skip")
 	}
 	if len(fixes) > 0 && noChange != nil {
 		return invalid(prefix+".no_change", "must not coexist with fixes")
@@ -435,6 +463,9 @@ func validateLibrarian(payload *LibrarianPayload) error {
 	}
 	if err := validateSkips("librarian.skips", payload.Skips); err != nil {
 		return err
+	}
+	if len(payload.ReviewedPaths) == 0 && !hasSkip(payload.Skips, "reviewed_paths") {
+		return invalid("librarian.reviewed_paths", "must record reviewed paths or an explained reviewed-paths skip")
 	}
 	for i, update := range payload.DocumentationUpdates {
 		prefix := fmt.Sprintf("librarian.documentation_updates[%d]", i)
@@ -589,11 +620,24 @@ func payloadCount(e Evidence) int {
 
 func hasSkip(skips []Skip, activity string) bool {
 	for _, skip := range skips {
-		if skip.Activity == activity && strings.TrimSpace(skip.Explanation) != "" {
+		if normalizeActivity(skip.Activity) == normalizeActivity(activity) && strings.TrimSpace(skip.Explanation) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+func hasWorkKind(items []WorkItem, kind WorkKind) bool {
+	for _, item := range items {
+		if item.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeActivity(activity string) string {
+	return strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(activity)))
 }
 
 func openFindings(findings []Finding) []Finding {

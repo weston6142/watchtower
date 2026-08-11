@@ -76,6 +76,27 @@ func TestValidateRejectsInvalidResults(t *testing.T) {
 		{name: "completed_with_remaining_work", mutate: func(r *stageresult.Result) {
 			r.RemainingWork = []stageresult.WorkItem{{Kind: stageresult.WorkPlanTask, Description: "finish task-0002"}}
 		}},
+		{name: "completed_with_remaining_task", mutate: func(r *stageresult.Result) {
+			r.Execute.PlanTasks[0].Outcome = stageresult.TaskRemaining
+		}},
+		{name: "retryable_remaining_task_without_plan_work", mutate: func(r *stageresult.Result) {
+			r.Outcome = stageresult.OutcomeRetryable
+			r.Execute.PlanTasks[0].Outcome = stageresult.TaskRemaining
+			r.RemainingConcerns = []stageresult.Concern{{Explanation: "the task still needs attention"}}
+		}},
+		{name: "completed_with_open_finding", mutate: func(r *stageresult.Result) {
+			r.Execute = nil
+			r.StageKind = stageresult.KindCorrectnessReview
+			r.CorrectnessReview = validCorrectnessEvidence().CorrectnessReview
+			r.CorrectnessReview.Findings[0].Status = stageresult.FindingOpen
+		}},
+		{name: "fixed_finding_without_fix", mutate: func(r *stageresult.Result) {
+			r.Execute = nil
+			r.StageKind = stageresult.KindCorrectnessReview
+			r.CorrectnessReview = validCorrectnessEvidence().CorrectnessReview
+			r.CorrectnessReview.Fixes = nil
+			r.CorrectnessReview.NoChange = &stageresult.NoChangeConclusion{Explanation: "no change was made"}
+		}},
 		{name: "skip_without_explanation", mutate: func(r *stageresult.Result) {
 			r.Execute.Skips = []stageresult.Skip{{Activity: "checks"}}
 		}},
@@ -94,11 +115,29 @@ func TestValidateRejectsInvalidResults(t *testing.T) {
 			r.CleanCodeReview = validCleanCodeEvidence().CleanCodeReview
 			r.CleanCodeReview.NoChange = nil
 		}},
+		{name: "review_without_checks_or_skip", mutate: func(r *stageresult.Result) {
+			r.Execute = nil
+			r.StageKind = stageresult.KindCleanCodeReview
+			r.CleanCodeReview = validCleanCodeEvidence().CleanCodeReview
+			r.CleanCodeReview.Checks = nil
+		}},
+		{name: "review_without_reviewed_paths_or_skip", mutate: func(r *stageresult.Result) {
+			r.Execute = nil
+			r.StageKind = stageresult.KindCleanCodeReview
+			r.CleanCodeReview = validCleanCodeEvidence().CleanCodeReview
+			r.CleanCodeReview.ReviewedPaths = nil
+		}},
 		{name: "librarian_no_change_with_updates", mutate: func(r *stageresult.Result) {
 			r.Execute = nil
 			r.StageKind = stageresult.KindLibrarian
 			r.Librarian = validLibrarianEvidence().Librarian
 			r.Librarian.NoChange = &stageresult.NoChangeConclusion{Explanation: "no documentation needed"}
+		}},
+		{name: "librarian_without_reviewed_paths_or_skip", mutate: func(r *stageresult.Result) {
+			r.Execute = nil
+			r.StageKind = stageresult.KindLibrarian
+			r.Librarian = validLibrarianEvidence().Librarian
+			r.Librarian.ReviewedPaths = nil
 		}},
 	}
 

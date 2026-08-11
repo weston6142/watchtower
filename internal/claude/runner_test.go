@@ -45,6 +45,27 @@ func TestCodeRunnerRejectsConflictingStageResultMarkers(t *testing.T) {
 	}
 }
 
+func TestCodeRunnerRejectsStageResultBeforeFinalTurn(t *testing.T) {
+	decision := `{"watchtower_decision":{"kind":"choice","question":"Apply the repair?","options":["Apply","Hold"],"recommended":0,"why":"The repair closes the gap.","consequences":["The repair is applied.","The stage remains incomplete."],"reversible":"Before the repair is committed."}}`
+	bin := writeClaudeDecisionStageResultStub(t, claudeStageResultMarker("before decision")+"\n"+decision)
+	r := &CodeRunner{Bin: bin, Packages: testPkgs()}
+	asks := make(chan runner.Ask, 1)
+	done := r.Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), asks)
+	select {
+	case ask := <-asks:
+		ask.Reply <- levers.ChoiceResponse(0)
+	case res := <-done:
+		if res.Err == nil || res.FailureClass != runner.FailureProtocol {
+			t.Fatalf("result = %+v", res)
+		}
+		return
+	}
+	res := <-done
+	if res.Err == nil || res.FailureClass != runner.FailureProtocol || res.StageEvidence != nil {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
 func writeClaudeStageResultStub(t *testing.T, markers ...string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claude-result-stub")
@@ -53,6 +74,26 @@ func writeClaudeStageResultStub(t *testing.T, markers ...string) string {
 		lines = append(lines, claudeJSONLine(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "text", "text": marker}}}}))
 	}
 	lines = append(lines, claudeJSONLine(map[string]any{"type": "result", "is_error": false, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}))
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeClaudeDecisionStageResultStub(t *testing.T, text string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-decision-result-stub")
+	lines := []string{
+		"#!/bin/sh",
+		"set -eu",
+		"read _task",
+		claudeJSONLine(map[string]any{"type": "system", "subtype": "init", "session_id": "s-premature-result"}),
+		claudeJSONLine(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}}}),
+		claudeJSONLine(map[string]any{"type": "result", "is_error": false, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
+		"read _reply",
+		claudeJSONLine(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{map[string]any{"type": "text", "text": "decision applied"}}}}),
+		claudeJSONLine(map[string]any{"type": "result", "is_error": false, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
+	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

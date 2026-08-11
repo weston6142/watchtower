@@ -198,7 +198,6 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 	prompt := agentprotocol.TaskMessage(stage, issueID)
 	coachCount := 0
 	decisionAccepted := false
-	var stageEvidence *stageresult.Evidence
 	if start != nil {
 		threadID = start.threadID
 		prompt = start.prompt
@@ -210,6 +209,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 	}
 
 	for {
+		var stageEvidence *stageresult.Evidence
 		turn := c.runTurn(ctx, workdir, pkg, profile, threadID, prompt, gate)
 		res.Attempt.RedactedArgv = turn.invocation.RedactedArgv
 		if turn.threadID != "" {
@@ -268,6 +268,11 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 					c.OnLine(issueID, stage, event.Tool)
 				}
 			}
+		}
+		if stageEvidence != nil && (decision != nil || unstructuredDecision) {
+			res.Err = fmt.Errorf("watchtower_stage_result marker is only valid on the final assistant turn")
+			res.FailureClass = runner.FailureProtocol
+			return res, continuation()
 		}
 
 		if decision == nil && unstructuredDecision {

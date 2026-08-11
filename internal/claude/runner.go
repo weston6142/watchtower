@@ -255,6 +255,10 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 				c.OnLine(issueID, stage, fmt.Sprintf("— turn complete (%d tokens) —", ev.Tokens))
 			}
 			gotResult = true
+			if len(pendingReplies) > 0 && stageEvidence != nil {
+				res.FailureClass = runner.FailureProtocol
+				return abort(fmt.Errorf("watchtower_stage_result marker is only valid on the final assistant turn"))
+			}
 			// In stream-json input mode the CLI emits one result per turn and
 			// then waits for more input. Send any deferred replies now — the
 			// CLI is idle, so each starts a fresh turn. A turn with no reply

@@ -45,6 +45,7 @@ type stageResultMarker struct {
 // distinguishes an absent marker from a malformed attempted marker so callers
 // can fail closed instead of silently treating malformed evidence as missing.
 func ExtractStageResult(text string) (stageresult.Evidence, bool, error) {
+	var result *stageresult.Evidence
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, `{"watchtower_stage_result":`) {
@@ -65,7 +66,16 @@ func ExtractStageResult(text string) (stageresult.Evidence, bool, error) {
 		if marker.Result == nil {
 			return stageresult.Evidence{}, true, fmt.Errorf("decode stage result marker: watchtower_stage_result must not be null")
 		}
-		return *marker.Result, true, nil
+		if result == nil {
+			result = marker.Result
+			continue
+		}
+		if !StageResultEvidenceEqual(*result, *marker.Result) {
+			return stageresult.Evidence{}, true, fmt.Errorf("conflicting watchtower_stage_result markers")
+		}
+	}
+	if result != nil {
+		return *result, true, nil
 	}
 	return stageresult.Evidence{}, false, nil
 }

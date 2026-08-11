@@ -55,6 +55,16 @@ func TestExtractStageResultDistinguishesMalformedAndMissingMarkers(t *testing.T)
 	}
 }
 
+func TestExtractStageResultRejectsConflictingMarkersInOneMessage(t *testing.T) {
+	first := validExecuteStageResultMarker()
+	second := strings.Replace(first, `"task-0001"`, `"task-0002"`, 1)
+
+	_, found, err := ExtractStageResult(first + "\n" + second)
+	if !found || err == nil {
+		t.Fatalf("ExtractStageResult() found=%v err=%v, want a conflicting-marker error", found, err)
+	}
+}
+
 func validExecuteStageResultMarker() string {
 	return `{"watchtower_stage_result":{"schema_version":1,"stage_kind":"execute","outcome":"completed","remaining_work":[],"remaining_concerns":[],"execute":{"plan_tasks":[{"id":"task-0001","outcome":"completed","summary":"implemented"}],"commits":[{"sha":"abc123","message":"feat: implement task","task_ids":["task-0001"]}],"checks":[{"name":"focused red","command":"go test ./internal/example -run TestBehavior","result":"red","affected":true},{"name":"focused green","command":"go test ./internal/example -run TestBehavior","result":"green","affected":true}],"skips":[{"activity":"repository gate","explanation":"the final repository gate belongs to merge verification"}]}}}`
 }

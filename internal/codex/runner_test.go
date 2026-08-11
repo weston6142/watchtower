@@ -51,6 +51,37 @@ func TestCodeRunnerRejectsConflictingStageResultMarkers(t *testing.T) {
 	}
 }
 
+func TestCodeRunnerRejectsStageResultBeforeFinalTurn(t *testing.T) {
+	decision := `{"watchtower_decision":{"kind":"choice","question":"Apply the repair?","options":["Apply","Hold"],"recommended":0,"why":"The repair closes the gap.","consequences":["The repair is applied.","The stage remains incomplete."],"reversible":"Before the repair is committed."}}`
+	bin, state := statefulStub(t,
+		strings.Join([]string{
+			codexJSONLine(map[string]any{"type": "thread.started", "thread_id": "thr-premature-result"}),
+			codexJSONLine(map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": codexStageResultMarker("before decision") + "\n" + decision}}),
+			codexJSONLine(map[string]any{"type": "turn.completed", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
+		}, "\n"),
+		strings.Join([]string{
+			codexJSONLine(map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": "decision applied"}}),
+			codexJSONLine(map[string]any{"type": "turn.completed", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
+		}, "\n"),
+	)
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	select {
+	case ask := <-asks:
+		ask.Reply <- levers.ChoiceResponse(0)
+	case res := <-done:
+		if res.Err == nil || res.FailureClass != runner.FailureProtocol {
+			t.Fatalf("result = %+v", res)
+		}
+		return
+	}
+	res := <-done
+	if res.Err == nil || res.FailureClass != runner.FailureProtocol || res.StageEvidence != nil {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
 func codexStageResultMarker(summary string) string {
 	evidence := map[string]any{
 		"schema_version": 1, "stage_kind": "execute", "outcome": "completed",
