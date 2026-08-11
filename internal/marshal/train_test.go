@@ -421,6 +421,142 @@ func TestVerificationCacheTrainReplaysWithFreshLeaseWhenCompleteSnapshotExists(t
 	}
 }
 
+func TestVerificationCacheTrainReusesExactIntegratedTree(t *testing.T) {
+	repo, branch := repoWithBranch(t, false)
+	cacheRoot := filepath.Join(t.TempDir(), "verification-cache")
+	count := filepath.Join(t.TempDir(), "count")
+	command := filepath.Join(t.TempDir(), "record.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nset -eu\nif [ -f \"$1\" ]; then exit 99; fi\nprintf 1 > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{command, count}
+	baseSHA := strings.TrimSpace(git(t, repo, "merge-base", "main", branch))
+	branchSHA := strings.TrimSpace(git(t, repo, "rev-parse", branch))
+	treeSHA := strings.TrimSpace(git(t, repo, "rev-parse", branch+"^{tree}"))
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: cacheRoot, RepoDir: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := runtime.Acquire(context.Background(), verificationcache.Config{
+		RepoDir: repo, BaseSHA: baseSHA, BranchSHA: branchSHA, TreeSHA: treeSHA, Argv: argv,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := lease.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(runtime.CompleteRoot(), evidence.LeaseID, "manifest.json")
+	beforeManifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := verificationFor(t, repo, branch, [][]string{argv})
+	receipt.CacheEvidence = NewCacheEvidence(evidence)
+	tr := &Train{Repo: repo, CacheRoot: cacheRoot, TestCmd: argv}
+	result, err := tr.LandVerified(context.Background(), "GH-66", branch, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CacheEvidence != nil {
+		t.Fatalf("unchanged integrated tree returned relabelled proof: %+v", result.CacheEvidence)
+	}
+	if _, err := os.Stat(count); !os.IsNotExist(err) {
+		t.Fatalf("configured gate ran for unchanged integrated tree: %v", err)
+	}
+	afterManifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterManifest) != string(beforeManifest) || receipt.CacheEvidence.TreeSHA != treeSHA ||
+		strings.TrimSpace(git(t, repo, "rev-parse", "main^{tree}")) != treeSHA {
+		t.Fatal("unchanged integration relabelled or replaced the repair-bound proof")
+	}
+}
+
+func TestVerificationCacheTrainCreatesDistinctIntegratedProof(t *testing.T) {
+	repo, branch := repoWithBranch(t, false)
+	cacheRoot := filepath.Join(t.TempDir(), "verification-cache")
+	count := filepath.Join(t.TempDir(), "count")
+	recordedTree := filepath.Join(t.TempDir(), "tree")
+	command := filepath.Join(t.TempDir(), "record.sh")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nset -eu\ncount=0\nif [ -f \"$1\" ]; then count=$(cat \"$1\"); fi\nprintf '%s\n' $((count+1)) > \"$1\"\ngit rev-parse 'HEAD^{tree}' > \"$2\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{command, count, recordedTree}
+	baseSHA := strings.TrimSpace(git(t, repo, "merge-base", "main", branch))
+	branchSHA := strings.TrimSpace(git(t, repo, "rev-parse", branch))
+	branchTree := strings.TrimSpace(git(t, repo, "rev-parse", branch+"^{tree}"))
+	runtime, err := verificationcache.New(verificationcache.Config{CacheRoot: cacheRoot, RepoDir: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := runtime.Acquire(context.Background(), verificationcache.Config{
+		RepoDir: repo, BaseSHA: baseSHA, BranchSHA: branchSHA, TreeSHA: branchTree, Argv: argv,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := lease.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(runtime.CompleteRoot(), evidence.LeaseID, "manifest.json")
+	beforeManifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := verificationFor(t, repo, branch, [][]string{argv})
+	receipt.CacheEvidence = NewCacheEvidence(evidence)
+	if err := os.WriteFile(filepath.Join(repo, "main-only.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "main-only.txt")
+	git(t, repo, "commit", "-qm", "advance main")
+	tr := &Train{Repo: repo, CacheRoot: cacheRoot, TestCmd: argv}
+	result, err := tr.LandVerified(context.Background(), "GH-66", branch, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CacheEvidence == nil || result.CacheEvidence.LeaseID == evidence.LeaseID ||
+		result.CacheEvidence.TreeSHA == branchTree {
+		t.Fatalf("integrated proof = %+v, want distinct proof for changed integrated tree", result.CacheEvidence)
+	}
+	integratedTree := strings.TrimSpace(git(t, repo, "rev-parse", "main^{tree}"))
+	if result.CacheEvidence.TreeSHA != integratedTree {
+		t.Fatalf("integrated proof tree = %q, want %q", result.CacheEvidence.TreeSHA, integratedTree)
+	}
+	if got, err := os.ReadFile(count); err != nil || strings.TrimSpace(string(got)) != "1" {
+		t.Fatalf("configured gate invocations = %q, %v; want one", got, err)
+	}
+	if got, err := os.ReadFile(recordedTree); err != nil || strings.TrimSpace(string(got)) != integratedTree {
+		t.Fatalf("configured gate observed tree = %q, %v; want %q", got, err, integratedTree)
+	}
+	if err := runtime.ValidateEvidence(result.CacheEvidence.RuntimeEvidence()); err != nil {
+		t.Fatalf("integrated cache evidence did not validate: %v", err)
+	}
+	afterManifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterManifest) != string(beforeManifest) {
+		t.Fatal("original repair-bound complete manifest changed during combined verification")
+	}
+}
+
 func TestVerificationCacheTrainFailureQuarantinesAndRollsBack(t *testing.T) {
 	repo, branch := repoWithBranch(t, false)
 	cacheRoot := filepath.Join(t.TempDir(), "verification-cache")

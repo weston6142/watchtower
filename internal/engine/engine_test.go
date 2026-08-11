@@ -3350,6 +3350,237 @@ func TestVerificationCacheAgentAndDaemonReplayShareLeaseEnvironment(t *testing.T
 	}
 }
 
+func dynamicVerificationArtifacts(fake *runner.FakeRunner) {
+	script := fake.Scripts["merge-verification/merge-verifier"]
+	script.Artifacts["merge-decision.json"] = ""
+	script.Artifacts["verification.json"] = ""
+	fake.Scripts["merge-verification/merge-verifier"] = script
+}
+
+func commitVerifierRepair(t *testing.T, workdir, filename, message string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(workdir, filename), []byte(message+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, workdir, "add", filename)
+	gitOutput(t, workdir, "commit", "-qm", message)
+	return strings.TrimSpace(gitOutput(t, workdir, "rev-parse", "HEAD"))
+}
+
+func verificationCacheManifestPaths(t *testing.T, cacheRoot, kind string) []string {
+	t.Helper()
+	pattern := filepath.Join(cacheRoot, "verification-cache", "*", kind, "*", "manifest.json")
+	if kind == "quarantine" {
+		pattern = filepath.Join(cacheRoot, "verification-cache", "*", kind, "*.json")
+	}
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return paths
+}
+
+func TestMergeVerificationKeepsInitialLeaseIdentity(t *testing.T) {
+	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	cacheRoot := t.TempDir()
+	e.cfg.CacheRoot = cacheRoot
+	e.cfg.Train.CacheRoot = cacheRoot
+	id, err := e.CreateIssue("no repair", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := marshal.LoadVerification(filepath.Join(e.issueDir(id), "artifacts", "verification.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.CacheEvidence == nil || receipt.CacheEvidence.BranchSHA != receipt.BranchSHA ||
+		receipt.CacheEvidence.TreeSHA != receipt.TreeSHA || len(receipt.CacheEvidence.Quarantines) != 0 {
+		t.Fatalf("no-change receipt evidence = %+v, want initial complete lease without quarantine", receipt.CacheEvidence)
+	}
+	if len(verificationCacheManifestPaths(t, cacheRoot, "quarantine")) != 0 ||
+		len(verificationCacheManifestPaths(t, cacheRoot, "complete")) != 1 {
+		t.Fatalf("no-change cache manifests do not show one complete initial lease")
+	}
+	if !hasEvent(t, s, id, core.EvVerificationReady) {
+		t.Fatal("no-change verification did not reach verification_ready")
+	}
+}
+
+func TestMergeVerificationRebindsAfterAcceptedRepair(t *testing.T) {
+	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	cacheRoot := t.TempDir()
+	e.cfg.CacheRoot = cacheRoot
+	e.cfg.Train.CacheRoot = cacheRoot
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	dynamicVerificationArtifacts(fake)
+	fake.OnStart = func(_, stage, _, workdir string) error {
+		if stage == "merge-verification" {
+			commitVerifierRepair(t, workdir, "repair-one", "accepted repair")
+		}
+		return nil
+	}
+	id, err := e.CreateIssue("one repair", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := marshal.LoadVerification(filepath.Join(e.issueDir(id), "artifacts", "verification.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.CacheEvidence == nil || receipt.CacheEvidence.LeaseID == "" || len(receipt.CacheEvidence.Quarantines) != 1 {
+		t.Fatalf("repair receipt evidence = %+v, want one quarantined pre-repair lease", receipt.CacheEvidence)
+	}
+	quarantine := receipt.CacheEvidence.Quarantines[0]
+	if quarantine.LeaseID == receipt.CacheEvidence.LeaseID || quarantine.BranchSHA == receipt.BranchSHA || quarantine.TreeSHA == receipt.TreeSHA {
+		t.Fatalf("repair quarantine = %+v, receipt = %+v, want distinct pre/post identities", quarantine, receipt.CacheEvidence)
+	}
+	completePaths := verificationCacheManifestPaths(t, cacheRoot, "complete")
+	if len(completePaths) != 1 || len(verificationCacheManifestPaths(t, cacheRoot, "quarantine")) != 1 {
+		t.Fatalf("repair cache manifests: complete=%v quarantine=%v", completePaths, verificationCacheManifestPaths(t, cacheRoot, "quarantine"))
+	}
+	manifestBody, err := os.ReadFile(completePaths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestBody, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest["lease_id"] != receipt.CacheEvidence.LeaseID || manifest["branch_sha"] != receipt.BranchSHA || manifest["tree_sha"] != receipt.TreeSHA {
+		t.Fatalf("complete manifest = %v, receipt = %+v, want matching final identity", manifest, receipt.CacheEvidence)
+	}
+	if !hasEvent(t, s, id, core.EvVerificationReady) {
+		t.Fatal("accepted repair did not reach verification_ready")
+	}
+}
+
+func TestMergeVerificationUsesFinalIdentityAfterMultipleRepairs(t *testing.T) {
+	e, _, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	cacheRoot := t.TempDir()
+	e.cfg.CacheRoot = cacheRoot
+	e.cfg.Train.CacheRoot = cacheRoot
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	dynamicVerificationArtifacts(fake)
+	var intermediate, final string
+	fake.OnStart = func(_, stage, _, workdir string) error {
+		if stage == "merge-verification" {
+			intermediate = commitVerifierRepair(t, workdir, "repair-one", "first repair")
+			final = commitVerifierRepair(t, workdir, "repair-two", "second repair")
+		}
+		return nil
+	}
+	id, err := e.CreateIssue("multiple repairs", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := marshal.LoadVerification(filepath.Join(e.issueDir(id), "artifacts", "verification.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.BranchSHA != final || receipt.BranchSHA == intermediate || receipt.CacheEvidence == nil || len(receipt.CacheEvidence.Quarantines) != 1 {
+		t.Fatalf("multiple-repair receipt = %+v, intermediate=%q final=%q", receipt, intermediate, final)
+	}
+	if receipt.CacheEvidence.Quarantines[0].BranchSHA == intermediate {
+		t.Fatalf("intermediate repair was retained as proof: %+v", receipt.CacheEvidence.Quarantines[0])
+	}
+	if len(verificationCacheManifestPaths(t, cacheRoot, "complete")) != 1 {
+		t.Fatal("multiple repairs produced more than one complete proof")
+	}
+}
+
+func TestMergeVerificationGateMutationFailsClosed(t *testing.T) {
+	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	cacheRoot := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "gate-invoked")
+	command := filepath.Join(t.TempDir(), "mutating-gate.sh")
+	script := "#!/bin/sh\nset -eu\nprintf invoked > \"$1\"\nprintf changed > gate-change\ngit add gate-change\ngit commit -qm gate-mutation\n"
+	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.cfg.CacheRoot = cacheRoot
+	e.cfg.Train.CacheRoot = cacheRoot
+	e.cfg.Train.TestCmd = []string{command, marker}
+	id, err := e.CreateIssue("gate mutation", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("gate mutation unexpectedly completed")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("gate was not invoked: %v", err)
+	}
+	if hasEvent(t, s, id, core.EvVerificationReady) {
+		t.Fatal("gate mutation created verification_ready")
+	}
+	if _, err := os.Stat(filepath.Join(e.issueDir(id), "artifacts", "verification.json")); !os.IsNotExist(err) {
+		t.Fatalf("gate mutation archived verification.json: %v", err)
+	}
+	if len(verificationCacheManifestPaths(t, cacheRoot, "quarantine")) == 0 || len(verificationCacheManifestPaths(t, cacheRoot, "complete")) != 0 {
+		t.Fatal("gate mutation did not leave only quarantined cache evidence")
+	}
+}
+
+func TestRehydrateVerifiedFinalizationUsesDurableProof(t *testing.T) {
+	e, s, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+	fake := e.cfg.Runner.(*runner.FakeRunner)
+	fake.OnStart = func(_, stage, _, _ string) error {
+		if stage == "merge-verification" {
+			return os.WriteFile(filepath.Join(repo, "diff"), []byte("dirty base\n"), 0o644)
+		}
+		return nil
+	}
+	id, err := e.CreateIssue("restart proof", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("dirty base unexpectedly finalized")
+	}
+	runsBefore, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
+		t.Fatalf("repair base checkout: %v: %s", err, out)
+	}
+	fake.OnStart = nil
+	restarted := New(e.cfg)
+	if err := restarted.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		integration, ok, err := s.IssueIntegration(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && integration.State == store.IntegrationMerged {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("durable proof did not finalize: %+v", integration)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runsAfter, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runsAfter) != len(runsBefore) {
+		t.Fatalf("restart reran verifier: before=%+v after=%+v", runsBefore, runsAfter)
+	}
+}
+
 func renamedVerificationFlow() flow.Flow {
 	return flow.Flow{Name: "custom", Stages: []flow.Stage{
 		{

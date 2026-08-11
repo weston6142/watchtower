@@ -21,7 +21,18 @@ func (e *Engine) writeVerificationReceipt(
 	if e.cfg.Train == nil || len(e.cfg.Train.TestCmd) == 0 {
 		return nil
 	}
-	commands := [][]string{e.cfg.Train.TestCmd}
+	commands := [][]string{append([]string(nil), e.cfg.Train.TestCmd...)}
+	if lease != nil {
+		branchSHA, treeSHA, err := verificationIdentity(workdir)
+		if err != nil {
+			return rejectVerificationIdentity(lease, fmt.Errorf("verification pre-gate identity: %w", err), "verification pre-gate identity read failed")
+		}
+		if branchSHA != lease.BranchSHA() || treeSHA != lease.TreeSHA() {
+			return rejectVerificationIdentity(lease, fmt.Errorf(
+				"verification pre-gate identity %s/%s does not match lease %s/%s",
+				branchSHA, treeSHA, lease.BranchSHA(), lease.TreeSHA()), "verification pre-gate identity mismatch")
+		}
+	}
 	var replayErr error
 	if lease != nil {
 		replayErr = marshal.ReplayWithEnvironment(ctx, workdir, commands, lease.ManagedEnvironment())
@@ -31,13 +42,14 @@ func (e *Engine) writeVerificationReceipt(
 	if replayErr != nil {
 		return fmt.Errorf("verification: %w", replayErr)
 	}
-	branchSHA, err := gitRevision(workdir, "HEAD")
+	branchSHA, treeSHA, err := verificationIdentity(workdir)
 	if err != nil {
-		return fmt.Errorf("verification branch commit: %w", err)
+		return rejectVerificationIdentity(lease, fmt.Errorf("verification post-gate identity: %w", err), "verification post-gate identity read failed")
 	}
-	treeSHA, err := gitRevision(workdir, "HEAD^{tree}")
-	if err != nil {
-		return fmt.Errorf("verification tree: %w", err)
+	if lease != nil && (branchSHA != lease.BranchSHA() || treeSHA != lease.TreeSHA()) {
+		return rejectVerificationIdentity(lease, fmt.Errorf(
+			"verification post-gate identity %s/%s does not match lease %s/%s",
+			branchSHA, treeSHA, lease.BranchSHA(), lease.TreeSHA()), "verification post-gate identity mismatch")
 	}
 	receipt := marshal.Verification{
 		BaseSHA: is.baseRef, BranchSHA: branchSHA, TreeSHA: treeSHA,
@@ -58,4 +70,26 @@ func (e *Engine) writeVerificationReceipt(
 		return fmt.Errorf("encode verification receipt: %w", err)
 	}
 	return os.WriteFile(filepath.Join(workdir, "verification.json"), document, 0o644)
+}
+
+func verificationIdentity(workdir string) (branchSHA, treeSHA string, err error) {
+	branchSHA, err = gitRevision(workdir, "HEAD")
+	if err != nil {
+		return "", "", fmt.Errorf("verification branch commit: %w", err)
+	}
+	treeSHA, err = gitRevision(workdir, "HEAD^{tree}")
+	if err != nil {
+		return "", "", fmt.Errorf("verification tree: %w", err)
+	}
+	return branchSHA, treeSHA, nil
+}
+
+func rejectVerificationIdentity(lease *verificationcache.Lease, cause error, reason string) error {
+	if lease == nil {
+		return cause
+	}
+	if err := lease.Quarantine(reason); err != nil {
+		return fmt.Errorf("%v (quarantine verification lease: %w)", cause, err)
+	}
+	return cause
 }

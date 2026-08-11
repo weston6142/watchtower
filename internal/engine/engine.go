@@ -3465,6 +3465,21 @@ func (e *Engine) runStageOnce(
 		}
 	}
 	if st.MergeBarrier {
+		if verificationLease != nil {
+			branchSHA, treeSHA, err := verificationIdentity(workdir)
+			if err != nil {
+				return fmt.Errorf("verification post-agent identity: %w", err)
+			}
+			if branchSHA != verificationLease.BranchSHA() || treeSHA != verificationLease.TreeSHA() {
+				verificationLease, err = verificationLease.Rebind(verificationcache.Config{
+					RepoDir: e.cfg.Train.Repo, BaseSHA: is.baseRef, BranchSHA: branchSHA,
+					TreeSHA: treeSHA, Argv: append([]string(nil), e.cfg.Train.TestCmd...),
+				})
+				if err != nil {
+					return fmt.Errorf("rebind verification cache lease: %w", err)
+				}
+			}
+		}
 		if err := e.writeVerificationReceipt(ctx, is, workdir, verificationLease); err != nil {
 			return err
 		}

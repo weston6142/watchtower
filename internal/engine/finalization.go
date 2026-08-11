@@ -96,10 +96,15 @@ func (e *Engine) validateFinalIdentity(
 			if verificationLease.State() != verificationcache.StateComplete {
 				return fmt.Errorf("current verification cache lease is not complete")
 			}
+			if verificationLease.Repository() != repository || verificationLease.BaseSHA() != is.baseRef ||
+				verificationLease.BranchSHA() != branchSHA || verificationLease.TreeSHA() != treeSHA ||
+				verificationLease.CommandDigest() != verificationcache.CommandDigest(e.cfg.Train.TestCmd) {
+				return fmt.Errorf("current verification cache lease does not match live identity")
+			}
 			current = marshal.CacheIdentity{
 				LeaseID: verificationLease.ID(), Repository: repository,
-				ManagedScope: verificationLease.ManagedScope(), BaseSHA: verificationLease.BaseSHA(),
-				BranchSHA: verificationLease.BranchSHA(), TreeSHA: verificationLease.TreeSHA(),
+				ManagedScope: verificationLease.ManagedScope(), BaseSHA: is.baseRef,
+				BranchSHA: branchSHA, TreeSHA: treeSHA,
 				CommandDigest: verificationLease.CommandDigest(),
 			}
 		}
