@@ -30,6 +30,74 @@ type authorityTestRegistry struct {
 	priorFound    bool
 }
 
+type scopedAuthorityRecord struct {
+	status   string
+	digest   []byte
+	manifest []byte
+	sections []byte
+}
+
+type scopedAuthorityTestRegistry struct {
+	mu      sync.Mutex
+	records map[int]scopedAuthorityRecord
+}
+
+func (r *scopedAuthorityTestRegistry) LoadPlannerArtifact(_ string, _ string, attempt int, _ string) (string, []byte, []byte, []byte, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, found := r.records[attempt]
+	return record.status, append([]byte(nil), record.digest...), append([]byte(nil), record.manifest...), append([]byte(nil), record.sections...), found, nil
+}
+
+func (r *scopedAuthorityTestRegistry) LoadLatestPlannerArtifactBefore(_ string, _ string, beforeAttempt int, _ string) (int, string, []byte, []byte, []byte, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	latest := 0
+	for attempt, record := range r.records {
+		if attempt < beforeAttempt && attempt > latest && record.status == "active" {
+			latest = attempt
+		}
+	}
+	if latest == 0 {
+		return 0, "", nil, nil, nil, false, nil
+	}
+	record := r.records[latest]
+	return latest, record.status, append([]byte(nil), record.digest...), append([]byte(nil), record.manifest...), append([]byte(nil), record.sections...), true, nil
+}
+
+func (r *scopedAuthorityTestRegistry) CreatePlannerArtifact(_ string, _ string, attempt int, _ string, status string, digest, manifest, sections []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.records == nil {
+		r.records = make(map[int]scopedAuthorityRecord)
+	}
+	r.records[attempt] = scopedAuthorityRecord{status: status, digest: append([]byte(nil), digest...), manifest: append([]byte(nil), manifest...), sections: append([]byte(nil), sections...)}
+	return nil
+}
+
+func (r *scopedAuthorityTestRegistry) UpdatePlannerArtifact(issue, stage string, attempt int, worktree, status string, digest, manifest, sections []byte) error {
+	return r.CreatePlannerArtifact(issue, stage, attempt, worktree, status, digest, manifest, sections)
+}
+
+func (r *scopedAuthorityTestRegistry) PromotePlannerArtifact(_ string, _ string, priorAttempt, attempt int, _ string, digest, manifest, sections []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prior := r.records[priorAttempt]
+	prior.status = "expired"
+	r.records[priorAttempt] = prior
+	r.records[attempt] = scopedAuthorityRecord{status: "active", digest: append([]byte(nil), digest...), manifest: append([]byte(nil), manifest...), sections: append([]byte(nil), sections...)}
+	return nil
+}
+
+func (r *scopedAuthorityTestRegistry) ExpirePlannerArtifact(_ string, _ string, attempt int, _ string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record := r.records[attempt]
+	record.status = "expired"
+	r.records[attempt] = record
+	return nil
+}
+
 func (r *authorityTestRegistry) LoadLatestPlannerArtifactBefore(string, string, int, string) (int, string, []byte, []byte, []byte, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -59,6 +127,10 @@ func (r *authorityTestRegistry) CreatePlannerArtifact(_ string, _ string, _ int,
 
 func (r *authorityTestRegistry) UpdatePlannerArtifact(issue, stage string, attempt int, worktree, status string, digest, manifest, sections []byte) error {
 	return r.CreatePlannerArtifact(issue, stage, attempt, worktree, status, digest, manifest, sections)
+}
+
+func (r *authorityTestRegistry) PromotePlannerArtifact(issue, stage string, _ int, attempt int, worktree string, digest, manifest, sections []byte) error {
+	return r.CreatePlannerArtifact(issue, stage, attempt, worktree, "active", digest, manifest, sections)
 }
 
 func (r *authorityTestRegistry) ExpirePlannerArtifact(string, string, int, string) error {
@@ -460,6 +532,99 @@ func TestAuthorityRecoverySerializesOldAuthorityOperations(t *testing.T) {
 				t.Fatalf("old authority after rotation = %v", oldApplyErr)
 			}
 		})
+	}
+}
+
+func TestAuthorityRecoverySerializesAcrossAttemptsAndStalesPriorManifest(t *testing.T) {
+	workdir := t.TempDir()
+	registry := &scopedAuthorityTestRegistry{records: make(map[int]scopedAuthorityRecord)}
+	firstBinding := Binding{IssueID: "GH-77", Stage: "plan", Attempt: 1, Worktree: workdir}
+	old, err := CreateOrLoad(registry, firstBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := authorityTestManifest()
+	if err := old.Apply(WriteRequest{Manifest: manifest, Key: "goal", Markdown: "durable goal", Globs: manifest.Sections[0].Globs}); err != nil {
+		t.Fatal(err)
+	}
+
+	planPath := filepath.Join(old.Binding().Worktree, "plan.md")
+	publishedPlan := make(chan struct{})
+	continueRecovery := make(chan struct{})
+	rename := func(oldPath, newPath string) error {
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return err
+		}
+		if newPath == planPath {
+			close(publishedPlan)
+			<-continueRecovery
+		}
+		return nil
+	}
+	type reloadResult struct {
+		authority *Authority
+		err       error
+	}
+	reloaded := make(chan reloadResult, 1)
+	go func() {
+		authority, err := CreateOrLoad(registry, Binding{IssueID: "GH-77", Stage: "plan", Attempt: 2, Worktree: workdir}, RequireDurableRecovery(), withRecoveryRename(rename))
+		reloaded <- reloadResult{authority: authority, err: err}
+	}()
+	select {
+	case <-publishedPlan:
+	case result := <-reloaded:
+		t.Fatalf("recovery returned before publishing the first target: %v", result.err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("cross-attempt recovery did not publish the first target")
+	}
+
+	changedManifest := authorityTestManifest()
+	changedManifest.Sections[1].Globs = []string{"internal/changed/**"}
+	oldApply := make(chan error, 1)
+	go func() {
+		oldApply <- old.Apply(WriteRequest{Manifest: changedManifest, Key: "architecture", Markdown: "stale architecture", Globs: changedManifest.Sections[1].Globs})
+	}()
+	select {
+	case err := <-oldApply:
+		close(continueRecovery)
+		<-reloaded
+		t.Fatalf("prior authority completed while cross-attempt recovery was partial: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(continueRecovery)
+	result := <-reloaded
+	if result.err != nil || result.authority == nil {
+		t.Fatalf("cross-attempt recovery = %#v err=%v", result.authority, result.err)
+	}
+	if err := <-oldApply; ErrorClassOf(err) != ErrorStaleCapability {
+		t.Fatalf("prior authority after recovery = %v, want stale capability", err)
+	}
+	if err := result.authority.Apply(WriteRequest{Manifest: manifest, Key: "architecture", Markdown: "current architecture", Globs: manifest.Sections[1].Globs}); err != nil {
+		t.Fatalf("current authority rejected original manifest: %v", err)
+	}
+}
+
+func TestStaleAuthorityCannotExpireRotatedBinding(t *testing.T) {
+	workdir := t.TempDir()
+	registry := &authorityTestRegistry{}
+	binding := Binding{IssueID: "GH-77", Stage: "plan", Attempt: 1, Worktree: workdir}
+	old, err := CreateOrLoad(registry, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := authorityTestManifest()
+	if err := old.Apply(WriteRequest{Manifest: manifest, Key: "goal", Markdown: "durable goal", Globs: manifest.Sections[0].Globs}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := CreateOrLoad(registry, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Expire(); ErrorClassOf(err) != ErrorStaleCapability {
+		t.Fatalf("stale expiration = %v, want stale capability", err)
+	}
+	if err := current.Apply(WriteRequest{Manifest: manifest, Key: "architecture", Markdown: "still active", Globs: manifest.Sections[1].Globs}); err != nil {
+		t.Fatalf("current authority after stale expiration: %v", err)
 	}
 }
 

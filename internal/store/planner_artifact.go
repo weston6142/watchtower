@@ -99,6 +99,48 @@ func (s *Store) CreatePlannerArtifact(issueID, stage string, attempt int, worktr
 	return err
 }
 
+// PromotePlannerArtifact atomically retires the selected prior attempt and
+// creates the recovered current attempt. This prevents a live prior handle
+// from mutating the shared planner pair after cross-attempt recovery.
+func (s *Store) PromotePlannerArtifact(issueID, stage string, priorAttempt, attempt int, worktree string, digest, manifest, sections []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failNextPlannerArtifactWrite {
+		s.failNextPlannerArtifactWrite = false
+		return fmt.Errorf("injected planner artifact registry write failure")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.Exec(`
+		UPDATE planner_artifacts SET status=?, updated_at=?
+		WHERE issue_id=? AND stage=? AND attempt=? AND worktree=? AND status=?`,
+		"expired", now, issueID, stage, priorAttempt, worktree, "active")
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return sql.ErrNoRows
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO planner_artifacts(
+			issue_id, stage, attempt, worktree, status, capability_digest,
+			manifest, sections, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		issueID, stage, attempt, worktree, "active", append([]byte(nil), digest...),
+		string(manifest), string(sections), now, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // UpdatePlannerArtifact replaces only the exact bound record. The caller has
 // already verified the capability and binding; this method remains serialized
 // with all other coordinator writes by Store.mu.

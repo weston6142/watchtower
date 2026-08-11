@@ -37,6 +37,10 @@ type retryRegistry interface {
 	LoadLatestPlannerArtifactBefore(issueID, stage string, beforeAttempt int, worktree string) (attempt int, status string, digest, manifest, sections []byte, found bool, err error)
 }
 
+type retryPromotionRegistry interface {
+	PromotePlannerArtifact(issueID, stage string, priorAttempt, attempt int, worktree string, digest, manifest, sections []byte) error
+}
+
 type acceptedSection struct {
 	Key      string   `json:"key"`
 	Markdown string   `json:"markdown"`
@@ -102,19 +106,26 @@ type bindingLockEntry struct {
 	refs int
 }
 
+type authorityScope struct {
+	IssueID  string
+	Stage    string
+	Worktree string
+}
+
 var authorityBindingLocks = struct {
 	sync.Mutex
-	entries map[Binding]*bindingLockEntry
-}{entries: make(map[Binding]*bindingLockEntry)}
+	entries map[authorityScope]*bindingLockEntry
+}{entries: make(map[authorityScope]*bindingLockEntry)}
 
 // acquireBindingLock counts callers before they wait so an entry is removed
 // only after its final holder or waiter has released it.
 func acquireBindingLock(binding Binding) func() {
+	scope := authorityScope{IssueID: binding.IssueID, Stage: binding.Stage, Worktree: binding.Worktree}
 	authorityBindingLocks.Lock()
-	entry := authorityBindingLocks.entries[binding]
+	entry := authorityBindingLocks.entries[scope]
 	if entry == nil {
 		entry = &bindingLockEntry{}
-		authorityBindingLocks.entries[binding] = entry
+		authorityBindingLocks.entries[scope] = entry
 	}
 	entry.refs++
 	authorityBindingLocks.Unlock()
@@ -125,7 +136,7 @@ func acquireBindingLock(binding Binding) func() {
 		authorityBindingLocks.Lock()
 		entry.refs--
 		if entry.refs == 0 {
-			delete(authorityBindingLocks.entries, binding)
+			delete(authorityBindingLocks.entries, scope)
 		}
 		authorityBindingLocks.Unlock()
 	}
@@ -133,6 +144,7 @@ func acquireBindingLock(binding Binding) func() {
 
 type durableAuthoritySelection struct {
 	exact    bool
+	attempt  int
 	status   string
 	digest   []byte
 	manifest []byte
@@ -232,7 +244,7 @@ func loadDurableAuthoritySelection(registry Registry, binding Binding) (durableA
 	if err != nil {
 		return durableAuthoritySelection{}, false, authorityError(ErrorAuthorityState, "", "registry read failed", err)
 	}
-	selection := durableAuthoritySelection{exact: true, status: status, digest: digest, manifest: manifest, sections: sections}
+	selection := durableAuthoritySelection{exact: true, attempt: binding.Attempt, status: status, digest: digest, manifest: manifest, sections: sections}
 	if !found {
 		retry, ok := registry.(retryRegistry)
 		if !ok {
@@ -246,7 +258,7 @@ func loadDurableAuthoritySelection(registry Registry, binding Binding) (durableA
 		if !priorFound {
 			return durableAuthoritySelection{}, false, nil
 		}
-		selection = durableAuthoritySelection{status: priorStatus, digest: priorDigest, manifest: priorManifest, sections: priorSections}
+		selection = durableAuthoritySelection{attempt: attempt, status: priorStatus, digest: priorDigest, manifest: priorManifest, sections: priorSections}
 		if attempt <= 0 || attempt >= binding.Attempt {
 			return durableAuthoritySelection{}, false, authorityError(ErrorAuthorityState, "", "planner retry state contradicts the requested attempt", nil)
 		}
@@ -270,8 +282,12 @@ func persistReloadedAuthority(registry Registry, binding Binding, selection dura
 		return registry.UpdatePlannerArtifact(binding.IssueID, binding.Stage, binding.Attempt, binding.Worktree,
 			"active", digest, selection.manifest, selection.sections)
 	}
-	return registry.CreatePlannerArtifact(binding.IssueID, binding.Stage, binding.Attempt, binding.Worktree,
-		"active", digest, selection.manifest, selection.sections)
+	promoter, ok := registry.(retryPromotionRegistry)
+	if !ok {
+		return errors.New("planner authority: atomic retry promotion is unavailable")
+	}
+	return promoter.PromotePlannerArtifact(binding.IssueID, binding.Stage, selection.attempt, binding.Attempt,
+		binding.Worktree, digest, selection.manifest, selection.sections)
 }
 
 func generateCapability(reader io.Reader) (string, []byte, error) {
@@ -779,6 +795,9 @@ func (a *Authority) Expire() error {
 	defer a.mu.Unlock()
 	if a.closed {
 		return nil
+	}
+	if err := a.verifyLocked(); err != nil {
+		return err
 	}
 	if err := a.registry.ExpirePlannerArtifact(a.binding.IssueID, a.binding.Stage, a.binding.Attempt, a.binding.Worktree); err != nil {
 		return err

@@ -53,3 +53,41 @@ func TestLoadLatestPlannerArtifactBeforeSelectsNewestEligibleExactScope(t *testi
 	assertLoad(2, 1, manifest1, sections1, true)
 	assertLoad(1, 0, nil, nil, false)
 }
+
+func TestPromotePlannerArtifactAtomicallyRetiresPriorAttempt(t *testing.T) {
+	s, err := Open(t.TempDir() + "/planner-promotion.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const (
+		issueID  = "GH-77"
+		stage    = "plan"
+		worktree = "/worktrees/GH-77"
+	)
+	if err := s.CreatePlannerArtifact(issueID, stage, 1, worktree, "active", []byte("old-digest"), []byte("old-manifest"), []byte("old-sections")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PromotePlannerArtifact(issueID, stage, 1, 2, worktree, []byte("new-digest"), []byte("new-manifest"), []byte("new-sections")); err != nil {
+		t.Fatal(err)
+	}
+	status, _, _, _, found, err := s.LoadPlannerArtifact(issueID, stage, 1, worktree)
+	if err != nil || !found || status != "expired" {
+		t.Fatalf("prior attempt = status %q found %v err %v", status, found, err)
+	}
+	status, digest, manifest, sections, found, err := s.LoadPlannerArtifact(issueID, stage, 2, worktree)
+	if err != nil || !found || status != "active" || !bytes.Equal(digest, []byte("new-digest")) || !bytes.Equal(manifest, []byte("new-manifest")) || !bytes.Equal(sections, []byte("new-sections")) {
+		t.Fatalf("current attempt = status %q digest %q manifest %q sections %q found %v err %v", status, digest, manifest, sections, found, err)
+	}
+
+	if err := s.CreatePlannerArtifact(issueID, stage, 3, worktree, "expired", []byte("occupied"), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PromotePlannerArtifact(issueID, stage, 2, 3, worktree, []byte("failed"), nil, nil); err == nil {
+		t.Fatal("promotion into an occupied attempt unexpectedly succeeded")
+	}
+	status, _, _, _, found, err = s.LoadPlannerArtifact(issueID, stage, 2, worktree)
+	if err != nil || !found || status != "active" {
+		t.Fatalf("failed promotion changed prior attempt = status %q found %v err %v", status, found, err)
+	}
+}
