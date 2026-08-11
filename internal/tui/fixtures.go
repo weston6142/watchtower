@@ -168,10 +168,10 @@ func fixtureSetup() *setupState {
 	agent := func(name string, preview string) proto.AgentSetup {
 		return proto.AgentSetup{
 			Package: name, Model: "gpt-5.6-luna", Effort: "xhigh",
-			ToolSource:           "codex config",
-			DeclaredAllowedTools: []string{"Bash", "Read", "Edit", "Glob", "Grep"},
-			PromptLines:          24,
-			PromptPreview:        []string{preview},
+			LegacyAllowedTools: []string{"Bash", "Read", "Edit", "Glob", "Grep"},
+			LegacyToolsNotice:  "deprecated restriction — cannot grant authority",
+			PromptLines:        24,
+			PromptPreview:      []string{preview},
 		}
 	}
 	view := proto.SetupView{

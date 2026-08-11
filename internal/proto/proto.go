@@ -203,17 +203,20 @@ type CodexProfileSetup struct {
 }
 
 type StageSetup struct {
-	Name         string       `json:"name"`
-	Gate         string       `json:"gate"`
-	Workspace    string       `json:"workspace"` // none|worktree|readonly
-	Parallel     bool         `json:"parallel"`
-	Completion   string       `json:"completion"` // all|any
-	HeavySlot    bool         `json:"heavy_slot"`
-	MergeBarrier bool         `json:"merge_barrier"`
-	Retries      int          `json:"retries"`
-	Artifacts    []string     `json:"artifacts,omitempty"` // declared, not produced
-	Lever        string       `json:"lever,omitempty"`     // issue-scoped only
-	Agents       []AgentSetup `json:"agents"`
+	Name                string                    `json:"name"`
+	CapabilityProfile   string                    `json:"capability_profile"`
+	DocumentationPaths  []string                  `json:"documentation_paths,omitempty"`
+	EffectiveCapability *EffectiveCapabilitySetup `json:"effective_capability,omitempty"`
+	Gate                string                    `json:"gate"`
+	Workspace           string                    `json:"workspace"` // none|worktree|readonly
+	Parallel            bool                      `json:"parallel"`
+	Completion          string                    `json:"completion"` // all|any
+	HeavySlot           bool                      `json:"heavy_slot"`
+	MergeBarrier        bool                      `json:"merge_barrier"`
+	Retries             int                       `json:"retries"`
+	Artifacts           []string                  `json:"artifacts,omitempty"` // declared, not produced
+	Lever               string                    `json:"lever,omitempty"`     // issue-scoped only
+	Agents              []AgentSetup              `json:"agents"`
 }
 
 type AgentSetup struct {
@@ -231,6 +234,8 @@ type AgentSetup struct {
 	// remains visible as Claude-only declaration metadata.
 	DeclaredAllowedTools []string `json:"declared_allowed_tools,omitempty"`
 	ToolSource           string   `json:"tool_source,omitempty"`
+	LegacyAllowedTools   []string `json:"legacy_allowed_tools,omitempty"`
+	LegacyToolsNotice    string   `json:"legacy_tools_notice,omitempty"`
 
 	// Declared but not applied — parsed by watchtower, never passed to the CLI.
 	DeclaredModel string `json:"declared_model,omitempty"` // flow.AgentRef.Model
@@ -238,4 +243,28 @@ type AgentSetup struct {
 
 	PromptPreview []string `json:"prompt_preview,omitempty"` // ≤3 non-blank lines, ≤120 runes each
 	PromptLines   int      `json:"prompt_lines,omitempty"`
+}
+
+// EffectiveCapabilitySetup is a bounded, safe projection of durable policy
+// evidence. It intentionally excludes prompts, file contents, argv, process
+// environments, remote URLs, sockets, handles, and provider diagnostics.
+type EffectiveCapabilitySetup struct {
+	SchemaVersion    int      `json:"schema_version"`
+	ContractID       string   `json:"contract_id"`
+	AuthorityDigest  string   `json:"authority_digest"`
+	Operations       []string `json:"operations,omitempty"`
+	ReadCount        int      `json:"read_count"`
+	WriteCount       int      `json:"write_count"`
+	AgentOutputs     int      `json:"agent_outputs"`
+	EngineOutputs    int      `json:"engine_outputs"`
+	Provider         string   `json:"provider,omitempty"`
+	Implementation   string   `json:"implementation,omitempty"`
+	PlanID           string   `json:"plan_id,omitempty"`
+	Preflight        string   `json:"preflight"`
+	Validation       string   `json:"validation"`
+	FailureReason    string   `json:"failure_reason,omitempty"`
+	FailurePhase     string   `json:"failure_phase,omitempty"`
+	FailureOperation string   `json:"failure_operation,omitempty"`
+	FailurePaths     []string `json:"failure_paths,omitempty"`
+	RecoveryRequired string   `json:"recovery_required,omitempty"`
 }

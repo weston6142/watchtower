@@ -31,6 +31,7 @@ func TestDecisionsJSONIncludesContext(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: review
+    capability_profile: artifact
     agents: [{package: correctness-reviewer}]
     gate: approve_artifact
     artifacts: [review.md]
@@ -1433,6 +1434,7 @@ func TestResetYesStillRefusesPendingDecision(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: review
+    capability_profile: artifact
     agents: [{package: correctness-reviewer}]
     gate: approve_artifact
     artifacts: [review.md]
@@ -1632,7 +1634,7 @@ stages:
 	}
 }
 
-func TestIntegratingFlowRefusesMissingVerificationCommand(t *testing.T) {
+func TestDaemonRejectsInvalidCapabilityConfigurationBeforeRunner(t *testing.T) {
 	t.Setenv("TMPDIR", "/tmp")
 	bin := buildBinary(t)
 	base, err := os.MkdirTemp("/tmp", "wt-missing-gate-")

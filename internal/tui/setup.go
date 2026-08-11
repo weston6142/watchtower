@@ -163,6 +163,9 @@ func setupStageLine(st proto.StageSetup, expanded bool) string {
 		caret = "▾"
 	}
 	parts := []string{fmt.Sprintf("%d agent%s", len(st.Agents), pluralSuffix(len(st.Agents))), st.Gate}
+	if st.CapabilityProfile != "" {
+		parts = append(parts, "profile "+st.CapabilityProfile)
+	}
 	if st.Workspace == "none" || st.Workspace == "" {
 		parts = append(parts, "no workspace")
 	} else {
@@ -206,8 +209,43 @@ func setupStageDetail(st proto.StageSetup) string {
 	if st.Lever != "" {
 		parts = append(parts, "lever "+st.Lever)
 	}
+	if effective := st.EffectiveCapability; effective != nil {
+		if effective.FailureReason != "" {
+			parts = append(parts, "policy "+effective.FailureReason)
+		}
+		status := "preflight " + effective.Preflight + " · validation " + effective.Validation
+		parts = append(parts, fmt.Sprintf("effective %d ops · %d/%d paths · %d/%d outputs · %s",
+			len(effective.Operations), effective.ReadCount, effective.WriteCount,
+			effective.AgentOutputs, effective.EngineOutputs, status))
+	}
+	if len(st.DocumentationPaths) > 0 {
+		parts = append(parts, "docs "+strings.Join(st.DocumentationPaths, ", "))
+	}
 	return "  " + lipgloss.NewStyle().Foreground(activeTheme.Dim).
 		Render(truncate(strings.Join(parts, " · "), setupRowWidth-4))
+}
+
+func setupCapabilityLines(effective *proto.EffectiveCapabilitySetup) []string {
+	if effective == nil {
+		return nil
+	}
+	lines := []string{fmt.Sprintf("  capability %s · preflight %s · validation %s · %s",
+		truncate(strings.Join(effective.Operations, ","), 28), effective.Preflight, effective.Validation,
+		truncate(effective.Provider+"/"+effective.Implementation, 24))}
+	if effective.FailureReason != "" {
+		failure := "  policy " + effective.FailureReason
+		if effective.FailurePhase != "" {
+			failure += " · " + effective.FailurePhase
+		}
+		if effective.RecoveryRequired != "" {
+			failure += " · next " + effective.RecoveryRequired
+		}
+		lines = append(lines, failure)
+	}
+	for index := range lines {
+		lines[index] = lipgloss.NewStyle().Foreground(activeTheme.Dim).Render(truncate(lines[index], setupRowWidth))
+	}
+	return lines
 }
 
 func setupHealthLine(health *scaffold.ConfigurationHealth) string {
@@ -264,17 +302,12 @@ func setupAgentLines(ag proto.AgentSetup, runnerKind string) []string {
 	}
 	lines := []string{lipgloss.NewStyle().Foreground(t.Bright).Render(name) +
 		lipgloss.NewStyle().Foreground(t.Structure).Render(truncate(head, setupRowWidth-24))}
-	tools := "tools —"
-	if ag.ToolSource != "" {
-		tools = "tools " + ag.ToolSource
-	} else if len(ag.AllowedTools) > 0 {
-		tools = "tools " + strings.Join(ag.AllowedTools, ", ")
-	}
+	tools := "effective tools — supplied by stage capability"
 	lines = append(lines, "    "+dim.Render(truncate(tools, setupRowWidth-6)))
 	warn := lipgloss.NewStyle().Foreground(t.Warn)
-	if len(ag.DeclaredAllowedTools) > 0 {
+	if len(ag.LegacyAllowedTools) > 0 {
 		lines = append(lines, "    "+warn.Render(truncate(
-			"declared tools "+strings.Join(ag.DeclaredAllowedTools, ", ")+" — not applied",
+			"legacy tools "+strings.Join(ag.LegacyAllowedTools, ", ")+" — "+ag.LegacyToolsNotice,
 			setupRowWidth-6)))
 	}
 	if ag.DeclaredModel != "" {
@@ -317,6 +350,9 @@ func setupRows(v proto.SetupView, expanded map[string]bool) []setupRow {
 			continue
 		}
 		rows = append(rows, setupRow{Kind: setupRowHeader, Text: setupStageDetail(st)})
+		for _, line := range setupCapabilityLines(st.EffectiveCapability) {
+			rows = append(rows, setupRow{Kind: setupRowHeader, Text: line})
+		}
 		for _, ag := range st.Agents {
 			lines := setupAgentLines(ag, v.Repo.Runner)
 			rows = append(rows, setupRow{Kind: setupRowAgent, Text: "  " + lines[0],
