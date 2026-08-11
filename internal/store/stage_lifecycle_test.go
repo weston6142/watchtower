@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
+	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/stageresult"
 )
@@ -20,19 +22,19 @@ func TestStageResultAttemptsPreservePredecessorsAndExactReplay(t *testing.T) {
 	second := BeginAttempt("GH-67", "execute", "checkpoint-2")
 	second.CreatedAt = time.Unix(2, 0).UTC()
 	for _, attempt := range []StageLifecycleAttempt{first, second} {
-		if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+		if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 			t.Fatal(err)
 		}
 	}
 	firstResult := structuredResultRef(t, first, "", stageresult.OutcomeRetryable, "a")
 	secondResult := structuredResultRef(t, second, first.AttemptID, stageresult.OutcomeCompleted, "b")
-	if err := s.PutStageLifecycleResult(first, firstResult); err != nil {
+	if err := putValidatedLifecycleResult(t, s, first, firstResult); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutStageLifecycleResult(second, secondResult); err != nil {
+	if err := putValidatedLifecycleResult(t, s, second, secondResult); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutStageLifecycleResult(second, secondResult); err != nil {
+	if err := putValidatedLifecycleResult(t, s, second, secondResult); err != nil {
 		t.Fatalf("exact replay failed: %v", err)
 	}
 	attempts, err := s.StageResultAttempts("GH-67", "execute", stageresult.KindExecute)
@@ -46,7 +48,7 @@ func TestStageResultAttemptsPreservePredecessorsAndExactReplay(t *testing.T) {
 	}
 	conflicting := secondResult
 	conflicting.ResultSHA256 = strings.Repeat("c", 64)
-	if err := s.PutStageLifecycleResult(second, conflicting); diagnosticCode(err) != CodeConflict {
+	if err := putValidatedLifecycleResult(t, s, second, conflicting); diagnosticCode(err) != CodeConflict {
 		t.Fatalf("conflicting replay error = %v", err)
 	}
 }
@@ -57,18 +59,18 @@ func TestStageResultExactReplayRemainsIdempotentAfterNewerAttempt(t *testing.T) 
 	second := BeginAttempt("GH-67", "execute", "checkpoint-2")
 	first.CreatedAt, second.CreatedAt = time.Unix(1, 0).UTC(), time.Unix(2, 0).UTC()
 	for _, attempt := range []StageLifecycleAttempt{first, second} {
-		if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+		if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 			t.Fatal(err)
 		}
 	}
 	firstResult := structuredResultRef(t, first, "", stageresult.OutcomeRetryable, "a")
-	if err := s.PutStageLifecycleResult(first, firstResult); err != nil {
+	if err := putValidatedLifecycleResult(t, s, first, firstResult); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutStageLifecycleResult(second, structuredResultRef(t, second, first.AttemptID, stageresult.OutcomeCompleted, "b")); err != nil {
+	if err := putValidatedLifecycleResult(t, s, second, structuredResultRef(t, second, first.AttemptID, stageresult.OutcomeCompleted, "b")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutStageLifecycleResult(first, firstResult); err != nil {
+	if err := putValidatedLifecycleResult(t, s, first, firstResult); err != nil {
 		t.Fatalf("older exact replay failed after newer result: %v", err)
 	}
 }
@@ -82,20 +84,20 @@ func TestStageResultRejectsWrongOrStalePredecessor(t *testing.T) {
 	}
 	for i := range attempts {
 		attempts[i].CreatedAt = time.Unix(int64(i+1), 0).UTC()
-		if err := s.CreateStageLifecycleAttempt(attempts[i]); err != nil {
+		if err := createValidatedLifecycleAttempt(t, s, attempts[i]); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.PutStageLifecycleResult(attempts[0], structuredResultRef(t, attempts[0], "", stageresult.OutcomeRetryable, "a")); err != nil {
+	if err := putValidatedLifecycleResult(t, s, attempts[0], structuredResultRef(t, attempts[0], "", stageresult.OutcomeRetryable, "a")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutStageLifecycleResult(attempts[1], structuredResultRef(t, attempts[1], "unknown", stageresult.OutcomeRetryable, "b")); err == nil {
+	if err := putValidatedLifecycleResult(t, s, attempts[1], structuredResultRef(t, attempts[1], "unknown", stageresult.OutcomeRetryable, "b")); err == nil {
 		t.Fatal("unknown predecessor was accepted")
 	}
-	if err := s.PutStageLifecycleResult(attempts[1], structuredResultRef(t, attempts[1], attempts[0].AttemptID, stageresult.OutcomeRetryable, "b")); err != nil {
+	if err := putValidatedLifecycleResult(t, s, attempts[1], structuredResultRef(t, attempts[1], attempts[0].AttemptID, stageresult.OutcomeRetryable, "b")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutStageLifecycleResult(attempts[2], structuredResultRef(t, attempts[2], attempts[0].AttemptID, stageresult.OutcomeCompleted, "c")); err == nil {
+	if err := putValidatedLifecycleResult(t, s, attempts[2], structuredResultRef(t, attempts[2], attempts[0].AttemptID, stageresult.OutcomeCompleted, "c")); err == nil {
 		t.Fatal("stale predecessor was accepted")
 	}
 }
@@ -106,15 +108,15 @@ func TestStageResultPersistenceFailureLeavesPreviousLatest(t *testing.T) {
 	second := BeginAttempt("GH-67", "execute", "checkpoint-2")
 	first.CreatedAt, second.CreatedAt = time.Unix(1, 0).UTC(), time.Unix(2, 0).UTC()
 	for _, attempt := range []StageLifecycleAttempt{first, second} {
-		if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+		if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.PutStageLifecycleResult(first, structuredResultRef(t, first, "", stageresult.OutcomeRetryable, "a")); err != nil {
+	if err := putValidatedLifecycleResult(t, s, first, structuredResultRef(t, first, "", stageresult.OutcomeRetryable, "a")); err != nil {
 		t.Fatal(err)
 	}
 	s.FailNextStageResultPutForTest()
-	if err := s.PutStageLifecycleResult(second, structuredResultRef(t, second, first.AttemptID, stageresult.OutcomeCompleted, "b")); err == nil {
+	if err := putValidatedLifecycleResult(t, s, second, structuredResultRef(t, second, first.AttemptID, stageresult.OutcomeCompleted, "b")); err == nil {
 		t.Fatal("injected persistence failure succeeded")
 	}
 	if _, found, err := s.StageLifecycleResult(second); err != nil || found {
@@ -131,11 +133,11 @@ func TestLatestStageResultIgnoresUnsupportedHistoricalSummary(t *testing.T) {
 	first := BeginAttempt("GH-67", "execute", "checkpoint-1")
 	second := BeginAttempt("GH-67", "execute", "checkpoint-2")
 	for _, attempt := range []StageLifecycleAttempt{first, second} {
-		if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+		if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.PutStageLifecycleResult(first, structuredResultRef(t, first, "", stageresult.OutcomeCompleted, "a")); err != nil {
+	if err := putValidatedLifecycleResult(t, s, first, structuredResultRef(t, first, "", stageresult.OutcomeCompleted, "a")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(`UPDATE stage_lifecycle_attempts SET stage_result_schema_version=2,
@@ -169,10 +171,10 @@ func TestStageResultColumnsMigrateLegacyLifecycleTable(t *testing.T) {
 	}
 	defer s.Close()
 	attempt := BeginAttempt("GH-67", "execute", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutStageLifecycleResult(attempt, structuredResultRef(t, attempt, "", stageresult.OutcomeCompleted, "a")); err != nil {
+	if err := putValidatedLifecycleResult(t, s, attempt, structuredResultRef(t, attempt, "", stageresult.OutcomeCompleted, "a")); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := s.LatestValidStageResultAttempt("GH-67", "execute", stageresult.KindExecute); err != nil || !found {
@@ -231,6 +233,37 @@ func openLifecycleStore(t *testing.T) *Store {
 	return s
 }
 
+func createValidatedLifecycleAttempt(t *testing.T, s *Store, attempt StageLifecycleAttempt) error {
+	t.Helper()
+	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+		return err
+	}
+	compiled, err := capability.Compile(capability.CompileInput{
+		IssueID: attempt.IssueID, Stage: attempt.Stage, AttemptID: attempt.AttemptID,
+		Profile: flow.ProfileArtifact, WorkspaceRoot: "/tmp/worktree",
+		MaterializedInputs: []string{"ISSUE.md"},
+		Repository:         capability.RepositoryIdentity{Branch: "issue/fixture", BaseCommit: "base", StartCommit: "head", Tree: "tree"},
+	})
+	if err != nil {
+		return err
+	}
+	return s.CreateCapabilityAttempt(capability.AttemptRecord{
+		Identity:      capability.AttemptIdentity{IssueID: attempt.IssueID, Stage: attempt.Stage, AttemptID: attempt.AttemptID},
+		SchemaVersion: capability.ContractVersion, Contract: compiled,
+	})
+}
+
+func putValidatedLifecycleResult(t *testing.T, s *Store, attempt StageLifecycleAttempt, result contextpack.AttemptResult) error {
+	t.Helper()
+	identity := capability.AttemptIdentity{IssueID: attempt.IssueID, Stage: attempt.Stage, AttemptID: attempt.AttemptID}
+	if err := s.BindCapabilityValidation(identity, result.ResultSHA256, capability.ValidationResult{
+		Passed: true, ResultDigest: result.ResultSHA256, DeltaDigest: strings.Repeat("d", 64),
+	}); err != nil {
+		return err
+	}
+	return s.PutStageLifecycleResult(attempt, result)
+}
+
 func lifecycleRecord(attempt StageLifecycleAttempt, substate stagelifecycle.Substate, version, predecessor int, id string) stagelifecycle.Record {
 	return stagelifecycle.Record{
 		SchemaVersion: 1, IssueID: attempt.IssueID, Stage: attempt.Stage, AttemptID: attempt.AttemptID,
@@ -242,7 +275,7 @@ func lifecycleRecord(attempt StageLifecycleAttempt, substate stagelifecycle.Subs
 
 func putLifecycleResult(t *testing.T, s *Store, attempt StageLifecycleAttempt) {
 	t.Helper()
-	if err := s.PutStageLifecycleResult(attempt, contextpack.AttemptResult{
+	if err := putValidatedLifecycleResult(t, s, attempt, contextpack.AttemptResult{
 		AttemptID: attempt.AttemptID, ResultPath: "artifacts/attempts/" + attempt.AttemptID + "/result/manifest.json", ResultSHA256: strings.Repeat("a", 64),
 	}); err != nil {
 		t.Fatal(err)
@@ -252,7 +285,7 @@ func putLifecycleResult(t *testing.T, s *Store, attempt StageLifecycleAttempt) {
 func TestStageLifecycleCommitsOnlyValidatedRecords(t *testing.T) {
 	s := openLifecycleStore(t)
 	attempt := BeginAttempt("GH-66", "spec", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
 	putLifecycleResult(t, s, attempt)
@@ -275,7 +308,7 @@ func TestStageLifecycleCommitsOnlyValidatedRecords(t *testing.T) {
 func TestStageLifecycleCommitRequiresDurableResult(t *testing.T) {
 	s := openLifecycleStore(t)
 	attempt := BeginAttempt("GH-66", "execute", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
 	record := lifecycleRecord(attempt, stagelifecycle.RunnerSucceeded, 1, 0, "checkpoint-1:runner_succeeded")
@@ -301,19 +334,19 @@ func TestStageLifecycleResultRequiresExistingAttempt(t *testing.T) {
 func TestStageLifecycleResultReplayRejectsConflictingIdentity(t *testing.T) {
 	s := openLifecycleStore(t)
 	attempt := BeginAttempt("GH-66", "execute", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
 	first := contextpack.AttemptResult{
 		AttemptID: attempt.AttemptID, ResultPath: "artifacts/attempts/" + attempt.AttemptID + "/result/manifest.json", ResultSHA256: strings.Repeat("a", 64),
 	}
-	if err := s.PutStageLifecycleResult(attempt, first); err != nil {
+	if err := putValidatedLifecycleResult(t, s, attempt, first); err != nil {
 		t.Fatal(err)
 	}
 	conflicting := first
 	conflicting.ResultPath = "artifacts/attempts/" + attempt.AttemptID + "/result/other-manifest.json"
 	conflicting.ResultSHA256 = strings.Repeat("b", 64)
-	if err := s.PutStageLifecycleResult(attempt, conflicting); err == nil {
+	if err := putValidatedLifecycleResult(t, s, attempt, conflicting); err == nil {
 		t.Fatal("conflicting result replay was accepted")
 	}
 }
@@ -321,7 +354,7 @@ func TestStageLifecycleResultReplayRejectsConflictingIdentity(t *testing.T) {
 func TestStageLifecycleResultRejectsNonCanonicalPath(t *testing.T) {
 	s := openLifecycleStore(t)
 	attempt := BeginAttempt("GH-66", "execute", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutStageLifecycleResult(attempt, contextpack.AttemptResult{
@@ -334,7 +367,7 @@ func TestStageLifecycleResultRejectsNonCanonicalPath(t *testing.T) {
 func TestStageArchiveManifestRejectsCrossAttemptPath(t *testing.T) {
 	s := openLifecycleStore(t)
 	attempt := BeginAttempt("GH-66", "execute", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
 	ref := contextpack.AttemptArtifact{
@@ -348,7 +381,7 @@ func TestStageArchiveManifestRejectsCrossAttemptPath(t *testing.T) {
 func TestStageArchiveManifestRejectsResultSlotPath(t *testing.T) {
 	s := openLifecycleStore(t)
 	attempt := BeginAttempt("GH-66", "execute", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
 	ref := contextpack.AttemptArtifact{
@@ -362,7 +395,7 @@ func TestStageArchiveManifestRejectsResultSlotPath(t *testing.T) {
 func TestStageLifecycleReplayAndConflicts(t *testing.T) {
 	s := openLifecycleStore(t)
 	attempt := BeginAttempt("GH-66", "spec", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
 	putLifecycleResult(t, s, attempt)
@@ -389,7 +422,7 @@ func TestStageLifecycleReplayAndConflicts(t *testing.T) {
 func TestStageLifecycleFinalizationFailureRetainsPriorRecoveryPoint(t *testing.T) {
 	s := openLifecycleStore(t)
 	attempt := BeginAttempt("GH-66", "execute", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
 	putLifecycleResult(t, s, attempt)
@@ -420,7 +453,7 @@ func TestStageLifecycleFinalizationFailureRetainsPriorRecoveryPoint(t *testing.T
 func TestStageLifecycleRejectsCorruptCommittedPredecessor(t *testing.T) {
 	s := openLifecycleStore(t)
 	attempt := BeginAttempt("GH-66", "execute", "checkpoint-1")
-	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+	if err := createValidatedLifecycleAttempt(t, s, attempt); err != nil {
 		t.Fatal(err)
 	}
 	putLifecycleResult(t, s, attempt)
