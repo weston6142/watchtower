@@ -12,23 +12,26 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/plannerartifact"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 type Script struct {
-	Asks             []levers.Decision
-	Proposals        []Proposal
-	ProposalBatches  [][]Proposal
-	DependsOn        []string
-	Lines            []string
-	Artifacts        map[string]string
-	SessionID        string
-	Tokens           int
-	TokensKnown      bool
-	Tools            []ToolCall
-	Fail             bool
-	PlannerRequests  []plannerartifact.WriteRequest
-	PlannerFailureAt int
-	PlannerFailure   error
+	Asks              []levers.Decision
+	Proposals         []Proposal
+	ProposalBatches   [][]Proposal
+	DependsOn         []string
+	Lines             []string
+	Artifacts         map[string]string
+	SessionID         string
+	Tokens            int
+	TokensKnown       bool
+	Tools             []ToolCall
+	Fail              bool
+	PlannerRequests   []plannerartifact.WriteRequest
+	PlannerFailureAt  int
+	PlannerFailure    error
+	StageEvidence     *stageresult.Evidence
+	OmitStageEvidence bool
 }
 
 type FakeRunner struct {
@@ -121,15 +124,75 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 			}
 			out[name] = p
 		}
+		stageEvidence, err := fakeStageEvidence(sc, agentPkg)
+		if err != nil {
+			done <- Result{Err: err}
+			return
+		}
 		done <- Result{
 			Artifacts: out, DependsOn: append([]string(nil), sc.DependsOn...),
-			SessionID: sc.SessionID, Tokens: sc.Tokens,
+			SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
+			StageEvidence: stageEvidence,
 		}
 	}()
 	return done
 }
 
 func (f *FakeRunner) SetOnLine(fn func(issueID, stage, line string)) { f.OnLine = fn }
+
+func fakeStageEvidence(script Script, agentPkg string) (*stageresult.Evidence, error) {
+	if script.OmitStageEvidence {
+		return nil, nil
+	}
+	if script.StageEvidence != nil {
+		data, err := json.Marshal(script.StageEvidence)
+		if err != nil {
+			return nil, fmt.Errorf("copy fake stage evidence: %w", err)
+		}
+		var copied stageresult.Evidence
+		if err := json.Unmarshal(data, &copied); err != nil {
+			return nil, fmt.Errorf("copy fake stage evidence: %w", err)
+		}
+		return &copied, nil
+	}
+	kind, ok := stageresult.KindForAgentPackage(agentPkg)
+	if !ok {
+		return nil, nil
+	}
+	evidence := stageresult.Evidence{
+		SchemaVersion: stageresult.SchemaVersion,
+		StageKind:     kind,
+		Outcome:       stageresult.OutcomeCompleted,
+	}
+	switch kind {
+	case stageresult.KindExecute:
+		evidence.Execute = &stageresult.ExecutePayload{
+			PlanTasks: []stageresult.PlanTask{{ID: "synthetic-task", Outcome: stageresult.TaskCompleted, Summary: "fake runner completed the stage"}},
+			Skips: []stageresult.Skip{
+				{Activity: "commits", Explanation: "the fake runner makes no repository commit"},
+				{Activity: "checks", Explanation: "the fake runner does not execute provider checks"},
+			},
+		}
+	case stageresult.KindCorrectnessReview:
+		evidence.CorrectnessReview = &stageresult.CorrectnessReviewPayload{
+			ReviewedPaths: []string{"internal/runner/fake.go"},
+			Skips:         []stageresult.Skip{{Activity: "checks", Explanation: "the fake runner does not execute provider checks"}},
+			NoChange:      &stageresult.NoChangeConclusion{Explanation: "the fake runner found no correctness change to make"},
+		}
+	case stageresult.KindCleanCodeReview:
+		evidence.CleanCodeReview = &stageresult.CleanCodeReviewPayload{
+			ReviewedPaths: []string{"internal/runner/fake.go"},
+			Skips:         []stageresult.Skip{{Activity: "checks", Explanation: "the fake runner does not execute provider checks"}},
+			NoChange:      &stageresult.NoChangeConclusion{Explanation: "the fake runner found no clean-code change to make"},
+		}
+	case stageresult.KindLibrarian:
+		evidence.Librarian = &stageresult.LibrarianPayload{
+			ReviewedPaths: []string{"internal/runner/fake.go"},
+			NoChange:      &stageresult.NoChangeConclusion{Explanation: "the fake runner found no documentation change to make"},
+		}
+	}
+	return &evidence, nil
+}
 
 func (f *FakeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, workdir string,
 	_asks chan<- Ask, gate ExplorationGate) <-chan Result {

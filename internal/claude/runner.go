@@ -131,6 +131,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 	sessionDone := false
 	coachCount := 0
 	decisionAccepted := false
+	var stageResults agentprotocol.StageResultCollector
 	var pendingTools []runner.ToolDecision
 	// Replies to the agent (decision answers, coaching) are deferred until the
 	// current turn's result event. A message written mid-turn is absorbed into
@@ -168,6 +169,10 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 			}
 			pendingTools = append(pendingTools, decisions...)
 			emit(ev)
+			if err := stageResults.Collect(ev.Text); err != nil {
+				res.FailureClass = runner.FailureProtocol
+				return abort(err)
+			}
 			if d, found := agentprotocol.ExtractDecision(ev.Text); found {
 				incomplete := agentprotocol.DecisionNeedsCoaching(d)
 				if incomplete {
@@ -249,6 +254,10 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 				c.OnLine(issueID, stage, fmt.Sprintf("— turn complete (%d tokens) —", ev.Tokens))
 			}
 			gotResult = true
+			if len(pendingReplies) > 0 && stageResults.Evidence() != nil {
+				res.FailureClass = runner.FailureProtocol
+				return abort(fmt.Errorf("watchtower_stage_result marker is only valid on the final assistant turn"))
+			}
 			// In stream-json input mode the CLI emits one result per turn and
 			// then waits for more input. Send any deferred replies now — the
 			// CLI is idle, so each starts a fresh turn. A turn with no reply
@@ -283,6 +292,9 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 	}
 	if res.Err == nil && !gotResult {
 		res.Err = fmt.Errorf("claude session %s ended without result event", res.SessionID)
+	}
+	if res.Err == nil {
+		res.StageEvidence = stageResults.Evidence()
 	}
 	return res
 }

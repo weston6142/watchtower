@@ -801,7 +801,7 @@ func TestDefaultCodexRunnerCompletesIssue(t *testing.T) {
 	if err := os.WriteFile(stub, []byte(`#!/bin/sh
 set -eu
 printf '%s\n' '{"type":"thread.started","thread_id":"thr-daemon"}'
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"stub complete"}}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_stage_result\":{\"schema_version\":1,\"stage_kind\":\"execute\",\"outcome\":\"completed\",\"remaining_work\":[],\"remaining_concerns\":[],\"execute\":{\"plan_tasks\":[{\"id\":\"task-0001\",\"outcome\":\"completed\",\"summary\":\"codex stub completed the stage\"}],\"commits\":[],\"checks\":[],\"skips\":[{\"activity\":\"commits\",\"explanation\":\"the integration stub makes no repository change\"},{\"activity\":\"checks\",\"explanation\":\"the integration test covers the full daemon workflow rather than provider-side checks\"}]}}}"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}'
 `), 0o755); err != nil {
 		t.Fatal(err)

@@ -1,13 +1,225 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
+
+func TestStageResultAttemptsPreservePredecessorsAndExactReplay(t *testing.T) {
+	s := openLifecycleStore(t)
+	first := BeginAttempt("GH-67", "execute", "checkpoint-1")
+	first.CreatedAt = time.Unix(1, 0).UTC()
+	second := BeginAttempt("GH-67", "execute", "checkpoint-2")
+	second.CreatedAt = time.Unix(2, 0).UTC()
+	for _, attempt := range []StageLifecycleAttempt{first, second} {
+		if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstResult := structuredResultRef(t, first, "", stageresult.OutcomeRetryable, "a")
+	secondResult := structuredResultRef(t, second, first.AttemptID, stageresult.OutcomeCompleted, "b")
+	if err := s.PutStageLifecycleResult(first, firstResult); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutStageLifecycleResult(second, secondResult); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutStageLifecycleResult(second, secondResult); err != nil {
+		t.Fatalf("exact replay failed: %v", err)
+	}
+	attempts, err := s.StageResultAttempts("GH-67", "execute", stageresult.KindExecute)
+	if err != nil || len(attempts) != 2 || attempts[0].AttemptID != "checkpoint-1" ||
+		attempts[1].PredecessorAttemptID != "checkpoint-1" {
+		t.Fatalf("attempt history = %+v, %v", attempts, err)
+	}
+	latest, found, err := s.LatestValidStageResultAttempt("GH-67", "execute", stageresult.KindExecute)
+	if err != nil || !found || latest.AttemptID != "checkpoint-2" {
+		t.Fatalf("latest = %+v, %v, %v", latest, found, err)
+	}
+	conflicting := secondResult
+	conflicting.ResultSHA256 = strings.Repeat("c", 64)
+	if err := s.PutStageLifecycleResult(second, conflicting); diagnosticCode(err) != CodeConflict {
+		t.Fatalf("conflicting replay error = %v", err)
+	}
+}
+
+func TestStageResultExactReplayRemainsIdempotentAfterNewerAttempt(t *testing.T) {
+	s := openLifecycleStore(t)
+	first := BeginAttempt("GH-67", "execute", "checkpoint-1")
+	second := BeginAttempt("GH-67", "execute", "checkpoint-2")
+	first.CreatedAt, second.CreatedAt = time.Unix(1, 0).UTC(), time.Unix(2, 0).UTC()
+	for _, attempt := range []StageLifecycleAttempt{first, second} {
+		if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstResult := structuredResultRef(t, first, "", stageresult.OutcomeRetryable, "a")
+	if err := s.PutStageLifecycleResult(first, firstResult); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutStageLifecycleResult(second, structuredResultRef(t, second, first.AttemptID, stageresult.OutcomeCompleted, "b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutStageLifecycleResult(first, firstResult); err != nil {
+		t.Fatalf("older exact replay failed after newer result: %v", err)
+	}
+}
+
+func TestStageResultRejectsWrongOrStalePredecessor(t *testing.T) {
+	s := openLifecycleStore(t)
+	attempts := []StageLifecycleAttempt{
+		BeginAttempt("GH-67", "execute", "checkpoint-1"),
+		BeginAttempt("GH-67", "execute", "checkpoint-2"),
+		BeginAttempt("GH-67", "execute", "checkpoint-3"),
+	}
+	for i := range attempts {
+		attempts[i].CreatedAt = time.Unix(int64(i+1), 0).UTC()
+		if err := s.CreateStageLifecycleAttempt(attempts[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.PutStageLifecycleResult(attempts[0], structuredResultRef(t, attempts[0], "", stageresult.OutcomeRetryable, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutStageLifecycleResult(attempts[1], structuredResultRef(t, attempts[1], "unknown", stageresult.OutcomeRetryable, "b")); err == nil {
+		t.Fatal("unknown predecessor was accepted")
+	}
+	if err := s.PutStageLifecycleResult(attempts[1], structuredResultRef(t, attempts[1], attempts[0].AttemptID, stageresult.OutcomeRetryable, "b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutStageLifecycleResult(attempts[2], structuredResultRef(t, attempts[2], attempts[0].AttemptID, stageresult.OutcomeCompleted, "c")); err == nil {
+		t.Fatal("stale predecessor was accepted")
+	}
+}
+
+func TestStageResultPersistenceFailureLeavesPreviousLatest(t *testing.T) {
+	s := openLifecycleStore(t)
+	first := BeginAttempt("GH-67", "execute", "checkpoint-1")
+	second := BeginAttempt("GH-67", "execute", "checkpoint-2")
+	first.CreatedAt, second.CreatedAt = time.Unix(1, 0).UTC(), time.Unix(2, 0).UTC()
+	for _, attempt := range []StageLifecycleAttempt{first, second} {
+		if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.PutStageLifecycleResult(first, structuredResultRef(t, first, "", stageresult.OutcomeRetryable, "a")); err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextStageResultPutForTest()
+	if err := s.PutStageLifecycleResult(second, structuredResultRef(t, second, first.AttemptID, stageresult.OutcomeCompleted, "b")); err == nil {
+		t.Fatal("injected persistence failure succeeded")
+	}
+	if _, found, err := s.StageLifecycleResult(second); err != nil || found {
+		t.Fatalf("failed attempt result found=%v err=%v", found, err)
+	}
+	latest, found, err := s.LatestValidStageResultAttempt("GH-67", "execute", stageresult.KindExecute)
+	if err != nil || !found || latest.AttemptID != first.AttemptID {
+		t.Fatalf("latest = %+v, %v, %v", latest, found, err)
+	}
+}
+
+func TestLatestStageResultIgnoresUnsupportedHistoricalSummary(t *testing.T) {
+	s := openLifecycleStore(t)
+	first := BeginAttempt("GH-67", "execute", "checkpoint-1")
+	second := BeginAttempt("GH-67", "execute", "checkpoint-2")
+	for _, attempt := range []StageLifecycleAttempt{first, second} {
+		if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.PutStageLifecycleResult(first, structuredResultRef(t, first, "", stageresult.OutcomeCompleted, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE stage_lifecycle_attempts SET stage_result_schema_version=2,
+		stage_result_kind='execute',stage_result_outcome='completed',stage_result_status='valid'
+		WHERE attempt_id='checkpoint-2'`); err != nil {
+		t.Fatal(err)
+	}
+	latest, found, err := s.LatestValidStageResultAttempt("GH-67", "execute", stageresult.KindExecute)
+	if err != nil || !found || latest.AttemptID != first.AttemptID {
+		t.Fatalf("latest = %+v, %v, %v", latest, found, err)
+	}
+}
+
+func TestStageResultColumnsMigrateLegacyLifecycleTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE stage_lifecycle_attempts(
+		issue_id TEXT NOT NULL,stage TEXT NOT NULL,attempt_id TEXT NOT NULL,
+		legacy_checkpoint_id INTEGER NOT NULL DEFAULT 0,result_path TEXT NOT NULL DEFAULT '',
+		result_sha256 TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,
+		PRIMARY KEY(issue_id,stage,attempt_id))`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	attempt := BeginAttempt("GH-67", "execute", "checkpoint-1")
+	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutStageLifecycleResult(attempt, structuredResultRef(t, attempt, "", stageresult.OutcomeCompleted, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := s.LatestValidStageResultAttempt("GH-67", "execute", stageresult.KindExecute); err != nil || !found {
+		t.Fatalf("migrated latest found=%v err=%v", found, err)
+	}
+}
+
+func structuredResultRef(t *testing.T, attempt StageLifecycleAttempt, predecessor string, outcome stageresult.Outcome, digestByte string) contextpack.AttemptResult {
+	t.Helper()
+	evidence := stageresult.Evidence{
+		SchemaVersion: stageresult.SchemaVersion, StageKind: stageresult.KindExecute, Outcome: outcome,
+		Execute: &stageresult.ExecutePayload{
+			PlanTasks: []stageresult.PlanTask{{ID: "task-0001", Outcome: stageresult.TaskCompleted, Summary: "implemented"}},
+			Skips: []stageresult.Skip{
+				{Activity: "commits", Explanation: "fixture has no commit"},
+				{Activity: "checks", Explanation: "fixture has no check"},
+			},
+		},
+	}
+	if outcome == stageresult.OutcomeRetryable {
+		evidence.RemainingWork = []stageresult.WorkItem{{Kind: stageresult.WorkPlanTask, Description: "continue implementation"}}
+	}
+	candidate, err := stageresult.Build(stageresult.BuildInput{
+		IssueID: attempt.IssueID, AttemptID: attempt.AttemptID, PredecessorAttemptID: predecessor,
+		ExpectedKind: stageresult.KindExecute, Evidence: evidence,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := stageresult.Validate(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contextpack.AttemptResult{
+		AttemptID: attempt.AttemptID, IssueID: attempt.IssueID, Stage: attempt.Stage,
+		ResultPath:   "artifacts/attempts/" + attempt.AttemptID + "/result/manifest.json",
+		ResultSHA256: strings.Repeat(digestByte, 64), StageResult: &result,
+	}
+}
+
+func diagnosticCode(err error) DiagnosticCode {
+	var diagnostic *DiagnosticError
+	if errors.As(err, &diagnostic) {
+		return diagnostic.Code
+	}
+	return ""
+}
 
 func openLifecycleStore(t *testing.T) *Store {
 	t.Helper()

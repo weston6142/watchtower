@@ -5,7 +5,69 @@ import (
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
+
+func TestExtractStageResultEvidence(t *testing.T) {
+	text := "finished\n" + validExecuteStageResultMarker()
+	evidence, found, err := ExtractStageResult(text)
+	if err != nil || !found {
+		t.Fatalf("ExtractStageResult() = (%#v, %v, %v)", evidence, found, err)
+	}
+	if evidence.StageKind != stageresult.KindExecute || evidence.Execute == nil {
+		t.Fatalf("evidence = %#v", evidence)
+	}
+	if got := evidence.Execute.PlanTasks[0].ID; got != "task-0001" {
+		t.Fatalf("task ID = %q", got)
+	}
+	if got := []stageresult.CheckResult{evidence.Execute.Checks[0].Result, evidence.Execute.Checks[1].Result}; got[0] != stageresult.CheckRed || got[1] != stageresult.CheckGreen {
+		t.Fatalf("check results = %#v", got)
+	}
+	if got := evidence.Execute.Skips[0].Explanation; got != "the final repository gate belongs to merge verification" {
+		t.Fatalf("skip explanation = %q", got)
+	}
+}
+
+func TestExtractStageResultDistinguishesMalformedAndMissingMarkers(t *testing.T) {
+	valid := validExecuteStageResultMarker()
+	tests := []struct {
+		name      string
+		text      string
+		wantFound bool
+		wantErr   bool
+	}{
+		{name: "invalid JSON", text: `{"watchtower_stage_result":`, wantFound: true, wantErr: true},
+		{name: "unknown top-level field", text: strings.TrimSuffix(valid, "}") + `,"extra":true}`, wantFound: true, wantErr: true},
+		{name: "unknown evidence field", text: strings.Replace(valid, `"schema_version":1`, `"schema_version":1,"extra":true`, 1), wantFound: true, wantErr: true},
+		{name: "missing marker value", text: `{"watchtower_stage_result":null}`, wantFound: true, wantErr: true},
+		{name: "no marker", text: "ordinary final prose"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, found, err := ExtractStageResult(tt.text)
+			if found != tt.wantFound || (err != nil) != tt.wantErr {
+				t.Fatalf("ExtractStageResult() found=%v err=%v", found, err)
+			}
+			if tt.wantErr && strings.TrimSpace(err.Error()) == "" {
+				t.Fatal("decode error is blank")
+			}
+		})
+	}
+}
+
+func TestExtractStageResultRejectsConflictingMarkersInOneMessage(t *testing.T) {
+	first := validExecuteStageResultMarker()
+	second := strings.Replace(first, `"task-0001"`, `"task-0002"`, 1)
+
+	_, found, err := ExtractStageResult(first + "\n" + second)
+	if !found || err == nil {
+		t.Fatalf("ExtractStageResult() found=%v err=%v, want a conflicting-marker error", found, err)
+	}
+}
+
+func validExecuteStageResultMarker() string {
+	return `{"watchtower_stage_result":{"schema_version":1,"stage_kind":"execute","outcome":"completed","remaining_work":[],"remaining_concerns":[],"execute":{"plan_tasks":[{"id":"task-0001","outcome":"completed","summary":"implemented"}],"commits":[{"sha":"abc123","message":"feat: implement task","task_ids":["task-0001"]}],"checks":[{"name":"focused red","command":"go test ./internal/example -run TestBehavior","result":"red","affected":true},{"name":"focused green","command":"go test ./internal/example -run TestBehavior","result":"green","affected":true}],"skips":[{"activity":"repository gate","explanation":"the final repository gate belongs to merge verification"}]}}}`
+}
 
 func TestTaskMessagePointsToCompactStageBrief(t *testing.T) {
 	message := TaskMessage("spec", "GH-1")

@@ -2,7 +2,7 @@ identity:
   name: Executor
   color: green
   symbol: ⚙
-includes: ["decision-protocol"]
+includes: ["decision-protocol", "stage-result-protocol"]
 allowed_tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
 model: ""
 max_turns: 0

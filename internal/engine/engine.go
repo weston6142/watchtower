@@ -34,6 +34,7 @@ import (
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
+	"github.com/weston6142/watchtower/internal/stageresult"
 	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
@@ -3218,12 +3219,32 @@ func (e *Engine) runStageOnce(
 	if err != nil {
 		return err
 	}
+	expectedResultKind, resultProducer, producesResult, err := resultProducerForStage(st)
+	if err != nil {
+		return err
+	}
+	var predecessorResult *stageresult.Result
+	var resultContext *stageresult.RetryContext
+	if producesResult {
+		predecessorResult, err = e.latestValidStageResult(is.id, st.Name, expectedResultKind)
+		if err != nil {
+			return err
+		}
+		if predecessorResult != nil {
+			projected, projectErr := stageresult.ProjectRetry(*predecessorResult)
+			if projectErr != nil {
+				return fmt.Errorf("project structured stage retry: %w", projectErr)
+			}
+			resultContext = &projected
+		}
+	}
 	var recovery *contextpack.Recovery
-	if attempt > 1 || lastFailure != "" {
+	if attempt > 1 || lastFailure != "" || resultContext != nil {
 		recovery = &contextpack.Recovery{
 			LastSuccessfulStage: lastSuccessful, CurrentHead: startCommit,
 			Dirty: dirty, LastFailure: lastFailure,
 			OutstandingOutputs: append([]string(nil), st.Artifacts...),
+			ResultContext:      resultContext,
 		}
 	}
 	expectedOutputs := append([]string(nil), st.Artifacts...)
@@ -3465,6 +3486,7 @@ func (e *Engine) runStageOnce(
 	var firstErr error
 	succeeded := 0
 	var discovered []string
+	var stageEvidence *stageresult.Evidence
 	runAgent := func(a flow.AgentRef) {
 		runID, insErr := e.cfg.Store.InsertStageRun(store.StageRun{
 			IssueID: is.id, Stage: st.Name, Agent: a.Package,
@@ -3555,6 +3577,9 @@ func (e *Engine) runStageOnce(
 				continue
 			}
 			succeeded++
+			if producesResult && d.pkg == resultProducer {
+				stageEvidence = d.res.StageEvidence
+			}
 			discovered = append(discovered, d.res.DependsOn...)
 			if st.Completion == flow.CompletionAny {
 				break
@@ -3576,6 +3601,11 @@ func (e *Engine) runStageOnce(
 	if artifactAuthority != nil {
 		if err := artifactAuthority.ValidateComplete(); err != nil {
 			return fmt.Errorf("validate planner artifacts: %w", err)
+		}
+	}
+	if resumedLifecycle && producesResult {
+		if lifecycleResult.StageResult == nil || lifecycleResult.StageResult.StageKind != expectedResultKind {
+			return fmt.Errorf("structured stage result: recovered result does not match %s", expectedResultKind)
 		}
 	}
 	if st.MergeBarrier {
@@ -3638,15 +3668,41 @@ func (e *Engine) runStageOnce(
 		}
 	}
 	if !resumedLifecycle {
+		var validatedStageResult *stageresult.Result
+		if producesResult {
+			if stageEvidence == nil {
+				return fmt.Errorf("structured stage result: package %s returned no evidence", resultProducer)
+			}
+			predecessorID := ""
+			if predecessorResult != nil {
+				predecessorID = predecessorResult.AttemptID
+			}
+			candidate, buildErr := stageresult.Build(stageresult.BuildInput{
+				IssueID: is.id, AttemptID: lifecycleAttempt.AttemptID,
+				PredecessorAttemptID: predecessorID, ExpectedKind: expectedResultKind,
+				Evidence: *stageEvidence,
+			})
+			if buildErr != nil {
+				return fmt.Errorf("structured stage result: %w", buildErr)
+			}
+			validated, validateErr := stageresult.Validate(candidate)
+			if validateErr != nil {
+				return fmt.Errorf("structured stage result: %w", validateErr)
+			}
+			validatedStageResult = &validated
+		}
 		lifecycleResult, err = contextpack.MaterializeAttemptResult(
 			workdir, e.issueDir(is.id), lifecycleAttempt.AttemptID, st.Artifacts,
-			contextpack.AttemptResult{IssueID: is.id, Stage: st.Name, DependsOn: append([]string(nil), discovered...)},
+			contextpack.AttemptResult{IssueID: is.id, Stage: st.Name, DependsOn: append([]string(nil), discovered...), StageResult: validatedStageResult},
 		)
 		if err != nil {
 			return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "model result materialization failed"}
 		}
 		if err := e.cfg.Store.PutStageLifecycleResult(lifecycleAttempt, lifecycleResult); err != nil {
 			return err
+		}
+		if validatedStageResult != nil && validatedStageResult.Outcome == stageresult.OutcomeRetryable {
+			return &stageResultRetryableError{Kind: validatedStageResult.StageKind, AttemptID: validatedStageResult.AttemptID}
 		}
 		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.RunnerSucceeded,
 			lifecyclePayloadDigest(stagelifecycle.RunnerSucceeded, lifecycleResult, lifecycleResult.Artifacts),
@@ -3788,6 +3844,15 @@ func (e *Engine) runStageOnce(
 		}
 	}
 	return nil
+}
+
+type stageResultRetryableError struct {
+	Kind      stageresult.Kind
+	AttemptID string
+}
+
+func (e *stageResultRetryableError) Error() string {
+	return fmt.Sprintf("structured stage result %s attempt %s is retryable", e.Kind, e.AttemptID)
 }
 
 func (e *Engine) stageWorkdir(is *issueState, st flow.Stage) string {

@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +19,90 @@ import (
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/store"
 )
+
+func TestCodeRunnerReturnsStageResultEvidence(t *testing.T) {
+	marker := codexStageResultMarker("implemented")
+	bin := writeStub(t, strings.Join([]string{
+		codexJSONLine(map[string]any{"type": "thread.started", "thread_id": "thr-result"}),
+		codexJSONLine(map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": marker}}),
+		codexJSONLine(map[string]any{"type": "turn.completed", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
+	}, "\n"))
+
+	res := <-testRunner(bin).Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	if res.Err != nil || res.StageEvidence == nil {
+		t.Fatalf("result = %+v", res)
+	}
+	if got := res.StageEvidence.Execute.PlanTasks[0].Summary; got != "implemented" {
+		t.Fatalf("task summary = %q", got)
+	}
+}
+
+func TestCodeRunnerRejectsConflictingStageResultMarkers(t *testing.T) {
+	bin := writeStub(t, strings.Join([]string{
+		codexJSONLine(map[string]any{"type": "thread.started", "thread_id": "thr-conflict"}),
+		codexJSONLine(map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": codexStageResultMarker("first")}}),
+		codexJSONLine(map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": codexStageResultMarker("different")}}),
+		codexJSONLine(map[string]any{"type": "turn.completed", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
+	}, "\n"))
+
+	res := <-testRunner(bin).Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	if res.Err == nil || res.FailureClass != runner.FailureProtocol || res.StageEvidence != nil {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestCodeRunnerRejectsStageResultBeforeFinalTurn(t *testing.T) {
+	decision := `{"watchtower_decision":{"kind":"choice","question":"Apply the repair?","options":["Apply","Hold"],"recommended":0,"why":"The repair closes the gap.","consequences":["The repair is applied.","The stage remains incomplete."],"reversible":"Before the repair is committed."}}`
+	bin, state := statefulStub(t,
+		strings.Join([]string{
+			codexJSONLine(map[string]any{"type": "thread.started", "thread_id": "thr-premature-result"}),
+			codexJSONLine(map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": codexStageResultMarker("before decision") + "\n" + decision}}),
+			codexJSONLine(map[string]any{"type": "turn.completed", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
+		}, "\n"),
+		strings.Join([]string{
+			codexJSONLine(map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": "decision applied"}}),
+			codexJSONLine(map[string]any{"type": "turn.completed", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
+		}, "\n"),
+	)
+	r := testRunner(bin)
+	r.ExtraEnv = []string{"STATE=" + state}
+	done, asks := stageRun(r, "executor", "execute")
+	select {
+	case ask := <-asks:
+		ask.Reply <- levers.ChoiceResponse(0)
+	case res := <-done:
+		if res.Err == nil || res.FailureClass != runner.FailureProtocol {
+			t.Fatalf("result = %+v", res)
+		}
+		return
+	}
+	res := <-done
+	if res.Err == nil || res.FailureClass != runner.FailureProtocol || res.StageEvidence != nil {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func codexStageResultMarker(summary string) string {
+	evidence := map[string]any{
+		"schema_version": 1, "stage_kind": "execute", "outcome": "completed",
+		"remaining_work": []any{}, "remaining_concerns": []any{},
+		"execute": map[string]any{
+			"plan_tasks": []any{map[string]any{"id": "task-0001", "outcome": "completed", "summary": summary}},
+			"commits":    []any{}, "checks": []any{},
+			"skips": []any{
+				map[string]any{"activity": "commits", "explanation": "the fixture makes no repository change"},
+				map[string]any{"activity": "checks", "explanation": "provider transport is the behavior under test"},
+			},
+		},
+	}
+	body, _ := json.Marshal(map[string]any{"watchtower_stage_result": evidence})
+	return string(body)
+}
+
+func codexJSONLine(value any) string {
+	body, _ := json.Marshal(value)
+	return "printf '%s\\n' '" + string(body) + "'"
+}
 
 func writeStub(t *testing.T, body string) string {
 	t.Helper()

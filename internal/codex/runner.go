@@ -208,6 +208,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 	}
 
 	for {
+		var stageResults agentprotocol.StageResultCollector
 		turn := c.runTurn(ctx, workdir, pkg, profile, threadID, prompt, gate)
 		res.Attempt.RedactedArgv = turn.invocation.RedactedArgv
 		if turn.threadID != "" {
@@ -235,6 +236,11 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			switch event.Kind {
 			case KindText:
 				c.emitText(issueID, stage, event.Text)
+				if err := stageResults.Collect(event.Text); err != nil {
+					res.Err = err
+					res.FailureClass = runner.FailureProtocol
+					return res, continuation()
+				}
 				if decision == nil {
 					if parsed, found := agentprotocol.ExtractDecision(event.Text); found {
 						decision = &parsed
@@ -262,6 +268,11 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 				}
 			}
 		}
+		if stageResults.Evidence() != nil && (decision != nil || unstructuredDecision) {
+			res.Err = fmt.Errorf("watchtower_stage_result marker is only valid on the final assistant turn")
+			res.FailureClass = runner.FailureProtocol
+			return res, continuation()
+		}
 
 		if decision == nil && unstructuredDecision {
 			if coachCount >= 2 {
@@ -274,6 +285,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			continue
 		}
 		if decision == nil {
+			res.StageEvidence = stageResults.Evidence()
 			return res, continuation()
 		}
 		d := *decision

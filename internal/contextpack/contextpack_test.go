@@ -11,6 +11,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 func TestStageBriefIncludesFinalizationContract(t *testing.T) {
@@ -168,5 +169,44 @@ func TestStageBriefContainsRecoveryFactsWithoutTranscript(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(text), "transcript") {
 		t.Fatalf("brief mentions transcript:\n%s", text)
+	}
+}
+
+func TestStageBriefProjectsStructuredRetryContextWithoutCompletedEvidence(t *testing.T) {
+	dir := t.TempDir()
+	context := &stageresult.RetryContext{
+		SourceAttemptID:      "checkpoint-4",
+		UnfinishedPlanTasks:  []stageresult.WorkItem{{Kind: stageresult.WorkPlanTask, Description: "finish task-0002", Paths: []string{"internal/engine/engine.go"}}},
+		RemainingWork:        []stageresult.WorkItem{{Kind: stageresult.WorkCheck, Description: "rerun affected engine checks"}},
+		OpenFindings:         []stageresult.Finding{{ID: "F-2", Summary: "persistence may advance early", Status: stageresult.FindingOpen, Paths: []string{"internal/store/stage_lifecycle.go"}}},
+		SkippedActivities:    []stageresult.Skip{{Activity: "race check", Explanation: "owned by merge verification"}},
+		UnreviewedPaths:      []stageresult.WorkItem{{Kind: stageresult.WorkReviewPath, Description: "review recovery", Paths: []string{"internal/engine/stage_lifecycle.go"}}},
+		MissingDocumentation: []stageresult.WorkItem{{Kind: stageresult.WorkDocumentation, Description: "document retry results", Paths: []string{"docs/guildhall/lane-ops-and-issue-states.md"}}},
+		RemainingConcerns:    []stageresult.Concern{{Explanation: "confirm failure injection preserves predecessor"}},
+	}
+	if err := WriteStageBrief(dir, Brief{
+		IssueID: "GH-67", Stage: "execute", Recovery: &Recovery{ResultContext: context},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "STAGE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		"Structured retry context", "checkpoint-4", "Unfinished work", "finish task-0002",
+		"Open findings", "F-2", "Skipped activities", "owned by merge verification",
+		"Unreviewed paths", "internal/engine/stage_lifecycle.go", "Missing documentation",
+		"docs/guildhall/lane-ops-and-issue-states.md", "Remaining concerns", "preserves predecessor",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("brief missing %q:\n%s", want, text)
+		}
+	}
+	for _, completed := range []string{"completed task-0001", "applied fix F-1", "reviewed internal/stageresult/result.go"} {
+		if strings.Contains(text, completed) {
+			t.Fatalf("brief repeated completed evidence %q:\n%s", completed, text)
+		}
 	}
 }

@@ -28,6 +28,7 @@ import (
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/stageresult"
 	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/steward"
 	"github.com/weston6142/watchtower/internal/store"
@@ -4314,6 +4315,10 @@ func (r *conflictFlowRunner) Run(
 		}
 		if output, err := commandIn(workdir, "commit", "-qam", "issue change"); err != nil {
 			result.Err = fmt.Errorf("commit issue: %v: %s", err, output)
+		}
+		if result.Err == nil {
+			evidence := executeStageEvidence(stageresult.OutcomeCompleted)
+			result.StageEvidence = &evidence
 		}
 	case "integrate-safely":
 		base, _ := commandIn(workdir, "merge-base", "main", "HEAD")

@@ -167,6 +167,27 @@ checkpoint as the retry boundary. Recovery validates the predecessor chain,
 result digest, archive paths, and archive digests before advancing; corruption,
 conflicts, missing results, or unknown versions stop with a diagnostic.
 
+For `execute`, correctness review, clean-code review, and librarian, that
+immutable model-result manifest also contains one versioned, stage-specific
+structured result. Providers supply evidence only; the engine binds the issue,
+attempt, logical kind, and newest valid predecessor, validates the envelope and
+payload, persists the immutable manifest and lifecycle summary, and only then
+may commit `runner_succeeded` or advance the stage. A `completed` result can
+resume unfinished post-run checkpoints without another model call. A valid
+`retryable` result remains durable history, but retry creates a new attempt
+linked to the newest supported valid predecessor instead of reusing the prior
+attempt.
+
+Structured result history is append-only. Exact replay of an attempt is
+idempotent; conflicting reuse is rejected, and earlier task, commit, finding,
+fix, review, skip, no-change, and documentation evidence remains queryable.
+The next attempt's `STAGE.md` is projected from only the newest supported valid
+result and contains explicit unfinished tasks, open findings, explained skips,
+unreviewed paths, missing documentation, and remaining concerns—not completed
+work, applied fixes, reviewed paths, or transcript prose. Invalid,
+contradictory, wrong-stage, unsupported, or incompletely persisted candidates
+cannot advance the stage or supersede the previous valid retry authority.
+
 The attempt archive path is the canonical operator link for newly archived
 artifacts. Legacy `stage_checkpoints` rows and `artifacts/<name>` paths remain
 readable for migration and historical pages, but Watchtower never rewrites
