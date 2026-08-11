@@ -12,16 +12,22 @@ import (
 
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 type StageLifecycleAttempt struct {
-	IssueID            string
-	Stage              string
-	AttemptID          string
-	LegacyCheckpointID int64
-	ResultPath         string
-	ResultSHA256       string
-	CreatedAt          time.Time
+	IssueID                  string
+	Stage                    string
+	AttemptID                string
+	LegacyCheckpointID       int64
+	ResultPath               string
+	ResultSHA256             string
+	StageResultSchemaVersion int
+	StageResultKind          stageresult.Kind
+	StageResultOutcome       stageresult.Outcome
+	StageResultStatus        stageresult.ValidationStatus
+	PredecessorAttemptID     string
+	CreatedAt                time.Time
 }
 
 type Substate = stagelifecycle.Substate
@@ -50,7 +56,10 @@ const (
 	CodeCheckpointFinalization = stagelifecycle.CodeCheckpointFinalization
 )
 
-const stageLifecycleRecordColumns = "schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,transition_id,payload_digest,result_path,result_sha256,artifacts,status"
+const (
+	stageLifecycleRecordColumns  = "schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,transition_id,payload_digest,result_path,result_sha256,artifacts,status"
+	stageLifecycleAttemptColumns = "issue_id,stage,attempt_id,legacy_checkpoint_id,result_path,result_sha256,stage_result_schema_version,stage_result_kind,stage_result_outcome,stage_result_status,predecessor_attempt_id,created_at"
+)
 
 func BeginAttempt(issueID, stage, attemptID string) StageLifecycleAttempt {
 	return StageLifecycleAttempt{
@@ -71,11 +80,13 @@ func (s *Store) CreateStageLifecycleAttempt(attempt StageLifecycleAttempt) error
 	}
 	var existing StageLifecycleAttempt
 	var createdAt string
-	err := s.db.QueryRow(`SELECT issue_id,stage,attempt_id,legacy_checkpoint_id,result_path,result_sha256,created_at
+	err := s.db.QueryRow("SELECT "+stageLifecycleAttemptColumns+`
 		FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND attempt_id=?`,
 		attempt.IssueID, attempt.Stage, attempt.AttemptID).Scan(
 		&existing.IssueID, &existing.Stage, &existing.AttemptID, &existing.LegacyCheckpointID,
-		&existing.ResultPath, &existing.ResultSHA256, &createdAt)
+		&existing.ResultPath, &existing.ResultSHA256, &existing.StageResultSchemaVersion,
+		&existing.StageResultKind, &existing.StageResultOutcome, &existing.StageResultStatus,
+		&existing.PredecessorAttemptID, &createdAt)
 	if err == nil {
 		if existing.LegacyCheckpointID != attempt.LegacyCheckpointID ||
 			(attempt.ResultPath != "" && existing.ResultPath != attempt.ResultPath) ||
@@ -88,9 +99,12 @@ func (s *Store) CreateStageLifecycleAttempt(attempt StageLifecycleAttempt) error
 		return err
 	}
 	_, err = s.db.Exec(`INSERT INTO stage_lifecycle_attempts(
-		issue_id,stage,attempt_id,legacy_checkpoint_id,result_path,result_sha256,created_at)
-		VALUES(?,?,?,?,?,?,?)`, attempt.IssueID, attempt.Stage, attempt.AttemptID,
+		issue_id,stage,attempt_id,legacy_checkpoint_id,result_path,result_sha256,
+		stage_result_schema_version,stage_result_kind,stage_result_outcome,stage_result_status,predecessor_attempt_id,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, attempt.IssueID, attempt.Stage, attempt.AttemptID,
 		attempt.LegacyCheckpointID, attempt.ResultPath, attempt.ResultSHA256,
+		attempt.StageResultSchemaVersion, attempt.StageResultKind, attempt.StageResultOutcome,
+		attempt.StageResultStatus, attempt.PredecessorAttemptID,
 		created.UTC().Format(time.RFC3339Nano))
 	return err
 }
@@ -98,8 +112,7 @@ func (s *Store) CreateStageLifecycleAttempt(attempt StageLifecycleAttempt) error
 func (s *Store) StageLifecycleAttempts(issueID, stage string) ([]StageLifecycleAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT issue_id,stage,attempt_id,legacy_checkpoint_id,
-		result_path,result_sha256,created_at FROM stage_lifecycle_attempts
+	rows, err := s.db.Query("SELECT "+stageLifecycleAttemptColumns+` FROM stage_lifecycle_attempts
 		WHERE issue_id=? AND stage=? ORDER BY created_at,attempt_id`, issueID, stage)
 	if err != nil {
 		return nil, err
@@ -107,17 +120,10 @@ func (s *Store) StageLifecycleAttempts(issueID, stage string) ([]StageLifecycleA
 	defer rows.Close()
 	var attempts []StageLifecycleAttempt
 	for rows.Next() {
-		var attempt StageLifecycleAttempt
-		var createdAt string
-		if err := rows.Scan(&attempt.IssueID, &attempt.Stage, &attempt.AttemptID,
-			&attempt.LegacyCheckpointID, &attempt.ResultPath, &attempt.ResultSHA256, &createdAt); err != nil {
-			return nil, err
-		}
-		parsed, err := time.Parse(time.RFC3339Nano, createdAt)
+		attempt, err := scanStageLifecycleAttempt(rows)
 		if err != nil {
 			return nil, err
 		}
-		attempt.CreatedAt = parsed
 		attempts = append(attempts, attempt)
 	}
 	return attempts, rows.Err()
@@ -169,21 +175,69 @@ func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results .
 	if err := s.requireAttemptLocked(attempt); err != nil {
 		return err
 	}
-	var existingPath, existingDigest string
-	err := s.db.QueryRow(`SELECT result_path,result_sha256 FROM stage_lifecycle_attempts
+	summary := StageLifecycleAttempt{}
+	if result.StageResult != nil {
+		validated, err := stageresult.ValidatePersisted(*result.StageResult)
+		if err != nil {
+			return lifecycleDiagnostic(CodeIntegrity, "structured stage result is invalid: %v", err)
+		}
+		if result.IssueID != attempt.IssueID || result.Stage != attempt.Stage ||
+			validated.IssueID != attempt.IssueID || validated.AttemptID != attempt.AttemptID {
+			return lifecycleDiagnostic(CodeIntegrity, "structured stage result identity conflicts")
+		}
+		summary.StageResultSchemaVersion = validated.SchemaVersion
+		summary.StageResultKind = validated.StageKind
+		summary.StageResultOutcome = validated.Outcome
+		summary.StageResultStatus = validated.ValidationStatus
+		summary.PredecessorAttemptID = validated.PredecessorAttemptID
+	}
+	var existing StageLifecycleAttempt
+	err := s.db.QueryRow(`SELECT result_path,result_sha256,stage_result_schema_version,stage_result_kind,
+		stage_result_outcome,stage_result_status,predecessor_attempt_id FROM stage_lifecycle_attempts
 		WHERE issue_id=? AND stage=? AND attempt_id=?`, attempt.IssueID, attempt.Stage, attempt.AttemptID).
-		Scan(&existingPath, &existingDigest)
+		Scan(&existing.ResultPath, &existing.ResultSHA256, &existing.StageResultSchemaVersion,
+			&existing.StageResultKind, &existing.StageResultOutcome, &existing.StageResultStatus,
+			&existing.PredecessorAttemptID)
 	if err != nil {
 		return err
 	}
-	if existingPath != "" || existingDigest != "" {
-		if existingPath == result.ResultPath && existingDigest == result.ResultSHA256 {
+	if existing.ResultPath != "" || existing.ResultSHA256 != "" {
+		if existing.ResultPath == result.ResultPath && existing.ResultSHA256 == result.ResultSHA256 &&
+			existing.StageResultSchemaVersion == summary.StageResultSchemaVersion &&
+			existing.StageResultKind == summary.StageResultKind &&
+			existing.StageResultOutcome == summary.StageResultOutcome &&
+			existing.StageResultStatus == summary.StageResultStatus &&
+			existing.PredecessorAttemptID == summary.PredecessorAttemptID {
 			return nil
 		}
 		return lifecycleDiagnostic(CodeConflict, "attempt result identity already has different data")
 	}
-	updated, err := s.db.Exec(`UPDATE stage_lifecycle_attempts SET result_path=?,result_sha256=?
+	if summary.StageResultStatus == stageresult.ValidationValid {
+		var latestID string
+		err = s.db.QueryRow(`SELECT attempt_id FROM stage_lifecycle_attempts
+			WHERE issue_id=? AND stage=? AND attempt_id<>? AND stage_result_schema_version=?
+			AND stage_result_kind=? AND stage_result_status=?
+			ORDER BY created_at DESC,attempt_id DESC LIMIT 1`, attempt.IssueID, attempt.Stage,
+			attempt.AttemptID, stageresult.SchemaVersion, summary.StageResultKind, stageresult.ValidationValid).Scan(&latestID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if latestID == "" && summary.PredecessorAttemptID != "" {
+			return lifecycleDiagnostic(CodeConflict, "initial structured result must not name a predecessor")
+		}
+		if latestID != "" && summary.PredecessorAttemptID != latestID {
+			return lifecycleDiagnostic(CodeConflict, "structured result predecessor %q is not newest valid attempt %q", summary.PredecessorAttemptID, latestID)
+		}
+	}
+	if s.failNextStageResultPut {
+		s.failNextStageResultPut = false
+		return lifecycleDiagnostic(CodeIntegrity, "structured stage result persistence failed")
+	}
+	updated, err := s.db.Exec(`UPDATE stage_lifecycle_attempts SET result_path=?,result_sha256=?,
+		stage_result_schema_version=?,stage_result_kind=?,stage_result_outcome=?,stage_result_status=?,predecessor_attempt_id=?
 		WHERE issue_id=? AND stage=? AND attempt_id=?`, result.ResultPath, result.ResultSHA256,
+		summary.StageResultSchemaVersion, summary.StageResultKind, summary.StageResultOutcome,
+		summary.StageResultStatus, summary.PredecessorAttemptID,
 		attempt.IssueID, attempt.Stage, attempt.AttemptID)
 	if err != nil {
 		return err
@@ -194,6 +248,67 @@ func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results .
 		return lifecycleDiagnostic(CodeMissingResult, "attempt result slot was not persisted")
 	}
 	return nil
+}
+
+func (s *Store) StageResultAttempts(issueID, stage string, kind stageresult.Kind) ([]StageLifecycleAttempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query("SELECT "+stageLifecycleAttemptColumns+` FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND stage_result_schema_version=?
+		AND stage_result_kind=? AND stage_result_status=? ORDER BY created_at,attempt_id`,
+		issueID, stage, stageresult.SchemaVersion, kind, stageresult.ValidationValid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var attempts []StageLifecycleAttempt
+	for rows.Next() {
+		attempt, err := scanStageLifecycleAttempt(rows)
+		if err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, rows.Err()
+}
+
+func (s *Store) LatestValidStageResultAttempt(issueID, stage string, kind stageresult.Kind) (StageLifecycleAttempt, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row := s.db.QueryRow("SELECT "+stageLifecycleAttemptColumns+` FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND stage_result_schema_version=?
+		AND stage_result_kind=? AND stage_result_status=? ORDER BY created_at DESC,attempt_id DESC LIMIT 1`,
+		issueID, stage, stageresult.SchemaVersion, kind, stageresult.ValidationValid)
+	attempt, err := scanStageLifecycleAttempt(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StageLifecycleAttempt{}, false, nil
+	}
+	return attempt, err == nil, err
+}
+
+type rowScanner interface {
+	Scan(...any) error
+}
+
+func scanStageLifecycleAttempt(row rowScanner) (StageLifecycleAttempt, error) {
+	var attempt StageLifecycleAttempt
+	var createdAt string
+	if err := row.Scan(&attempt.IssueID, &attempt.Stage, &attempt.AttemptID, &attempt.LegacyCheckpointID,
+		&attempt.ResultPath, &attempt.ResultSHA256, &attempt.StageResultSchemaVersion,
+		&attempt.StageResultKind, &attempt.StageResultOutcome, &attempt.StageResultStatus,
+		&attempt.PredecessorAttemptID, &createdAt); err != nil {
+		return StageLifecycleAttempt{}, err
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return StageLifecycleAttempt{}, err
+	}
+	attempt.CreatedAt = parsed
+	return attempt, nil
+}
+
+func (s *Store) FailNextStageResultPutForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextStageResultPut = true
 }
 
 // PutStageArchiveManifest records the immutable archive refs after the

@@ -3,11 +3,127 @@ package contextpack
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
+
+func TestAttemptResultRoundTripsValidatedStageResult(t *testing.T) {
+	result := validatedAttemptStageResult(t, "checkpoint-2", "checkpoint-1")
+	issueDir := t.TempDir()
+	want, err := MaterializeAttemptResult(t.TempDir(), issueDir, "checkpoint-2", nil, AttemptResult{
+		IssueID: "GH-67", Stage: "execute", StageResult: &result,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadAttemptResult(issueDir, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StageResult == nil || got.StageResult.AttemptID != "checkpoint-2" ||
+		got.StageResult.PredecessorAttemptID != "checkpoint-1" ||
+		got.StageResult.Execute.PlanTasks[0].ID != "task-0001" ||
+		got.StageResult.Execute.Checks[0].Result != stageresult.CheckRed ||
+		got.StageResult.Execute.Skips[0].Explanation == "" {
+		t.Fatalf("loaded structured result = %#v", got.StageResult)
+	}
+	replayed, err := MaterializeAttemptResult(t.TempDir(), issueDir, "checkpoint-2", nil, AttemptResult{
+		IssueID: "GH-67", Stage: "execute", StageResult: &result,
+	})
+	if err != nil || replayed.ResultSHA256 != want.ResultSHA256 {
+		t.Fatalf("exact replay = %+v, %v", replayed, err)
+	}
+}
+
+func TestAttemptResultRejectsInvalidOrUnsupportedStageResult(t *testing.T) {
+	valid := validatedAttemptStageResult(t, "checkpoint-2", "checkpoint-1")
+	invalid := valid
+	invalid.ValidationStatus = stageresult.ValidationInvalid
+	unsupported := valid
+	unsupported.SchemaVersion = 2
+	for _, tt := range []struct {
+		name   string
+		result stageresult.Result
+	}{{"invalid", invalid}, {"unsupported", unsupported}} {
+		t.Run(tt.name, func(t *testing.T) {
+			issueDir := t.TempDir()
+			if _, err := MaterializeAttemptResult(t.TempDir(), issueDir, "checkpoint-2", nil, AttemptResult{
+				IssueID: "GH-67", Stage: "execute", StageResult: &tt.result,
+			}); err == nil {
+				t.Fatal("invalid structured result was materialized")
+			}
+			if _, err := os.Stat(filepath.Join(issueDir, "artifacts", "attempts", "checkpoint-2", "result", "manifest.json")); !os.IsNotExist(err) {
+				t.Fatalf("manifest exists after rejection: %v", err)
+			}
+		})
+	}
+
+	for _, status := range []any{"invalid", 2} {
+		issueDir := t.TempDir()
+		stored, err := MaterializeAttemptResult(t.TempDir(), issueDir, "checkpoint-2", nil, AttemptResult{
+			IssueID: "GH-67", Stage: "execute", StageResult: &valid,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestPath := filepath.Join(issueDir, filepath.FromSlash(stored.ResultPath))
+		body, err := os.ReadFile(manifestPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var manifest map[string]any
+		if err := json.Unmarshal(body, &manifest); err != nil {
+			t.Fatal(err)
+		}
+		stageResult := manifest["stage_result"].(map[string]any)
+		if version, ok := status.(int); ok {
+			stageResult["schema_version"] = version
+		} else {
+			stageResult["validation_status"] = status
+		}
+		body, _ = json.Marshal(manifest)
+		if err := os.WriteFile(manifestPath, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(body)
+		stored.ResultSHA256 = hex.EncodeToString(digest[:])
+		if _, err := LoadAttemptResult(issueDir, stored); err == nil {
+			t.Fatalf("tampered structured result %v was loaded", status)
+		}
+	}
+}
+
+func validatedAttemptStageResult(t *testing.T, attemptID, predecessor string) stageresult.Result {
+	t.Helper()
+	evidence := stageresult.Evidence{
+		SchemaVersion: stageresult.SchemaVersion,
+		StageKind:     stageresult.KindExecute,
+		Outcome:       stageresult.OutcomeRetryable,
+		RemainingWork: []stageresult.WorkItem{{Kind: stageresult.WorkPlanTask, Description: "finish task-0002"}},
+		Execute: &stageresult.ExecutePayload{
+			PlanTasks: []stageresult.PlanTask{{ID: "task-0001", Outcome: stageresult.TaskCompleted, Summary: "implemented contract"}},
+			Checks:    []stageresult.Check{{Name: "red", Command: "go test ./internal/stageresult", Result: stageresult.CheckRed, Affected: true}},
+			Skips:     []stageresult.Skip{{Activity: "commits", Explanation: "commit follows the test"}},
+		},
+	}
+	candidate, err := stageresult.Build(stageresult.BuildInput{
+		IssueID: "GH-67", AttemptID: attemptID, PredecessorAttemptID: predecessor,
+		ExpectedKind: stageresult.KindExecute, Evidence: evidence,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := stageresult.Validate(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
 
 func writeAttemptArtifact(t *testing.T, dir, name, content string) {
 	t.Helper()

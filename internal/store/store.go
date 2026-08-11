@@ -81,6 +81,11 @@ CREATE TABLE IF NOT EXISTS stage_lifecycle_attempts(
   legacy_checkpoint_id INTEGER NOT NULL DEFAULT 0,
   result_path TEXT NOT NULL DEFAULT '',
   result_sha256 TEXT NOT NULL DEFAULT '',
+  stage_result_schema_version INTEGER NOT NULL DEFAULT 0,
+  stage_result_kind TEXT NOT NULL DEFAULT '',
+  stage_result_outcome TEXT NOT NULL DEFAULT '',
+  stage_result_status TEXT NOT NULL DEFAULT '',
+  predecessor_attempt_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   PRIMARY KEY(issue_id,stage,attempt_id)
 );
@@ -201,6 +206,7 @@ type Store struct {
 	failNextStageLifecycleCommit     bool
 	failNextStageArchiveManifest     bool
 	failNextStageCheckpointFinish    bool
+	failNextStageResultPut           bool
 	failIssueIntegrationWriteAfter   int
 	failNextVerificationRetry        bool
 }
@@ -384,6 +390,20 @@ func Open(path string) (*Store, error) {
 	if err := ensureColumn(db, "decisions", "page_snapshot",
 		`ALTER TABLE decisions ADD COLUMN page_snapshot TEXT`); err != nil {
 		return nil, err
+	}
+	for _, migration := range []struct {
+		column string
+		alter  string
+	}{
+		{"stage_result_schema_version", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN stage_result_schema_version INTEGER NOT NULL DEFAULT 0`},
+		{"stage_result_kind", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN stage_result_kind TEXT NOT NULL DEFAULT ''`},
+		{"stage_result_outcome", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN stage_result_outcome TEXT NOT NULL DEFAULT ''`},
+		{"stage_result_status", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN stage_result_status TEXT NOT NULL DEFAULT ''`},
+		{"predecessor_attempt_id", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN predecessor_attempt_id TEXT NOT NULL DEFAULT ''`},
+	} {
+		if err := ensureColumn(db, "stage_lifecycle_attempts", migration.column, migration.alter); err != nil {
+			return nil, err
+		}
 	}
 	if err := ensureColumn(db, "issues", "plan_review_policy",
 		`ALTER TABLE issues ADD COLUMN plan_review_policy TEXT NOT NULL DEFAULT '{}'`); err != nil {

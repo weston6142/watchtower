@@ -13,10 +13,12 @@ import (
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/contextpack"
+	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
+	"github.com/weston6142/watchtower/internal/stageresult"
 	"github.com/weston6142/watchtower/internal/store"
 )
 
@@ -25,6 +27,237 @@ func lifecycleTestFlow() flow.Flow {
 		Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}},
 		Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll,
 	}}}
+}
+
+func TestStructuredStageResultRetryProjectsOnlyRemainingWork(t *testing.T) {
+	first := executeStageEvidence(stageresult.OutcomeRetryable)
+	first.RemainingWork = []stageresult.WorkItem{{Kind: stageresult.WorkPlanTask, Description: "finish task-0002", Paths: []string{"internal/engine/engine.go"}}}
+	first.RemainingConcerns = []stageresult.Concern{{Explanation: "confirm retry persistence"}}
+	first.Execute.PlanTasks = append(first.Execute.PlanTasks,
+		stageresult.PlanTask{ID: "task-0002", Outcome: stageresult.TaskRemaining, Summary: "finish engine integration"})
+	first.Execute.Skips = append(first.Execute.Skips,
+		stageresult.Skip{Activity: "affected race check", Explanation: "owned by merge verification"})
+	second := executeStageEvidence(stageresult.OutcomeCompleted)
+	var starts atomic.Int32
+	var retryBrief string
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/executor": {StageEvidence: &first},
+	}}
+	r.OnStart = func(_, _, _, workdir string) error {
+		if starts.Add(1) == 1 {
+			r.Scripts["execute/executor"] = runner.Script{StageEvidence: &second}
+			return nil
+		}
+		body, err := os.ReadFile(filepath.Join(workdir, "STAGE.md"))
+		retryBrief = string(body)
+		return err
+	}
+	e, s := structuredLifecycleEngine(t, r, []flow.Stage{structuredStage("execute", "executor", 1)})
+	id := createStructuredIssue(t, e, "structured-retry", []string{"execute"})
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"finish task-0002", "owned by merge verification", "confirm retry persistence"} {
+		if !strings.Contains(retryBrief, want) {
+			t.Fatalf("retry brief missing %q:\n%s", want, retryBrief)
+		}
+	}
+	for _, absent := range []string{"task-0001", "first-attempt-commit"} {
+		if strings.Contains(retryBrief, absent) {
+			t.Fatalf("retry brief repeated %q:\n%s", absent, retryBrief)
+		}
+	}
+	attempts, err := s.StageResultAttempts(id, "execute", stageresult.KindExecute)
+	if err != nil || len(attempts) != 2 || attempts[1].PredecessorAttemptID != attempts[0].AttemptID {
+		t.Fatalf("attempts = %+v, %v", attempts, err)
+	}
+	events, _ := s.EventsSince(0)
+	completed := 0
+	for _, event := range events {
+		if event.IssueID == id && event.Type == core.EvStageCompleted {
+			completed++
+		}
+	}
+	if completed != 1 {
+		t.Fatalf("stage completed events = %d", completed)
+	}
+}
+
+func TestStageResultPersistenceFailurePreservesPredecessor(t *testing.T) {
+	retryable := executeStageEvidence(stageresult.OutcomeRetryable)
+	retryable.RemainingWork = []stageresult.WorkItem{{Kind: stageresult.WorkPlanTask, Description: "finish task-0002"}}
+	completed := executeStageEvidence(stageresult.OutcomeCompleted)
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/executor": {StageEvidence: &retryable}}}
+	e, s := structuredLifecycleEngine(t, r, []flow.Stage{structuredStage("execute", "executor", 0)})
+	id := createStructuredIssue(t, e, "persistence-failure", []string{"execute"})
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("retryable first result unexpectedly completed")
+	}
+	r.Scripts["execute/executor"] = runner.Script{StageEvidence: &completed}
+	s.FailNextStageResultPutForTest()
+	if err := e.RetryStage(context.Background(), id); err == nil {
+		t.Fatal("injected persistence failure unexpectedly completed")
+	}
+	latest, found, err := s.LatestValidStageResultAttempt(id, "execute", stageresult.KindExecute)
+	if err != nil || !found || latest.StageResultOutcome != stageresult.OutcomeRetryable {
+		t.Fatalf("latest after failure = %+v, %v, %v", latest, found, err)
+	}
+	if err := e.RetryStage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := s.StageResultAttempts(id, "execute", stageresult.KindExecute)
+	if err != nil || len(attempts) != 2 || attempts[1].PredecessorAttemptID != attempts[0].AttemptID {
+		t.Fatalf("attempts = %+v, %v", attempts, err)
+	}
+}
+
+func TestStageRejectsMissingOrWrongStructuredResult(t *testing.T) {
+	wrong := correctnessStageEvidence()
+	for _, tt := range []struct {
+		name   string
+		script runner.Script
+	}{{"missing", runner.Script{OmitStageEvidence: true}}, {"wrong", runner.Script{StageEvidence: &wrong}}} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/executor": tt.script}}
+			e, s := structuredLifecycleEngine(t, r, []flow.Stage{structuredStage("execute", "executor", 0)})
+			id := createStructuredIssue(t, e, "reject-"+tt.name, []string{"execute"})
+			if err := e.StartIssue(context.Background(), id); err == nil || !strings.Contains(err.Error(), "structured stage result") {
+				t.Fatalf("StartIssue error = %v", err)
+			}
+			if _, found, err := s.LatestValidStageResultAttempt(id, "execute", stageresult.KindExecute); err != nil || found {
+				t.Fatalf("invalid result became latest: found=%v err=%v", found, err)
+			}
+		})
+	}
+}
+
+func TestStructuredResultsRunExecuteThroughLibrarian(t *testing.T) {
+	execute, correctness, clean, librarian := executeStageEvidence(stageresult.OutcomeCompleted), correctnessStageEvidence(), cleanCodeStageEvidence(), librarianStageEvidence()
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/executor":                 {StageEvidence: &execute},
+		"correctness/correctness-reviewer": {StageEvidence: &correctness},
+		"clean-code/clean-code-reviewer":   {StageEvidence: &clean},
+		"librarian/librarian":              {StageEvidence: &librarian},
+	}}
+	stages := []flow.Stage{
+		structuredStage("execute", "executor", 0),
+		structuredStage("correctness", "correctness-reviewer", 0),
+		structuredStage("clean-code", "clean-code-reviewer", 0),
+		structuredStage("librarian", "librarian", 0),
+	}
+	e, s := structuredLifecycleEngine(t, r, stages)
+	id := createStructuredIssue(t, e, "full-sequence", []string{"execute", "correctness", "clean-code", "librarian"})
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []struct {
+		stage string
+		kind  stageresult.Kind
+	}{{"execute", stageresult.KindExecute}, {"correctness", stageresult.KindCorrectnessReview}, {"clean-code", stageresult.KindCleanCodeReview}, {"librarian", stageresult.KindLibrarian}} {
+		attempt, found, err := s.LatestValidStageResultAttempt(id, want.stage, want.kind)
+		if err != nil || !found || attempt.StageResultOutcome != stageresult.OutcomeCompleted {
+			t.Fatalf("stage %d result = %+v, %v, %v", index, attempt, found, err)
+		}
+		ref, found, err := s.StageLifecycleResult(attempt)
+		if err != nil || !found {
+			t.Fatalf("stage %s ref found=%v err=%v", want.stage, found, err)
+		}
+		loaded, err := contextpack.LoadAttemptResult(e.issueDir(id), ref)
+		if err != nil || loaded.StageResult == nil || loaded.StageResult.StageKind != want.kind || loaded.StageResult.ValidationStatus != stageresult.ValidationValid {
+			t.Fatalf("stage %s loaded = %+v, %v", want.stage, loaded.StageResult, err)
+		}
+	}
+}
+
+func TestCompletedStructuredResultResumesLifecycleWithoutRunner(t *testing.T) {
+	completed := executeStageEvidence(stageresult.OutcomeCompleted)
+	var starts atomic.Int32
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/executor": {StageEvidence: &completed}}, OnStart: func(_, _, _, _ string) error {
+		starts.Add(1)
+		return nil
+	}}
+	e, s := structuredLifecycleEngine(t, r, []flow.Stage{structuredStage("execute", "executor", 0)})
+	id := createStructuredIssue(t, e, "completed-resume", []string{"execute"})
+	s.FailNextStageLifecycleCommitForTest()
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("injected lifecycle failure unexpectedly completed")
+	}
+	if err := e.RetryStage(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if starts.Load() != 1 {
+		t.Fatalf("runner starts = %d, want 1", starts.Load())
+	}
+}
+
+func structuredStage(name, agent string, retries int) flow.Stage {
+	return flow.Stage{Name: name, Agents: []flow.AgentRef{{Package: agent}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll, Retries: retries}
+}
+
+func structuredLifecycleEngine(t *testing.T, r runner.Runner, stages []flow.Stage) (*Engine, *store.Store) {
+	t.Helper()
+	f := flow.Flow{Name: "structured", Stages: stages}
+	return newEngineCfg(t, r, func(cfg *Config) { cfg.Flows = map[string]flow.Flow{f.Name: f} })
+}
+
+func createStructuredIssue(t *testing.T, e *Engine, title string, stages []string) string {
+	t.Helper()
+	matrix := levers.Matrix{}
+	for _, stage := range stages {
+		matrix[stage] = flow.LeverYolo
+	}
+	id, err := e.CreateIssue(title, "", "structured", matrix, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func executeStageEvidence(outcome stageresult.Outcome) stageresult.Evidence {
+	return stageresult.Evidence{
+		SchemaVersion: stageresult.SchemaVersion, StageKind: stageresult.KindExecute, Outcome: outcome,
+		Execute: &stageresult.ExecutePayload{
+			PlanTasks: []stageresult.PlanTask{{ID: "task-0001", Outcome: stageresult.TaskCompleted, Summary: "completed task-0001"}},
+			Commits:   []stageresult.Commit{{SHA: "first-attempt-commit", Message: "feat: task", TaskIDs: []string{"task-0001"}}},
+			Checks: []stageresult.Check{
+				{Name: "red", Command: "go test ./internal/engine", Result: stageresult.CheckRed, Affected: true},
+				{Name: "green", Command: "go test ./internal/engine", Result: stageresult.CheckGreen, Affected: true},
+			},
+		},
+	}
+}
+
+func correctnessStageEvidence() stageresult.Evidence {
+	return stageresult.Evidence{
+		SchemaVersion: stageresult.SchemaVersion, StageKind: stageresult.KindCorrectnessReview, Outcome: stageresult.OutcomeCompleted,
+		CorrectnessReview: &stageresult.CorrectnessReviewPayload{
+			Findings:      []stageresult.Finding{{ID: "F-1", Summary: "invalid result advanced", Status: stageresult.FindingFixed, Paths: []string{"internal/engine/engine.go"}}},
+			Fixes:         []stageresult.Fix{{Summary: "reject invalid result", FindingIDs: []string{"F-1"}, Paths: []string{"internal/engine/engine.go"}, Commit: "fix123"}},
+			Checks:        []stageresult.Check{{Name: "regression", Command: "go test ./internal/engine", Result: stageresult.CheckGreen, Affected: true}},
+			ReviewedPaths: []string{"internal/engine/engine.go"},
+		},
+	}
+}
+
+func cleanCodeStageEvidence() stageresult.Evidence {
+	return stageresult.Evidence{
+		SchemaVersion: stageresult.SchemaVersion, StageKind: stageresult.KindCleanCodeReview, Outcome: stageresult.OutcomeCompleted,
+		CleanCodeReview: &stageresult.CleanCodeReviewPayload{
+			ReviewedPaths: []string{"internal/engine/engine.go"},
+			Checks:        []stageresult.Check{{Name: "changed code", Command: "go test ./internal/engine", Result: stageresult.CheckGreen, Affected: true}},
+			NoChange:      &stageresult.NoChangeConclusion{Explanation: "changed code follows repository conventions"},
+		},
+	}
+}
+
+func librarianStageEvidence() stageresult.Evidence {
+	return stageresult.Evidence{
+		SchemaVersion: stageresult.SchemaVersion, StageKind: stageresult.KindLibrarian, Outcome: stageresult.OutcomeCompleted,
+		Librarian: &stageresult.LibrarianPayload{
+			ReviewedPaths:        []string{"internal/engine/engine.go"},
+			DocumentationUpdates: []stageresult.DocumentationUpdate{{Path: "docs/guildhall/lane-ops-and-issue-states.md", Summary: "document retry semantics"}},
+		},
+	}
 }
 
 func lifecycleTestRunner(starts *atomic.Int32) *runner.FakeRunner {

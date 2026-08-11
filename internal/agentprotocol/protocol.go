@@ -3,13 +3,16 @@
 package agentprotocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 // CoachMessage asks an agent to repair an incomplete decision marker without
@@ -32,6 +35,95 @@ protocol. Nothing else.`
 // TaskMessage is the first user message watchtower sends an agent.
 func TaskMessage(stage, issueID string) string {
 	return fmt.Sprintf("Task: run the %s stage for issue %s. Read ISSUE.md and STAGE.md in the current directory, then use only the materialized artifacts and decisions.md named there. Work in the current directory.", stage, issueID)
+}
+
+type stageResultMarker struct {
+	Result *stageresult.Evidence `json:"watchtower_stage_result"`
+}
+
+// StageResultCollector retains at most one distinct stage-result marker across
+// the assistant text events that make up a provider turn.
+type StageResultCollector struct {
+	evidence *stageresult.Evidence
+}
+
+// Collect adds any stage-result marker in text and rejects malformed or
+// conflicting markers.
+func (c *StageResultCollector) Collect(text string) error {
+	evidence, found, err := ExtractStageResult(text)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if c.evidence == nil {
+		c.evidence = &evidence
+		return nil
+	}
+	if !stageResultEvidenceEqual(*c.evidence, evidence) {
+		return fmt.Errorf("conflicting watchtower_stage_result markers")
+	}
+	return nil
+}
+
+// Evidence returns the collected evidence, or nil when no marker was present.
+func (c *StageResultCollector) Evidence() *stageresult.Evidence {
+	if c.evidence == nil {
+		return nil
+	}
+	evidence := *c.evidence
+	return &evidence
+}
+
+// ExtractStageResult strictly decodes provider-supplied stage evidence. It
+// distinguishes an absent marker from a malformed attempted marker so callers
+// can fail closed instead of silently treating malformed evidence as missing.
+func ExtractStageResult(text string) (stageresult.Evidence, bool, error) {
+	var result *stageresult.Evidence
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, `{"watchtower_stage_result":`) {
+			continue
+		}
+		var marker stageResultMarker
+		decoder := json.NewDecoder(bytes.NewBufferString(line))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&marker); err != nil {
+			return stageresult.Evidence{}, true, fmt.Errorf("decode stage result marker: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			if err == nil {
+				err = fmt.Errorf("multiple JSON values")
+			}
+			return stageresult.Evidence{}, true, fmt.Errorf("decode stage result marker: %w", err)
+		}
+		if marker.Result == nil {
+			return stageresult.Evidence{}, true, fmt.Errorf("decode stage result marker: watchtower_stage_result must not be null")
+		}
+		if result == nil {
+			result = marker.Result
+			continue
+		}
+		if !stageResultEvidenceEqual(*result, *marker.Result) {
+			return stageresult.Evidence{}, true, fmt.Errorf("conflicting watchtower_stage_result markers")
+		}
+	}
+	if result != nil {
+		return *result, true, nil
+	}
+	return stageresult.Evidence{}, false, nil
+}
+
+// stageResultEvidenceEqual compares the canonical JSON form so equivalent
+// markers remain harmless even when object fields arrive in a different order.
+func stageResultEvidenceEqual(left, right stageresult.Evidence) bool {
+	a, err := json.Marshal(left)
+	if err != nil {
+		return false
+	}
+	b, err := json.Marshal(right)
+	return err == nil && bytes.Equal(a, b)
 }
 
 type decisionPayload struct {

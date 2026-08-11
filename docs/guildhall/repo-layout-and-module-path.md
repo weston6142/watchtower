@@ -29,6 +29,11 @@ Layout:
   overlords (issue state, project memory, merge train), woken on events.
 - `internal/decision/` — the provider-neutral decision context contract and
   validation shared by the engine, persistence, protocol, and renderers.
+- `internal/stageresult/` — the provider-neutral, versioned result envelope,
+  stage-specific evidence validation, and compact retry-context projection for
+  execute, correctness review, clean-code review, and librarian. It defines
+  what a durable stage result means; `internal/stagelifecycle/` separately owns
+  the ordered recovery checkpoints for completing an attempt.
 - `internal/projection/` — event log → renderable `State`.
 - `internal/tui/` — Bubble Tea client; goldens in `internal/tui/testdata/`.
 - `internal/proto/` — Unix-socket JSONL commands/ops.
