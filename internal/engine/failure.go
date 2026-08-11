@@ -17,6 +17,7 @@ import (
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/verificationcache"
 )
 
@@ -216,6 +217,17 @@ func digestFailureIdentity(value string) string {
 }
 
 func classifyFailure(err error) (failure.Site, failure.Class, failure.RetryDisposition, failure.StateChange) {
+	var lifecycleErr *stagelifecycle.DiagnosticError
+	if errors.As(err, &lifecycleErr) {
+		switch lifecycleErr.Code {
+		case stagelifecycle.CodeCheckpointFinalization:
+			return failure.SiteLifecycle, failure.ClassStateMismatch, failure.RetryAfterStateChange, failure.StateStore
+		case stagelifecycle.CodeIntegrity, stagelifecycle.CodeConflict:
+			return failure.SiteLifecycle, failure.ClassIntegrity, failure.RetryAfterStateChange, failure.StateStore
+		case stagelifecycle.CodeMissingResult, stagelifecycle.CodeLegacyNormalization:
+			return failure.SiteLifecycle, failure.ClassValidation, failure.RetryAfterStateChange, failure.StateStore
+		}
+	}
 	var runnerErr *runnerStageError
 	if errors.As(err, &runnerErr) {
 		return failure.SiteRunner, failure.NormalizeClass(failure.Class(runnerErr.Result.FailureClass)), failure.RetryNow, failure.StateRunnerInput

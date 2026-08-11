@@ -2,15 +2,19 @@ package engine
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/decisionpage"
@@ -18,6 +22,7 @@ import (
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/review"
+	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
 )
@@ -211,8 +216,12 @@ func (e *Engine) buildPageDataWithDecisionRows(
 			floor.Note = checkpointNote(checkpoint, tokensByStage[stage.Name])
 			data.DoneCount++
 			for _, artifact := range checkpoint.Artifacts {
+				href, hrefErr := e.decisionArtifactHref(issueID, checkpoint, artifact)
+				if hrefErr != nil {
+					return decisionpage.PageData{}, hrefErr
+				}
 				floor.Artifacts = append(floor.Artifacts, decisionpage.FloorLink{
-					Name: artifact.Name, Href: "artifacts/" + artifact.Name})
+					Name: artifact.Name, Href: href})
 			}
 			floor.Decisions = decisionsByStage[stage.Name]
 		case hasCheckpoint && (checkpoint.Status == "failed" || checkpoint.Status == "killed"):
@@ -246,6 +255,95 @@ func (e *Engine) buildPageDataWithDecisionRows(
 		}
 	}
 	return data, nil
+}
+
+// buildDecisionPageForCheckpoint renders a checkpoint's page using the same
+// data path as the daemon. Tests use it to exercise persisted checkpoint and
+// archive state without private fixtures.
+func (e *Engine) buildDecisionPageForCheckpoint(issueID string, checkpointID int64) (string, error) {
+	rows, err := e.cfg.Store.Issues()
+	if err != nil {
+		return "", err
+	}
+	var issue store.IssueRow
+	foundIssue := false
+	for _, row := range rows {
+		if row.ID == issueID {
+			issue = row
+			foundIssue = true
+			break
+		}
+	}
+	if !foundIssue {
+		return "", fmt.Errorf("issue %s is unavailable", issueID)
+	}
+	checkpoints, err := e.cfg.Store.StageCheckpoints(issueID)
+	if err != nil {
+		return "", err
+	}
+	for _, checkpoint := range checkpoints {
+		if checkpoint.ID != checkpointID {
+			continue
+		}
+		data, dataErr := e.buildPageData(issueID, issue.Flow, issue.Title, checkpoint.Stage,
+			nil, nil, nil, 0, nil)
+		if dataErr != nil {
+			return "", dataErr
+		}
+		content, renderErr := decisionpage.Render(data)
+		if renderErr != nil {
+			return "", renderErr
+		}
+		return string(content), nil
+	}
+	return "", fmt.Errorf("checkpoint %d is unavailable", checkpointID)
+}
+
+func (e *Engine) decisionArtifactHref(issueID string, checkpoint store.StageCheckpoint, artifact contextpack.Artifact) (string, error) {
+	attemptID := "checkpoint-" + strconv.FormatInt(checkpoint.ID, 10)
+	records, err := e.cfg.Store.StageLifecycleRecords(issueID, checkpoint.Stage, attemptID)
+	if err != nil {
+		return "", err
+	}
+	var ref *stagelifecycle.ArtifactRef
+	for index := len(records) - 1; index >= 0; index-- {
+		record := records[index]
+		if !record.Committed || !lifecycleReached(record.Substate, stagelifecycle.ArtifactsArchived) {
+			continue
+		}
+		for artifactIndex := range record.Artifacts {
+			candidate := record.Artifacts[artifactIndex]
+			if candidate.Name == artifact.Name && !strings.Contains(candidate.Path, "/result/") {
+				copy := candidate
+				ref = &copy
+				break
+			}
+		}
+		if ref != nil {
+			break
+		}
+	}
+	if ref == nil {
+		return "artifacts/" + artifact.Name, nil
+	}
+	if !safeDecisionArchivePath(ref.Path, ref.Name) ||
+		(artifact.SHA256 != "" && ref.SHA256 != artifact.SHA256) {
+		return "", &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeIntegrity, Message: "decision artifact reference does not validate"}
+	}
+	body, err := os.ReadFile(filepath.Join(e.issueDir(issueID), filepath.FromSlash(ref.Path)))
+	if err != nil {
+		return "", &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeIntegrity, Message: "decision artifact reference cannot be read"}
+	}
+	digest := sha256.Sum256(body)
+	if hex.EncodeToString(digest[:]) != ref.SHA256 {
+		return "", &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeIntegrity, Message: "decision artifact reference digest does not validate"}
+	}
+	return ref.Path, nil
+}
+
+func safeDecisionArchivePath(value, name string) bool {
+	clean := path.Clean(value)
+	return value == clean && !path.IsAbs(value) && strings.HasPrefix(value, "artifacts/attempts/") && path.Base(value) == name && !strings.Contains(value, "../")
 }
 
 func firstIncompleteStage(fl flow.Flow, checkpoints map[string]store.StageCheckpoint) string {

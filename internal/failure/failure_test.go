@@ -85,3 +85,12 @@ func TestFailureRecordInputRejectsUncontrolledValues(t *testing.T) {
 		t.Fatal("uncontrolled failure class was accepted")
 	}
 }
+
+func TestLifecycleFailureSiteIsStableAndSafe(t *testing.T) {
+	if got := NormalizeSite(Site("lifecycle")); got != SiteLifecycle {
+		t.Fatalf("lifecycle site = %q, want %q", got, SiteLifecycle)
+	}
+	if got := NormalizeSite(Site("private-path")); got != SiteOther {
+		t.Fatalf("unknown site = %q, want %q", got, SiteOther)
+	}
+}

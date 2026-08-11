@@ -27,6 +27,7 @@ const (
 	SiteCache        Site = "cache"
 	SiteStore        Site = "store"
 	SiteFinalization Site = "finalization"
+	SiteLifecycle    Site = "lifecycle"
 	SiteUnknown      Site = "unknown"
 	SiteOther        Site = "other"
 
@@ -348,7 +349,7 @@ func NormalizeStateChange(value StateChange) StateChange {
 func isSite(value Site) bool {
 	switch value {
 	case SiteRunner, SiteWorkspace, SiteArtifact, SitePlanner, SiteGit, SiteVerification,
-		SiteCache, SiteStore, SiteFinalization, SiteUnknown, SiteOther:
+		SiteCache, SiteStore, SiteFinalization, SiteLifecycle, SiteUnknown, SiteOther:
 		return true
 	default:
 		return false

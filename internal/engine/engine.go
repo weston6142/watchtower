@@ -33,6 +33,7 @@ import (
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
@@ -169,6 +170,7 @@ type issueState struct {
 	pauseRequested      bool
 	pauseStage          int
 	terminal            bool
+	retryUnmerged       bool
 	running             bool
 	draft               bool
 	claiming            bool
@@ -615,7 +617,7 @@ func (e *Engine) Rehydrate() error {
 				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
 				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
 				dependsOn: append([]string(nil), row.DependsOn...), running: true,
-				stageIdx: finalIdx, planReview: row.PlanReviewPolicy,
+				stageIdx: finalIdx, retryUnmerged: true, planReview: row.PlanReviewPolicy,
 			}
 			e.mu.Lock()
 			e.issues[row.ID] = is
@@ -652,6 +654,24 @@ func (e *Engine) Rehydrate() error {
 				}
 				e.mu.Unlock()
 			}(integration)
+			continue
+		}
+		if recovered, found, recoveryErr := e.lifecycleRecoveryState(row); recoveryErr != nil {
+			e.emit(core.EvStageFailed, row.ID, map[string]any{
+				"stage": "lifecycle", "error": "lifecycle checkpoint recovery blocked: " + lifecycleErrorMessage(recoveryErr), "final": true})
+			continue
+		} else if found {
+			e.mu.Lock()
+			_, known := e.issues[row.ID]
+			if !known {
+				e.issues[row.ID] = recovered
+			}
+			e.mu.Unlock()
+			if !known {
+				e.emit(core.EvStageFailed, row.ID, map[string]any{
+					"stage": e.cfg.Flows[row.Flow].Stages[recovered.stageIdx].Name,
+					"error": "lifecycle checkpoint recovered — press R to retry", "final": true})
+			}
 			continue
 		}
 		run, hasRun, err := e.cfg.Store.LoadRunState(row.ID)
@@ -2655,6 +2675,12 @@ func (e *Engine) continueArtifactReview(
 			return
 		}
 	}
+	if err := e.commitRehydratedArtifactReviewGate(issueID, stage, target.CheckpointID); err != nil {
+		recordArtifactFailure(fmt.Errorf("artifact review lifecycle handoff: %w", err))
+		e.emit(core.EvStageFailed, issueID, map[string]any{
+			"stage": stage, "error": fmt.Sprintf("artifact review lifecycle handoff: %v", err), "final": true})
+		return
+	}
 	if err := e.cfg.Store.CompleteArtifactReview(target.CheckpointID, target); err != nil {
 		recordArtifactFailure(fmt.Errorf("artifact review handoff: %w", err))
 		e.emit(core.EvStageFailed, issueID, map[string]any{
@@ -3176,7 +3202,7 @@ func (e *Engine) runStageOnce(
 	if err != nil {
 		return err
 	}
-	if err := contextpack.Materialize(e.issueDir(is.id), workdir, requiredInputs); err != nil {
+	if err := e.materializeStageContext(is.id, workdir, requiredInputs); err != nil {
 		return fmt.Errorf("materialize stage context: %w", err)
 	}
 	ledger, err := e.decisionLedger(is.id)
@@ -3252,27 +3278,64 @@ func (e *Engine) runStageOnce(
 	if err != nil {
 		return err
 	}
+	lifecycleAttempt, lifecycleRecords, err := e.lifecycleAttemptFor(is, st, checkpointID)
+	if err != nil {
+		return err
+	}
+	if is.retryUnmerged && st.MergeBarrier {
+		lifecycleRecords = nil
+	}
+	var lifecycleResult contextpack.AttemptResult
+	resumedLifecycle := false
+	var durableRunnerRecord stagelifecycle.Record
+	if runnerRecord, ok := lifecycleRecordResult(lifecycleRecords); ok {
+		durableRunnerRecord = runnerRecord
+		lifecycleResult, err = e.restoreLifecycleResult(e.issueDir(is.id), runnerRecord, workdir)
+		if err != nil {
+			return err
+		}
+		resumedLifecycle = true
+	} else if storedResult, found, resultErr := e.cfg.Store.StageLifecycleResult(lifecycleAttempt); resultErr != nil {
+		return resultErr
+	} else if found {
+		loadedResult, loadErr := contextpack.LoadAttemptResult(e.issueDir(is.id), storedResult)
+		if loadErr != nil {
+			code := stagelifecycle.CodeIntegrity
+			if errors.Is(loadErr, os.ErrNotExist) {
+				code = stagelifecycle.CodeMissingResult
+			}
+			return &stagelifecycle.DiagnosticError{Code: code, Message: "durable model result cannot be recovered"}
+		}
+		durableRunnerRecord = lifecycleRunnerRecord(loadedResult)
+		if _, restoreErr := e.restoreLifecycleResult(e.issueDir(is.id), durableRunnerRecord, workdir); restoreErr != nil {
+			return restoreErr
+		}
+		lifecycleResult = loadedResult
+		resumedLifecycle = true
+	}
 	var checkpointArtifacts []contextpack.Artifact
 	var sessionIDs []string
-	defer func() {
-		endCommit, _, _ := repositoryState(workdir, contextPaths)
-		if runErr != nil {
-			if checkpoints, checkpointErr := e.cfg.Store.StageCheckpoints(is.id); checkpointErr == nil {
-				for _, checkpoint := range checkpoints {
-					if checkpoint.ID == checkpointID && checkpoint.Status == "revision_required" {
-						return
-					}
-				}
-			}
+	legacyFinalizationAttempted := false
+	finishLegacyCheckpoint := func(stageErr error) error {
+		if legacyFinalizationAttempted {
+			return stageErr
 		}
+		legacyFinalizationAttempted = true
+		endCommit, _, _ := repositoryState(workdir, contextPaths)
 		status, failureMessage := "succeeded", ""
+		durableFailureMessage := func(err error) string {
+			if lifecycleErrorCode(err) != "" {
+				return lifecycleErrorMessage(err)
+			}
+			return err.Error()
+		}
 		switch {
-		case errors.Is(runErr, errDependenciesDiscovered):
+		case errors.Is(stageErr, errDependenciesDiscovered):
 			status = "waiting_dependencies"
-		case runErr != nil && ctx.Err() != nil:
-			status, failureMessage = "killed", runErr.Error()
-		case runErr != nil:
-			status, failureMessage = "failed", runErr.Error()
+		case stageErr != nil && ctx.Err() != nil:
+			status, failureMessage = "killed", durableFailureMessage(stageErr)
+		case stageErr != nil:
+			status, failureMessage = "failed", durableFailureMessage(stageErr)
 		}
 		if err := e.cfg.Store.FinishStageCheckpoint(
 			checkpointID, status, endCommit, strings.Join(sessionIDs, ","),
@@ -3280,7 +3343,27 @@ func (e *Engine) runStageOnce(
 			_ = e.recordBoundaryFailure(context.WithoutCancel(ctx), is.id, st.Name, attempt,
 				failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
 				failure.StateStore, err)
+			if stageErr == nil {
+				return &stagelifecycle.DiagnosticError{
+					Code:    stagelifecycle.CodeCheckpointFinalization,
+					Message: "legacy stage checkpoint finalization failed",
+				}
+			}
 		}
+		return stageErr
+	}
+	defer func() {
+		if runErr != nil {
+			if checkpoints, checkpointErr := e.cfg.Store.StageCheckpoints(is.id); checkpointErr == nil {
+				for _, checkpoint := range checkpoints {
+					if checkpoint.ID == checkpointID && checkpoint.Status == "revision_required" {
+						e.refreshDecisionPage(is.id)
+						return
+					}
+				}
+			}
+		}
+		runErr = finishLegacyCheckpoint(runErr)
 		e.refreshDecisionPage(is.id)
 	}()
 	e.emit(core.EvStageStarted, is.id, map[string]any{
@@ -3379,6 +3462,9 @@ func (e *Engine) runStageOnce(
 	var plannerTokensMu sync.Mutex
 	plannerTokensRecorded := false
 	dones := make(chan agentDone, len(st.Agents))
+	var firstErr error
+	succeeded := 0
+	var discovered []string
 	runAgent := func(a flow.AgentRef) {
 		runID, insErr := e.cfg.Store.InsertStageRun(store.StageRun{
 			IssueID: is.id, Stage: st.Name, Agent: a.Package,
@@ -3443,38 +3529,39 @@ func (e *Engine) runStageOnce(
 			}
 		}
 	}
-	if st.Parallel {
-		for _, a := range st.Agents {
-			go runAgent(a)
+	if !resumedLifecycle {
+		if st.Parallel {
+			for _, a := range st.Agents {
+				go runAgent(a)
+			}
+		} else {
+			go func() {
+				for _, a := range st.Agents {
+					runAgent(a)
+				}
+			}()
+		}
+
+		need := len(st.Agents)
+		for i := 0; i < need; i++ {
+			d := <-dones
+			if d.res.SessionID != "" {
+				sessionIDs = append(sessionIDs, d.res.SessionID)
+			}
+			if d.res.Err != nil {
+				if firstErr == nil {
+					firstErr = &runnerStageError{Agent: d.pkg, Result: d.res}
+				}
+				continue
+			}
+			succeeded++
+			discovered = append(discovered, d.res.DependsOn...)
+			if st.Completion == flow.CompletionAny {
+				break
+			}
 		}
 	} else {
-		go func() {
-			for _, a := range st.Agents {
-				runAgent(a)
-			}
-		}()
-	}
-
-	need := len(st.Agents)
-	var firstErr error
-	succeeded := 0
-	var discovered []string
-	for i := 0; i < need; i++ {
-		d := <-dones
-		if d.res.SessionID != "" {
-			sessionIDs = append(sessionIDs, d.res.SessionID)
-		}
-		if d.res.Err != nil {
-			if firstErr == nil {
-				firstErr = &runnerStageError{Agent: d.pkg, Result: d.res}
-			}
-			continue
-		}
-		succeeded++
-		discovered = append(discovered, d.res.DependsOn...)
-		if st.Completion == flow.CompletionAny {
-			break
-		}
+		succeeded = len(st.Agents)
 	}
 	if plannerController != nil {
 		outcome := plannerController.Finish(firstErr)
@@ -3545,6 +3632,49 @@ func (e *Engine) runStageOnce(
 			}
 		}
 	}
+	for _, name := range st.Artifacts {
+		if _, err := os.Stat(filepath.Join(workdir, name)); err != nil {
+			return fmt.Errorf("stage %s missing artifact %s", st.Name, name)
+		}
+	}
+	if !resumedLifecycle {
+		lifecycleResult, err = contextpack.MaterializeAttemptResult(
+			workdir, e.issueDir(is.id), lifecycleAttempt.AttemptID, st.Artifacts,
+			contextpack.AttemptResult{IssueID: is.id, Stage: st.Name, DependsOn: append([]string(nil), discovered...)},
+		)
+		if err != nil {
+			return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "model result materialization failed"}
+		}
+		if err := e.cfg.Store.PutStageLifecycleResult(lifecycleAttempt, lifecycleResult); err != nil {
+			return err
+		}
+		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.RunnerSucceeded,
+			lifecyclePayloadDigest(stagelifecycle.RunnerSucceeded, lifecycleResult, lifecycleResult.Artifacts),
+			lifecycleResult, lifecycleResult.Artifacts); err != nil {
+			return err
+		}
+	} else if !durableRunnerRecord.Committed {
+		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.RunnerSucceeded,
+			lifecyclePayloadDigest(stagelifecycle.RunnerSucceeded, lifecycleResult, lifecycleResult.Artifacts),
+			lifecycleResult, lifecycleResult.Artifacts); err != nil {
+			return err
+		}
+	}
+	current, currentFound, err := e.cfg.Store.LatestCommittedStageLifecycle(lifecycleAttempt)
+	if err != nil {
+		return err
+	}
+	if !currentFound || !lifecycleReached(current.Substate, stagelifecycle.ArtifactsValidated) {
+		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.ArtifactsValidated,
+			lifecyclePayloadDigest(stagelifecycle.ArtifactsValidated, lifecycleResult, lifecycleResult.Artifacts),
+			lifecycleResult, lifecycleResult.Artifacts); err != nil {
+			return err
+		}
+		current, _, err = e.cfg.Store.LatestCommittedStageLifecycle(lifecycleAttempt)
+		if err != nil {
+			return err
+		}
+	}
 	// validate artifacts
 	for _, name := range st.Artifacts {
 		p := filepath.Join(workdir, name)
@@ -3552,14 +3682,29 @@ func (e *Engine) runStageOnce(
 			return fmt.Errorf("stage %s missing artifact %s", st.Name, name)
 		}
 	}
-	checkpointArtifacts, err = contextpack.Archive(workdir, e.issueDir(is.id), st.Artifacts)
-	if err != nil {
-		return fmt.Errorf("archive stage artifacts: %w", err)
+	var archiveRefs []contextpack.AttemptArtifact
+	if lifecycleReached(current.Substate, stagelifecycle.ArtifactsArchived) {
+		archiveRefs = attemptArtifactRefs(current.Artifacts)
+	} else {
+		archiveRefs, err = contextpack.PublishAttemptArchive(e.issueDir(is.id), lifecycleResult,
+			lifecycleAttempt.AttemptID+":"+string(stagelifecycle.ArtifactsArchived))
+		if err != nil {
+			return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeIntegrity, Message: "attempt archive publication failed"}
+		}
+		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.ArtifactsArchived,
+			lifecyclePayloadDigest(stagelifecycle.ArtifactsArchived, lifecycleResult, archiveRefs),
+			lifecycleResult, archiveRefs); err != nil {
+			return err
+		}
 	}
+	if err := publishLegacyCompatibility(e.issueDir(is.id), archiveRefs); err != nil {
+		return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeIntegrity, Message: "legacy artifact compatibility publication failed"}
+	}
+	checkpointArtifacts = lifecycleArchiveRefs(archiveRefs)
 	for _, artifact := range checkpointArtifacts {
 		e.emit(core.EvArtifactProduced, is.id, map[string]string{
 			"stage": st.Name, "artifact": artifact.Name,
-			"path": filepath.Join(e.issueDir(is.id), "artifacts", artifact.Name)})
+			"path": filepath.Join(e.issueDir(is.id), "artifacts", "attempts", lifecycleAttempt.AttemptID, artifact.Name)})
 	}
 	if st.Gate == flow.GatePlanReview {
 		response, err := e.requestPlanReview(is, st, checkpointID, checkpointArtifacts)
@@ -3586,6 +3731,17 @@ func (e *Engine) runStageOnce(
 			return fmt.Errorf("stage %s artifacts require revision", st.Name)
 		}
 	}
+	current, currentFound, err = e.cfg.Store.LatestCommittedStageLifecycle(lifecycleAttempt)
+	if err != nil {
+		return err
+	}
+	if !currentFound || !lifecycleReached(current.Substate, stagelifecycle.GateResolved) {
+		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.GateResolved,
+			lifecyclePayloadDigest(stagelifecycle.GateResolved, lifecycleResult, archiveRefs),
+			lifecycleResult, archiveRefs); err != nil {
+			return err
+		}
+	}
 	if normalized := deps.Normalize(discovered); len(normalized) > 0 {
 		e.mu.Lock()
 		all := append(append([]string(nil), is.dependsOn...), normalized...)
@@ -3604,6 +3760,31 @@ func (e *Engine) runStageOnce(
 			if err := e.checkpointVerificationReady(is); err != nil {
 				return fmt.Errorf("persist verification ready: %w", err)
 			}
+		}
+	}
+	current, currentFound, err = e.cfg.Store.LatestCommittedStageLifecycle(lifecycleAttempt)
+	if err != nil {
+		return err
+	}
+	if !currentFound || !lifecycleReached(current.Substate, stagelifecycle.VerificationPassed) {
+		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.VerificationPassed,
+			lifecyclePayloadDigest(stagelifecycle.VerificationPassed, lifecycleResult, archiveRefs),
+			lifecycleResult, archiveRefs); err != nil {
+			return err
+		}
+	}
+	current, currentFound, err = e.cfg.Store.LatestCommittedStageLifecycle(lifecycleAttempt)
+	if err != nil {
+		return err
+	}
+	if err := finishLegacyCheckpoint(nil); err != nil {
+		return err
+	}
+	if !currentFound || !lifecycleReached(current.Substate, stagelifecycle.FinalizationReady) {
+		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.FinalizationReady,
+			lifecyclePayloadDigest(stagelifecycle.FinalizationReady, lifecycleResult, archiveRefs),
+			lifecycleResult, archiveRefs); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -3698,15 +3879,19 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 			e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
 			return context.Canceled
 		}
+		stageFailureMessage := err.Error()
+		if lifecycleErrorCode(err) != "" {
+			stageFailureMessage = lifecycleErrorMessage(err)
+		}
 		if plannerAuthorityFinalValidation(err) {
 			e.emit(core.EvStageFailed, is.id, map[string]any{
-				"stage": st.Name, "error": err.Error(),
+				"stage": st.Name, "error": stageFailureMessage,
 				"attempt": attempt + 1, "of": of, "final": true,
 			})
 			break
 		}
 		payload := map[string]any{
-			"stage": st.Name, "error": err.Error(),
+			"stage": st.Name, "error": stageFailureMessage,
 			"attempt": attempt + 1, "of": of, "final": attempt == st.Retries}
 		for key, value := range runnerFailurePayload(err) {
 			payload[key] = value
@@ -4219,6 +4404,7 @@ func (e *Engine) retryStaleVerification(
 	e.mu.Lock()
 	is.stageIdx = stageIdx
 	is.terminal = false
+	is.retryUnmerged = true
 	e.mu.Unlock()
 	return true, e.runFromOwned(ctx, is, stageIdx, plannerOverride)
 }
@@ -4267,7 +4453,7 @@ func (e *Engine) loadDoneUnmergedForRetry(issueID string) (*issueState, error) {
 		id: found.ID, title: found.Title, body: found.Body, flowName: found.Flow,
 		matrix: matrixFromStrings(found.Levers), priority: found.Priority,
 		dependsOn: append([]string(nil), found.DependsOn...),
-		stageIdx:  stageIdx, terminal: true, planReview: found.PlanReviewPolicy,
+		stageIdx:  stageIdx, terminal: true, retryUnmerged: true, planReview: found.PlanReviewPolicy,
 	}
 	e.restoreInterruptedWorkspace(is)
 	return is, nil

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decisionpage"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -163,6 +164,50 @@ func TestDecisionPageHistoricalGapsAreExplicit(t *testing.T) {
 	}
 }
 
+func TestDecisionPageUsesAttemptArchivePathAndLegacyFallback(t *testing.T) {
+	f := flow.Flow{Name: "attempt-page", Stages: []flow.Stage{{
+		Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Artifacts: []string{"plan.md"},
+		Gate: flow.GateAuto, Completion: flow.CompletionAll,
+	}}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/agent": {Artifacts: map[string]string{"plan.md": "plan v1\n"}},
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) { cfg.Flows = map[string]flow.Flow{f.Name: f} })
+	id, err := e.CreateIssue("Attempt archive page", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := s.StageCheckpoints(id)
+	if err != nil || len(checkpoints) != 1 {
+		t.Fatalf("stage checkpoints = %+v, err=%v", checkpoints, err)
+	}
+	page, err := e.buildDecisionPageForCheckpoint(id, checkpoints[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(page, "artifacts/attempts/checkpoint-") || !strings.Contains(page, "/plan.md") {
+		t.Fatalf("attempt archive href missing: %s", page)
+	}
+
+	legacyID, err := s.InsertStageCheckpoint(store.StageCheckpoint{
+		IssueID: id, Stage: "execute", Status: "succeeded",
+		Artifacts: []contextpack.Artifact{{Name: "legacy.md"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPage, err := e.buildDecisionPageForCheckpoint(id, legacyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(legacyPage, "artifacts/legacy.md") {
+		t.Fatalf("legacy href missing: %s", legacyPage)
+	}
+}
+
 func TestDecisionPageRendersEscalationEvidence(t *testing.T) {
 	importance := 0.2
 	hash := strings.Repeat("a", 64)
@@ -298,6 +343,7 @@ func TestArtifactReviewPageBreakdown(t *testing.T) {
 		if checkErr == nil {
 			for _, checkpoint := range checkpoints {
 				if checkpoint.Stage == "spec" && checkpoint.Status == "revision_required" {
+					waitForEvent(t, s, id, core.EvStageFailed)
 					return
 				}
 			}
