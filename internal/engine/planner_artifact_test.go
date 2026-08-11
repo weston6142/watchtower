@@ -568,4 +568,30 @@ func TestPlannerArtifactExplicitRetryWithoutDurableRecordFailsClosed(t *testing.
 	if r.started {
 		t.Fatal("planner runner started without durable retry authority")
 	}
+	canonicalWorkdir, err := filepath.EvalSymlinks(filepath.Join(e.cfg.DataDir, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range []int{1, 2} {
+		_, _, _, _, found, loadErr := s.LoadPlannerArtifact(id, "plan", attempt, canonicalWorkdir)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if found {
+			t.Fatalf("durable planner row exists without recoverable authority at attempt %d", attempt)
+		}
+	}
+	if got := countEventType(t, s, id, core.EvPlanReviewRequested); got != 0 {
+		t.Fatalf("plan review requests without durable authority = %d", got)
+	}
+	if got := countPlannerArtifactEvents(t, s, id); got != 0 {
+		t.Fatalf("planner artifact events without durable authority = %d", got)
+	}
+	artifacts, err := s.ArtifactPaths(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("archived artifacts without durable authority = %v", artifacts)
+	}
 }
