@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -418,6 +419,30 @@ func TestPlannerArtifactExplicitRetryAfterRestartRestoresDurablePrefix(t *testin
 		t.Fatalf("StartIssue error = %v, want planner transport failure", err)
 	}
 	workdir := filepath.Join(e.cfg.DataDir, id)
+	canonicalWorkdir, err := filepath.EvalSymlinks(workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, beforeDigest, beforeManifest, beforeSections, found, err := s.LoadPlannerArtifact(id, "plan", 1, canonicalWorkdir)
+	if err != nil || !found {
+		t.Fatalf("durable prefix before retry = found %v err %v", found, err)
+	}
+	var beforeAccepted []json.RawMessage
+	if err := json.Unmarshal(beforeSections, &beforeAccepted); err != nil || len(beforeAccepted) != 1 {
+		t.Fatalf("accepted prefix before retry = %s err %v", beforeSections, err)
+	}
+	if got := countArtifactEvents(t, s, id, "brainstorm.md"); got != 1 {
+		t.Fatalf("brainstorm archive events before retry = %d", got)
+	}
+	if got := countArtifactEvents(t, s, id, "spec.md"); got != 1 {
+		t.Fatalf("spec archive events before retry = %d", got)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "brainstorm.md"), []byte("tampered brainstorm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "spec.md"), []byte("tampered spec\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(filepath.Join(workdir, "plan.md")); err != nil {
 		t.Fatal(err)
 	}
@@ -437,6 +462,29 @@ func TestPlannerArtifactExplicitRetryAfterRestartRestoresDurablePrefix(t *testin
 	if retry.stageRuns["brainstorm"] != 0 || retry.stageRuns["spec"] != 0 {
 		t.Fatalf("successful prior stages reran after retry: %+v", retry.stageRuns)
 	}
+	if got := string(mustReadEngine(t, filepath.Join(workdir, "brainstorm.md"))); got != "durable brainstorm\n" {
+		t.Fatalf("restored brainstorm = %q", got)
+	}
+	if got := string(mustReadEngine(t, filepath.Join(workdir, "spec.md"))); got != "durable spec\n" {
+		t.Fatalf("restored spec = %q", got)
+	}
+	_, afterDigest, afterManifest, afterSections, found, err := s.LoadPlannerArtifact(id, "plan", 1, canonicalWorkdir)
+	if err != nil || !found {
+		t.Fatalf("durable authority after retry = found %v err %v", found, err)
+	}
+	if bytes.Equal(beforeDigest, afterDigest) {
+		t.Fatal("retry did not rotate the durable capability digest")
+	}
+	if !bytes.Equal(beforeManifest, afterManifest) {
+		t.Fatalf("retry changed durable manifest identity:\nbefore %s\nafter  %s", beforeManifest, afterManifest)
+	}
+	var afterAccepted []json.RawMessage
+	if err := json.Unmarshal(afterSections, &afterAccepted); err != nil || len(afterAccepted) != len(plannerArtifactRequests()) {
+		t.Fatalf("accepted sections after retry = %s err %v", afterSections, err)
+	}
+	if !bytes.Equal(beforeAccepted[0], afterAccepted[0]) {
+		t.Fatalf("retry changed accepted prefix:\nbefore %s\nafter  %s", beforeAccepted[0], afterAccepted[0])
+	}
 	plan := string(mustReadEngine(t, filepath.Join(workdir, "plan.md")))
 	for _, request := range plannerArtifactRequests() {
 		anchor := "<!-- watchtower-section: key=" + request.Key + " -->"
@@ -444,6 +492,55 @@ func TestPlannerArtifactExplicitRetryAfterRestartRestoresDurablePrefix(t *testin
 			t.Fatalf("anchor %s count = %d after recovery", request.Key, got)
 		}
 	}
+	for _, artifact := range []string{"brainstorm.md", "spec.md", "plan.md", "touchset.json"} {
+		if got := countArtifactEvents(t, s, id, artifact); got != 1 {
+			t.Fatalf("%s archive events after retry = %d", artifact, got)
+		}
+	}
+	events := mustEvents(t, s, id)
+	reviewIndex := -1
+	artifactIndex := map[string]int{"plan.md": -1, "touchset.json": -1}
+	for index, event := range events {
+		if event.Type == core.EvPlanReviewRequested {
+			reviewIndex = index
+		}
+		if event.Type != core.EvArtifactProduced {
+			continue
+		}
+		var payload struct {
+			Artifact string `json:"artifact"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, tracked := artifactIndex[payload.Artifact]; tracked {
+			artifactIndex[payload.Artifact] = index
+		}
+	}
+	if reviewIndex < 0 || artifactIndex["plan.md"] < 0 || artifactIndex["touchset.json"] < 0 ||
+		artifactIndex["plan.md"] >= reviewIndex || artifactIndex["touchset.json"] >= reviewIndex {
+		t.Fatalf("artifact/review event order = plan %d touchset %d review %d", artifactIndex["plan.md"], artifactIndex["touchset.json"], reviewIndex)
+	}
+}
+
+func countArtifactEvents(t *testing.T, s *store.Store, issueID, artifact string) int {
+	t.Helper()
+	count := 0
+	for _, event := range mustEvents(t, s, issueID) {
+		if event.Type != core.EvArtifactProduced {
+			continue
+		}
+		var payload struct {
+			Artifact string `json:"artifact"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Artifact == artifact {
+			count++
+		}
+	}
+	return count
 }
 
 func TestPlannerArtifactExplicitRetryWithoutDurableRecordFailsClosed(t *testing.T) {
