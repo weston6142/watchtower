@@ -44,9 +44,7 @@ var errDependenciesDiscovered = errors.New("new dependencies discovered")
 var errConflictHeld = errors.New("merge conflict held")
 
 const (
-	integrationPendingReverification = store.IntegrationPendingReverification
-	integrationReverificationFailed  = "reverification_failed"
-	verificationAttemptFailedReason  = "merge verification attempt failed"
+	verificationAttemptFailedReason = "merge verification attempt failed"
 )
 
 type Config struct {
@@ -608,7 +606,7 @@ func (e *Engine) Rehydrate() error {
 			e.mu.Unlock()
 			continue
 		}
-		if hasIntegration && integration.State == integrationPendingReverification {
+		if hasIntegration && integration.State == store.IntegrationPendingReverification {
 			finalIdx, finalErr := finalStageIndex(e.cfg.Flows[row.Flow])
 			if finalErr != nil {
 				return finalErr
@@ -4166,7 +4164,7 @@ func (e *Engine) failPendingVerificationAttempt(is *issueState, cause error) {
 	if err != nil || !ok || integration.State != store.IntegrationPendingReverification {
 		return
 	}
-	integration.State = integrationReverificationFailed
+	integration.State = store.IntegrationReverificationFailed
 	integration.LastError = cause.Error()
 	_ = e.cfg.Store.SetIssueIntegration(integration)
 }

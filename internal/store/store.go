@@ -272,6 +272,7 @@ const (
 	IntegrationClaimed               = "claimed"
 	IntegrationVerificationReady     = "verification_ready"
 	IntegrationPendingReverification = "pending_reverification"
+	IntegrationReverificationFailed  = "reverification_failed"
 	IntegrationPublishPending        = "publish_pending"
 	IntegrationCleanupNeeded         = "cleanup_needed"
 	IntegrationMerged                = "merged"

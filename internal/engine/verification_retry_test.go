@@ -359,7 +359,6 @@ func TestGH79VerificationRetryMatrix(t *testing.T) {
 
 	t.Run("stale proof without explicit retry remains failed closed", func(t *testing.T) {
 		fixture := newGH79Fixture(t, [][]string{{"true"}}, true, false)
-		time.Sleep(100 * time.Millisecond)
 		attempts, err := fixture.s.VerificationAttempts(fixture.id)
 		if err != nil || len(attempts) != 1 || attempts[0].Status != store.VerificationAttemptPassed {
 			t.Fatalf("attempts without retry = %+v err=%v", attempts, err)
@@ -437,10 +436,9 @@ func TestGH79VerificationRetryMatrix(t *testing.T) {
 			t.Fatalf("failed reverification persisted raw diagnostic: %q", attempts[1].Reason)
 		}
 		integration, ok, err := fixture.s.IssueIntegration(fixture.id)
-		if err != nil || !ok || integration.State != integrationReverificationFailed {
+		if err != nil || !ok || integration.State != store.IntegrationReverificationFailed {
 			t.Fatalf("failed reverification integration = %+v ok=%v err=%v", integration, ok, err)
 		}
-		time.Sleep(100 * time.Millisecond)
 		attempts, err = fixture.s.VerificationAttempts(fixture.id)
 		if err != nil || len(attempts) != 2 {
 			t.Fatalf("automatic retry created an attempt: %+v err=%v", attempts, err)

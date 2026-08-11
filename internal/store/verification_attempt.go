@@ -22,8 +22,13 @@ const (
 	VerificationAttemptQuarantined VerificationAttemptStatus = "quarantined"
 )
 
-// VerificationAttempt is the immutable receipt journal row plus its current
-// lifecycle state. ReceiptJSON is copied at both store boundaries.
+const verificationAttemptSelect = `
+	SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
+	FROM verification_attempts`
+
+// VerificationAttempt is the receipt journal row plus its current lifecycle
+// state. ReceiptJSON is immutable once a verification attempt is finished and
+// copied at both store boundaries.
 type VerificationAttempt struct {
 	ID          int64
 	IssueID     string
@@ -95,9 +100,7 @@ func (s *Store) RecordVerificationAttempt(attempt VerificationAttempt) (Verifica
 func (s *Store) VerificationAttempts(issueID string) ([]VerificationAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`
-		SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
-		FROM verification_attempts WHERE issue_id=? ORDER BY id`, issueID)
+	rows, err := s.db.Query(verificationAttemptSelect+` WHERE issue_id=? ORDER BY id`, issueID)
 	if err != nil {
 		return nil, err
 	}
@@ -124,9 +127,7 @@ func (s *Store) VerificationAttempts(issueID string) ([]VerificationAttempt, err
 func (s *Store) CurrentVerificationAttempt(issueID string) (VerificationAttempt, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	row := s.db.QueryRow(`
-		SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
-		FROM verification_attempts
+	row := s.db.QueryRow(verificationAttemptSelect+`
 		WHERE issue_id=? AND status IN ('current','pending','passed')
 		ORDER BY id DESC LIMIT 1`, issueID)
 	attempt, err := scanVerificationAttempt(row)
@@ -156,9 +157,7 @@ func (s *Store) BeginVerificationRetry(ctx context.Context, retry VerificationRe
 	defer tx.Rollback()
 
 	var existing VerificationAttempt
-	row := tx.QueryRow(`
-		SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
-		FROM verification_attempts WHERE issue_id=? AND retry_key=?`, retry.IssueID, retry.RetryKey)
+	row := tx.QueryRow(verificationAttemptSelect+` WHERE issue_id=? AND retry_key=?`, retry.IssueID, retry.RetryKey)
 	existing, err = scanVerificationAttempt(row)
 	if err == nil {
 		return existing, nil
@@ -170,9 +169,7 @@ func (s *Store) BeginVerificationRetry(ctx context.Context, retry VerificationRe
 	var parent VerificationAttempt
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if retry.ParentID > 0 {
-		parent, err = scanVerificationAttempt(tx.QueryRow(`
-			SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
-			FROM verification_attempts WHERE id=? AND issue_id=?`, retry.ParentID, retry.IssueID))
+		parent, err = scanVerificationAttempt(tx.QueryRow(verificationAttemptSelect+` WHERE id=? AND issue_id=?`, retry.ParentID, retry.IssueID))
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return VerificationAttempt{}, fmt.Errorf("verification parent %d is not current", retry.ParentID)
@@ -296,16 +293,8 @@ func (s *Store) FinishVerificationAttempt(
 	return s.verificationAttemptByIDLocked(attemptID)
 }
 
-func (s *Store) verificationAttemptByID(id int64) (VerificationAttempt, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.verificationAttemptByIDLocked(id)
-}
-
 func (s *Store) verificationAttemptByIDLocked(id int64) (VerificationAttempt, error) {
-	return scanVerificationAttempt(s.db.QueryRow(`
-		SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
-		FROM verification_attempts WHERE id=?`, id))
+	return scanVerificationAttempt(s.db.QueryRow(verificationAttemptSelect+` WHERE id=?`, id))
 }
 
 func validateVerificationAttempt(attempt VerificationAttempt, requireReceipt bool) error {
@@ -357,9 +346,7 @@ func insertLegacyVerificationAttempt(tx *sql.Tx, retry VerificationRetry, now st
 	if err != nil {
 		return VerificationAttempt{}, err
 	}
-	return scanVerificationAttempt(tx.QueryRow(`
-		SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
-		FROM verification_attempts WHERE id=?`, parentID))
+	return scanVerificationAttempt(tx.QueryRow(verificationAttemptSelect+` WHERE id=?`, parentID))
 }
 
 func validVerificationAttemptStatus(status VerificationAttemptStatus) bool {
