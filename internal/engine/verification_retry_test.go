@@ -142,6 +142,71 @@ func waitForGH79Integration(t *testing.T, s *store.Store, issueID, want string) 
 }
 
 func TestGH79VerificationRetryMatrix(t *testing.T) {
+	t.Run("pre-journal legacy receipt is imported on explicit retry", func(t *testing.T) {
+		e, s, repo := verificationEngine(t, "merge", [][]string{{"true"}}, "")
+		id, err := e.CreateIssue("GH-79 legacy receipt", "", "default", levers.Matrix{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path, release, err := e.cfg.Workspace.Acquire(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = release() })
+		base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+		oldTree := strings.TrimSpace(gitOutput(t, path, "rev-parse", "HEAD^{tree}"))
+		oldReceipt, err := json.Marshal(marshal.Verification{
+			BaseSHA: base, BranchSHA: base, TreeSHA: oldTree, Passed: true,
+			Commands: [][]string{{"true"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifactDir := filepath.Join(e.issueDir(id), "artifacts")
+		if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(artifactDir, "verification.json"), oldReceipt, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("git", "-C", path, "commit", "--allow-empty", "-qm", "post-verification change").CombinedOutput(); err != nil {
+			t.Fatalf("mutate legacy worktree: %v: %s", err, out)
+		}
+		currentHead := strings.TrimSpace(gitOutput(t, path, "rev-parse", "HEAD"))
+		decision, err := json.Marshal(marshal.MergeDecision{
+			Decision: "merge", BranchCommit: currentHead, BaseCommit: base,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(artifactDir, "merge-decision.json"), decision, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetIssueIntegration(store.IssueIntegration{
+			IssueID: id, State: store.IntegrationVerificationReady, PreSHA: base,
+			Worktree: path, Branch: "issue/" + id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		fake := e.cfg.Runner.(*runner.FakeRunner)
+		script := fake.Scripts["merge-verification/merge-verifier"]
+		script.Artifacts["merge-decision.json"] = string(decision)
+		fake.Scripts["merge-verification/merge-verifier"] = script
+
+		if err := e.RetryStage(context.Background(), id); err != nil {
+			t.Fatalf("legacy explicit retry: %v", err)
+		}
+		attempts, err := s.VerificationAttempts(id)
+		if err != nil || len(attempts) != 2 {
+			t.Fatalf("legacy attempts = %+v err=%v", attempts, err)
+		}
+		if attempts[0].Status != store.VerificationAttemptQuarantined ||
+			string(attempts[0].ReceiptJSON) != string(oldReceipt) ||
+			attempts[1].Status != store.VerificationAttemptPassed {
+			t.Fatalf("legacy attempt history = %+v", attempts)
+		}
+	})
+
 	t.Run("identity mismatches remain independently classified", func(t *testing.T) {
 		dir, head := initReceiptRepo(t)
 		tree := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD^{tree}"))
@@ -367,6 +432,9 @@ func TestGH79VerificationRetryMatrix(t *testing.T) {
 		attempts, err := fixture.s.VerificationAttempts(fixture.id)
 		if err != nil || len(attempts) != 2 || attempts[1].Status != store.VerificationAttemptFailed {
 			t.Fatalf("failed reverification attempts = %+v err=%v", attempts, err)
+		}
+		if strings.Contains(attempts[1].Reason, gate) || strings.Contains(attempts[1].Reason, marker) {
+			t.Fatalf("failed reverification persisted raw diagnostic: %q", attempts[1].Reason)
 		}
 		integration, ok, err := fixture.s.IssueIntegration(fixture.id)
 		if err != nil || !ok || integration.State != integrationReverificationFailed {

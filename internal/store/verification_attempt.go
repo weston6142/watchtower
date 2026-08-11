@@ -41,11 +41,13 @@ type VerificationAttempt struct {
 // Failure is validated with the same canonical failure contract as all other
 // durable failure records.
 type VerificationRetry struct {
-	IssueID  string
-	ParentID int64
-	RetryKey string
-	Reason   string
-	Failure  failure.RecordInput
+	IssueID           string
+	Stage             string
+	ParentID          int64
+	RetryKey          string
+	Reason            string
+	LegacyReceiptJSON []byte
+	Failure           failure.RecordInput
 }
 
 func (s *Store) FailNextVerificationRetryForTest() {
@@ -166,23 +168,29 @@ func (s *Store) BeginVerificationRetry(ctx context.Context, retry VerificationRe
 	}
 
 	var parent VerificationAttempt
-	parent, err = scanVerificationAttempt(tx.QueryRow(`
-		SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
-		FROM verification_attempts WHERE id=? AND issue_id=?`, retry.ParentID, retry.IssueID))
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return VerificationAttempt{}, fmt.Errorf("verification parent %d is not current", retry.ParentID)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if retry.ParentID > 0 {
+		parent, err = scanVerificationAttempt(tx.QueryRow(`
+			SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
+			FROM verification_attempts WHERE id=? AND issue_id=?`, retry.ParentID, retry.IssueID))
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return VerificationAttempt{}, fmt.Errorf("verification parent %d is not current", retry.ParentID)
+			}
+			return VerificationAttempt{}, err
 		}
-		return VerificationAttempt{}, err
+	} else {
+		parent, err = insertLegacyVerificationAttempt(tx, retry, now)
+		if err != nil {
+			return VerificationAttempt{}, err
+		}
 	}
 	if parent.Status != VerificationAttemptCurrent && parent.Status != VerificationAttemptPassed {
 		return VerificationAttempt{}, fmt.Errorf("verification parent %d is not current", parent.ID)
 	}
-
 	if _, err := insertFailureTx(ctx, tx, retry.Failure); err != nil {
 		return VerificationAttempt{}, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := tx.Exec(`
 		UPDATE verification_attempts SET status=?,reason=?,updated_at=?
 		WHERE id=? AND issue_id=? AND status IN ('current','passed')`,
@@ -317,8 +325,14 @@ func validateVerificationAttempt(attempt VerificationAttempt, requireReceipt boo
 }
 
 func validateVerificationRetry(retry VerificationRetry) error {
-	if strings.TrimSpace(retry.IssueID) == "" || retry.ParentID <= 0 || strings.TrimSpace(retry.RetryKey) == "" {
+	if strings.TrimSpace(retry.IssueID) == "" || retry.ParentID < 0 || strings.TrimSpace(retry.RetryKey) == "" {
 		return fmt.Errorf("verification retry identity is required")
+	}
+	if retry.ParentID == 0 && (strings.TrimSpace(retry.Stage) == "" || len(retry.LegacyReceiptJSON) == 0) {
+		return fmt.Errorf("legacy verification receipt and stage are required")
+	}
+	if retry.ParentID > 0 && len(retry.LegacyReceiptJSON) != 0 {
+		return fmt.Errorf("legacy verification receipt is only valid without a parent")
 	}
 	if strings.TrimSpace(retry.Reason) == "" {
 		return fmt.Errorf("verification retry reason is required")
@@ -327,6 +341,25 @@ func validateVerificationRetry(retry VerificationRetry) error {
 		return fmt.Errorf("verification retry failure issue does not match attempt")
 	}
 	return failure.ValidateRecordInput(retry.Failure)
+}
+
+func insertLegacyVerificationAttempt(tx *sql.Tx, retry VerificationRetry, now string) (VerificationAttempt, error) {
+	result, err := tx.Exec(`
+		INSERT INTO verification_attempts(
+			issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?)`,
+		retry.IssueID, retry.Stage, 0, "", VerificationAttemptCurrent,
+		"legacy pre-journal verification receipt", retry.LegacyReceiptJSON, now, now)
+	if err != nil {
+		return VerificationAttempt{}, err
+	}
+	parentID, err := result.LastInsertId()
+	if err != nil {
+		return VerificationAttempt{}, err
+	}
+	return scanVerificationAttempt(tx.QueryRow(`
+		SELECT id,issue_id,stage,parent_id,retry_key,status,reason,receipt_json,created_at,updated_at
+		FROM verification_attempts WHERE id=?`, parentID))
 }
 
 func validVerificationAttemptStatus(status VerificationAttemptStatus) bool {

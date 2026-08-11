@@ -46,6 +46,7 @@ var errConflictHeld = errors.New("merge conflict held")
 const (
 	integrationPendingReverification = store.IntegrationPendingReverification
 	integrationReverificationFailed  = "reverification_failed"
+	verificationAttemptFailedReason  = "merge verification attempt failed"
 )
 
 type Config struct {
@@ -4157,7 +4158,7 @@ func (e *Engine) failPendingVerificationAttempt(is *issueState, cause error) {
 		return
 	}
 	if _, err := e.cfg.Store.FinishVerificationAttempt(
-		is.id, attempt.ID, store.VerificationAttemptFailed, nil, cause.Error(),
+		is.id, attempt.ID, store.VerificationAttemptFailed, nil, verificationAttemptFailedReason,
 	); err != nil {
 		return
 	}
@@ -4180,7 +4181,7 @@ func (e *Engine) retryStaleVerification(
 	if _, err := os.Stat(filepath.Join(is.wsPath, "conflict-decision.json")); err == nil {
 		return false, nil
 	}
-	_, err := e.prepareFinalization(is, nil)
+	prepared, err := e.prepareFinalization(is, nil)
 	if err == nil {
 		return false, nil
 	}
@@ -4188,14 +4189,18 @@ func (e *Engine) retryStaleVerification(
 	if !stale {
 		return false, nil
 	}
+	var legacyReceiptJSON []byte
 	if parentID <= 0 {
-		return true, e.recordFinalizationFailure(is, err)
+		if len(prepared.VerificationReceiptJSON) == 0 {
+			return true, e.recordFinalizationFailure(is, err)
+		}
+		legacyReceiptJSON = prepared.VerificationReceiptJSON
 	}
 	stage := e.integrationStageName(is)
 	retryKey := fmt.Sprintf("stale-finalization:%d", parentID)
 	_, beginErr := e.cfg.Store.BeginVerificationRetry(context.WithoutCancel(ctx), store.VerificationRetry{
-		IssueID: is.id, ParentID: parentID, RetryKey: retryKey,
-		Reason: fmt.Sprintf("%s identity mismatch: %v", kind, err),
+		IssueID: is.id, Stage: stage, ParentID: parentID, RetryKey: retryKey,
+		Reason: fmt.Sprintf("%s identity mismatch", kind), LegacyReceiptJSON: legacyReceiptJSON,
 		Failure: failure.RecordInput{
 			IssueID: is.id, Stage: stage, StageAttempt: 0,
 			FailureSite: failure.SiteFinalization, FailureClass: failure.ClassStateMismatch,

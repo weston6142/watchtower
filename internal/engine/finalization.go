@@ -21,9 +21,10 @@ import (
 )
 
 type preparedFinalization struct {
-	Decision              marshal.MergeDecision
-	Verification          marshal.Verification
-	VerificationAttemptID int64
+	Decision                marshal.MergeDecision
+	Verification            marshal.Verification
+	VerificationReceiptJSON []byte
+	VerificationAttemptID   int64
 }
 
 // StaleVerificationIdentityKind is the narrowly scoped identity mismatch
@@ -75,6 +76,7 @@ func (e *Engine) prepareFinalization(
 	}
 	verificationPath := filepath.Join(artifactDir, "verification.json")
 	var verification marshal.Verification
+	var verificationReceiptJSON []byte
 	var verificationAttemptID int64
 	if e.cfg.Store != nil {
 		attempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
@@ -86,30 +88,40 @@ func (e *Engine) prepareFinalization(
 			if len(attempt.ReceiptJSON) == 0 {
 				return preparedFinalization{}, fmt.Errorf("active verification attempt %d has no receipt", attempt.ID)
 			}
-			verification, err = loadVerificationBytes(attempt.ReceiptJSON)
+			verificationReceiptJSON = append([]byte(nil), attempt.ReceiptJSON...)
+			verification, err = loadVerificationBytes(verificationReceiptJSON)
 			if err != nil {
 				return preparedFinalization{}, fmt.Errorf("load journal verification receipt: %w", err)
 			}
 		} else {
-			verification, err = marshal.LoadVerification(verificationPath)
+			verificationReceiptJSON, err = os.ReadFile(verificationPath)
+			if err == nil {
+				verification, err = marshal.LoadVerification(verificationPath)
+			}
 			if err != nil {
 				return preparedFinalization{}, fmt.Errorf("load verification receipt: %w", err)
 			}
 		}
 	} else {
 		var err error
-		verification, err = marshal.LoadVerification(verificationPath)
+		verificationReceiptJSON, err = os.ReadFile(verificationPath)
+		if err == nil {
+			verification, err = marshal.LoadVerification(verificationPath)
+		}
 		if err != nil {
 			return preparedFinalization{}, fmt.Errorf("load verification receipt: %w", err)
 		}
 	}
-	if err := e.validateFinalIdentityForAttempt(is, decision, verification, verificationLease, verificationAttemptID); err != nil {
-		return preparedFinalization{}, err
+	prepared := preparedFinalization{
+		Decision:                decision,
+		Verification:            verification,
+		VerificationReceiptJSON: append([]byte(nil), verificationReceiptJSON...),
+		VerificationAttemptID:   verificationAttemptID,
 	}
-	return preparedFinalization{
-		Decision: decision, Verification: verification,
-		VerificationAttemptID: verificationAttemptID,
-	}, nil
+	if err := e.validateFinalIdentityForAttempt(is, decision, verification, verificationLease, verificationAttemptID); err != nil {
+		return prepared, err
+	}
+	return prepared, nil
 }
 
 func (e *Engine) validateFinalIdentity(
