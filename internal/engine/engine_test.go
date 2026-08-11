@@ -2212,7 +2212,11 @@ func TestPausedEventNamesUpcomingStage(t *testing.T) {
 func TestFailedAgentRetriesThenFails(t *testing.T) {
 	sc := scripts()
 	sc["execute/executor"] = runner.Script{Fail: true}
-	e, s := newEngine(t, &runner.FakeRunner{Scripts: sc})
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	e, s := newEngineCfg(t, &runner.FakeRunner{Scripts: sc}, func(cfg *Config) {
+		cfg.Workspace = &fakeWS{dir: repo}
+	})
 	id, _ := e.CreateIssue("boom", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 
 	errc := make(chan error, 1)
@@ -2681,7 +2685,11 @@ func TestRetryStageResumesFromFailure(t *testing.T) {
 	sc := scripts()
 	sc["execute/executor"] = runner.Script{Fail: true}
 	fr := &runner.FakeRunner{Scripts: sc}
-	e, s := newEngine(t, fr)
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	e, s := newEngineCfg(t, fr, func(cfg *Config) {
+		cfg.Workspace = &fakeWS{dir: repo}
+	})
 	id, _ := e.CreateIssue("r", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()

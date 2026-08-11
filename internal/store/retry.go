@@ -155,6 +155,32 @@ func (s *Store) AuthorizeRetry(ctx context.Context, update retry.AuthorizationUp
 	return stored, nil
 }
 
+func (s *Store) CloseRetryContext(ctx context.Context, issueID, stage string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE retry_contexts SET lifecycle=?, version=version+1, updated_at=?
+		WHERE context_key=(
+		  SELECT context_key FROM retry_contexts
+		  WHERE issue_id=? AND stage=? ORDER BY latest_record_id DESC LIMIT 1
+		) AND lifecycle=?`, retry.ContextClosed, updatedAt, issueID, stage, retry.ContextActive)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return retry.ErrContextNotFound
+	}
+	return nil
+}
+
 func (s *Store) FailNextRetryAuthorizationsForTest(count int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

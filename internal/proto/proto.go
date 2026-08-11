@@ -10,6 +10,7 @@ import (
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
@@ -58,6 +59,7 @@ type Command struct {
 	Package         string                        `json:"package,omitempty"` // setup_prompt: which agent package
 	N               int                           `json:"n,omitempty"`
 	PlannerBudget   *plannerbudget.Override       `json:"planner_budget,omitempty"`
+	RetryKind       retry.Kind                    `json:"retry_kind,omitempty"`
 }
 
 type Response struct {
@@ -131,6 +133,7 @@ type IssueDetail struct {
 	FailureHistory     FailureHistory       `json:"failure_history"`
 	DecisionEvaluation *review.Evaluation   `json:"decision_evaluation,omitempty"`
 	DecisionBindings   []review.Binding     `json:"decision_bindings,omitempty"`
+	RetryDecision      *retry.Decision      `json:"retry_decision,omitempty"`
 }
 
 type FailureHistory struct {

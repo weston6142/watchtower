@@ -64,6 +64,14 @@ type Rule struct {
 	Evidence              PolicyEvidence
 }
 
+func DefaultPolicy() Policy {
+	return Policy{
+		ID: "retry-v1", Version: "1", TransientLimit: 2, DeterministicLimit: 1,
+		ModelResampleLimit:   1,
+		ModelResampleClasses: []failure.Class{failure.ClassExecution, failure.ClassTransport, failure.ClassProtocol},
+	}
+}
+
 type Request struct {
 	IssueID          string      `json:"issue_id"`
 	Stage            string      `json:"stage"`

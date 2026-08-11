@@ -34,6 +34,7 @@ import (
 	"github.com/weston6142/watchtower/internal/priority"
 	"github.com/weston6142/watchtower/internal/proto"
 	"github.com/weston6142/watchtower/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
@@ -54,6 +55,37 @@ type plannerBudgetFlags struct {
 	callsWarn, callsHard     int64
 	tokensWarn, tokensHard   int64
 	elapsedWarn, elapsedHard time.Duration
+}
+
+func extractModelResample(args []string) ([]string, int64, error) {
+	filtered := make([]string, 0, len(args))
+	var decisionID int64
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		value := ""
+		switch {
+		case argument == "--model-resample":
+			if index+1 >= len(args) {
+				return nil, 0, fmt.Errorf("--model-resample requires a decision ID")
+			}
+			index++
+			value = args[index]
+		case strings.HasPrefix(argument, "--model-resample="):
+			value = strings.TrimPrefix(argument, "--model-resample=")
+		default:
+			filtered = append(filtered, argument)
+			continue
+		}
+		if decisionID != 0 {
+			return nil, 0, fmt.Errorf("--model-resample may be specified only once")
+		}
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed <= 0 {
+			return nil, 0, fmt.Errorf("--model-resample requires a positive decision ID")
+		}
+		decisionID = parsed
+	}
+	return filtered, decisionID, nil
 }
 
 func bindPlannerBudgetFlags(fs *flag.FlagSet) *plannerBudgetFlags {
@@ -497,6 +529,14 @@ func main() {
 		if cmd == "retry" || cmd == "launch" {
 			plannerFlags = bindPlannerBudgetFlags(fs)
 		}
+		modelResampleDecision := int64(0)
+		if cmd == "retry" {
+			var err error
+			args, modelResampleDecision, err = extractModelResample(args)
+			if err != nil {
+				fatal(err)
+			}
+		}
 		fs.Parse(args)
 		if len(fs.Args()) != 1 {
 			fmt.Fprintf(os.Stderr, "usage: watchtower %s <issue-id>\n", cmd)
@@ -514,7 +554,17 @@ func main() {
 		if plannerFlags != nil {
 			plannerOverride = plannerBudgetOverride(fs, plannerFlags)
 		}
-		mustDo(c, proto.Command{Op: ops[cmd], IssueID: fs.Args()[0], PlannerBudget: plannerOverride})
+		retryKind := retry.Kind("")
+		if cmd == "retry" {
+			retryKind = retry.KindExplicit
+			if modelResampleDecision > 0 {
+				retryKind = retry.KindModelResample
+			}
+		}
+		mustDo(c, proto.Command{
+			Op: ops[cmd], IssueID: fs.Args()[0], PlannerBudget: plannerOverride,
+			RetryKind: retryKind, DecisionID: modelResampleDecision,
+		})
 		fmt.Println(cmd, fs.Args()[0])
 	case "lever":
 		fs := flag.NewFlagSet("lever", flag.ExitOnError)
@@ -823,6 +873,10 @@ func runDaemon(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	retryPolicy, err := cfg.RetryPolicy.Policy()
+	if err != nil {
+		fatal(err)
+	}
 	// Explicit flags override config; unset flags take config values.
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
@@ -983,6 +1037,7 @@ func runDaemon(args []string) {
 		Flows: flows, DataDir: filepath.Join(data, "issues"), CacheRoot: data,
 		Workspace: ws, TokenBudget: *budget,
 		PlannerBudget:  cfg.PlannerBudget,
+		RetryPolicy:    retryPolicy,
 		PlanReview:     cfg.PlanReviewSettings(),
 		DecisionPolicy: cfg.DecisionEscalationPolicy(), DecisionPolicyConfigured: true,
 		DecisionIdentities: decisionIdentities,

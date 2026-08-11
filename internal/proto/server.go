@@ -25,6 +25,7 @@ import (
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
@@ -308,7 +309,20 @@ func (sv *Server) exec(cmd Command) Response {
 		if err := sv.resolvePlannerOverride(cmd.PlannerBudget); err != nil {
 			return Response{Error: err.Error()}
 		}
-		go sv.eng.RetryStageWithBudget(context.Background(), cmd.IssueID, cmd.PlannerBudget)
+		kind := cmd.RetryKind
+		if kind == "" {
+			kind = retry.KindExplicit
+		}
+		if kind != retry.KindExplicit && kind != retry.KindModelResample {
+			return Response{Error: "retry_stage accepts explicit or model-resample retry_kind"}
+		}
+		if kind == retry.KindModelResample && cmd.DecisionID <= 0 {
+			return Response{Error: "model-resample retry requires a durable decision ID"}
+		}
+		if kind == retry.KindExplicit && cmd.DecisionID != 0 {
+			return Response{Error: "ordinary explicit retry does not accept a decision ID"}
+		}
+		go sv.eng.RetryStageWithBudgetKind(context.Background(), cmd.IssueID, cmd.PlannerBudget, kind, cmd.DecisionID)
 		return Response{OK: true, IssueID: cmd.IssueID}
 	case "abandon_issue":
 		if err := sv.eng.Abandon(cmd.IssueID); err != nil {
@@ -432,6 +446,26 @@ func (sv *Server) exec(cmd Command) Response {
 				}
 			}
 		}
+		var retryDecision *retry.Decision
+		if events, eventsErr := sv.st.EventsSince(0); eventsErr == nil {
+			for _, event := range events {
+				if event.IssueID != cmd.IssueID {
+					continue
+				}
+				switch event.Type {
+				case core.EvRetryAuthorized:
+					var authorization retry.Authorization
+					if json.Unmarshal(event.Payload, &authorization) == nil {
+						retryDecision = &retry.Decision{Authorized: true, Authorization: &authorization}
+					}
+				case core.EvRetryRejected:
+					var rejection retry.Rejection
+					if json.Unmarshal(event.Payload, &rejection) == nil {
+						retryDecision = &retry.Decision{Rejection: &rejection}
+					}
+				}
+			}
+		}
 		model, effort := "", ""
 		if f, ok := sv.flows[issue.Flow]; ok {
 			for _, stg := range f.Stages {
@@ -456,6 +490,7 @@ func (sv *Server) exec(cmd Command) Response {
 			Planner: plannerSnapshot, PlannerOutcome: plannerOutcome,
 			DecisionPage: decisionPage, FailureHistory: history,
 			DecisionEvaluation: decisionEvaluation, DecisionBindings: decisionBindings,
+			RetryDecision: retryDecision,
 		}}
 	case "resolve_proposal":
 		issueID, err := sv.eng.ResolveProposal(cmd.ProposalID, cmd.Accept, cmd.Flow, cmd.Preset)

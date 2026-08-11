@@ -33,6 +33,7 @@ import (
 	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
@@ -71,6 +72,7 @@ type Config struct {
 	Workspace                workspace.Provider
 	TokenBudget              int
 	PlannerBudget            plannerbudget.Profile
+	RetryPolicy              retry.Policy
 	OnLine                   func(issueID, stage, line string)
 }
 
@@ -241,6 +243,7 @@ type Engine struct {
 	reviewContinuations map[int64]bool
 	plannerAuthorities  map[string]*plannerartifact.Authority
 	dependencyReadiness dependencyReadiness
+	retryGate           *retry.Gate
 }
 
 func New(cfg Config) *Engine {
@@ -272,6 +275,11 @@ func New(cfg Config) *Engine {
 	if cfg.PlannerBudget == (plannerbudget.Profile{}) {
 		cfg.PlannerBudget = plannerbudget.DefaultProfile()
 	}
+	if cfg.RetryPolicy.ID == "" && cfg.RetryPolicy.Version == "" &&
+		cfg.RetryPolicy.TransientLimit == 0 && cfg.RetryPolicy.DeterministicLimit == 0 &&
+		cfg.RetryPolicy.ModelResampleLimit == 0 && len(cfg.RetryPolicy.ModelResampleClasses) == 0 {
+		cfg.RetryPolicy = retry.DefaultPolicy()
+	}
 	if cfg.Train != nil && cfg.Train.CacheRoot == "" {
 		cfg.Train.CacheRoot = cfg.CacheRoot
 		if cfg.Train.CacheRoot == "" {
@@ -283,6 +291,9 @@ func New(cfg Config) *Engine {
 		reviewContinuations: map[int64]bool{},
 		plannerAuthorities:  map[string]*plannerartifact.Authority{},
 		dependencyReadiness: durableDependencyReadiness{source: cfg.Store},
+	}
+	if gate, err := retry.NewGate(cfg.Store, cfg.RetryPolicy); err == nil {
+		e.retryGate = gate
 	}
 	if cfg.OnLine != nil {
 		if sink, ok := cfg.Runner.(runner.LineSink); ok {
@@ -712,6 +723,8 @@ func (e *Engine) Rehydrate() error {
 			e.mu.Lock()
 			e.issues[row.ID] = is
 			e.mu.Unlock()
+			configuredFlow := e.cfg.Flows[row.Flow]
+			e.recordInterruptedRetryFailure(is, configuredFlow.Stages[run.StageIndex], attempt, failure.ClassCancellation)
 			e.emit(core.EvStageFailed, row.ID, map[string]any{
 				"stage": stage, "attempt": attempt, "of": of,
 				"error": "daemon restarted — press R to retry", "final": true})
@@ -784,8 +797,12 @@ func (e *Engine) Rehydrate() error {
 			planReview: row.PlanReviewPolicy,
 		}
 		restartError := "daemon restarted — press R to retry"
+		restartClass := failure.ClassCancellation
 		if hasPersistedAttempt {
 			stage = persistedAttempt.Stage
+			if persistedAttempt.FailureClass != "" {
+				restartClass = failure.NormalizeClass(failure.Class(persistedAttempt.FailureClass))
+			}
 			if persistedAttempt.State == runner.AttemptRunning || persistedAttempt.State == runner.AttemptReserved {
 				interrupted := persistedAttempt
 				interrupted.State = runner.AttemptTerminal
@@ -799,6 +816,12 @@ func (e *Engine) Rehydrate() error {
 			}
 		}
 		e.restoreInterruptedWorkspace(is)
+		for _, configured := range f.Stages {
+			if configured.Name == stage {
+				e.recordInterruptedRetryFailure(is, configured, attempt, restartClass)
+				break
+			}
+		}
 		e.mu.Lock()
 		e.issues[row.ID] = is
 		e.mu.Unlock()
@@ -4104,6 +4127,146 @@ func runnerFailurePayload(err error) map[string]any {
 	}
 }
 
+type RetryRejectedError struct {
+	Rejection retry.Rejection
+}
+
+func (e *RetryRejectedError) Error() string {
+	return fmt.Sprintf("retry rejected: %s: %s", e.Rejection.Reason, e.Rejection.NextAction)
+}
+
+func (e *Engine) modelResampleDecisionIdentity(issueID, stage string, decisionID int64) string {
+	if decisionID <= 0 {
+		return ""
+	}
+	stored, err := e.cfg.Store.LoadRetryContext(context.Background(), issueID, stage)
+	if err != nil {
+		return ""
+	}
+	row, found, err := e.cfg.Store.DecisionByID(decisionID)
+	if err != nil || !found || row.IssueID != issueID || row.Stage != stage || row.Status == "pending" {
+		return ""
+	}
+	contextUpdated, err := time.Parse(time.RFC3339Nano, stored.UpdatedAt)
+	if err != nil || !row.CreatedAt.After(contextUpdated) {
+		return ""
+	}
+	canonical, err := json.Marshal(struct {
+		ID         int64           `json:"id"`
+		IssueID    string          `json:"issue_id"`
+		Stage      string          `json:"stage"`
+		Status     string          `json:"status"`
+		Response   levers.Response `json:"response"`
+		CreatedAt  string          `json:"created_at"`
+		AnsweredAt string          `json:"answered_at"`
+	}{
+		ID: row.ID, IssueID: row.IssueID, Stage: row.Stage, Status: row.Status, Response: row.Response,
+		CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339Nano), AnsweredAt: row.AnsweredAt.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return ""
+	}
+	return digestFailureIdentity(string(canonical))
+}
+
+func (e *Engine) authorizeStageRetry(
+	ctx context.Context, is *issueState, st flow.Stage, kind retry.Kind, decisionID int64,
+) error {
+	if e.retryGate == nil {
+		rejection := retry.Rejection{
+			Reason: retry.ReasonPersistenceUnavailable, IssueID: is.id, Stage: st.Name, Kind: kind,
+			NextAction: "restore a valid configured retry policy and durable store",
+		}
+		e.emit(core.EvRetryRejected, is.id, core.RetryRejectedPayload(rejection))
+		return &RetryRejectedError{Rejection: rejection}
+	}
+	if st.Workspace != "none" && is.wsPath == "" {
+		e.restoreInterruptedWorkspace(is)
+	}
+	workdir := e.stageWorkdir(is, st)
+	inputs := stageFailureFingerprintInputs(e, is, st, failure.SiteUnknown, workdir)
+	request := retry.Request{
+		IssueID: is.id, Stage: st.Name, Kind: kind,
+		Current: retry.BuildStateVector(inputs),
+	}
+	if kind == retry.KindModelResample {
+		request.DecisionIdentity = e.modelResampleDecisionIdentity(is.id, st.Name, decisionID)
+	}
+	decision, err := e.retryGate.Authorize(ctx, request)
+	if err != nil {
+		return err
+	}
+	if decision.Authorized && decision.Authorization != nil {
+		e.emit(core.EvRetryAuthorized, is.id, core.RetryAuthorizedPayload(*decision.Authorization))
+		return nil
+	}
+	if decision.Rejection == nil {
+		return fmt.Errorf("retry gate returned no authorization or rejection")
+	}
+	e.emit(core.EvRetryRejected, is.id, core.RetryRejectedPayload(*decision.Rejection))
+	return &RetryRejectedError{Rejection: *decision.Rejection}
+}
+
+// prepareRetryWorkspaceLocked makes the current worktree identity available
+// before authorization. RetryStage calls it while holding e.mu; automatic
+// retries already retain the workspace acquired by runFrom.
+func (e *Engine) prepareRetryWorkspaceLocked(is *issueState, st flow.Stage) bool {
+	if st.Workspace == "none" || is.wsPath != "" {
+		return false
+	}
+	e.restoreInterruptedWorkspace(is)
+	if is.wsPath != "" || e.cfg.Workspace == nil {
+		return false
+	}
+	path, release, err := e.cfg.Workspace.Acquire(is.id)
+	if err != nil {
+		return false
+	}
+	branch := ""
+	if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
+		branch = strings.TrimSpace(string(out))
+	}
+	baseRef := ""
+	if out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output(); err == nil {
+		baseRef = strings.TrimSpace(string(out))
+	}
+	if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
+		if baseHead, headErr := gitRevision(e.cfg.Train.Repo, "HEAD"); headErr == nil {
+			if mergeBase, mergeErr := gitCommandOutput(path, "merge-base", "HEAD", baseHead); mergeErr == nil {
+				baseRef = mergeBase
+			}
+		}
+	}
+	is.wsPath, is.wsRelease = path, release
+	is.branch, is.baseRef = branch, baseRef
+	return true
+}
+
+func (e *Engine) discardPreparedRetryWorkspaceLocked(is *issueState) {
+	release := is.wsRelease
+	is.wsPath, is.wsRelease = "", nil
+	is.branch, is.baseRef = "", ""
+	if release != nil {
+		_ = release()
+	}
+}
+
+func (e *Engine) recordInterruptedRetryFailure(
+	is *issueState, st flow.Stage, attempt int, class failure.Class,
+) {
+	if class == "" || class == failure.ClassUnknown {
+		class = failure.ClassCancellation
+	}
+	primary := errors.New("stage interrupted by daemon restart")
+	_ = e.recordFailure(context.Background(), failureContext{
+		IssueID: is.id, Stage: st.Name, StageAttempt: attempt,
+		Site: failure.SiteRunner, Class: class,
+		Disposition: failure.RetryNow, StateChange: failure.StateRunnerInput,
+		FingerprintInputs: stageFailureFingerprintInputs(e, is, st, failure.SiteRunner, e.stageWorkdir(is, st)),
+		Primary:           primary,
+	})
+}
+
 func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, plannerOverride *plannerbudget.Override) error {
 	stageCtx, cancel := context.WithCancel(ctx)
 	e.mu.Lock()
@@ -4140,6 +4303,15 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 	var err error
 	of := st.Retries + 1
 	for attempt := 0; attempt <= st.Retries; attempt++ {
+		if attempt > 0 {
+			if gateErr := e.authorizeStageRetry(stageCtx, is, st, retry.KindAutomatic, 0); gateErr != nil {
+				e.emit(core.EvStageFailed, is.id, map[string]any{
+					"stage": st.Name, "error": gateErr.Error(),
+					"attempt": attempt, "of": of, "final": true,
+				})
+				return errors.Join(err, gateErr)
+			}
+		}
 		err = e.runStageOnce(stageCtx, is, st, attempt+1, of, plannerOverride)
 		if err == nil {
 			break
@@ -4195,6 +4367,10 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 	}
 	if err != nil {
 		return err
+	}
+	if closeErr := e.cfg.Store.CloseRetryContext(stageCtx, is.id, st.Name); closeErr != nil &&
+		!errors.Is(closeErr, retry.ErrContextNotFound) {
+		return fmt.Errorf("close retry context: %w", closeErr)
 	}
 	if e.wasKilled(is) {
 		e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
@@ -4513,6 +4689,15 @@ func (e *Engine) runFromWithOwnership(
 			return err
 		}
 		if decision == "hold" {
+			st := f.Stages[len(f.Stages)-1]
+			primary := errors.New("verification held for an explicit later retry")
+			_ = e.recordFailure(context.Background(), failureContext{
+				IssueID: is.id, Stage: st.Name, StageAttempt: 0,
+				Site: failure.SiteVerification, Class: failure.ClassStateMismatch,
+				Disposition: failure.RetryAfterStateChange, StateChange: failure.StateOperator,
+				FingerprintInputs: stageFailureFingerprintInputs(e, is, st, failure.SiteVerification, e.stageWorkdir(is, st)),
+				Primary:           primary,
+			})
 			e.emit(core.EvIssueCompleted, is.id, map[string]string{
 				"merge": "left-unmerged", "branch": is.branch})
 			if e.cfg.Marshal != nil {
@@ -4765,10 +4950,20 @@ func (e *Engine) loadDoneUnmergedForRetry(issueID string) (*issueState, error) {
 // across daemon restarts until the operator explicitly retries it. Earlier
 // successful stages are not repeated.
 func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
-	return e.RetryStageWithBudget(ctx, issueID, nil)
+	return e.RetryStageWithBudgetKind(ctx, issueID, nil, retry.KindExplicit, 0)
 }
 
 func (e *Engine) RetryStageWithBudget(ctx context.Context, issueID string, plannerOverride *plannerbudget.Override) error {
+	return e.RetryStageWithBudgetKind(ctx, issueID, plannerOverride, retry.KindExplicit, 0)
+}
+
+func (e *Engine) RetryStageWithKind(ctx context.Context, issueID string, kind retry.Kind, decisionID int64) error {
+	return e.RetryStageWithBudgetKind(ctx, issueID, nil, kind, decisionID)
+}
+
+func (e *Engine) RetryStageWithBudgetKind(
+	ctx context.Context, issueID string, plannerOverride *plannerbudget.Override, kind retry.Kind, decisionID int64,
+) error {
 	e.mu.Lock()
 	is, ok := e.issues[issueID]
 	if !ok {
@@ -4843,6 +5038,19 @@ func (e *Engine) RetryStageWithBudget(ctx context.Context, issueID string, plann
 		return fmt.Errorf("issue %s has no failed stage to retry", issueID)
 	}
 	startIdx := is.stageIdx
+	f, exists := e.cfg.Flows[is.flowName]
+	if !exists || startIdx < 0 || startIdx >= len(f.Stages) {
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s has no configured retry stage", issueID)
+	}
+	preparedWorkspace := e.prepareRetryWorkspaceLocked(is, f.Stages[startIdx])
+	if err := e.authorizeStageRetry(ctx, is, f.Stages[startIdx], kind, decisionID); err != nil {
+		if preparedWorkspace {
+			e.discardPreparedRetryWorkspaceLocked(is)
+		}
+		e.mu.Unlock()
+		return err
+	}
 	is.terminal = false
 	is.killRequested = false
 	e.mu.Unlock()

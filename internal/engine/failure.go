@@ -76,6 +76,12 @@ func (e *Engine) recordRunnerFailure(
 		return nil
 	}
 	site, class, disposition, stateChange := failure.SiteRunner, failure.NormalizeClass(failure.Class(result.FailureClass)), failure.RetryNow, failure.StateRunnerInput
+	if result.FailureClass == "" {
+		// A runner that reports an error without a more specific typed class
+		// failed while executing the agent. Classify that boundary once when
+		// recording it; retry authorization never reclassifies error text.
+		class = failure.NormalizeClass(failure.ClassExecution)
+	}
 	var policyErr *capability.PolicyError
 	if errors.As(result.Err, &policyErr) {
 		site, class, disposition, stateChange = classifyFailure(result.Err)
@@ -116,11 +122,12 @@ func stageFailureFingerprintInputs(
 		Retries      int             `json:"retries"`
 		HeavySlot    bool            `json:"heavy_slot"`
 		MergeBarrier bool            `json:"merge_barrier"`
+		RetryPolicy  retry.Policy    `json:"retry_policy"`
 	}{
 		Name: stage.Name, Agents: stage.Agents, Parallel: stage.Parallel,
 		Completion: stage.Completion, Workspace: stage.Workspace, Gate: stage.Gate,
 		Artifacts: stage.Artifacts, Retries: stage.Retries, HeavySlot: stage.HeavySlot,
-		MergeBarrier: stage.MergeBarrier,
+		MergeBarrier: stage.MergeBarrier, RetryPolicy: e.cfg.RetryPolicy,
 	})
 	inputs.ConfigurationIdentity = digestFailureIdentity(string(config))
 
@@ -171,6 +178,18 @@ func stageFailureFingerprintInputs(
 			cacheRoot = e.cfg.DataDir
 		}
 		inputs.Verification.CacheIdentity = digestFailureIdentity(cacheRoot + "\x00" + e.cfg.Train.Repo)
+	}
+	if stage.Workspace == "none" {
+		// A stage-local issue directory is still an authoritative tree. Bind
+		// its identity to the materialized inputs and declared artifacts so a
+		// missing Git repository is not confused with missing evidence.
+		canonical, _ := json.Marshal(struct {
+			Inputs    []failure.InputIdentity   `json:"inputs"`
+			Artifacts []failure.ContentIdentity `json:"artifacts"`
+		}{Inputs: inputs.StageInputs, Artifacts: inputs.Artifacts})
+		inputs.Git.Repository = digestFailureIdentity("workspace:none")
+		inputs.Git.BranchCommit = digestFailureIdentity("workspace:none:" + is.id)
+		inputs.Git.TreeIdentity = digestFailureIdentity(string(canonical))
 	}
 	if head, branch, _ := repositoryState(workdir, nil); head != "" {
 		inputs.Git.BranchCommit = digestFailureIdentity(head)
@@ -254,6 +273,8 @@ func classifyFailure(err error) (failure.Site, failure.Class, failure.RetryDispo
 	}
 	message := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(message, "artifacts require revision"):
+		return failure.SiteArtifact, failure.ClassValidation, failure.RetryNow, failure.StateOperator
 	case strings.Contains(message, "finaliz"), strings.Contains(message, "merge"), strings.Contains(message, "publish"), strings.Contains(message, "cleanup"):
 		return failure.SiteFinalization, failure.ClassStateMismatch, failure.RetryAfterStateChange, failure.StateOperator
 	case strings.Contains(message, "cache"):
