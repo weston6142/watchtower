@@ -28,6 +28,7 @@ const (
 	SiteStore        Site = "store"
 	SiteFinalization Site = "finalization"
 	SiteLifecycle    Site = "lifecycle"
+	SiteCapability   Site = "capability"
 	SiteUnknown      Site = "unknown"
 	SiteOther        Site = "other"
 
@@ -46,6 +47,7 @@ const (
 	ClassUnavailable    Class = "unavailable"
 	ClassUnknown        Class = "unknown"
 	ClassOther          Class = "other"
+	ClassPolicy         Class = "policy"
 
 	RetryNow              RetryDisposition = "retry_now"
 	RetryAfterStateChange RetryDisposition = "retry_after_state_change"
@@ -53,19 +55,20 @@ const (
 	RetryUnknown          RetryDisposition = "unknown"
 	RetryOther            RetryDisposition = "other"
 
-	StateNone          StateChange = "none"
-	StateRunnerInput   StateChange = "runner_input"
-	StateWorkspace     StateChange = "workspace"
-	StateArtifact      StateChange = "artifact"
-	StatePlannerInput  StateChange = "planner_input"
-	StateGit           StateChange = "git"
-	StateVerification  StateChange = "verification"
-	StateCache         StateChange = "cache"
-	StateStore         StateChange = "store"
-	StateConfiguration StateChange = "configuration"
-	StateOperator      StateChange = "operator"
-	StateUnknown       StateChange = "unknown"
-	StateOther         StateChange = "other"
+	StateNone             StateChange = "none"
+	StateRunnerInput      StateChange = "runner_input"
+	StateWorkspace        StateChange = "workspace"
+	StateArtifact         StateChange = "artifact"
+	StatePlannerInput     StateChange = "planner_input"
+	StateGit              StateChange = "git"
+	StateVerification     StateChange = "verification"
+	StateCache            StateChange = "cache"
+	StateStore            StateChange = "store"
+	StateConfiguration    StateChange = "configuration"
+	StateOperator         StateChange = "operator"
+	StateUnknown          StateChange = "unknown"
+	StateOther            StateChange = "other"
+	StateTrustedWorkspace StateChange = "trusted_workspace"
 )
 
 const (
@@ -349,7 +352,7 @@ func NormalizeStateChange(value StateChange) StateChange {
 func isSite(value Site) bool {
 	switch value {
 	case SiteRunner, SiteWorkspace, SiteArtifact, SitePlanner, SiteGit, SiteVerification,
-		SiteCache, SiteStore, SiteFinalization, SiteLifecycle, SiteUnknown, SiteOther:
+		SiteCache, SiteStore, SiteFinalization, SiteLifecycle, SiteCapability, SiteUnknown, SiteOther:
 		return true
 	default:
 		return false
@@ -360,7 +363,7 @@ func isClass(value Class) bool {
 	switch value {
 	case ClassLaunch, ClassExecution, ClassTransport, ClassProtocol, ClassCancellation,
 		ClassAuthentication, ClassAuthorization, ClassResumeIdentity, ClassConfiguration,
-		ClassValidation, ClassIntegrity, ClassStateMismatch, ClassUnavailable, ClassUnknown, ClassOther:
+		ClassValidation, ClassIntegrity, ClassStateMismatch, ClassUnavailable, ClassPolicy, ClassUnknown, ClassOther:
 		return true
 	default:
 		return false
@@ -380,7 +383,7 @@ func isStateChange(value StateChange) bool {
 	switch value {
 	case StateNone, StateRunnerInput, StateWorkspace, StateArtifact, StatePlannerInput,
 		StateGit, StateVerification, StateCache, StateStore, StateConfiguration,
-		StateOperator, StateUnknown, StateOther:
+		StateOperator, StateTrustedWorkspace, StateUnknown, StateOther:
 		return true
 	default:
 		return false

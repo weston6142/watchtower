@@ -226,11 +226,11 @@ func classifyFailure(err error) (failure.Site, failure.Class, failure.RetryDispo
 	if errors.As(err, &policyErr) {
 		switch policyErr.Reason {
 		case capability.ReasonContractInvalid, capability.ReasonProviderUnsupported:
-			return failure.SiteRunner, failure.ClassConfiguration, failure.RetryAfterStateChange, failure.StateConfiguration
+			return failure.SiteCapability, failure.ClassPolicy, failure.RetryAfterStateChange, failure.StateConfiguration
 		case capability.ReasonRuntimeDenied:
-			return failure.SiteWorkspace, failure.ClassAuthorization, failure.RetryAfterStateChange, failure.StateWorkspace
+			return failure.SiteCapability, failure.ClassPolicy, failure.RetryAfterStateChange, failure.StateTrustedWorkspace
 		case capability.ReasonPostStageViolation:
-			return failure.SiteWorkspace, failure.ClassValidation, failure.RetryAfterStateChange, failure.StateWorkspace
+			return failure.SiteCapability, failure.ClassPolicy, failure.RetryAfterStateChange, failure.StateTrustedWorkspace
 		}
 	}
 	var lifecycleErr *stagelifecycle.DiagnosticError

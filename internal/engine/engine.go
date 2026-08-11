@@ -3720,9 +3720,20 @@ func (e *Engine) runStageOnce(
 			if audit.Outcome == "denied" {
 				e.emit(core.EvCapabilityDenied, is.id, map[string]any{
 					"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
-					"reason": capability.ReasonRuntimeDenied, "operation": audit.Operation, "paths": audit.Paths,
+					"reason": capability.ReasonRuntimeDenied, "operation": audit.Operation,
 				})
 			}
+		}
+	}
+	if firstErr != nil {
+		if _, policyFailure := capabilityRecoveryReason(firstErr); policyFailure {
+			if err := e.cfg.Store.BindCapabilityValidation(capabilityIdentity, "", capability.ValidationResult{Passed: false}); err != nil {
+				return err
+			}
+			if err := e.markCapabilityWorkspaceRejected(is, st.Name, capabilityIdentity, compiledContract, capabilityBaseline, firstErr); err != nil {
+				return fmt.Errorf("%w (mark rejected workspace: %v)", firstErr, err)
+			}
+			return firstErr
 		}
 	}
 	if st.Completion == flow.CompletionAll && firstErr != nil {
@@ -3761,10 +3772,9 @@ func (e *Engine) runStageOnce(
 				Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "post-stage", Outcome: "failed",
 				Reason: capability.ReasonPostStageViolation,
 			})
-			e.emit(core.EvCapabilityRejected, is.id, map[string]any{
-				"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
-				"reason": capability.ReasonPostStageViolation,
-			})
+			if markErr := e.markCapabilityWorkspaceRejected(is, st.Name, capabilityIdentity, compiledContract, capabilityBaseline, err); markErr != nil {
+				return fmt.Errorf("%w (mark rejected workspace: %v)", err, markErr)
+			}
 			return err
 		}
 	}
@@ -4158,6 +4168,9 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 			return err
 		}
 	}
+	if _, err := e.recoverPendingCapabilityWorkspace(context.WithoutCancel(stageCtx), is); err != nil {
+		return err
+	}
 	if st.HeavySlot {
 		e.emit(core.EvSlotQueued, is.id, map[string]string{"stage": st.Name})
 		release, err := e.cfg.Pool.Acquire(stageCtx, is.id, is.priority)
@@ -4181,11 +4194,29 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 		if errors.Is(err, errDependenciesDiscovered) {
 			return err
 		}
+		if policyReason, policyFailure := capabilityRecoveryReason(err); policyFailure {
+			recovered, recoveryErr := e.recoverPendingCapabilityWorkspace(context.WithoutCancel(stageCtx), is)
+			if recoveryErr != nil {
+				return fmt.Errorf("%w (trusted workspace recovery failed: %v)", err, recoveryErr)
+			}
+			if recovered && attempt < st.Retries {
+				e.emit(core.EvStageFailed, is.id, map[string]any{
+					"stage": st.Name, "reason": policyReason,
+					"retry_disposition": failure.RetryAfterStateChange,
+					"required_state":    failure.StateTrustedWorkspace,
+					"attempt":           attempt + 1, "of": of, "final": false,
+				})
+				continue
+			}
+		}
 		if e.wasKilled(is) {
 			e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
 			return context.Canceled
 		}
 		stageFailureMessage := err.Error()
+		if policyReason, policyFailure := capabilityRecoveryReason(err); policyFailure {
+			stageFailureMessage = string(policyReason)
+		}
 		if lifecycleErrorCode(err) != "" {
 			stageFailureMessage = lifecycleErrorMessage(err)
 		}
@@ -4201,6 +4232,11 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 			"attempt": attempt + 1, "of": of, "final": attempt == st.Retries}
 		for key, value := range runnerFailurePayload(err) {
 			payload[key] = value
+		}
+		if policyReason, policyFailure := capabilityRecoveryReason(err); policyFailure {
+			payload["reason"] = policyReason
+			payload["retry_disposition"] = failure.RetryAfterStateChange
+			payload["required_state"] = failure.StateTrustedWorkspace
 		}
 		e.emit(core.EvStageFailed, is.id, payload)
 	}

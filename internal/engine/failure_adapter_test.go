@@ -239,10 +239,10 @@ func TestCapabilityFailureReasonsUseStablePolicyClassification(t *testing.T) {
 		class  failure.Class
 		state  failure.StateChange
 	}{
-		{capability.ReasonContractInvalid, failure.SiteRunner, failure.ClassConfiguration, failure.StateConfiguration},
-		{capability.ReasonProviderUnsupported, failure.SiteRunner, failure.ClassConfiguration, failure.StateConfiguration},
-		{capability.ReasonRuntimeDenied, failure.SiteWorkspace, failure.ClassAuthorization, failure.StateWorkspace},
-		{capability.ReasonPostStageViolation, failure.SiteWorkspace, failure.ClassValidation, failure.StateWorkspace},
+		{capability.ReasonContractInvalid, failure.SiteCapability, failure.ClassPolicy, failure.StateConfiguration},
+		{capability.ReasonProviderUnsupported, failure.SiteCapability, failure.ClassPolicy, failure.StateConfiguration},
+		{capability.ReasonRuntimeDenied, failure.SiteCapability, failure.ClassPolicy, failure.StateTrustedWorkspace},
+		{capability.ReasonPostStageViolation, failure.SiteCapability, failure.ClassPolicy, failure.StateTrustedWorkspace},
 	}
 	for _, test := range tests {
 		t.Run(string(test.reason), func(t *testing.T) {
