@@ -5,7 +5,7 @@ interchangeable:
 |---|---|---|---|
 | pause / resume | `p` (toggle) | `pause_issue` / `resume_issue` | issue keeps its place; reversible |
 | kill | `x` | `kill_stage` | cancels the *running stage* only; the lane stays |
-| retry | `R` | `retry_stage` | re-runs an invalid/unvalidated final verifier, or resumes verified integration/publication/cleanup without a model call |
+| retry | `R` | `retry_stage` | re-runs an invalid/unvalidated final verifier or stale-identity reverification, or resumes verified integration/publication/cleanup without a model call |
 | retire | `c` | none (TUI-local) | hides a *shipped* lane in this TUI session only; not durable |
 | abandon | `X` | `abandon_issue` | removes the lane everywhere, durably, forever |
 
@@ -141,11 +141,17 @@ Finalization has a durable boundary that is independent of an agent transcript:
   and configured verification command, then persists `verification_ready`
   before emitting final-stage completion.
 - A failure before that checkpoint belongs to the final verifier, so `R`
-  reruns that stage. A failure after it belongs to finalization, so `R` retries
-  integration without calling a model. `publish_pending` and `cleanup_needed`
-  retries are likewise model-free.
-- Restart automatically resumes only `verification_ready` finalization. Other
-  interrupted stages fail visibly and wait for an operator retry.
+  reruns that stage. A failure after it normally belongs to finalization, so
+  `R` retries integration without calling a model. If finalization identifies
+  stale branch, tree, lease, or cache identity, it remains failed closed until
+  an explicit `R`; that retry quarantines the stale verification attempt and
+  re-enters merge-verification for fresh current-identity proof. The old
+  receipt remains immutable. Matching proof and unrelated finalization
+  failures retain their existing retry behavior. `publish_pending` and
+  `cleanup_needed` retries are likewise model-free.
+- Restart automatically resumes `verification_ready` finalization and a
+  committed pending reverification attempt. Other interrupted stages fail
+  visibly and wait for an operator retry.
 - Transcript completion is never lifecycle authority. Only validated receipts,
   durable integration state, and completion/merge events can finish a lane.
 

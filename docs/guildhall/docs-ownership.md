@@ -53,5 +53,7 @@ Final verification has three artifacts with deliberately separate ownership:
   stage complete. Transcript completion is never lifecycle authority.
 
 After that checkpoint, integration, publication, cleanup retry, and automatic
-restart recovery are non-model operations. Only an invalid or unvalidated
-receipt causes `R` to rerun the merge verifier.
+restart recovery are non-model operations. An invalid or unvalidated receipt,
+or an explicit retry after finalization classifies stale branch, tree, lease,
+or cache identity, causes `R` to rerun the merge verifier; stale receipts stay
+immutable and are retained as history.
