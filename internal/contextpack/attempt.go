@@ -1,6 +1,7 @@
 package contextpack
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 // AttemptArtifact identifies immutable bytes owned by one stage attempt.
@@ -25,13 +28,14 @@ type AttemptArtifact struct {
 // its immutable manifest; the declared result files live below its result/
 // directory and are copied before the envelope becomes visible.
 type AttemptResult struct {
-	AttemptID    string            `json:"attempt_id"`
-	IssueID      string            `json:"issue_id"`
-	Stage        string            `json:"stage"`
-	ResultPath   string            `json:"result_path"`
-	ResultSHA256 string            `json:"result_sha256"`
-	Artifacts    []AttemptArtifact `json:"artifacts"`
-	DependsOn    []string          `json:"depends_on"`
+	AttemptID    string              `json:"attempt_id"`
+	IssueID      string              `json:"issue_id"`
+	Stage        string              `json:"stage"`
+	ResultPath   string              `json:"result_path"`
+	ResultSHA256 string              `json:"result_sha256"`
+	Artifacts    []AttemptArtifact   `json:"artifacts"`
+	DependsOn    []string            `json:"depends_on"`
+	StageResult  *stageresult.Result `json:"stage_result,omitempty"`
 }
 
 type attemptManifest struct {
@@ -40,11 +44,12 @@ type attemptManifest struct {
 }
 
 type resultManifest struct {
-	AttemptID string            `json:"attempt_id"`
-	IssueID   string            `json:"issue_id"`
-	Stage     string            `json:"stage"`
-	Artifacts []AttemptArtifact `json:"artifacts"`
-	DependsOn []string          `json:"depends_on"`
+	AttemptID   string              `json:"attempt_id"`
+	IssueID     string              `json:"issue_id"`
+	Stage       string              `json:"stage"`
+	Artifacts   []AttemptArtifact   `json:"artifacts"`
+	DependsOn   []string            `json:"depends_on"`
+	StageResult *stageresult.Result `json:"stage_result,omitempty"`
 }
 
 // MaterializeAttemptResult copies declared model outputs into the immutable
@@ -59,6 +64,16 @@ func MaterializeAttemptResult(sourceDir, issueDir, attemptID string,
 		return AttemptResult{}, fmt.Errorf("attempt result identity conflicts with attempt %q", attemptID)
 	}
 	metadata.AttemptID = attemptID
+	if metadata.StageResult != nil {
+		validated, err := stageresult.ValidatePersisted(*metadata.StageResult)
+		if err != nil {
+			return AttemptResult{}, fmt.Errorf("validate structured stage result: %w", err)
+		}
+		if validated.IssueID != metadata.IssueID || validated.AttemptID != metadata.AttemptID {
+			return AttemptResult{}, fmt.Errorf("structured stage result identity conflicts with attempt manifest")
+		}
+		metadata.StageResult = &validated
+	}
 	metadata.ResultPath = filepath.ToSlash(filepath.Join("artifacts", "attempts", attemptID, "result", "manifest.json"))
 	metadata.Artifacts = nil
 	for _, name := range names {
@@ -87,6 +102,7 @@ func MaterializeAttemptResult(sourceDir, issueDir, attemptID string,
 	manifest, err := json.Marshal(resultManifest{
 		AttemptID: metadata.AttemptID, IssueID: metadata.IssueID, Stage: metadata.Stage,
 		Artifacts: metadata.Artifacts, DependsOn: append([]string(nil), metadata.DependsOn...),
+		StageResult: metadata.StageResult,
 	})
 	if err != nil {
 		return AttemptResult{}, err
@@ -118,8 +134,13 @@ func LoadAttemptResult(issueDir string, expected AttemptResult) (AttemptResult, 
 		return AttemptResult{}, fmt.Errorf("attempt result manifest has a conflicting digest")
 	}
 	var manifest resultManifest
-	if err := json.Unmarshal(body, &manifest); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&manifest); err != nil {
 		return AttemptResult{}, fmt.Errorf("decode attempt result manifest: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return AttemptResult{}, fmt.Errorf("decode attempt result manifest: trailing JSON data")
 	}
 	if manifest.AttemptID != expected.AttemptID ||
 		(expected.IssueID != "" && manifest.IssueID != expected.IssueID) ||
@@ -133,11 +154,22 @@ func LoadAttemptResult(issueDir string, expected AttemptResult) (AttemptResult, 
 			return AttemptResult{}, fmt.Errorf("attempt result manifest contains an unsafe artifact reference")
 		}
 	}
+	if manifest.StageResult != nil {
+		validated, err := stageresult.ValidatePersisted(*manifest.StageResult)
+		if err != nil {
+			return AttemptResult{}, fmt.Errorf("validate structured stage result: %w", err)
+		}
+		if validated.IssueID != manifest.IssueID || validated.AttemptID != manifest.AttemptID {
+			return AttemptResult{}, fmt.Errorf("structured stage result identity conflicts with attempt manifest")
+		}
+		manifest.StageResult = &validated
+	}
 	return AttemptResult{
 		AttemptID: expected.AttemptID, IssueID: manifest.IssueID, Stage: manifest.Stage,
 		ResultPath: expected.ResultPath, ResultSHA256: expected.ResultSHA256,
-		Artifacts: append([]AttemptArtifact(nil), manifest.Artifacts...),
-		DependsOn: append([]string(nil), manifest.DependsOn...),
+		Artifacts:   append([]AttemptArtifact(nil), manifest.Artifacts...),
+		DependsOn:   append([]string(nil), manifest.DependsOn...),
+		StageResult: manifest.StageResult,
 	}, nil
 }
 
