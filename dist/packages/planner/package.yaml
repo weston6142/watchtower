@@ -3,6 +3,5 @@ identity:
   color: blue
   symbol: ⌘
 includes: ["decision-protocol"]
-allowed_tools: ["Bash", "Read", "Glob", "Grep", "Write"]
 model: ""
 max_turns: 0

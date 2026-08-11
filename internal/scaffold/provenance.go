@@ -17,7 +17,7 @@ import (
 const (
 	ProvenanceFile        = "provenance.yaml"
 	ManifestSchemaVersion = 1
-	DefaultsVersion       = "2"
+	DefaultsVersion       = "3"
 )
 
 type Manifest struct {
