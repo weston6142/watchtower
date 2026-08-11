@@ -17,7 +17,6 @@ import (
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/repocfg"
 	"github.com/weston6142/watchtower/internal/runner"
-	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 const (
@@ -209,7 +208,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 	}
 
 	for {
-		var stageEvidence *stageresult.Evidence
+		var stageResults agentprotocol.StageResultCollector
 		turn := c.runTurn(ctx, workdir, pkg, profile, threadID, prompt, gate)
 		res.Attempt.RedactedArgv = turn.invocation.RedactedArgv
 		if turn.threadID != "" {
@@ -237,7 +236,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			switch event.Kind {
 			case KindText:
 				c.emitText(issueID, stage, event.Text)
-				if err := collectStageEvidence(&stageEvidence, event.Text); err != nil {
+				if err := stageResults.Collect(event.Text); err != nil {
 					res.Err = err
 					res.FailureClass = runner.FailureProtocol
 					return res, continuation()
@@ -269,7 +268,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 				}
 			}
 		}
-		if stageEvidence != nil && (decision != nil || unstructuredDecision) {
+		if stageResults.Evidence() != nil && (decision != nil || unstructuredDecision) {
 			res.Err = fmt.Errorf("watchtower_stage_result marker is only valid on the final assistant turn")
 			res.FailureClass = runner.FailureProtocol
 			return res, continuation()
@@ -286,7 +285,7 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 			continue
 		}
 		if decision == nil {
-			res.StageEvidence = stageEvidence
+			res.StageEvidence = stageResults.Evidence()
 			return res, continuation()
 		}
 		d := *decision
@@ -335,25 +334,6 @@ func (c *CodeRunner) runProfile(ctx context.Context, issueID, stage string, pkg 
 		}
 		prompt = "Human decision: " + answer
 	}
-}
-
-func collectStageEvidence(current **stageresult.Evidence, text string) error {
-	evidence, found, err := agentprotocol.ExtractStageResult(text)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-	if *current == nil {
-		copied := evidence
-		*current = &copied
-		return nil
-	}
-	if !agentprotocol.StageResultEvidenceEqual(**current, evidence) {
-		return fmt.Errorf("conflicting watchtower_stage_result markers")
-	}
-	return nil
 }
 
 func (c *CodeRunner) runTurn(ctx context.Context, workdir string, pkg pkgs.Package,

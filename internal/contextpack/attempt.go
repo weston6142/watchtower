@@ -64,16 +64,11 @@ func MaterializeAttemptResult(sourceDir, issueDir, attemptID string,
 		return AttemptResult{}, fmt.Errorf("attempt result identity conflicts with attempt %q", attemptID)
 	}
 	metadata.AttemptID = attemptID
-	if metadata.StageResult != nil {
-		validated, err := stageresult.ValidatePersisted(*metadata.StageResult)
-		if err != nil {
-			return AttemptResult{}, fmt.Errorf("validate structured stage result: %w", err)
-		}
-		if validated.IssueID != metadata.IssueID || validated.AttemptID != metadata.AttemptID {
-			return AttemptResult{}, fmt.Errorf("structured stage result identity conflicts with attempt manifest")
-		}
-		metadata.StageResult = &validated
+	validatedStageResult, err := validateManifestStageResult(metadata.StageResult, metadata.IssueID, metadata.AttemptID)
+	if err != nil {
+		return AttemptResult{}, err
 	}
+	metadata.StageResult = validatedStageResult
 	metadata.ResultPath = filepath.ToSlash(filepath.Join("artifacts", "attempts", attemptID, "result", "manifest.json"))
 	metadata.Artifacts = nil
 	for _, name := range names {
@@ -154,16 +149,11 @@ func LoadAttemptResult(issueDir string, expected AttemptResult) (AttemptResult, 
 			return AttemptResult{}, fmt.Errorf("attempt result manifest contains an unsafe artifact reference")
 		}
 	}
-	if manifest.StageResult != nil {
-		validated, err := stageresult.ValidatePersisted(*manifest.StageResult)
-		if err != nil {
-			return AttemptResult{}, fmt.Errorf("validate structured stage result: %w", err)
-		}
-		if validated.IssueID != manifest.IssueID || validated.AttemptID != manifest.AttemptID {
-			return AttemptResult{}, fmt.Errorf("structured stage result identity conflicts with attempt manifest")
-		}
-		manifest.StageResult = &validated
+	validatedStageResult, err := validateManifestStageResult(manifest.StageResult, manifest.IssueID, manifest.AttemptID)
+	if err != nil {
+		return AttemptResult{}, err
 	}
+	manifest.StageResult = validatedStageResult
 	return AttemptResult{
 		AttemptID: expected.AttemptID, IssueID: manifest.IssueID, Stage: manifest.Stage,
 		ResultPath: expected.ResultPath, ResultSHA256: expected.ResultSHA256,
@@ -171,6 +161,20 @@ func LoadAttemptResult(issueDir string, expected AttemptResult) (AttemptResult, 
 		DependsOn:   append([]string(nil), manifest.DependsOn...),
 		StageResult: manifest.StageResult,
 	}, nil
+}
+
+func validateManifestStageResult(result *stageresult.Result, issueID, attemptID string) (*stageresult.Result, error) {
+	if result == nil {
+		return nil, nil
+	}
+	validated, err := stageresult.ValidatePersisted(*result)
+	if err != nil {
+		return nil, fmt.Errorf("validate structured stage result: %w", err)
+	}
+	if validated.IssueID != issueID || validated.AttemptID != attemptID {
+		return nil, fmt.Errorf("structured stage result identity conflicts with attempt manifest")
+	}
+	return &validated, nil
 }
 
 // PublishAttemptArchive promotes result-slot bytes to immutable attempt

@@ -56,7 +56,10 @@ const (
 	CodeCheckpointFinalization = stagelifecycle.CodeCheckpointFinalization
 )
 
-const stageLifecycleRecordColumns = "schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,transition_id,payload_digest,result_path,result_sha256,artifacts,status"
+const (
+	stageLifecycleRecordColumns  = "schema_version,issue_id,stage,attempt_id,version,substate,predecessor_version,transition_id,payload_digest,result_path,result_sha256,artifacts,status"
+	stageLifecycleAttemptColumns = "issue_id,stage,attempt_id,legacy_checkpoint_id,result_path,result_sha256,stage_result_schema_version,stage_result_kind,stage_result_outcome,stage_result_status,predecessor_attempt_id,created_at"
+)
 
 func BeginAttempt(issueID, stage, attemptID string) StageLifecycleAttempt {
 	return StageLifecycleAttempt{
@@ -77,8 +80,7 @@ func (s *Store) CreateStageLifecycleAttempt(attempt StageLifecycleAttempt) error
 	}
 	var existing StageLifecycleAttempt
 	var createdAt string
-	err := s.db.QueryRow(`SELECT issue_id,stage,attempt_id,legacy_checkpoint_id,result_path,result_sha256,
-		stage_result_schema_version,stage_result_kind,stage_result_outcome,stage_result_status,predecessor_attempt_id,created_at
+	err := s.db.QueryRow("SELECT "+stageLifecycleAttemptColumns+`
 		FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND attempt_id=?`,
 		attempt.IssueID, attempt.Stage, attempt.AttemptID).Scan(
 		&existing.IssueID, &existing.Stage, &existing.AttemptID, &existing.LegacyCheckpointID,
@@ -110,9 +112,7 @@ func (s *Store) CreateStageLifecycleAttempt(attempt StageLifecycleAttempt) error
 func (s *Store) StageLifecycleAttempts(issueID, stage string) ([]StageLifecycleAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT issue_id,stage,attempt_id,legacy_checkpoint_id,
-		result_path,result_sha256,stage_result_schema_version,stage_result_kind,
-		stage_result_outcome,stage_result_status,predecessor_attempt_id,created_at FROM stage_lifecycle_attempts
+	rows, err := s.db.Query("SELECT "+stageLifecycleAttemptColumns+` FROM stage_lifecycle_attempts
 		WHERE issue_id=? AND stage=? ORDER BY created_at,attempt_id`, issueID, stage)
 	if err != nil {
 		return nil, err
@@ -120,19 +120,10 @@ func (s *Store) StageLifecycleAttempts(issueID, stage string) ([]StageLifecycleA
 	defer rows.Close()
 	var attempts []StageLifecycleAttempt
 	for rows.Next() {
-		var attempt StageLifecycleAttempt
-		var createdAt string
-		if err := rows.Scan(&attempt.IssueID, &attempt.Stage, &attempt.AttemptID,
-			&attempt.LegacyCheckpointID, &attempt.ResultPath, &attempt.ResultSHA256,
-			&attempt.StageResultSchemaVersion, &attempt.StageResultKind, &attempt.StageResultOutcome,
-			&attempt.StageResultStatus, &attempt.PredecessorAttemptID, &createdAt); err != nil {
-			return nil, err
-		}
-		parsed, err := time.Parse(time.RFC3339Nano, createdAt)
+		attempt, err := scanStageLifecycleAttempt(rows)
 		if err != nil {
 			return nil, err
 		}
-		attempt.CreatedAt = parsed
 		attempts = append(attempts, attempt)
 	}
 	return attempts, rows.Err()
@@ -199,7 +190,6 @@ func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results .
 		summary.StageResultOutcome = validated.Outcome
 		summary.StageResultStatus = validated.ValidationStatus
 		summary.PredecessorAttemptID = validated.PredecessorAttemptID
-
 	}
 	var existing StageLifecycleAttempt
 	err := s.db.QueryRow(`SELECT result_path,result_sha256,stage_result_schema_version,stage_result_kind,
@@ -263,9 +253,7 @@ func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results .
 func (s *Store) StageResultAttempts(issueID, stage string, kind stageresult.Kind) ([]StageLifecycleAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT issue_id,stage,attempt_id,legacy_checkpoint_id,result_path,result_sha256,
-		stage_result_schema_version,stage_result_kind,stage_result_outcome,stage_result_status,predecessor_attempt_id,created_at
-		FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND stage_result_schema_version=?
+	rows, err := s.db.Query("SELECT "+stageLifecycleAttemptColumns+` FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND stage_result_schema_version=?
 		AND stage_result_kind=? AND stage_result_status=? ORDER BY created_at,attempt_id`,
 		issueID, stage, stageresult.SchemaVersion, kind, stageresult.ValidationValid)
 	if err != nil {
@@ -274,7 +262,7 @@ func (s *Store) StageResultAttempts(issueID, stage string, kind stageresult.Kind
 	defer rows.Close()
 	var attempts []StageLifecycleAttempt
 	for rows.Next() {
-		attempt, err := scanStageResultAttempt(rows)
+		attempt, err := scanStageLifecycleAttempt(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -286,12 +274,10 @@ func (s *Store) StageResultAttempts(issueID, stage string, kind stageresult.Kind
 func (s *Store) LatestValidStageResultAttempt(issueID, stage string, kind stageresult.Kind) (StageLifecycleAttempt, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	row := s.db.QueryRow(`SELECT issue_id,stage,attempt_id,legacy_checkpoint_id,result_path,result_sha256,
-		stage_result_schema_version,stage_result_kind,stage_result_outcome,stage_result_status,predecessor_attempt_id,created_at
-		FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND stage_result_schema_version=?
+	row := s.db.QueryRow("SELECT "+stageLifecycleAttemptColumns+` FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND stage_result_schema_version=?
 		AND stage_result_kind=? AND stage_result_status=? ORDER BY created_at DESC,attempt_id DESC LIMIT 1`,
 		issueID, stage, stageresult.SchemaVersion, kind, stageresult.ValidationValid)
-	attempt, err := scanStageResultAttempt(row)
+	attempt, err := scanStageLifecycleAttempt(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StageLifecycleAttempt{}, false, nil
 	}
@@ -302,7 +288,7 @@ type rowScanner interface {
 	Scan(...any) error
 }
 
-func scanStageResultAttempt(row rowScanner) (StageLifecycleAttempt, error) {
+func scanStageLifecycleAttempt(row rowScanner) (StageLifecycleAttempt, error) {
 	var attempt StageLifecycleAttempt
 	var createdAt string
 	if err := row.Scan(&attempt.IssueID, &attempt.Stage, &attempt.AttemptID, &attempt.LegacyCheckpointID,

@@ -153,6 +153,15 @@ type LibrarianPayload struct {
 	NoChange             *NoChangeConclusion   `json:"no_change"`
 }
 
+type reviewPayload struct {
+	findings      []Finding
+	fixes         []Fix
+	checks        []Check
+	reviewedPaths []string
+	skips         []Skip
+	noChange      *NoChangeConclusion
+}
+
 type Evidence struct {
 	SchemaVersion     int                       `json:"schema_version"`
 	StageKind         Kind                      `json:"stage_kind"`
@@ -342,12 +351,20 @@ func validateResult(result Result) error {
 		if result.CorrectnessReview == nil {
 			return invalid("correctness_review", "payload must match stage_kind")
 		}
-		return validateReview("correctness_review", result.Outcome, result.CorrectnessReview.Findings, result.CorrectnessReview.Fixes, result.CorrectnessReview.Checks, result.CorrectnessReview.ReviewedPaths, result.CorrectnessReview.Skips, result.CorrectnessReview.NoChange)
+		return validateReview("correctness_review", result.Outcome, reviewPayload{
+			findings: result.CorrectnessReview.Findings, fixes: result.CorrectnessReview.Fixes,
+			checks: result.CorrectnessReview.Checks, reviewedPaths: result.CorrectnessReview.ReviewedPaths,
+			skips: result.CorrectnessReview.Skips, noChange: result.CorrectnessReview.NoChange,
+		})
 	case KindCleanCodeReview:
 		if result.CleanCodeReview == nil {
 			return invalid("clean_code_review", "payload must match stage_kind")
 		}
-		return validateReview("clean_code_review", result.Outcome, result.CleanCodeReview.Findings, result.CleanCodeReview.Fixes, result.CleanCodeReview.Checks, result.CleanCodeReview.ReviewedPaths, result.CleanCodeReview.Skips, result.CleanCodeReview.NoChange)
+		return validateReview("clean_code_review", result.Outcome, reviewPayload{
+			findings: result.CleanCodeReview.Findings, fixes: result.CleanCodeReview.Fixes,
+			checks: result.CleanCodeReview.Checks, reviewedPaths: result.CleanCodeReview.ReviewedPaths,
+			skips: result.CleanCodeReview.Skips, noChange: result.CleanCodeReview.NoChange,
+		})
 	case KindLibrarian:
 		if result.Librarian == nil {
 			return invalid("librarian", "payload must match stage_kind")
@@ -409,20 +426,20 @@ func validateExecute(outcome Outcome, remainingWork []WorkItem, payload *Execute
 	return validateChecks("execute.checks", payload.Checks)
 }
 
-func validateReview(prefix string, outcome Outcome, findings []Finding, fixes []Fix, checks []Check, reviewedPaths []string, skips []Skip, noChange *NoChangeConclusion) error {
-	if err := validateFindings(prefix+".findings", findings); err != nil {
+func validateReview(prefix string, outcome Outcome, payload reviewPayload) error {
+	if err := validateFindings(prefix+".findings", payload.findings); err != nil {
 		return err
 	}
-	if err := validateFixes(prefix+".fixes", findings, fixes); err != nil {
+	if err := validateFixes(prefix+".fixes", payload.findings, payload.fixes); err != nil {
 		return err
 	}
-	fixed := make(map[string]bool, len(findings))
-	for _, fix := range fixes {
+	fixed := make(map[string]bool, len(payload.findings))
+	for _, fix := range payload.fixes {
 		for _, findingID := range fix.FindingIDs {
 			fixed[findingID] = true
 		}
 	}
-	for i, finding := range findings {
+	for i, finding := range payload.findings {
 		if outcome == OutcomeCompleted && finding.Status == FindingOpen {
 			return invalid(fmt.Sprintf("%s.findings[%d].status", prefix, i), "open finding requires a retryable result")
 		}
@@ -430,28 +447,28 @@ func validateReview(prefix string, outcome Outcome, findings []Finding, fixes []
 			return invalid(fmt.Sprintf("%s.findings[%d].status", prefix, i), "fixed finding requires a recorded fix")
 		}
 	}
-	if err := validateChecks(prefix+".checks", checks); err != nil {
+	if err := validateChecks(prefix+".checks", payload.checks); err != nil {
 		return err
 	}
-	if err := validatePaths(prefix+".reviewed_paths", reviewedPaths); err != nil {
+	if err := validatePaths(prefix+".reviewed_paths", payload.reviewedPaths); err != nil {
 		return err
 	}
-	if err := validateSkips(prefix+".skips", skips); err != nil {
+	if err := validateSkips(prefix+".skips", payload.skips); err != nil {
 		return err
 	}
-	if len(checks) == 0 && !hasSkip(skips, "checks") {
+	if len(payload.checks) == 0 && !hasSkip(payload.skips, "checks") {
 		return invalid(prefix+".checks", "must record checks or an explained checks skip")
 	}
-	if len(reviewedPaths) == 0 && !hasSkip(skips, "reviewed_paths") {
+	if len(payload.reviewedPaths) == 0 && !hasSkip(payload.skips, "reviewed_paths") {
 		return invalid(prefix+".reviewed_paths", "must record reviewed paths or an explained reviewed-paths skip")
 	}
-	if len(fixes) > 0 && noChange != nil {
+	if len(payload.fixes) > 0 && payload.noChange != nil {
 		return invalid(prefix+".no_change", "must not coexist with fixes")
 	}
-	if len(fixes) == 0 && noChange == nil {
+	if len(payload.fixes) == 0 && payload.noChange == nil {
 		return invalid(prefix+".no_change", "is required when no fixes were made")
 	}
-	if noChange != nil && strings.TrimSpace(noChange.Explanation) == "" {
+	if payload.noChange != nil && strings.TrimSpace(payload.noChange.Explanation) == "" {
 		return invalid(prefix+".no_change.explanation", "must not be blank")
 	}
 	return nil
