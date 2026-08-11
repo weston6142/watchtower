@@ -264,6 +264,9 @@ func (s *Store) FinishVerificationAttempt(
 		return VerificationAttempt{}, fmt.Errorf("passing verification receipt is required")
 	}
 	receiptJSON = append([]byte(nil), receiptJSON...)
+	if receiptJSON == nil {
+		receiptJSON = []byte{}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
