@@ -43,6 +43,11 @@ import (
 var errDependenciesDiscovered = errors.New("new dependencies discovered")
 var errConflictHeld = errors.New("merge conflict held")
 
+const (
+	integrationPendingReverification = store.IntegrationPendingReverification
+	integrationReverificationFailed  = "reverification_failed"
+)
+
 type Config struct {
 	Store                    *store.Store
 	FailureRecorder          failure.Recorder
@@ -600,6 +605,29 @@ func (e *Engine) Rehydrate() error {
 			e.mu.Lock()
 			e.issues[row.ID] = is
 			e.mu.Unlock()
+			continue
+		}
+		if hasIntegration && integration.State == integrationPendingReverification {
+			finalIdx, finalErr := finalStageIndex(e.cfg.Flows[row.Flow])
+			if finalErr != nil {
+				return finalErr
+			}
+			is := &issueState{
+				id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+				matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+				dependsOn: append([]string(nil), row.DependsOn...), running: true,
+				stageIdx: finalIdx, planReview: row.PlanReviewPolicy,
+			}
+			e.mu.Lock()
+			e.issues[row.ID] = is
+			e.mu.Unlock()
+			go func(integration store.IssueIntegration, stageIdx int) {
+				err := e.resumePendingVerification(context.Background(), is, integration, stageIdx)
+				e.mu.Lock()
+				is.terminal = err != nil
+				is.running = false
+				e.mu.Unlock()
+			}(integration, finalIdx)
 			continue
 		}
 		if hasIntegration && integration.State == store.IntegrationVerificationReady {
@@ -3484,6 +3512,39 @@ func (e *Engine) runStageOnce(
 			return err
 		}
 		verificationLeaseSealed = verificationLease != nil
+		if e.cfg.Store != nil {
+			receiptJSON, err := verificationReceiptBytes(workdir)
+			if err != nil {
+				return fmt.Errorf("read verification receipt: %w", err)
+			}
+			if _, err := loadVerificationBytes(receiptJSON); err != nil {
+				return fmt.Errorf("validate verification receipt: %w", err)
+			}
+			currentAttempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
+			if err != nil {
+				return fmt.Errorf("load verification attempt: %w", err)
+			}
+			if found {
+				if currentAttempt.Status == store.VerificationAttemptPending {
+					if _, err := e.cfg.Store.FinishVerificationAttempt(
+						is.id, currentAttempt.ID, store.VerificationAttemptPassed, receiptJSON, "",
+					); err != nil {
+						return fmt.Errorf("finish verification attempt: %w", err)
+					}
+				} else if _, err := e.cfg.Store.RecordVerificationAttempt(store.VerificationAttempt{
+					IssueID: is.id, Stage: st.Name, ParentID: currentAttempt.ID,
+					Status: store.VerificationAttemptPassed, Reason: "explicit verification rerun",
+					ReceiptJSON: receiptJSON,
+				}); err != nil {
+					return fmt.Errorf("record verification attempt: %w", err)
+				}
+			} else if _, err := e.cfg.Store.RecordVerificationAttempt(store.VerificationAttempt{
+				IssueID: is.id, Stage: st.Name, Status: store.VerificationAttemptPassed,
+				ReceiptJSON: receiptJSON,
+			}); err != nil {
+				return fmt.Errorf("record verification attempt: %w", err)
+			}
+		}
 	}
 	// validate artifacts
 	for _, name := range st.Artifacts {
@@ -3779,16 +3840,29 @@ func (e *Engine) planReviewAuthorization(is *issueState) (store.DecisionRow, []c
 }
 
 func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plannerOverride *plannerbudget.Override) error {
+	return e.runFromWithOwnership(ctx, is, startIdx, plannerOverride, false)
+}
+
+func (e *Engine) runFromOwned(ctx context.Context, is *issueState, startIdx int, plannerOverride *plannerbudget.Override) error {
+	return e.runFromWithOwnership(ctx, is, startIdx, plannerOverride, true)
+}
+
+func (e *Engine) runFromWithOwnership(
+	ctx context.Context, is *issueState, startIdx int,
+	plannerOverride *plannerbudget.Override, alreadyRunning bool,
+) error {
 	if err := e.freezeTaskSummary(is); err != nil {
 		return err
 	}
-	e.mu.Lock()
-	if is.running {
+	if !alreadyRunning {
+		e.mu.Lock()
+		if is.running {
+			e.mu.Unlock()
+			return fmt.Errorf("issue %s is already running", is.id)
+		}
+		is.running = true
 		e.mu.Unlock()
-		return fmt.Errorf("issue %s is already running", is.id)
 	}
-	is.running = true
-	e.mu.Unlock()
 	f := e.cfg.Flows[is.flowName]
 	// Fresh issues should build on the latest shared code. Fast-forward only
 	// and non-fatal: a diverged or dirty base is reported, not a blocker.
@@ -3933,6 +4007,9 @@ func (e *Engine) runFrom(ctx context.Context, is *issueState, startIdx int, plan
 				"unmet": unmet, "restart_stage": f.Stages[0].Name})
 			return nil
 		} else if err != nil {
+			if st.MergeBarrier {
+				e.failPendingVerificationAttempt(is, err)
+			}
 			return err
 		}
 	}
@@ -4061,6 +4138,88 @@ func (e *Engine) runAndRecordWithPlannerBudget(ctx context.Context, is *issueSta
 	return err
 }
 
+func (e *Engine) resumePendingVerification(
+	ctx context.Context, is *issueState, integration store.IssueIntegration, stageIdx int,
+) error {
+	if err := e.restoreVerifiedWorkspace(is, integration); err != nil {
+		e.failPendingVerificationAttempt(is, err)
+		return err
+	}
+	return e.runFromOwned(ctx, is, stageIdx, nil)
+}
+
+func (e *Engine) failPendingVerificationAttempt(is *issueState, cause error) {
+	if cause == nil || e.cfg.Store == nil {
+		return
+	}
+	attempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
+	if err != nil || !found || attempt.Status != store.VerificationAttemptPending {
+		return
+	}
+	if _, err := e.cfg.Store.FinishVerificationAttempt(
+		is.id, attempt.ID, store.VerificationAttemptFailed, nil, cause.Error(),
+	); err != nil {
+		return
+	}
+	integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
+	if err != nil || !ok || integration.State != store.IntegrationPendingReverification {
+		return
+	}
+	integration.State = integrationReverificationFailed
+	integration.LastError = cause.Error()
+	_ = e.cfg.Store.SetIssueIntegration(integration)
+}
+
+func (e *Engine) retryStaleVerification(
+	ctx context.Context, is *issueState, integration store.IssueIntegration,
+	plannerOverride *plannerbudget.Override,
+) (bool, error) {
+	if err := e.restoreVerifiedWorkspace(is, integration); err != nil {
+		return false, nil
+	}
+	if _, err := os.Stat(filepath.Join(is.wsPath, "conflict-decision.json")); err == nil {
+		return false, nil
+	}
+	_, err := e.prepareFinalization(is, nil)
+	if err == nil {
+		return false, nil
+	}
+	kind, parentID, stale := StaleVerificationIdentity(err)
+	if !stale {
+		return false, nil
+	}
+	if parentID <= 0 {
+		return true, e.recordFinalizationFailure(is, err)
+	}
+	stage := e.integrationStageName(is)
+	retryKey := fmt.Sprintf("stale-finalization:%d", parentID)
+	_, beginErr := e.cfg.Store.BeginVerificationRetry(context.WithoutCancel(ctx), store.VerificationRetry{
+		IssueID: is.id, ParentID: parentID, RetryKey: retryKey,
+		Reason: fmt.Sprintf("%s identity mismatch: %v", kind, err),
+		Failure: failure.RecordInput{
+			IssueID: is.id, Stage: stage, StageAttempt: 0,
+			FailureSite: failure.SiteFinalization, FailureClass: failure.ClassStateMismatch,
+			RetryDisposition: failure.RetryAfterStateChange, RequiredStateChange: failure.StateVerification,
+			Fingerprint: failure.BuildFingerprint(failure.FingerprintInputs{
+				IssueID: is.id, Stage: stage, FailureSite: failure.SiteFinalization,
+				Git: failure.GitIdentity{Base: is.baseRef, Branch: is.branch},
+			}),
+		},
+	})
+	if beginErr != nil {
+		return true, e.recordFinalizationFailure(is, beginErr)
+	}
+	_, stageIdx, ok := e.cfg.Flows[is.flowName].IntegrationStage()
+	if !ok {
+		return true, fmt.Errorf("flow %q has no merge barrier", is.flowName)
+	}
+	e.mu.Lock()
+	is.stageIdx = stageIdx
+	is.terminal = false
+	e.mu.Unlock()
+	return true, e.runFromOwned(ctx, is, stageIdx, plannerOverride)
+}
+
 func (e *Engine) StartIssue(ctx context.Context, id string) error {
 	return e.StartIssueWithBudget(ctx, id, nil)
 }
@@ -4169,6 +4328,13 @@ func (e *Engine) RetryStageWithBudget(ctx context.Context, issueID string, plann
 		is.terminal = false
 		is.killRequested = false
 		e.mu.Unlock()
+		if handled, err := e.retryStaleVerification(ctx, is, integration, plannerOverride); handled {
+			e.mu.Lock()
+			is.running = false
+			is.terminal = err != nil
+			e.mu.Unlock()
+			return err
+		}
 		err := e.retryVerifiedFinalization(ctx, is, integration)
 		e.mu.Lock()
 		is.running = false
