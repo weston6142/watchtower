@@ -18,9 +18,9 @@ type recoveryTarget struct {
 }
 
 type pairRecovery struct {
-	before    [2]recoveryTarget
-	rename    func(string, string) error
-	committed bool
+	before   [2]recoveryTarget
+	rename   func(string, string) error
+	finished bool
 }
 
 func recoverDurablePair(worktree string, plan, touchset []byte) (*pairRecovery, error) {
@@ -178,7 +178,7 @@ func recoveryFailed(recovery *pairRecovery) (*pairRecovery, error) {
 // Rollback restores the exact pair observed before recovery. It is safe to call
 // after Commit or after an already successful rollback.
 func (recovery *pairRecovery) Rollback() error {
-	if recovery == nil || recovery.committed {
+	if recovery == nil || recovery.finished {
 		return nil
 	}
 	worktree := filepath.Dir(recovery.before[0].path)
@@ -222,14 +222,14 @@ func (recovery *pairRecovery) Rollback() error {
 	if !restored {
 		return errors.New("planner recovery: prior state could not be restored")
 	}
-	recovery.committed = true
+	recovery.finished = true
 	return nil
 }
 
 // Commit retains the recovered durable pair and disables later rollback.
 func (recovery *pairRecovery) Commit() {
 	if recovery != nil {
-		recovery.committed = true
+		recovery.finished = true
 	}
 }
 

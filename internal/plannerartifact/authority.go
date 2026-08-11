@@ -89,6 +89,8 @@ func withRecoveryRename(rename func(string, string) error) CreateOrLoadOption {
 	}
 }
 
+// withCapabilityReader is a deterministic test seam for capability rotation.
+// The production path always defaults to crypto/rand.Reader.
 func withCapabilityReader(reader io.Reader) CreateOrLoadOption {
 	return func(config *createOrLoadConfig) {
 		config.random = reader
@@ -204,11 +206,8 @@ func CreateOrLoad(registry Registry, binding Binding, options ...CreateOrLoadOpt
 	if err != nil {
 		return nil, authorityError(ErrorAuthorityState, "", "durable planner pair recovery failed", err)
 	}
-	committed := false
 	defer func() {
-		if !committed {
-			_ = recovery.Rollback()
-		}
+		_ = recovery.Rollback()
 	}()
 	if err := Prepare(normalized.Worktree); err != nil {
 		return nil, authorityError(ErrorAuthorityState, "", "recovered planner targets are invalid", err)
@@ -224,7 +223,6 @@ func CreateOrLoad(registry Registry, binding Binding, options ...CreateOrLoadOpt
 		return nil, authorityError(ErrorAuthorityState, "", "registry write failed", err)
 	}
 	recovery.Commit()
-	committed = true
 	return newAuthority(registry, normalized, digest, capability), nil
 }
 
@@ -339,7 +337,7 @@ func (a *Authority) ApplyWithCapability(handle string, request WriteRequest) err
 	if err := a.verifyCapabilityLocked(handle); err != nil {
 		return err
 	}
-	return a.applyLocked(request, false)
+	return a.applyVerifiedLocked(request)
 }
 
 func normalizeBinding(binding Binding) (Binding, error) {
@@ -407,15 +405,13 @@ func (a *Authority) Apply(request WriteRequest) error {
 	defer release()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.applyLocked(request, true)
+	if err := a.verifyLocked(); err != nil {
+		return err
+	}
+	return a.applyVerifiedLocked(request)
 }
 
-func (a *Authority) applyLocked(request WriteRequest, verify bool) error {
-	if verify {
-		if err := a.verifyLocked(); err != nil {
-			return err
-		}
-	}
+func (a *Authority) applyVerifiedLocked(request WriteRequest) error {
 	status, digest, manifestBytes, sectionBytes, found, err := a.registry.LoadPlannerArtifact(
 		a.binding.IssueID, a.binding.Stage, a.binding.Attempt, a.binding.Worktree)
 	if err != nil || !found || status != "active" || len(digest) != sha256.Size || subtle.ConstantTimeCompare(digest, a.digest) != 1 {

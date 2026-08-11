@@ -171,7 +171,7 @@ func TestCreateOrLoadRestoresTamperedPlanFromExactDurableAuthority(t *testing.T)
 	if err != nil {
 		t.Fatalf("reload after durable-pair tampering: %v", err)
 	}
-	if !bytes.Equal(mustReadAuthorityFile(t, workdir, "plan.md"), mustRenderedAuthorityPlan(t, "durable content")) {
+	if !bytes.Equal(mustReadAuthorityFile(t, workdir, "plan.md"), mustRenderAuthorityPlan(t, "durable content")) {
 		t.Fatal("reload did not restore exact durable plan bytes")
 	}
 	accepted, err := reloaded.AcceptedSections()
@@ -607,7 +607,7 @@ func mustRemoveAuthorityFile(t *testing.T, workdir, name string) {
 	}
 }
 
-func mustRenderedAuthorityPlan(t *testing.T, markdown string) []byte {
+func mustRenderAuthorityPlan(t *testing.T, markdown string) []byte {
 	t.Helper()
 	plan, _, err := renderPair([]acceptedSection{{Key: "goal", Markdown: normalizedMarkdown(markdown), Globs: authorityTestManifest().Sections[0].Globs}})
 	if err != nil {
