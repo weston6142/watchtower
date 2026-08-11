@@ -11,6 +11,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
 type Artifact struct {
@@ -37,6 +38,7 @@ type Recovery struct {
 	Dirty               bool
 	LastFailure         string
 	OutstandingOutputs  []string
+	ResultContext       *stageresult.RetryContext
 }
 
 type Brief struct {
@@ -206,8 +208,57 @@ func WriteStageBrief(workdir string, brief Brief) error {
 		body.WriteString("- dirty: " + dirty + "\n")
 		body.WriteString("- Last failure: " + valueOrUnknown(brief.Recovery.LastFailure) + "\n")
 		writeList(&body, "Outstanding outputs", brief.Recovery.OutstandingOutputs)
+		writeStructuredRetryContext(&body, brief.Recovery.ResultContext)
 	}
 	return writeAtomic(filepath.Join(workdir, "STAGE.md"), []byte(body.String()))
+}
+
+func writeStructuredRetryContext(body *strings.Builder, context *stageresult.RetryContext) {
+	if context == nil {
+		return
+	}
+	body.WriteString("\n## Structured retry context\n\n")
+	body.WriteString("- Source attempt: " + context.SourceAttemptID + "\n")
+	unfinished := append(append([]stageresult.WorkItem(nil), context.UnfinishedPlanTasks...), context.RemainingWork...)
+	writeWorkItems(body, "Unfinished work", unfinished)
+	if len(context.OpenFindings) > 0 {
+		body.WriteString("\n### Open findings\n\n")
+		for _, finding := range context.OpenFindings {
+			line := finding.ID + ": " + finding.Summary
+			body.WriteString("- " + withPaths(line, finding.Paths) + "\n")
+		}
+	}
+	if len(context.SkippedActivities) > 0 {
+		body.WriteString("\n### Skipped activities\n\n")
+		for _, skip := range context.SkippedActivities {
+			body.WriteString("- " + skip.Activity + ": " + skip.Explanation + "\n")
+		}
+	}
+	writeWorkItems(body, "Unreviewed paths", context.UnreviewedPaths)
+	writeWorkItems(body, "Missing documentation", context.MissingDocumentation)
+	if len(context.RemainingConcerns) > 0 {
+		body.WriteString("\n### Remaining concerns\n\n")
+		for _, concern := range context.RemainingConcerns {
+			body.WriteString("- " + concern.Explanation + "\n")
+		}
+	}
+}
+
+func writeWorkItems(body *strings.Builder, title string, items []stageresult.WorkItem) {
+	if len(items) == 0 {
+		return
+	}
+	body.WriteString("\n### " + title + "\n\n")
+	for _, item := range items {
+		body.WriteString("- " + withPaths(item.Description, item.Paths) + "\n")
+	}
+}
+
+func withPaths(text string, paths []string) string {
+	if len(paths) == 0 {
+		return text
+	}
+	return text + " (paths: " + strings.Join(paths, ", ") + ")"
 }
 
 func WriteDecisionLedger(workdir, ledger string) error {

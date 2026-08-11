@@ -14,8 +14,51 @@ import (
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
+	"github.com/weston6142/watchtower/internal/stageresult"
 	"github.com/weston6142/watchtower/internal/store"
 )
+
+func resultProducerForStage(st flow.Stage) (stageresult.Kind, string, bool, error) {
+	var kind stageresult.Kind
+	producer := ""
+	for _, agent := range st.Agents {
+		candidate, ok := stageresult.KindForAgentPackage(agent.Package)
+		if !ok {
+			continue
+		}
+		if producer != "" {
+			return "", "", false, fmt.Errorf("stage %q has multiple structured result producers %q and %q", st.Name, producer, agent.Package)
+		}
+		kind, producer = candidate, agent.Package
+	}
+	return kind, producer, producer != "", nil
+}
+
+func (e *Engine) latestValidStageResult(issueID, actualStage string, kind stageresult.Kind) (*stageresult.Result, error) {
+	summary, found, err := e.cfg.Store.LatestValidStageResultAttempt(issueID, actualStage, kind)
+	if err != nil || !found {
+		return nil, err
+	}
+	reference, found, err := e.cfg.Store.StageLifecycleResult(summary)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "structured stage result summary has no immutable manifest"}
+	}
+	loaded, err := contextpack.LoadAttemptResult(e.issueDir(issueID), reference)
+	if err != nil {
+		return nil, &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeIntegrity, Message: "structured stage result manifest cannot be validated"}
+	}
+	if loaded.StageResult == nil || loaded.StageResult.StageKind != summary.StageResultKind ||
+		loaded.StageResult.Outcome != summary.StageResultOutcome ||
+		loaded.StageResult.ValidationStatus != summary.StageResultStatus ||
+		loaded.StageResult.PredecessorAttemptID != summary.PredecessorAttemptID {
+		return nil, &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeIntegrity, Message: "structured stage result summary conflicts with immutable manifest"}
+	}
+	result := *loaded.StageResult
+	return &result, nil
+}
 
 func (e *Engine) lifecycleAttemptFor(is *issueState, st flow.Stage, checkpointID int64) (store.StageLifecycleAttempt, []stagelifecycle.Record, error) {
 	records, err := e.cfg.Store.StageLifecycleRecords(is.id, st.Name, "")
@@ -28,14 +71,26 @@ func (e *Engine) lifecycleAttemptFor(is *issueState, st flow.Stage, checkpointID
 	}
 	attemptID := fmt.Sprintf("checkpoint-%d", checkpointID)
 	if !(is.retryUnmerged && st.MergeBarrier) {
-		latestAttemptID := ""
+		var latestAttempt *store.StageLifecycleAttempt
 		for _, candidate := range attempts {
 			if candidate.ResultPath != "" &&
-				(latestAttemptID == "" || lifecycleAttemptAfter(candidate.AttemptID, latestAttemptID)) {
-				latestAttemptID = candidate.AttemptID
+				(latestAttempt == nil || lifecycleAttemptAfter(candidate.AttemptID, latestAttempt.AttemptID)) {
+				copy := candidate
+				latestAttempt = &copy
 			}
 		}
-		if latestAttemptID == "" {
+		latestAttemptID := ""
+		if latestAttempt != nil {
+			switch {
+			case latestAttempt.StageResultSchemaVersion == 0:
+				latestAttemptID = latestAttempt.AttemptID
+			case latestAttempt.StageResultSchemaVersion == stageresult.SchemaVersion &&
+				latestAttempt.StageResultStatus == stageresult.ValidationValid &&
+				latestAttempt.StageResultOutcome == stageresult.OutcomeCompleted:
+				latestAttemptID = latestAttempt.AttemptID
+			}
+		}
+		if latestAttempt == nil {
 			for _, record := range records {
 				if record.AttemptID != "" &&
 					(latestAttemptID == "" || lifecycleAttemptAfter(record.AttemptID, latestAttemptID)) {
