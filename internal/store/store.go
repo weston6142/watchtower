@@ -1508,6 +1508,16 @@ func (s *Store) ResolveArtifactReview(
 	id int64, target review.Target, response levers.Response,
 	provenances ...*review.ApprovalProvenance,
 ) (review.Outcome, error) {
+	return s.ResolveArtifactReviewAt(id, target, response, s.now(), provenances...)
+}
+
+// ResolveArtifactReviewAt records an artifact-review response at the supplied
+// semantic time. Engine callers use it to keep their configured clock
+// authoritative while ResolveArtifactReview retains the store clock default.
+func (s *Store) ResolveArtifactReviewAt(
+	id int64, target review.Target, response levers.Response, answeredAt time.Time,
+	provenances ...*review.ApprovalProvenance,
+) (review.Outcome, error) {
 	canonical, err := target.Canonical()
 	if err != nil {
 		return review.OutcomeStale, err
@@ -1637,10 +1647,12 @@ func (s *Store) ResolveArtifactReview(
 		statusValue = "auto"
 		answeredBy = "policy:" + provenance.PolicyID + "@" + provenance.PolicyVersion
 	}
-	answeredAt := s.now().Format(time.RFC3339Nano)
+	if answeredAt.IsZero() {
+		answeredAt = s.now()
+	}
 	result, err := tx.Exec(
 		`UPDATE decisions SET status=?,answer=?,answered_by=?,evidence=?,answered_at=? WHERE id=? AND status='pending'`,
-		statusValue, string(answer), answeredBy, string(updatedEvidence), answeredAt, id)
+		statusValue, string(answer), answeredBy, string(updatedEvidence), answeredAt.UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		return "", err
 	}
@@ -1727,16 +1739,23 @@ func (s *Store) ArtifactReviewRows(issueID string) ([]DecisionRow, error) {
 
 // AnswerDecision records a typed response, status, and current UTC answer time.
 func (s *Store) AnswerDecision(id int64, response levers.Response, status string) error {
+	return s.AnswerDecisionAt(id, response, status, s.now())
+}
+
+// AnswerDecisionAt records a typed response at the supplied semantic time.
+func (s *Store) AnswerDecisionAt(id int64, response levers.Response, status string, answeredAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	answer, err := json.Marshal(response)
 	if err != nil {
 		return err
 	}
-	answeredAt := s.now().Format(time.RFC3339Nano)
+	if answeredAt.IsZero() {
+		answeredAt = s.now()
+	}
 	_, err = s.db.Exec(
 		`UPDATE decisions SET status=?, answer=?, answered_at=? WHERE id=?`,
-		status, string(answer), answeredAt, id,
+		status, string(answer), answeredAt.UTC().Format(time.RFC3339Nano), id,
 	)
 	return err
 }

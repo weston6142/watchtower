@@ -88,6 +88,110 @@ func TestEngineUsesConfiguredClock(t *testing.T) {
 	}
 }
 
+func TestEngineClockControlsDecisionTimestamps(t *testing.T) {
+	fixed := time.Date(2001, 2, 3, 4, 5, 6, 789, time.UTC)
+	assertTimestamp := func(t *testing.T, label string, got time.Time) {
+		t.Helper()
+		if !got.Equal(fixed) || got.Location() != time.UTC {
+			t.Errorf("%s = %v (%v), want %v (UTC)", label, got, got.Location(), fixed)
+		}
+	}
+	decisionRow := func(t *testing.T, s *store.Store, id int64) store.DecisionRow {
+		t.Helper()
+		row, found, err := s.DecisionByID(id)
+		if err != nil || !found {
+			t.Fatalf("decision %d found=%v err=%v", id, found, err)
+		}
+		return row
+	}
+
+	t.Run("ordinary human decision", func(t *testing.T) {
+		f := flow.Flow{Name: "clock-decision", Stages: []flow.Stage{{
+			Name: "ask", Agents: []flow.AgentRef{{Package: "agent"}},
+			Workspace: "none", Completion: flow.CompletionAll, Gate: flow.GateAuto,
+		}}}
+		r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"ask/agent": {Asks: []levers.Decision{{
+				Kind: levers.DecisionChoice, Question: "Continue?", Options: []string{"yes", "no"},
+				Recommended: 0, Importance: 1,
+			}}},
+		}}
+		e, s := newEngineCfg(t, r, func(cfg *Config) {
+			cfg.Clock = core.ClockFunc(func() time.Time { return fixed })
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+		})
+		id, err := e.CreateIssue("engine decision clock", "", f.Name, levers.Matrix{"ask": flow.LeverYolo}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- e.StartIssue(context.Background(), id) }()
+		pending := waitForPendingStage(t, e, "ask")
+		created := decisionRow(t, s, pending.ID)
+		if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		answered := decisionRow(t, s, pending.ID)
+		assertTimestamp(t, "ordinary CreatedAt", created.CreatedAt)
+		assertTimestamp(t, "ordinary AnsweredAt", answered.AnsweredAt)
+	})
+
+	t.Run("human plan review", func(t *testing.T) {
+		f := planReviewFlow()
+		e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+			cfg.Clock = core.ClockFunc(func() time.Time { return fixed })
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+			cfg.PlanReview = planReviewSettings("manual-clock", "1", false)
+		})
+		id, err := e.CreateIssue("human review clock", "", f.Name, levers.Matrix{
+			"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+		}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- e.StartIssue(context.Background(), id) }()
+		pending := waitForPendingStage(t, e, "plan")
+		created := decisionRow(t, s, pending.ID)
+		if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		answered := decisionRow(t, s, pending.ID)
+		assertTimestamp(t, "human review CreatedAt", created.CreatedAt)
+		assertTimestamp(t, "human review AnsweredAt", answered.AnsweredAt)
+	})
+
+	t.Run("policy plan review", func(t *testing.T) {
+		f := planReviewFlow()
+		e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+			cfg.Clock = core.ClockFunc(func() time.Time { return fixed })
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+			cfg.PlanReview = planReviewSettings("policy-clock", "1", true)
+		})
+		id, err := e.CreateIssue("policy review clock", "", f.Name, levers.Matrix{
+			"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+		}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.StartIssue(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.ArtifactReviewRows(id)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("policy review rows = %+v, err=%v", rows, err)
+		}
+		assertTimestamp(t, "policy review CreatedAt", rows[0].CreatedAt)
+		assertTimestamp(t, "policy review AnsweredAt", rows[0].AnsweredAt)
+	})
+}
+
 func TestPauseBeforeStagePersistsBoundaryAndResumeUsesIt(t *testing.T) {
 	f := flow.Flow{Name: "paused", Stages: []flow.Stage{
 		{Name: "plan", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},

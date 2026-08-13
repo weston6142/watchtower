@@ -2223,7 +2223,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 				return fmt.Errorf("revalidate artifact review %d: %s", decisionID, result.Outcome)
 			}
 		}
-		if _, err := e.cfg.Store.ResolveArtifactReview(decisionID, target, response, provenance); err != nil {
+		if _, err := e.cfg.Store.ResolveArtifactReviewAt(decisionID, target, response, e.now(), provenance); err != nil {
 			if errors.Is(err, review.ErrStaleTarget) {
 				e.emitDecisionGateFailure(p.IssueID, p.ID, p.Stage, p.Evaluation, review.Result{Outcome: review.OutcomeStale, Err: err})
 			}
@@ -2286,7 +2286,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	}
 	delete(e.pend, decisionID)
 	e.mu.Unlock()
-	if err := e.cfg.Store.AnswerDecision(decisionID, response, "answered"); err != nil {
+	if err := e.cfg.Store.AnswerDecisionAt(decisionID, response, "answered", e.now()); err != nil {
 		return err
 	}
 	archiveErr := e.writeResolvedDecisionArchive(p.ID)
@@ -2460,7 +2460,7 @@ func (e *Engine) requestArtifactReview(
 		Why: d.Why, Consequences: d.Consequences,
 		Reversible: d.Reversible, Briefing: d.Briefing, Context: &decisionContext,
 		Evaluation: &evaluation, Bindings: bindings,
-		BlockingCost: e.blockingCost(is.id),
+		CreatedAt: e.now(), BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("request artifact review: %w", err)
@@ -2556,7 +2556,7 @@ func (e *Engine) requestPlanReview(
 		Reversible: d.Reversible, Briefing: d.Briefing,
 		Context: &decisionContext, ReviewPolicy: &policy, PageSnapshot: pageSnapshot,
 		Evaluation: &evaluation, Bindings: bindings,
-		BlockingCost: e.blockingCost(is.id),
+		CreatedAt: e.now(), BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("request plan review: %w", err)
@@ -2581,7 +2581,7 @@ func (e *Engine) requestPlanReview(
 			}
 			return levers.Response{}, fmt.Errorf("authorize plan review policy: %s", result.Outcome)
 		}
-		if _, err := e.cfg.Store.ResolveArtifactReview(rowID, target, levers.ChoiceResponse(0), provenance); err != nil {
+		if _, err := e.cfg.Store.ResolveArtifactReviewAt(rowID, target, levers.ChoiceResponse(0), e.now(), provenance); err != nil {
 			return levers.Response{}, fmt.Errorf("resolve plan review policy: %w", err)
 		}
 		payload := planReviewPayload(rowID, st.Name, policy)
@@ -3096,7 +3096,7 @@ func (e *Engine) escalateWithEvaluation(
 		Briefing:           d.Briefing,
 		Context:            &decisionContext,
 		Evaluation:         &evaluation, Bindings: []review.Binding{binding},
-		BlockingCost: e.blockingCost(is.id),
+		CreatedAt: e.now(), BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("insert decision: %w", err)
