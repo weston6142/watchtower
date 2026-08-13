@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +14,8 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
+	"github.com/weston6142/watchtower/internal/capability"
+	capruntime "github.com/weston6142/watchtower/internal/capability/runtime"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/plannerartifact"
@@ -28,7 +32,8 @@ func TestCodeRunnerReturnsStageResultEvidence(t *testing.T) {
 		codexJSONLine(map[string]any{"type": "turn.completed", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
 	}, "\n"))
 
-	res := <-testRunner(bin).Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	r := testRunner(bin)
+	res := <-r.Run(context.Background(), testStageRequest(r, "GH-67", "execute", "executor", t.TempDir()), make(chan runner.Ask))
 	if res.Err != nil || res.StageEvidence == nil {
 		t.Fatalf("result = %+v", res)
 	}
@@ -45,7 +50,8 @@ func TestCodeRunnerRejectsConflictingStageResultMarkers(t *testing.T) {
 		codexJSONLine(map[string]any{"type": "turn.completed", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}),
 	}, "\n"))
 
-	res := <-testRunner(bin).Run(context.Background(), "GH-67", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	r := testRunner(bin)
+	res := <-r.Run(context.Background(), testStageRequest(r, "GH-67", "execute", "executor", t.TempDir()), make(chan runner.Ask))
 	if res.Err == nil || res.FailureClass != runner.FailureProtocol || res.StageEvidence != nil {
 		t.Fatalf("result = %+v", res)
 	}
@@ -122,6 +128,55 @@ func testRunner(bin string) *CodeRunner {
 		},
 		DefaultModel:  "gpt-5.6-luna",
 		DefaultEffort: "xhigh",
+		Backend:       passthroughTestBackend{},
+	}
+}
+
+// passthroughTestBackend keeps parser, continuation, and invocation fixtures
+// focused on their observable adapter behavior. Provider-boundary tests use
+// NewPlatformBackend directly and therefore still exercise real containment.
+type passthroughTestBackend struct{}
+
+func (passthroughTestBackend) Preflight(contract capability.CompiledContract) (capability.EnforcementPlan, error) {
+	controls := runner.RequiredControls(contract)
+	proofs := make([]capability.ControlProof, 0, len(controls))
+	for _, control := range controls {
+		proofs = append(proofs, capability.ControlProof{Control: control, Proven: true})
+	}
+	return runner.NewEnforcementPlan(contract, "test-runtime", "passthrough", "1", proofs)
+}
+
+func (passthroughTestBackend) Wrap(request capruntime.ProcessRequest) (capruntime.ProcessRequest, error) {
+	return request, nil
+}
+
+func testStageRequest(r *CodeRunner, issueID, stage, agent, workdir string) runner.StageRequest {
+	contract := sealCodexTestContract(capability.Contract{
+		Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
+		IssueID: issueID, Stage: stage, AttemptID: "attempt-test", Profile: "implementation",
+		WorkspaceRoot: workdir,
+		Operations: []capability.OperationClass{
+			capability.OpWorkspaceRead, capability.OpWorkspaceMutate, capability.OpLocalProcess,
+			capability.OpVCSRead, capability.OpVCSCommit, capability.OpPlannerArtifactApply,
+		},
+	})
+	plan, err := r.Preflight(context.Background(), runner.PreflightRequest{
+		IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return runner.StageRequest{IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract, Plan: plan}
+}
+
+func sealCodexTestContract(contract capability.Contract) capability.CompiledContract {
+	body, _ := json.Marshal(contract)
+	authority := contract
+	authority.AttemptID = ""
+	authorityBody, _ := json.Marshal(authority)
+	contractSum, authoritySum := sha256.Sum256(body), sha256.Sum256(authorityBody)
+	return capability.CompiledContract{
+		Contract: contract, ContractID: hex.EncodeToString(contractSum[:]), AuthorityDigest: hex.EncodeToString(authoritySum[:]),
 	}
 }
 
@@ -148,7 +203,7 @@ func (g *recordingGate) Complete(_ context.Context, _ runner.ToolDecision, actua
 func runTurn(t *testing.T, ctx context.Context, r *CodeRunner, workdir string) runner.Result {
 	t.Helper()
 	asks := make(chan runner.Ask, 1)
-	return <-r.Run(ctx, "GH-1", "execute", "executor", workdir, asks)
+	return <-r.Run(ctx, testStageRequest(r, "GH-1", "execute", "executor", workdir), asks)
 }
 
 func successfulStub(prefix string) string {
@@ -184,17 +239,20 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE"; done`))
 	args := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
 	joined := strings.Join(args, "\n")
 	for _, want := range []string{
-		"exec", "--json", "-C", workdir, "-m", "gpt-5.6-luna",
+		"exec", "--json", "-C", "-m", "gpt-5.6-luna",
+		"--strict-config", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
 		`model_reasoning_effort="xhigh"`,
-		`sandbox_mode="danger-full-access"`,
+		`sandbox_mode="read-only"`,
 		`approval_policy="never"`,
+		`tools.web_search=false`,
+		`features.shell_tool=false`,
 		`developer_instructions="Implement and verify."`,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv missing %q:\n%s", want, joined)
 		}
 	}
-	for _, forbidden := range []string{"--ignore-user-config", "--ignore-rules", "--ephemeral"} {
+	for _, forbidden := range []string{workdir, "--ephemeral"} {
 		if strings.Contains(joined, forbidden) {
 			t.Errorf("argv contains %q:\n%s", forbidden, joined)
 		}
@@ -216,7 +274,8 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE_ARGV"; done`))
 	r.ExtraEnv = []string{"CAPTURE_ENV=" + envCapture, "CAPTURE_ARGV=" + argvCapture}
 	t.Setenv("WATCHTOWER_PLANNER_SESSION", sentinel)
 	ctx := context.Background()
-	res := <-r.RunPlanner(ctx, "GH-1", "plan", "executor", t.TempDir(), make(chan runner.Ask), nil)
+	workdir := t.TempDir()
+	res := <-r.RunPlanner(ctx, testStageRequest(r, "GH-1", "plan", "executor", workdir), make(chan runner.Ask), nil)
 	if res.Err != nil {
 		t.Fatal(res.Err)
 	}
@@ -252,7 +311,7 @@ fi`+successfulStub(""))
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := <-r.RunPlanner(runner.WithPlannerArtifactAuthority(context.Background(), authority), "GH-72", "plan", "executor", workdir, make(chan runner.Ask), nil)
+	result := <-r.RunPlanner(runner.WithPlannerArtifactAuthority(context.Background(), authority), testStageRequest(r, "GH-72", "plan", "executor", workdir), make(chan runner.Ask), nil)
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
@@ -272,7 +331,8 @@ printf '%s\n' "$GOCACHE" "$GOMODCACHE" "$GOPATH" "$SENTINEL" > "$CAPTURE"`))
 	ctx := runner.WithManagedEnvironment(context.Background(), []string{
 		"GOCACHE=lease-cache", "GOMODCACHE=lease-mod", "GOPATH=lease-path",
 	})
-	res := <-r.Run(ctx, "GH-48", "execute", "executor", t.TempDir(), make(chan runner.Ask))
+	workdir := t.TempDir()
+	res := <-r.Run(ctx, testStageRequest(r, "GH-48", "execute", "executor", workdir), make(chan runner.Ask))
 	if res.Err != nil {
 		t.Fatal(res.Err)
 	}
@@ -408,8 +468,8 @@ func TestEligibleFailureUsesExactlyOneFallbackAndCompletes(t *testing.T) {
 	if got := readCount(t, state); got != 2 {
 		t.Fatalf("process attempts = %d, want one primary and one fallback", got)
 	}
-	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "features.unified_exec=true") {
-		t.Fatalf("fallback argv = %q", got)
+	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "features.unified_exec=false") || strings.Contains(got, "features.unified_exec=true") {
+		t.Fatalf("fallback widened native execution authority: %q", got)
 	}
 }
 
@@ -489,7 +549,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "features.unified_exec=false") {
 		t.Fatalf("primary resumed argv = %q", got)
 	}
-	if got := strings.Join(readCapturedArgs(t, state, 3), "\n"); !strings.Contains(got, "features.unified_exec=true") || !containsArg(readCapturedArgs(t, state, 3), "thr-fallback-resume") {
+	if got := strings.Join(readCapturedArgs(t, state, 3), "\n"); !strings.Contains(got, "features.unified_exec=false") || strings.Contains(got, "features.unified_exec=true") || !containsArg(readCapturedArgs(t, state, 3), "thr-fallback-resume") {
 		t.Fatalf("fallback resumed argv = %q", got)
 	}
 }
@@ -510,11 +570,12 @@ func readCount(t *testing.T, state string) int {
 func TestPlannerToolReconcilesAfterTurnUsage(t *testing.T) {
 	bin := writeStub(t, `
 printf '%s\n' '{"type":"thread.started","thread_id":"thr-planner"}'
-printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","command":"cat ISSUE.md"}}'
+printf '%s\n' '{"type":"item.started","item":{"type":"mcp_tool_call","server":"watchtower","tool":"local_process"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":7}}'`)
 	gate := &recordingGate{}
 	r := testRunner(bin)
-	done := r.RunPlanner(context.Background(), "GH-39", "plan", "executor", t.TempDir(), make(chan runner.Ask), gate)
+	workdir := t.TempDir()
+	done := r.RunPlanner(context.Background(), testStageRequest(r, "GH-39", "plan", "executor", workdir), make(chan runner.Ask), gate)
 	result := <-done
 	if result.Err != nil || result.Tokens != 12 || !result.TokensKnown {
 		t.Fatalf("result = %+v", result)
@@ -557,7 +618,8 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$CAPTURE"; done`))
 func TestUnknownPackageFailsWithoutStartingCodex(t *testing.T) {
 	r := testRunner(filepath.Join(t.TempDir(), "missing-codex"))
 	asks := make(chan runner.Ask, 1)
-	res := <-r.Run(context.Background(), "GH-1", "execute", "missing", t.TempDir(), asks)
+	workdir := t.TempDir()
+	res := <-r.Run(context.Background(), testStageRequest(r, "GH-1", "execute", "missing", workdir), asks)
 	if res.Err == nil || !strings.Contains(res.Err.Error(), `unknown agent package "missing"`) {
 		t.Fatalf("result = %+v", res)
 	}
@@ -662,7 +724,7 @@ case "$count" in
 
 func stageRun(r *CodeRunner, pkg, stage string) (<-chan runner.Result, chan runner.Ask) {
 	asks := make(chan runner.Ask, 1)
-	return r.Run(context.Background(), "GH-1", stage, pkg, os.TempDir(), asks), asks
+	return r.Run(context.Background(), testStageRequest(r, "GH-1", stage, pkg, os.TempDir()), asks), asks
 }
 
 func readCapturedArgs(t *testing.T, state string, invocation int) []string {
@@ -765,7 +827,14 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	r := testRunner(bin)
 	r.ExtraEnv = []string{"STATE=" + state}
 	done, asks := stageRun(r, "executor", "execute")
-	ask := <-asks
+	var ask runner.Ask
+	select {
+	case ask = <-asks:
+	case res := <-done:
+		t.Fatalf("runner ended before emitting the repaired decision: %+v", res)
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner neither emitted the repaired decision nor completed")
+	}
 	if ask.Decision.Why != "Safe." || ask.Decision.Briefing == nil ||
 		len(ask.Decision.Briefing.Proof) != 1 || ask.Decision.Briefing.Proof[0].Cite != "go test ./internal/decisionpage" {
 		t.Fatalf("ask was not repaired: %+v", ask.Decision)

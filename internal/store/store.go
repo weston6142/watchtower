@@ -86,9 +86,48 @@ CREATE TABLE IF NOT EXISTS stage_lifecycle_attempts(
   stage_result_outcome TEXT NOT NULL DEFAULT '',
   stage_result_status TEXT NOT NULL DEFAULT '',
   predecessor_attempt_id TEXT NOT NULL DEFAULT '',
+  capability_schema_version INTEGER NOT NULL DEFAULT 0,
+  capability_contract_sha256 TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   PRIMARY KEY(issue_id,stage,attempt_id)
 );
+CREATE TABLE IF NOT EXISTS capability_attempts(
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  contract_json TEXT NOT NULL,
+  contract_digest TEXT NOT NULL,
+  authority_digest TEXT NOT NULL,
+  enforcement_plan_json TEXT NOT NULL DEFAULT '',
+  enforcement_plan_digest TEXT NOT NULL DEFAULT '',
+  baseline_json TEXT NOT NULL DEFAULT '',
+  baseline_digest TEXT NOT NULL DEFAULT '',
+  validation_json TEXT NOT NULL DEFAULT '',
+  final_status TEXT NOT NULL DEFAULT '',
+  immutable_result_digest TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(issue_id,stage,attempt_id)
+);
+CREATE TABLE IF NOT EXISTS capability_audit_records(
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  contract_id TEXT NOT NULL DEFAULT '',
+  phase TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  provider TEXT NOT NULL DEFAULT '',
+  implementation TEXT NOT NULL DEFAULT '',
+  operation TEXT NOT NULL DEFAULT '',
+  paths_json TEXT NOT NULL DEFAULT '[]',
+  diagnostic TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS capability_audit_attempt_order
+  ON capability_audit_records(issue_id,stage,attempt_id,sequence);
 CREATE TABLE IF NOT EXISTS stage_attempt_archives(
   issue_id TEXT NOT NULL,
   stage TEXT NOT NULL,
@@ -319,14 +358,15 @@ type RunState struct {
 }
 
 const (
-	IntegrationClaimed               = "claimed"
-	IntegrationVerificationReady     = "verification_ready"
-	IntegrationPendingReverification = "pending_reverification"
-	IntegrationReverificationFailed  = "reverification_failed"
-	IntegrationPublishPending        = "publish_pending"
-	IntegrationCleanupNeeded         = "cleanup_needed"
-	IntegrationMerged                = "merged"
-	IntegrationPreserved             = "preserved"
+	IntegrationClaimed                  = "claimed"
+	IntegrationVerificationReady        = "verification_ready"
+	IntegrationPendingReverification    = "pending_reverification"
+	IntegrationReverificationFailed     = "reverification_failed"
+	IntegrationPublishPending           = "publish_pending"
+	IntegrationCleanupNeeded            = "cleanup_needed"
+	IntegrationMerged                   = "merged"
+	IntegrationPreserved                = "preserved"
+	IntegrationCapabilityRecoveryNeeded = "capability_recovery_needed"
 )
 
 type IssueIntegration struct {
@@ -400,6 +440,8 @@ func Open(path string) (*Store, error) {
 		{"stage_result_outcome", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN stage_result_outcome TEXT NOT NULL DEFAULT ''`},
 		{"stage_result_status", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN stage_result_status TEXT NOT NULL DEFAULT ''`},
 		{"predecessor_attempt_id", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN predecessor_attempt_id TEXT NOT NULL DEFAULT ''`},
+		{"capability_schema_version", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN capability_schema_version INTEGER NOT NULL DEFAULT 0`},
+		{"capability_contract_sha256", `ALTER TABLE stage_lifecycle_attempts ADD COLUMN capability_contract_sha256 TEXT NOT NULL DEFAULT ''`},
 	} {
 		if err := ensureColumn(db, "stage_lifecycle_attempts", migration.column, migration.alter); err != nil {
 			return nil, err

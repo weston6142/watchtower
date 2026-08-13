@@ -3,6 +3,8 @@ package main_test
 import (
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -225,18 +227,20 @@ func stopProcess(t *testing.T, cmd *exec.Cmd) {
 }
 
 type e2eOptions struct {
-	mode string
+	mode   string
+	runner string
 }
 
 type flowE2E struct {
-	t      *testing.T
-	bin    string
-	root   string
-	base   string
-	repo   string
-	remote string
-	lanes  string
-	log    string
+	t        *testing.T
+	bin      string
+	root     string
+	base     string
+	repo     string
+	remote   string
+	lanes    string
+	log      string
+	pauseURL string
 }
 
 func newFlowE2E(t *testing.T, options e2eOptions) *flowE2E {
@@ -257,14 +261,73 @@ func newFlowE2E(t *testing.T, options e2eOptions) *flowE2E {
 			t.Fatal(err)
 		}
 	}
+	if options.mode == "pause-change" {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			_ = os.WriteFile(filepath.Join(h.lanes, "change-started"), []byte("started\n"), 0o644)
+			ticker := time.NewTicker(20 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				if _, err := os.Stat(filepath.Join(h.lanes, "change-released")); err == nil {
+					writer.WriteHeader(http.StatusNoContent)
+					return
+				}
+				select {
+				case <-request.Context().Done():
+					_ = os.WriteFile(filepath.Join(h.lanes, "change-aborted"), []byte("aborted\n"), 0o644)
+					return
+				case <-ticker.C:
+				}
+			}
+		}))
+		h.pauseURL = server.URL
+		t.Cleanup(server.Close)
+	}
 	h.git(h.repo, "init", "-q", "-b", "main")
 	h.git(h.repo, "config", "user.email", "test@example.com")
 	h.git(h.repo, "config", "user.name", "Test")
-	verify := "#!/bin/sh\nset -eu\ntest \"$(cat feature.txt)\" = delivered\n"
-	if err := os.WriteFile(filepath.Join(h.repo, "verify-e2e.sh"), []byte(verify), 0o755); err != nil {
-		t.Fatal(err)
+	verify := `#!/bin/sh
+set -eu
+test "$(cat feature.txt)" = delivered
+case "${WT_E2E_MODE:-}" in
+  advance-base)
+    if [ ! -f "$WT_E2E_LANES/.base-advanced" ]; then
+      printf 'advanced\n' > "$WT_E2E_REPO/base-advanced.txt"
+      git -C "$WT_E2E_REPO" add base-advanced.txt
+      git -C "$WT_E2E_REPO" commit -qm 'test: advance base'
+      touch "$WT_E2E_LANES/.base-advanced"
+    fi
+    ;;
+  profile-matrix)
+    if [ ! -f "$WT_E2E_LANES/.base-conflicted" ]; then
+      printf 'base advanced\n' > "$WT_E2E_REPO/feature.txt"
+      git -C "$WT_E2E_REPO" add feature.txt
+      git -C "$WT_E2E_REPO" commit -qm 'test: create scoped conflict'
+      touch "$WT_E2E_LANES/.base-conflicted"
+    fi
+    ;;
+esac
+`
+	seed := map[string]struct {
+		body string
+		mode os.FileMode
+	}{
+		"verify-e2e.sh": {verify, 0o755},
+		"feature.txt":   {"base\n", 0o644},
+		"rename.txt":    {"rename me\n", 0o644},
+		"delete.txt":    {"delete me\n", 0o644},
+		"docs/guide.md": {"base docs\n", 0o644},
+		"product.md":    {"product sentinel\n", 0o644},
 	}
-	h.git(h.repo, "add", "verify-e2e.sh")
+	for name, file := range seed {
+		path := filepath.Join(h.repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(file.body), file.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.git(h.repo, "add", "verify-e2e.sh", "feature.txt", "rename.txt", "delete.txt", "docs/guide.md", "product.md")
 	h.git(h.repo, "commit", "-qm", "base")
 	h.git(h.remote, "init", "--bare", "-q")
 	h.git(h.repo, "remote", "add", "origin", h.remote)
@@ -272,11 +335,12 @@ func newFlowE2E(t *testing.T, options e2eOptions) *flowE2E {
 	run(t, h.bin, h.repo, "init", "--data", h.base)
 	h.writeSyntheticFlow(options)
 	h.installTreehouseShim(options)
-	h.installCodexShim(options)
+	h.installCapabilityProvider(options)
 	t.Setenv("PATH", filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WT_E2E_REPO", h.repo)
 	t.Setenv("WT_E2E_LANES", h.lanes)
 	t.Setenv("WT_E2E_LOG", h.log)
+	t.Setenv("WT_E2E_ROOT", h.root)
 	t.Setenv("WT_E2E_MODE", options.mode)
 	if options.mode == "publish-fail" {
 		h.git(h.repo, "remote", "set-url", "origin", filepath.Join(root, "missing-origin.git"))
@@ -287,6 +351,236 @@ func newFlowE2E(t *testing.T, options e2eOptions) *flowE2E {
 	})
 	return h
 }
+
+func (h *flowE2E) installCapabilityProvider(options e2eOptions) {
+	h.t.Helper()
+	source := strings.NewReplacer(
+		"{{MODE}}", strconv.Quote(options.mode),
+		"{{ROOT}}", strconv.Quote(h.root),
+		"{{PAUSE_URL}}", strconv.Quote(h.pauseURL),
+	).Replace(capabilityProviderSource)
+	sourceDir := filepath.Join(h.root, "provider-source")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	sourcePath := filepath.Join(sourceDir, "main.go")
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+	codexPath := filepath.Join(h.root, "bin", "codex-e2e")
+	command := exec.Command("go", "build", "-o", codexPath, sourcePath)
+	command.Env = os.Environ()
+	if output, err := command.CombinedOutput(); err != nil {
+		h.t.Fatalf("build capability provider: %v: %s", err, output)
+	}
+	claudePath := filepath.Join(h.root, "bin", "claude-e2e")
+	if err := os.Link(codexPath, claudePath); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+const capabilityProviderSource = `package main
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+)
+
+const testMode = {{MODE}}
+const e2eRoot = {{ROOT}}
+const pauseURL = {{PAUSE_URL}}
+
+var stagePattern = regexp.MustCompile("run the ([a-z-]+) stage")
+var requestID = 10
+
+type response struct {
+	Error *struct{ Message string ` + "`json:\"message\"`" + ` } ` + "`json:\"error\"`" + `
+	Result struct {
+		Content []struct{ Text string ` + "`json:\"text\"`" + ` } ` + "`json:\"content\"`" + `
+		IsError bool ` + "`json:\"isError\"`" + `
+	} ` + "`json:\"result\"`" + `
+}
+
+func main() {
+	parent := os.Getppid()
+	go func() {
+		for {
+			time.Sleep(20 * time.Millisecond)
+			if os.Getppid() != parent {
+				os.Exit(143)
+			}
+		}
+	}()
+	provider := "codex"
+	input := strings.Join(os.Args[1:], " ")
+	if strings.Contains(filepath.Base(os.Args[0]), "claude") {
+		provider = "claude"
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		input += " " + line
+	}
+	match := stagePattern.FindStringSubmatch(input)
+	if len(match) != 2 {
+		os.Exit(31)
+	}
+	stage := match[1]
+	sessionID := "thr-" + stage
+	if testMode == "provider-containment" {
+		sessionID = "provider-contained"
+	}
+	emitStart(provider, sessionID)
+
+	endpoint := os.Getenv("WATCHTOWER_CAPABILITY_GATEWAY_URL")
+	if endpoint == "" {
+		os.Exit(32)
+	}
+	initialize(endpoint)
+
+	if testMode == "provider-containment" {
+		if err := os.WriteFile(filepath.Join(e2eRoot, "provider-escaped"), []byte("escaped\n"), 0o644); err == nil {
+			os.Exit(33)
+		}
+		os.Exit(34)
+	}
+
+	switch stage {
+	case "prepare-input":
+		mutate(endpoint, map[string]any{"action":"write", "path":"prepared.txt", "content":"prepared\n", "mutation":"create"})
+		touchset := "{\"globs\":[\"feature.txt\"]}\n"
+		if testMode == "profile-matrix" {
+			touchset = "{\"globs\":[\"feature.txt\",\"created.txt\",\"rename.txt\",\"renamed.txt\",\"delete.txt\",\"review.txt\",\"docs/**\"]}\n"
+		}
+		mutate(endpoint, map[string]any{"action":"write", "path":"touchset.json", "content":touchset, "mutation":"create"})
+	case "inspect-input":
+		call(endpoint, "workspace_read", map[string]any{"path":"ISSUE.md"})
+	case "change-repository":
+		if testMode == "runtime-denial" {
+			go func() { time.Sleep(750*time.Millisecond); _ = os.WriteFile(filepath.Join(e2eRoot, "prohibited-side-effect"), []byte("bad"), 0o644) }()
+			call(endpoint, "workspace_destroy", map[string]any{})
+			os.Exit(35)
+		}
+		if testMode == "pause-change" {
+			pauseUntilReleased()
+		}
+		if testMode == "outside-mutation" {
+			if err := os.WriteFile(filepath.Join(e2eRoot, "outside.txt"), []byte("bad"), 0o644); err == nil {
+				os.Exit(37)
+			}
+			call(endpoint, "workspace_mutate", map[string]any{"action":"write", "path":"outside.txt", "content":"bad", "mutation":"create"})
+			os.Exit(38)
+		}
+		mutate(endpoint, map[string]any{"action":"write", "path":"feature.txt", "content":"delivered\n", "mutation":"modify"})
+		if testMode == "profile-matrix" {
+			mutate(endpoint, map[string]any{"action":"write", "path":"created.txt", "content":"created\n", "mutation":"create"})
+			mutate(endpoint, map[string]any{"action":"remove", "path":"delete.txt"})
+			mutate(endpoint, map[string]any{"action":"rename", "from":"rename.txt", "to":"renamed.txt"})
+			mutate(endpoint, map[string]any{"action":"write", "path":"renamed.txt", "content":"renamed\n", "mutation":"modify"})
+		}
+		fmt.Fprintf(os.Stderr, "e2e status before commit=%q\n", call(endpoint, "vcs_read", map[string]any{"args":[]string{"status", "--porcelain=v1"}}))
+		call(endpoint, "vcs_commit", map[string]any{"message":"test: exercise scoped mutations"})
+	case "review-change":
+		mutate(endpoint, map[string]any{"action":"write", "path":"review.txt", "content":"reviewed\n", "mutation":"create"})
+		call(endpoint, "vcs_commit", map[string]any{"message":"test: review scoped change"})
+	case "document-change":
+		mutate(endpoint, map[string]any{"action":"write", "path":"docs/guide.md", "content":"documented\n", "mutation":"modify"})
+		call(endpoint, "vcs_commit", map[string]any{"message":"docs: exercise librarian scope"})
+	case "integrate-safely":
+		branch := strings.TrimSpace(call(endpoint, "vcs_read", map[string]any{"args":[]string{"rev-parse", "HEAD"}}))
+		base := strings.TrimSpace(call(endpoint, "vcs_read", map[string]any{"args":[]string{"rev-parse", "main"}}))
+		mutate(endpoint, map[string]any{"action":"write", "path":"merge-report.md", "content":"verification passed\n", "mutation":"create"})
+		decision := fmt.Sprintf("{\"decision\":\"merge\",\"branch_commit\":%q,\"base_commit\":%q}\n", branch, base)
+		mutate(endpoint, map[string]any{"action":"write", "path":"merge-decision.json", "content":decision, "mutation":"create"})
+	case "conflict-resolution":
+		mutate(endpoint, map[string]any{"action":"write", "path":"feature.txt", "content":"delivered\n", "mutation":"modify"})
+		mutate(endpoint, map[string]any{"action":"write", "path":"conflict-report.md", "content":"conflict resolved\n", "mutation":"create"})
+		mutate(endpoint, map[string]any{"action":"write", "path":"conflict-decision.json", "content":"{\"decision\":\"resolved\"}\n", "mutation":"create"})
+	default:
+		os.Exit(39)
+	}
+	emitComplete(provider)
+}
+
+func initialize(endpoint string) {
+	rpc(endpoint, map[string]any{"jsonrpc":"2.0", "id":1, "method":"initialize", "params":map[string]any{
+		"protocolVersion":"2025-03-26", "capabilities":map[string]any{}, "clientInfo":map[string]any{"name":"watchtower-e2e", "version":"1"},
+	}})
+	rpc(endpoint, map[string]any{"jsonrpc":"2.0", "method":"notifications/initialized"})
+}
+
+func mutate(endpoint string, arguments map[string]any) {
+	fmt.Fprintf(os.Stderr, "e2e gateway mutation action=%v path=%v from=%v to=%v\n", arguments["action"], arguments["path"], arguments["from"], arguments["to"])
+	call(endpoint, "workspace_mutate", arguments)
+}
+
+func call(endpoint, name string, arguments map[string]any) string {
+	fmt.Fprintf(os.Stderr, "e2e gateway call name=%s\n", name)
+	requestID++
+	decoded := rpc(endpoint, map[string]any{"jsonrpc":"2.0", "id":requestID, "method":"tools/call", "params":map[string]any{"name":name, "arguments":arguments}})
+	if decoded.Error != nil || decoded.Result.IsError {
+		os.Exit(40)
+	}
+	if len(decoded.Result.Content) == 0 {
+		return ""
+	}
+	return decoded.Result.Content[0].Text
+}
+
+func rpc(endpoint string, request any) response {
+	body, err := json.Marshal(request)
+	if err != nil { panic(err) }
+	client := &http.Client{Transport:&http.Transport{Proxy:nil, DialContext:(&net.Dialer{Timeout:2*time.Second}).DialContext}, Timeout:35*time.Second}
+	httpRequest, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil { panic(err) }
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "application/json, text/event-stream")
+	httpResponse, err := client.Do(httpRequest)
+	if err != nil { os.Exit(41) }
+	defer httpResponse.Body.Close()
+	encoded, err := io.ReadAll(httpResponse.Body)
+	if err != nil { os.Exit(42) }
+	if len(encoded) == 0 { return response{} }
+	var decoded response
+	if err := json.Unmarshal(encoded, &decoded); err != nil { os.Exit(43) }
+	return decoded
+}
+
+func pauseUntilReleased() {
+	client := &http.Client{Transport:&http.Transport{Proxy:nil, DialContext:(&net.Dialer{Timeout:2*time.Second}).DialContext}}
+	request, err := http.NewRequest(http.MethodGet, pauseURL, nil)
+	if err != nil { os.Exit(44) }
+	response, err := client.Do(request)
+	if err != nil { os.Exit(45) }
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent { os.Exit(46) }
+}
+
+func emitStart(provider, id string) {
+	if provider == "claude" {
+		fmt.Printf("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":%q}\n", id)
+		return
+	}
+	fmt.Printf("{\"type\":\"thread.started\",\"thread_id\":%q}\n", id)
+}
+
+func emitComplete(provider string) {
+	if provider == "claude" {
+		fmt.Println("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"synthetic stage complete\"}]}}")
+		fmt.Println("{\"type\":\"result\",\"is_error\":false,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}")
+		return
+	}
+	fmt.Println("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"synthetic stage complete\"}}")
+	fmt.Println("{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}")
+}
+`
 
 func (h *flowE2E) git(dir string, args ...string) string {
 	h.t.Helper()
@@ -478,47 +772,102 @@ func tailBytes(body []byte, limit int) string {
 	return string(body)
 }
 
-func (h *flowE2E) writeSyntheticFlow(_ e2eOptions) {
+func (h *flowE2E) writeSyntheticFlow(options e2eOptions) {
 	h.t.Helper()
 	flowBody := `name: synthetic
 stages:
   - name: prepare-input
+    capability_profile: artifact
     agents: [{package: preparer}]
     workspace: worktree
-    gate: auto
-    artifacts: [prepared.txt]
+    gate: plan_review
+    artifacts: [prepared.txt, touchset.json]
   - name: change-repository
+    capability_profile: implementation
     agents: [{package: changer}]
     workspace: worktree
     gate: auto
   - name: integrate-safely
+    capability_profile: final-review
     agents: [{package: integrator}]
     workspace: worktree
     gate: auto
     merge_barrier: true
     artifacts: [merge-report.md, merge-decision.json, verification.json]
 `
+	if options.mode == "profile-matrix" {
+		flowBody = `name: synthetic
+stages:
+  - name: prepare-input
+    capability_profile: artifact
+    agents: [{package: preparer}]
+    workspace: worktree
+    gate: plan_review
+    artifacts: [prepared.txt, touchset.json]
+  - name: inspect-input
+    capability_profile: inspect
+    agents: [{package: inspector}]
+    workspace: readonly
+    gate: auto
+  - name: change-repository
+    capability_profile: implementation
+    agents: [{package: changer}]
+    workspace: worktree
+    gate: auto
+  - name: review-change
+    capability_profile: review
+    agents: [{package: reviewer}]
+    workspace: worktree
+    gate: auto
+  - name: document-change
+    capability_profile: librarian
+    documentation_paths: [docs/**, docs-draft-*]
+    agents: [{package: documenter}]
+    workspace: worktree
+    gate: auto
+  - name: integrate-safely
+    capability_profile: final-review
+    agents: [{package: integrator}]
+    workspace: worktree
+    gate: auto
+    merge_barrier: true
+    artifacts: [merge-report.md, merge-decision.json, verification.json]
+`
+	}
 	watchtower := filepath.Join(h.repo, ".watchtower")
 	if err := os.WriteFile(filepath.Join(watchtower, "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
 		h.t.Fatal(err)
 	}
-	config := fmt.Sprintf(`runner: codex
+	runnerName := options.runner
+	if runnerName == "" {
+		runnerName = "codex"
+	}
+	config := fmt.Sprintf(`runner: %s
 codex_bin: %s
+claude_bin: %s
 codex_model: test-model
 codex_effort: low
 test_cmd: ./verify-e2e.sh
+plan_review:
+  policy_id: e2e-auto
+  policy_version: "1"
+  auto_approve_regular: true
 pull: false
 push: true
-`, filepath.Join(h.root, "bin", "codex-e2e"))
+`, runnerName, filepath.Join(h.root, "bin", "codex-e2e"), filepath.Join(h.root, "bin", "claude-e2e"))
 	if err := os.WriteFile(filepath.Join(watchtower, "config.yaml"), []byte(config), 0o644); err != nil {
 		h.t.Fatal(err)
 	}
 	identities := map[string][3]string{
-		"preparer":   {"Input Preparer", "green", "◈"},
-		"changer":    {"Repository Changer", "blue", "✚"},
-		"integrator": {"Safe Integrator", "orange", "⛨"},
+		"preparer":          {"Input Preparer", "green", "◈"},
+		"inspector":         {"Readonly Inspector", "cyan", "⌕"},
+		"changer":           {"Repository Changer", "blue", "✚"},
+		"reviewer":          {"Change Reviewer", "violet", "✓"},
+		"documenter":        {"Documentation Librarian", "yellow", "▤"},
+		"integrator":        {"Safe Integrator", "orange", "⛨"},
+		"conflict-resolver": {"Conflict Resolver", "red", "⇄"},
 	}
-	for _, name := range []string{"preparer", "changer", "integrator"} {
+	for _, name := range []string{"preparer", "inspector", "changer", "reviewer", "documenter", "integrator", "conflict-resolver"} {
 		dir := filepath.Join(watchtower, "packages", name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			h.t.Fatal(err)
@@ -575,66 +924,6 @@ case "$1" in
 esac
 `
 	h.writeExecutable(filepath.Join(h.root, "bin", "treehouse"), body)
-}
-
-func (h *flowE2E) installCodexShim(_ e2eOptions) {
-	h.t.Helper()
-	body := `#!/bin/sh
-set -eu
-
-stage=$(sed -n 's/^- Stage: //p' STAGE.md | head -1)
-base=$(sed -n 's/^- Base commit: //p' STAGE.md | head -1)
-
-case "$stage" in
-  prepare-input)
-    printf 'prepared\n' > prepared.txt
-    ;;
-  change-repository)
-	printf 'codex change start pid=%s parent=%s\n' "$$" "$PPID" >> "$WT_E2E_LOG"
-    if [ "${WT_E2E_MODE:-}" = "pause-change" ] && [ ! -f "$WT_E2E_LANES/change-released" ]; then
-      touch "$WT_E2E_LANES/change-started"
-      parent=$PPID
-      while [ ! -f "$WT_E2E_LANES/change-released" ]; do
-		if ! kill -0 "$parent" 2>/dev/null; then
-		  printf 'codex change parent-dead pid=%s parent=%s\n' "$$" "$parent" >> "$WT_E2E_LOG"
-		  touch "$WT_E2E_LANES/change-aborted"
-		  exit 143
-		fi
-        sleep 0.02
-      done
-		printf 'codex change released pid=%s parent=%s\n' "$$" "$parent" >> "$WT_E2E_LOG"
-    fi
-    printf 'delivered\n' > feature.txt
-    git add feature.txt
-    git commit -qm 'test: deliver synthetic change'
-	printf 'codex change committed pid=%s parent=%s\n' "$$" "$PPID" >> "$WT_E2E_LOG"
-    ;;
-  integrate-safely)
-    ./verify-e2e.sh
-    if [ "${WT_E2E_MODE:-}" = "advance-base" ] && [ ! -f "$WT_E2E_LANES/.base-advanced" ]; then
-      printf 'advanced\n' > "$WT_E2E_REPO/base-advanced.txt"
-      git -C "$WT_E2E_REPO" add base-advanced.txt
-      git -C "$WT_E2E_REPO" commit -qm 'test: advance base'
-      touch "$WT_E2E_LANES/.base-advanced"
-    fi
-    branch=$(git rev-parse HEAD)
-    tree=$(git rev-parse 'HEAD^{tree}')
-    printf 'verification passed\n' > merge-report.md
-    printf '{"decision":"merge","branch_commit":"%s","base_commit":"%s"}\n' "$branch" "$base" > merge-decision.json
-    printf '{"base_sha":"%s","branch_sha":"%s","tree_sha":"%s","passed":true,"commands":[["./verify-e2e.sh"]]}\n' "$base" "$branch" "$tree" > verification.json
-    ;;
-  *)
-    printf 'unexpected stage %s\n' "$stage" >&2
-    exit 3
-    ;;
-esac
-
-safe_stage=$(printf '%s' "$stage" | tr -cd 'A-Za-z0-9_-')
-printf '{"type":"thread.started","thread_id":"thr-%s"}\n' "$safe_stage"
-printf '{"type":"item.completed","item":{"type":"agent_message","text":"synthetic stage complete"}}\n'
-printf '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n'
-`
-	h.writeExecutable(filepath.Join(h.root, "bin", "codex-e2e"), body)
 }
 
 func (h *flowE2E) writeExecutable(path, body string) {

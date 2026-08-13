@@ -64,11 +64,40 @@ The inspector describes loaded configuration, not lane completion. In
 particular, a completed merge-verifier transcript does not make an issue done.
 Final-stage completion requires strict `merge-decision.json` and
 `verification.json` validation plus the durable `verification_ready`
-checkpoint described in lane-ops-and-issue-states. When `test_cmd` is
-configured, the daemon authors `verification.json` after the merge-barrier
-stage; repositories without a `test_cmd` retain the agent-authored receipt
-path. Restart the daemon after any provider, config, prompt, or flow edit so
-the verifier receives the current contract.
+checkpoint described in lane-ops-and-issue-states. Integrating flows require
+`test_cmd`; the engine authors `verification.json` only after the final-review
+capability result is validated and bound. Restart the daemon after any
+provider, config, prompt, or flow edit so final review receives the current
+contract.
+
+## Declared and effective capabilities
+
+Every stage row shows the daemon-loaded `capability_profile`; librarian rows
+also show their explicit `documentation_paths`. These are declarations, not
+proof that a particular issue attempt received authority. Repository-default
+views therefore show no fabricated effective contract.
+
+An issue-scoped setup view adds the newest durable capability attempt for each
+stage when one exists. The bounded projection includes contract version and
+identity, authority digest, sorted operation classes, read/write counts,
+agent/engine output counts, provider implementation and plan identity, and
+preflight/final-validation outcomes. `unavailable` means the corresponding
+durable evidence does not exist; it never means passed. The inspector loads
+this evidence from the store and does not compile a contract, preflight a
+provider, or trust a mutable worktree while rendering.
+
+Policy failures show only the stable reason, phase, normalized operation,
+canonical path facts, and required next state change. A runtime or post-stage
+violation that quarantined the issue workspace shows `trusted_workspace` as
+the recovery requirement. Prompts, file contents, argv and tool payloads,
+environment values, credentials, remote URLs, sockets, handles, and provider
+diagnostics are excluded.
+
+Agent rows say `effective tools — supplied by stage capability`. A custom
+legacy `allowed_tools` declaration appears separately as
+`deprecated restriction — cannot grant authority`; it can only subtract from
+the compiled profile and is never the provider's effective tool list. See
+effective-stage-capabilities for compilation and enforcement semantics.
 
 **A repo-level field is blank unless `main.go` hands it over.**
 `srv.SetRepoSetup(...)` in `runDaemon` is the only writer of `proto.RepoSetup`,

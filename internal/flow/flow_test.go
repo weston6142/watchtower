@@ -1,9 +1,79 @@
 package flow
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestLoadRequiresCapabilityProfile(t *testing.T) {
+	_, err := loadBytes([]byte("name: x\nstages:\n  - name: build\n    agents: [{package: p}]\n    gate: auto\n"))
+	if err == nil || !strings.Contains(err.Error(), `stage "build" capability_profile`) {
+		t.Fatalf("load error = %v", err)
+	}
+
+	for _, profile := range []CapabilityProfile{
+		ProfileArtifact, ProfileInspect, ProfileImplementation, ProfileReview,
+		ProfileLibrarian, ProfileFinalReview, ProfileConflictResolution,
+	} {
+		documentation := ""
+		if profile == ProfileLibrarian {
+			documentation = "    documentation_paths: [docs/**]\n"
+		}
+		input := "name: x\nstages:\n  - name: arbitrary-name\n    agents: [{package: p}]\n    gate: auto\n    capability_profile: " + string(profile) + "\n" + documentation
+		flow, loadErr := loadBytes([]byte(input))
+		if loadErr != nil {
+			t.Errorf("profile %q rejected: %v", profile, loadErr)
+			continue
+		}
+		if got := flow.Stages[0].CapabilityProfile; got != profile {
+			t.Errorf("profile = %q, want %q", got, profile)
+		}
+	}
+}
+
+func TestLoadRejectsCapabilityProfileContradictions(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"unknown", "capability_profile: omnipotent\n", "capability_profile"},
+		{"documentation on implementation", "capability_profile: implementation\n    documentation_paths: [docs/**]\n", "documentation_paths"},
+		{"librarian without paths", "capability_profile: librarian\n", "documentation_paths"},
+		{"librarian unsafe path", "capability_profile: librarian\n    documentation_paths: [.git/**]\n", "documentation_paths"},
+		{"readonly output", "capability_profile: artifact\n    workspace: readonly\n    artifacts: [result.md]\n", "readonly"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := loadBytes([]byte("name: x\nstages:\n  - name: named-stage\n    agents: [{package: p}]\n    gate: auto\n    " + test.yaml))
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "named-stage") {
+				t.Fatalf("load error = %v, want stage and %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestShippedDefaultFlowDeclaresCapabilityProfiles(t *testing.T) {
+	f, err := Load("../scaffold/defaults/flows/default.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]CapabilityProfile{
+		"brainstorm": ProfileArtifact, "spec": ProfileArtifact, "plan": ProfileArtifact,
+		"execute": ProfileImplementation, "correctness-review": ProfileReview,
+		"clean-code-review": ProfileReview, "librarian": ProfileLibrarian,
+		"merge-verification": ProfileFinalReview,
+	}
+	for _, stage := range f.Stages {
+		if stage.CapabilityProfile != want[stage.Name] {
+			t.Errorf("stage %q profile = %q, want %q", stage.Name, stage.CapabilityProfile, want[stage.Name])
+		}
+		if stage.Name == "librarian" && !reflect.DeepEqual(stage.DocumentationPaths, []string{"docs/**", "docs-draft-*"}) {
+			t.Errorf("librarian documentation paths = %v", stage.DocumentationPaths)
+		}
+	}
+}
 
 func TestLoadValidFlow(t *testing.T) {
 	f, err := Load("testdata/default.yaml")
@@ -23,7 +93,7 @@ func TestLoadValidFlow(t *testing.T) {
 }
 
 func TestLoadRejectsBadGate(t *testing.T) {
-	if _, err := loadBytes([]byte("name: x\nstages:\n  - name: a\n    agents: [{package: p}]\n    gate: bogus\n")); err == nil {
+	if _, err := loadBytes([]byte("name: x\nstages:\n  - name: a\n    agents: [{package: p}]\n    capability_profile: inspect\n    gate: bogus\n")); err == nil {
 		t.Fatal("expected error for bad gate")
 	}
 }
@@ -33,6 +103,7 @@ func TestLoadPlanReviewGate(t *testing.T) {
 stages:
   - name: plan
     agents: [{package: planner}]
+    capability_profile: artifact
     gate: plan_review
 `))
 	if err != nil {
@@ -48,6 +119,7 @@ func TestLoadAllowsFlowWithoutMergeBarrier(t *testing.T) {
 stages:
   - name: investigate
     agents: [{package: explorer}]
+    capability_profile: inspect
     gate: auto
 `))
 	if err != nil {
@@ -63,9 +135,11 @@ func TestLoadAllowsOneTerminalMergeBarrierWithRequiredArtifacts(t *testing.T) {
 stages:
   - name: change
     agents: [{package: builder}]
+    capability_profile: implementation
     gate: auto
   - name: ship-it
     agents: [{package: verifier}]
+    capability_profile: final-review
     gate: auto
     merge_barrier: true
     artifacts: [merge-report.md, merge-decision.json, verification.json]
@@ -91,11 +165,13 @@ func TestLoadRejectsMultipleOrNonTerminalMergeBarriers(t *testing.T) {
 stages:
   - name: first
     agents: [{package: verifier}]
+    capability_profile: final-review
     gate: auto
     merge_barrier: true
     artifacts: [merge-report.md, merge-decision.json, verification.json]
   - name: second
     agents: [{package: verifier}]
+    capability_profile: final-review
     gate: auto
     merge_barrier: true
     artifacts: [merge-report.md, merge-decision.json, verification.json]
@@ -108,11 +184,13 @@ stages:
 stages:
   - name: integrate
     agents: [{package: verifier}]
+    capability_profile: final-review
     gate: auto
     merge_barrier: true
     artifacts: [merge-report.md, merge-decision.json, verification.json]
   - name: mutate-afterward
     agents: [{package: builder}]
+    capability_profile: implementation
     gate: auto
 `,
 			want: `flow "bad" merge barrier "integrate" must be the final stage`,
@@ -133,6 +211,7 @@ func TestLoadRejectsBarrierMissingFinalizationArtifacts(t *testing.T) {
 stages:
   - name: integrate
     agents: [{package: verifier}]
+    capability_profile: final-review
     gate: auto
     merge_barrier: true
     artifacts: [verification.json]
@@ -147,6 +226,7 @@ func TestIntegratingFlowRequiresConfiguredVerificationCommand(t *testing.T) {
 stages:
   - name: integrate
     agents: [{package: verifier}]
+    capability_profile: final-review
     gate: auto
     merge_barrier: true
     artifacts: [merge-report.md, merge-decision.json, verification.json]

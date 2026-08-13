@@ -148,11 +148,21 @@ func TestGH79VerificationRetryMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		path, release, err := e.cfg.Workspace.Acquire(id)
-		if err != nil {
-			t.Fatal(err)
+		fake := e.cfg.Runner.(*runner.FakeRunner)
+		finalScript := fake.Scripts["merge-verification/merge-verifier"]
+		finalScript.Fail = true
+		fake.Scripts["merge-verification/merge-verifier"] = finalScript
+		startErr := e.StartIssue(context.Background(), id)
+		if startErr == nil {
+			t.Fatal("fixture final review unexpectedly succeeded")
 		}
-		t.Cleanup(func() { _ = release() })
+		finalScript.Fail = false
+		fake.Scripts["merge-verification/merge-verifier"] = finalScript
+		path := filepath.Join(repo, ".worktrees", id)
+		if out, err := exec.Command("git", "-C", repo, "worktree", "add", path, "issue/"+id).CombinedOutput(); err != nil {
+			t.Fatalf("restore approved fixture worktree after %v: %v: %s", startErr, err, out)
+		}
+		t.Cleanup(func() { _, _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", path).CombinedOutput() })
 		base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
 		oldTree := strings.TrimSpace(gitOutput(t, path, "rev-parse", "HEAD^{tree}"))
 		oldReceipt, err := json.Marshal(marshal.Verification{
@@ -188,7 +198,6 @@ func TestGH79VerificationRetryMatrix(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		fake := e.cfg.Runner.(*runner.FakeRunner)
 		script := fake.Scripts["merge-verification/merge-verifier"]
 		script.Artifacts["merge-decision.json"] = string(decision)
 		fake.Scripts["merge-verification/merge-verifier"] = script
@@ -337,12 +346,16 @@ func TestGH79VerificationRetryMatrix(t *testing.T) {
 	t.Run("matching proof and unrelated finalization keep existing retry behavior", func(t *testing.T) {
 		t.Run("matching proof", func(t *testing.T) {
 			matching := newGH79Fixture(t, [][]string{{"true"}}, false, false)
+			before, err := matching.s.StageRuns(matching.id)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := matching.e.RetryStage(context.Background(), matching.id); err != nil {
 				t.Fatal(err)
 			}
-			runs, err := matching.s.StageRuns(matching.id)
-			if err != nil || len(runs) != 1 {
-				t.Fatalf("matching stage runs = %+v err=%v", runs, err)
+			after, err := matching.s.StageRuns(matching.id)
+			if err != nil || len(after) != len(before) {
+				t.Fatalf("matching retry reran a provider: before=%+v after=%+v err=%v", before, after, err)
 			}
 		})
 		t.Run("unrelated finalization", func(t *testing.T) {

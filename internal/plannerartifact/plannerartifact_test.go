@@ -237,6 +237,14 @@ func TestValidateManifestRules(t *testing.T) {
 	}
 }
 
+func TestCanonicalScopeUsesTouchsetGrammar(t *testing.T) {
+	manifest := completeManifest()
+	manifest.Sections[0].Globs = []string{".git/config"}
+	if err := ValidateManifest(manifest); err == nil || !strings.Contains(err.Error(), "invalid globs") {
+		t.Fatalf("ValidateManifest error = %v", err)
+	}
+}
+
 func TestValidateCompleteValidationScopes(t *testing.T) {
 	manifest := completeManifest()
 	dir := t.TempDir()

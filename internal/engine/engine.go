@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/attach"
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
@@ -38,7 +41,6 @@ import (
 	"github.com/weston6142/watchtower/internal/stageusage"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
-	"github.com/weston6142/watchtower/internal/verificationcache"
 	"github.com/weston6142/watchtower/internal/workspace"
 )
 
@@ -179,9 +181,13 @@ type issueState struct {
 	externalSession     bool
 	budgetWaived        bool
 	activeTouchset      *touchset.Set
+	conflictPaths       []string
 	dependsOn           []string
 	waitingDependencies bool
 	planReview          review.ResolvedPolicy
+	capabilityAttemptID string
+	capabilityWorkdir   string
+	capabilityWrites    map[string]string
 }
 
 func planReviewLever(f flow.Flow, matrix levers.Matrix) flow.Lever {
@@ -329,6 +335,14 @@ func (e *Engine) rehydrateArtifactReview(
 	checkpoints, err := e.cfg.Store.StageCheckpoints(row.IssueID)
 	if err != nil {
 		return false, false, err
+	}
+	for _, candidate := range checkpoints {
+		if candidate.ID > row.Review.CheckpointID {
+			// A later stage attempt can exist only after this review handed off.
+			// Treat the row as history instead of revalidating it against a
+			// checkpoint that has since completed and risking a false stale hold.
+			return false, false, nil
+		}
 	}
 	var checkpoint *store.StageCheckpoint
 	for i := range checkpoints {
@@ -3251,6 +3265,7 @@ func (e *Engine) runStageOnce(
 	if len(expectedOutputs) == 0 {
 		expectedOutputs = []string{"committed repository changes or a stage result"}
 	}
+	agentOutputs, engineOutputs := stageOutputOwnership(st, expectedOutputs)
 	prohibited := []string{
 		"do not merge or publish the issue branch",
 		"do not commit ISSUE.md, STAGE.md, decisions.md, or materialized workflow artifacts",
@@ -3269,7 +3284,8 @@ func (e *Engine) runStageOnce(
 	if err := contextpack.WriteStageBrief(workdir, contextpack.Brief{
 		IssueID: is.id, Stage: st.Name, StartCommit: startCommit,
 		BaseCommit: is.baseRef, Branch: branch, RequiredInputs: requiredInputs,
-		ExpectedOutputs: expectedOutputs, ProhibitedActions: prohibited,
+		ExpectedOutputs: expectedOutputs, AgentOwnedOutputs: agentOutputs, EngineOwnedOutputs: engineOutputs,
+		ProhibitedActions: prohibited,
 		VerificationOwner: verificationOwner(f), FinalizationContract: finalizationContract,
 		Recovery: recovery,
 	}); err != nil {
@@ -3433,52 +3449,93 @@ func (e *Engine) runStageOnce(
 		emitPlannerSnapshot(plannerbudget.OutcomeNormal, plannerController.Snapshot())
 	}
 
-	var verificationLease *verificationcache.Lease
-	verificationLeaseSealed := false
-	if st.MergeBarrier && e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 {
-		branchSHA, err := gitRevision(workdir, "HEAD")
-		if err != nil {
-			return fmt.Errorf("verification branch identity: %w", err)
+	capabilityIdentity := capability.AttemptIdentity{IssueID: is.id, Stage: st.Name, AttemptID: lifecycleAttempt.AttemptID}
+	var compiledContract capability.CompiledContract
+	var enforcementPlan capability.EnforcementPlan
+	var capabilityBaseline capability.Baseline
+	var capabilityValidation capability.ValidationResult
+	var runtimeAudit []capability.AuditRecord
+	if !resumedLifecycle {
+		materializedInputs := append([]string(nil), requiredInputs...)
+		for _, row := range rows {
+			materializedInputs = append(materializedInputs, filepath.ToSlash(filepath.Join("attachments", row.Name)))
 		}
-		treeSHA, err := gitRevision(workdir, "HEAD^{tree}")
-		if err != nil {
-			return fmt.Errorf("verification tree identity: %w", err)
+		authority, authorityErr := e.resolveCapabilityAuthority(is, st, lifecycleAttempt, materializedInputs, is.conflictPaths)
+		if authorityErr != nil {
+			e.emit(core.EvCapabilityRejected, is.id, map[string]any{"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "reason": capability.ReasonContractInvalid})
+			return &capability.PolicyError{Phase: "compile", Reason: capability.ReasonContractInvalid, Diagnostic: "durable stage authority is unavailable"}
 		}
-		cacheRoot := e.cfg.CacheRoot
-		if cacheRoot == "" {
-			cacheRoot = e.cfg.DataDir
-		}
-		runtime, err := verificationcache.New(verificationcache.Config{
-			CacheRoot: cacheRoot, RepoDir: e.cfg.Train.Repo,
+		compiledContract, err = capability.Compile(capability.CompileInput{
+			IssueID: is.id, Stage: st.Name, AttemptID: lifecycleAttempt.AttemptID,
+			Profile: authority.Profile, WorkspaceRoot: authority.WorkspaceRoot, Readonly: st.Workspace == "readonly",
+			Repository: authority.Repository, MaterializedInputs: authority.MaterializedReadablePaths,
+			ReadableRepositoryPaths: authority.ReadableRepositoryPaths, Outputs: authority.RequiredOutputs,
+			Approval: authority.ApprovalBinding, ApprovedTouchset: authority.ApprovedTouchset,
+			DocumentationPaths: authority.DocumentationPaths, ConflictPaths: authority.ConflictPaths,
+			LegacyRestrictions:      stageLegacyRestrictions(e.cfg.Runner, st.Agents),
+			PlannerArtifactRequired: artifactAuthority != nil,
 		})
 		if err != nil {
-			return fmt.Errorf("initialize verification cache: %w", err)
+			e.emit(core.EvCapabilityRejected, is.id, map[string]any{"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "reason": capability.ReasonContractInvalid})
+			return err
 		}
-		verificationLease, err = runtime.Acquire(ctx, verificationcache.Config{
-			RepoDir: e.cfg.Train.Repo, BaseSHA: is.baseRef, BranchSHA: branchSHA,
-			TreeSHA: treeSHA, Argv: append([]string(nil), e.cfg.Train.TestCmd...),
+		if err := e.cfg.Store.CreateCapabilityAttempt(capability.AttemptRecord{
+			Identity: capabilityIdentity, SchemaVersion: capability.ContractVersion, Contract: compiledContract,
+		}); err != nil {
+			return err
+		}
+		if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+			Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "compile", Outcome: "passed",
+		}); err != nil {
+			return err
+		}
+		e.emit(core.EvCapabilityCompiled, is.id, map[string]any{
+			"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
+			"authority_digest": compiledContract.AuthorityDigest,
+		})
+		if e.cfg.Runner == nil {
+			return &capability.PolicyError{Phase: "preflight", Reason: capability.ReasonProviderUnsupported, Diagnostic: "runner adapter is unavailable"}
+		}
+		preflightAgent := "stage"
+		if len(st.Agents) > 0 {
+			preflightAgent = st.Agents[0].Package
+		}
+		enforcementPlan, err = e.cfg.Runner.Preflight(ctx, runner.PreflightRequest{
+			IssueID: is.id, Stage: st.Name, Agent: preflightAgent, Workdir: workdir, Contract: compiledContract,
 		})
 		if err != nil {
-			return fmt.Errorf("acquire verification cache lease: %w", err)
+			_ = e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+				Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "preflight", Outcome: "failed",
+				Reason: capability.ReasonProviderUnsupported,
+			})
+			e.emit(core.EvCapabilityRejected, is.id, map[string]any{"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID, "reason": capability.ReasonProviderUnsupported})
+			return err
 		}
+		if err := runner.ValidateEnforcementPlan(compiledContract, enforcementPlan); err != nil {
+			return err
+		}
+		if err := e.cfg.Store.RecordCapabilityPreflight(capabilityIdentity, enforcementPlan); err != nil {
+			return err
+		}
+		if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+			Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "preflight", Outcome: "passed",
+			Provider: enforcementPlan.Provider, Implementation: enforcementPlan.Implementation,
+		}); err != nil {
+			return err
+		}
+		e.emit(core.EvCapabilityPreflighted, is.id, map[string]any{
+			"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID, "plan_id": enforcementPlan.PlanID,
+		})
+		capabilityBaseline, err = (capability.Observer{}).Capture(workdir, nil)
+		if err != nil {
+			return fmt.Errorf("capture capability baseline: %w", err)
+		}
+		if err := e.cfg.Store.RecordCapabilityBaseline(capabilityIdentity, capability.BaselineIdentity{Digest: capabilityBaseline.Digest}); err != nil {
+			return err
+		}
+		e.beginCapabilityWriteTracking(is, lifecycleAttempt.AttemptID, workdir)
+		defer e.endCapabilityWriteTracking(is, lifecycleAttempt.AttemptID)
 	}
-	defer func() {
-		if verificationLease == nil {
-			return
-		}
-		if !verificationLeaseSealed {
-			reason := "verification stage did not complete"
-			if runErr != nil {
-				reason = runErr.Error()
-			}
-			if err := verificationLease.Quarantine(reason); err != nil {
-				_ = e.recordBoundaryFailure(context.WithoutCancel(ctx), is.id, st.Name, attempt,
-					failure.SiteCache, failure.ClassUnavailable, failure.RetryAfterStateChange,
-					failure.StateCache, err)
-			}
-		}
-		_ = verificationLease.Close()
-	}()
 
 	type agentDone struct {
 		pkg string
@@ -3491,6 +3548,9 @@ func (e *Engine) runStageOnce(
 	succeeded := 0
 	var discovered []string
 	var stageEvidence *stageresult.Evidence
+	descendantsReaped := true
+	agentCtx, cancelAgents := context.WithCancel(ctx)
+	defer cancelAgents()
 	runAgent := func(a flow.AgentRef) {
 		runID, insErr := e.cfg.Store.InsertStageRun(store.StageRun{
 			IssueID: is.id, Stage: st.Name, Agent: a.Package,
@@ -3499,23 +3559,24 @@ func (e *Engine) runStageOnce(
 			dones <- agentDone{pkg: a.Package, res: runner.Result{Err: fmt.Errorf("insert stage run: %w", insErr)}}
 			return
 		}
-		agentCtx := runner.WithOperationID(ctx, strconv.FormatInt(runID, 10))
-		if verificationLease != nil {
-			agentCtx = runner.WithManagedEnvironment(agentCtx, verificationLease.ManagedEnvironment())
-		}
+		runCtx := runner.WithOperationID(agentCtx, strconv.FormatInt(runID, 10))
 		if artifactAuthority != nil {
-			agentCtx = runner.WithPlannerArtifactAuthority(agentCtx, artifactAuthority)
+			runCtx = runner.WithPlannerArtifactAuthority(runCtx, artifactAuthority)
 		}
 		asks := make(chan runner.Ask)
 		var resc <-chan runner.Result
+		request := runner.StageRequest{
+			IssueID: is.id, Stage: st.Name, Agent: a.Package, Workdir: workdir,
+			Contract: compiledContract, Plan: enforcementPlan,
+		}
 		if plannerGate != nil {
 			if plannerRunner != nil {
-				resc = plannerRunner.RunPlanner(agentCtx, is.id, st.Name, a.Package, workdir, asks, plannerGate)
+				resc = plannerRunner.RunPlanner(runCtx, request, asks, plannerGate)
 			} else {
-				resc = e.cfg.Runner.Run(agentCtx, is.id, st.Name, a.Package, workdir, asks)
+				resc = e.cfg.Runner.Run(runCtx, request, asks)
 			}
 		} else {
-			resc = e.cfg.Runner.Run(agentCtx, is.id, st.Name, a.Package, workdir, asks)
+			resc = e.cfg.Runner.Run(runCtx, request, asks)
 		}
 		for {
 			select {
@@ -3560,33 +3621,51 @@ func (e *Engine) runStageOnce(
 			for _, a := range st.Agents {
 				go runAgent(a)
 			}
+			for range st.Agents {
+				d := <-dones
+				descendantsReaped = descendantsReaped && runtimeAuditProvesReap(d.res.RuntimeAudit)
+				runtimeAudit = append(runtimeAudit, d.res.RuntimeAudit...)
+				if d.res.SessionID != "" {
+					sessionIDs = append(sessionIDs, d.res.SessionID)
+				}
+				if d.res.Err != nil {
+					if firstErr == nil {
+						firstErr = &runnerStageError{Agent: d.pkg, Result: d.res}
+					}
+					continue
+				}
+				succeeded++
+				if producesResult && d.pkg == resultProducer {
+					stageEvidence = d.res.StageEvidence
+				}
+				discovered = append(discovered, d.res.DependsOn...)
+				if st.Completion == flow.CompletionAny {
+					cancelAgents()
+				}
+			}
 		} else {
-			go func() {
-				for _, a := range st.Agents {
-					runAgent(a)
+			for _, agent := range st.Agents {
+				go runAgent(agent)
+				d := <-dones
+				descendantsReaped = descendantsReaped && runtimeAuditProvesReap(d.res.RuntimeAudit)
+				runtimeAudit = append(runtimeAudit, d.res.RuntimeAudit...)
+				if d.res.SessionID != "" {
+					sessionIDs = append(sessionIDs, d.res.SessionID)
 				}
-			}()
-		}
-
-		need := len(st.Agents)
-		for i := 0; i < need; i++ {
-			d := <-dones
-			if d.res.SessionID != "" {
-				sessionIDs = append(sessionIDs, d.res.SessionID)
-			}
-			if d.res.Err != nil {
-				if firstErr == nil {
-					firstErr = &runnerStageError{Agent: d.pkg, Result: d.res}
+				if d.res.Err != nil {
+					if firstErr == nil {
+						firstErr = &runnerStageError{Agent: d.pkg, Result: d.res}
+					}
+					continue
 				}
-				continue
-			}
-			succeeded++
-			if producesResult && d.pkg == resultProducer {
-				stageEvidence = d.res.StageEvidence
-			}
-			discovered = append(discovered, d.res.DependsOn...)
-			if st.Completion == flow.CompletionAny {
-				break
+				succeeded++
+				if producesResult && d.pkg == resultProducer {
+					stageEvidence = d.res.StageEvidence
+				}
+				discovered = append(discovered, d.res.DependsOn...)
+				if st.Completion == flow.CompletionAny {
+					break
+				}
 			}
 		}
 	} else {
@@ -3595,6 +3674,34 @@ func (e *Engine) runStageOnce(
 	if plannerController != nil {
 		outcome := plannerController.Finish(firstErr)
 		emitPlannerSnapshot(outcome, plannerController.Snapshot())
+	}
+	if !resumedLifecycle {
+		for _, audit := range runtimeAudit {
+			audit.Attempt = capabilityIdentity
+			if audit.ContractID == "" {
+				audit.ContractID = compiledContract.ContractID
+			}
+			if err := e.cfg.Store.AppendCapabilityAudit(audit); err != nil {
+				return err
+			}
+			if audit.Outcome == "denied" {
+				e.emit(core.EvCapabilityDenied, is.id, map[string]any{
+					"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
+					"reason": capability.ReasonRuntimeDenied, "operation": audit.Operation,
+				})
+			}
+		}
+	}
+	if firstErr != nil {
+		if _, policyFailure := capabilityRecoveryReason(firstErr); policyFailure {
+			if err := e.cfg.Store.BindCapabilityValidation(capabilityIdentity, "", capability.ValidationResult{Passed: false}); err != nil {
+				return err
+			}
+			if err := e.markCapabilityWorkspaceRejected(is, st.Name, capabilityIdentity, compiledContract, capabilityBaseline, firstErr); err != nil {
+				return fmt.Errorf("%w (mark rejected workspace: %v)", firstErr, err)
+			}
+			return firstErr
+		}
 	}
 	if st.Completion == flow.CompletionAll && firstErr != nil {
 		return firstErr
@@ -3607,66 +3714,57 @@ func (e *Engine) runStageOnce(
 			return fmt.Errorf("validate planner artifacts: %w", err)
 		}
 	}
+	if !resumedLifecycle {
+		cancelAgents()
+		if !descendantsReaped {
+			policyErr := &capability.PolicyError{
+				Phase: "post-stage", Reason: capability.ReasonPostStageViolation,
+				Diagnostic: "agent descendant reaping was not proven",
+			}
+			if bindErr := e.cfg.Store.BindCapabilityValidation(capabilityIdentity, "", capability.ValidationResult{Passed: false}); bindErr != nil {
+				return bindErr
+			}
+			_ = e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+				Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "post-stage", Outcome: "failed",
+				Reason: capability.ReasonPostStageViolation, Diagnostic: "agent descendant reaping was not proven",
+			})
+			if markErr := e.markCapabilityWorkspaceRejected(is, st.Name, capabilityIdentity, compiledContract, capabilityBaseline, policyErr); markErr != nil {
+				return fmt.Errorf("%w (mark rejected workspace: %v)", policyErr, markErr)
+			}
+			return policyErr
+		}
+		capabilityBaseline.EngineWrites = e.capabilityEngineWrites(is, lifecycleAttempt.AttemptID)
+		delta, compareErr := (capability.Observer{DescendantsReaped: func() bool { return descendantsReaped }}).Compare(capabilityBaseline)
+		if compareErr != nil {
+			return fmt.Errorf("compare capability workspace: %w", compareErr)
+		}
+		observedOutputs, observeErr := observeCapabilityOutputs(workdir, compiledContract)
+		if observeErr != nil {
+			return observeErr
+		}
+		capabilityValidation, err = capability.Validate(compiledContract, capabilityBaseline, delta, runtimeAudit, observedOutputs)
+		if err != nil {
+			failed := capability.ValidationResult{Passed: false, DeltaDigest: delta.Digest}
+			if bindErr := e.cfg.Store.BindCapabilityValidation(capabilityIdentity, "", failed); bindErr != nil {
+				return bindErr
+			}
+			_ = e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+				Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "post-stage", Outcome: "failed",
+				Reason: capability.ReasonPostStageViolation,
+			})
+			if markErr := e.markCapabilityWorkspaceRejected(is, st.Name, capabilityIdentity, compiledContract, capabilityBaseline, err); markErr != nil {
+				return fmt.Errorf("%w (mark rejected workspace: %v)", err, markErr)
+			}
+			return err
+		}
+	}
 	if resumedLifecycle && producesResult {
 		if lifecycleResult.StageResult == nil || lifecycleResult.StageResult.StageKind != expectedResultKind {
 			return fmt.Errorf("structured stage result: recovered result does not match %s", expectedResultKind)
 		}
 	}
-	if st.MergeBarrier {
-		if verificationLease != nil {
-			branchSHA, treeSHA, err := verificationIdentity(workdir)
-			if err != nil {
-				return fmt.Errorf("verification post-agent identity: %w", err)
-			}
-			if branchSHA != verificationLease.BranchSHA() || treeSHA != verificationLease.TreeSHA() {
-				verificationLease, err = verificationLease.Rebind(verificationcache.Config{
-					RepoDir: e.cfg.Train.Repo, BaseSHA: is.baseRef, BranchSHA: branchSHA,
-					TreeSHA: treeSHA, Argv: append([]string(nil), e.cfg.Train.TestCmd...),
-				})
-				if err != nil {
-					return fmt.Errorf("rebind verification cache lease: %w", err)
-				}
-			}
-		}
-		if err := e.writeVerificationReceipt(ctx, is, workdir, verificationLease); err != nil {
-			return err
-		}
-		verificationLeaseSealed = verificationLease != nil
-		if e.cfg.Store != nil {
-			receiptJSON, err := verificationReceiptBytes(workdir)
-			if err != nil {
-				return fmt.Errorf("read verification receipt: %w", err)
-			}
-			if _, err := loadVerificationBytes(receiptJSON); err != nil {
-				return fmt.Errorf("validate verification receipt: %w", err)
-			}
-			currentAttempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
-			if err != nil {
-				return fmt.Errorf("load verification attempt: %w", err)
-			}
-			if found {
-				if currentAttempt.Status == store.VerificationAttemptPending {
-					if _, err := e.cfg.Store.FinishVerificationAttempt(
-						is.id, currentAttempt.ID, store.VerificationAttemptPassed, receiptJSON, "",
-					); err != nil {
-						return fmt.Errorf("finish verification attempt: %w", err)
-					}
-				} else if _, err := e.cfg.Store.RecordVerificationAttempt(store.VerificationAttempt{
-					IssueID: is.id, Stage: st.Name, ParentID: currentAttempt.ID,
-					Status: store.VerificationAttemptPassed, Reason: "explicit verification rerun",
-					ReceiptJSON: receiptJSON,
-				}); err != nil {
-					return fmt.Errorf("record verification attempt: %w", err)
-				}
-			} else if _, err := e.cfg.Store.RecordVerificationAttempt(store.VerificationAttempt{
-				IssueID: is.id, Stage: st.Name, Status: store.VerificationAttemptPassed,
-				ReceiptJSON: receiptJSON,
-			}); err != nil {
-				return fmt.Errorf("record verification attempt: %w", err)
-			}
-		}
-	}
-	for _, name := range st.Artifacts {
+	agentArtifacts := agentOwnedArtifacts(st.Artifacts)
+	for _, name := range agentArtifacts {
 		if _, err := os.Stat(filepath.Join(workdir, name)); err != nil {
 			return fmt.Errorf("stage %s missing artifact %s", st.Name, name)
 		}
@@ -3696,15 +3794,27 @@ func (e *Engine) runStageOnce(
 			validatedStageResult = &validated
 		}
 		lifecycleResult, err = contextpack.MaterializeAttemptResult(
-			workdir, e.issueDir(is.id), lifecycleAttempt.AttemptID, st.Artifacts,
+			workdir, e.issueDir(is.id), lifecycleAttempt.AttemptID, agentArtifacts,
 			contextpack.AttemptResult{IssueID: is.id, Stage: st.Name, DependsOn: append([]string(nil), discovered...), StageResult: validatedStageResult},
 		)
 		if err != nil {
 			return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "model result materialization failed"}
 		}
-		if err := e.cfg.Store.PutStageLifecycleResult(lifecycleAttempt, lifecycleResult); err != nil {
+		capabilityValidation.ResultDigest = lifecycleResult.ResultSHA256
+		if err := e.cfg.Store.CommitCapabilityValidatedResult(
+			lifecycleAttempt, capabilityIdentity, capabilityValidation, lifecycleResult,
+		); err != nil {
 			return err
 		}
+		if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+			Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "post-stage", Outcome: "passed",
+		}); err != nil {
+			return err
+		}
+		e.emit(core.EvCapabilityValidated, is.id, map[string]any{
+			"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
+			"result_digest": lifecycleResult.ResultSHA256, "delta_digest": capabilityValidation.DeltaDigest,
+		})
 		if validatedStageResult != nil && validatedStageResult.Outcome == stageresult.OutcomeRetryable {
 			return &stageResultRetryableError{Kind: validatedStageResult.StageKind, AttemptID: validatedStageResult.AttemptID}
 		}
@@ -3717,6 +3827,11 @@ func (e *Engine) runStageOnce(
 		if err := e.commitLifecycleSubstate(lifecycleAttempt, stagelifecycle.RunnerSucceeded,
 			lifecyclePayloadDigest(stagelifecycle.RunnerSucceeded, lifecycleResult, lifecycleResult.Artifacts),
 			lifecycleResult, lifecycleResult.Artifacts); err != nil {
+			return err
+		}
+	}
+	if st.MergeBarrier {
+		if err := (lifecycleExecutor{engine: e}).verify(ctx, is, st.Name, lifecycleAttempt.AttemptID, workdir); err != nil {
 			return err
 		}
 	}
@@ -3812,7 +3927,7 @@ func (e *Engine) runStageOnce(
 		return errDependenciesDiscovered
 	}
 	if st.MergeBarrier {
-		prepared, err := e.prepareFinalization(is, verificationLease)
+		prepared, err := e.prepareFinalization(is, nil)
 		if err != nil {
 			return err
 		}
@@ -3848,6 +3963,91 @@ func (e *Engine) runStageOnce(
 		}
 	}
 	return nil
+}
+
+func observeCapabilityOutputs(workdir string, contract capability.CompiledContract) (map[string]capability.ObservedOutput, error) {
+	result := make(map[string]capability.ObservedOutput)
+	for _, output := range contract.Contract.Outputs {
+		if output.Owner != capability.OwnerAgent {
+			continue
+		}
+		path := filepath.Join(workdir, filepath.FromSlash(output.Path))
+		info, err := os.Lstat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		observed := capability.ObservedOutput{Path: output.Path, Regular: info.Mode().IsRegular()}
+		if observed.Regular {
+			body, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, readErr
+			}
+			digest := sha256.Sum256(body)
+			observed.SHA256 = hex.EncodeToString(digest[:])
+		}
+		result[output.Path] = observed
+	}
+	return result, nil
+}
+
+func (e *Engine) beginCapabilityWriteTracking(is *issueState, attemptID, workdir string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	is.capabilityAttemptID = attemptID
+	is.capabilityWorkdir = workdir
+	is.capabilityWrites = make(map[string]string)
+}
+
+func (e *Engine) endCapabilityWriteTracking(is *issueState, attemptID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if is.capabilityAttemptID != attemptID {
+		return
+	}
+	is.capabilityAttemptID = ""
+	is.capabilityWorkdir = ""
+	is.capabilityWrites = nil
+}
+
+func (e *Engine) recordCapabilityEngineWrite(issueID, absolutePath string, body []byte) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	is := e.issues[issueID]
+	if is == nil || is.capabilityAttemptID == "" || is.capabilityWorkdir == "" {
+		return
+	}
+	relative, err := filepath.Rel(is.capabilityWorkdir, absolutePath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return
+	}
+	relative = filepath.ToSlash(relative)
+	digest := sha256.Sum256(body)
+	is.capabilityWrites[relative] = hex.EncodeToString(digest[:])
+}
+
+func (e *Engine) capabilityEngineWrites(is *issueState, attemptID string) map[string]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	result := make(map[string]string)
+	if is.capabilityAttemptID != attemptID {
+		return result
+	}
+	for path, digest := range is.capabilityWrites {
+		result[path] = digest
+	}
+	return result
+}
+
+func runtimeAuditProvesReap(records []capability.AuditRecord) bool {
+	for _, record := range records {
+		if record.Phase == "reap" && record.Outcome == "passed" {
+			return true
+		}
+	}
+	return false
 }
 
 type stageResultRetryableError struct {
@@ -3921,6 +4121,9 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 			return err
 		}
 	}
+	if _, err := e.recoverPendingCapabilityWorkspace(context.WithoutCancel(stageCtx), is); err != nil {
+		return err
+	}
 	if st.HeavySlot {
 		e.emit(core.EvSlotQueued, is.id, map[string]string{"stage": st.Name})
 		release, err := e.cfg.Pool.Acquire(stageCtx, is.id, is.priority)
@@ -3944,11 +4147,29 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 		if errors.Is(err, errDependenciesDiscovered) {
 			return err
 		}
+		if policyReason, policyFailure := capabilityRecoveryReason(err); policyFailure {
+			recovered, recoveryErr := e.recoverPendingCapabilityWorkspace(context.WithoutCancel(stageCtx), is)
+			if recoveryErr != nil {
+				return fmt.Errorf("%w (trusted workspace recovery failed: %v)", err, recoveryErr)
+			}
+			if recovered && attempt < st.Retries {
+				e.emit(core.EvStageFailed, is.id, map[string]any{
+					"stage": st.Name, "reason": policyReason,
+					"retry_disposition": failure.RetryAfterStateChange,
+					"required_state":    failure.StateTrustedWorkspace,
+					"attempt":           attempt + 1, "of": of, "final": false,
+				})
+				continue
+			}
+		}
 		if e.wasKilled(is) {
 			e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
 			return context.Canceled
 		}
 		stageFailureMessage := err.Error()
+		if policyReason, policyFailure := capabilityRecoveryReason(err); policyFailure {
+			stageFailureMessage = string(policyReason)
+		}
 		if lifecycleErrorCode(err) != "" {
 			stageFailureMessage = lifecycleErrorMessage(err)
 		}
@@ -3964,6 +4185,11 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 			"attempt": attempt + 1, "of": of, "final": attempt == st.Retries}
 		for key, value := range runnerFailurePayload(err) {
 			payload[key] = value
+		}
+		if policyReason, policyFailure := capabilityRecoveryReason(err); policyFailure {
+			payload["reason"] = policyReason
+			payload["retry_disposition"] = failure.RetryAfterStateChange
+			payload["required_state"] = failure.StateTrustedWorkspace
 		}
 		e.emit(core.EvStageFailed, is.id, payload)
 	}
@@ -4040,7 +4266,13 @@ func (e *Engine) planReviewAuthorization(is *issueState) (store.DecisionRow, []c
 		return store.DecisionRow{}, nil, fmt.Errorf("plan review approval is missing")
 	}
 	if !sameResolvedPlanReviewPolicy(is.planReview, *found.ReviewPolicy) {
-		return store.DecisionRow{}, nil, fmt.Errorf("plan review policy snapshot is inconsistent")
+		if is.planReview.Reason != "invalid_policy" {
+			return store.DecisionRow{}, nil, fmt.Errorf("plan review policy snapshot is inconsistent")
+		}
+		// Drafts created before the daemon resolves repository policy retain a
+		// fail-closed placeholder. Once a review has durable approval evidence,
+		// its exact policy snapshot is the authority restored after restart.
+		is.planReview = *found.ReviewPolicy
 	}
 	if found.Status != "answered" && found.Status != "auto" {
 		return store.DecisionRow{}, nil, fmt.Errorf("plan review is not approved")
@@ -4691,25 +4923,106 @@ func (e *Engine) landWithEscalation(
 func (e *Engine) resolveConflict(
 	ctx context.Context, is *issueState, conflict *marshal.ConflictError,
 ) (string, error) {
+	controller, err := marshal.NewConflictController(is.wsPath)
+	if err != nil {
+		return "", err
+	}
+	state, err := controller.Start(conflict.BaseSHA)
+	if err != nil {
+		return "", err
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = controller.Abort()
+		}
+	}()
+	approved, _, _, err := e.archivedApprovedTouchset(is)
+	if err != nil {
+		return "", err
+	}
+	for !state.Done {
+		if err := e.writeConflictContext(is, conflict, state.Paths); err != nil {
+			return "", err
+		}
+		for _, name := range state.Paths {
+			if !matchesAny(approved.Globs, name) {
+				e.emit(core.EvMergeConflict, is.id, map[string]any{
+					"base_sha": conflict.BaseSHA, "files": state.Paths, "decision": "hold",
+					"reason": "conflict path is outside approved touchset",
+				})
+				if err := controller.Abort(); err != nil {
+					return "", err
+				}
+				complete = true
+				return "hold", nil
+			}
+		}
+		e.mu.Lock()
+		is.conflictPaths = append([]string(nil), state.Paths...)
+		e.mu.Unlock()
+		stage := flow.Stage{
+			Name: "conflict-resolution", Agents: []flow.AgentRef{{Package: "conflict-resolver"}},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+			CapabilityProfile: flow.ProfileConflictResolution,
+			Artifacts:         []string{"conflict-report.md", "conflict-decision.json"},
+		}
+		runErr := e.runStage(ctx, is, stage, nil)
+		e.mu.Lock()
+		is.conflictPaths = nil
+		e.mu.Unlock()
+		if runErr != nil {
+			return "", runErr
+		}
+		decision, err := loadConflictDecision(filepath.Join(is.wsPath, "conflict-decision.json"))
+		if err != nil {
+			return "", err
+		}
+		if decision == "hold" {
+			if err := controller.Abort(); err != nil {
+				return "", err
+			}
+			complete = true
+			return decision, nil
+		}
+		if decision != "resolved" {
+			return "", fmt.Errorf("invalid conflict decision %q: want resolved or hold", decision)
+		}
+		state, err = controller.Continue(state.Paths)
+		if err != nil {
+			return "", err
+		}
+	}
+	if output, err := exec.Command("git", "-C", is.wsPath, "merge-base", "--is-ancestor", conflict.BaseSHA, "HEAD").CombinedOutput(); err != nil {
+		return "", fmt.Errorf("resolved issue branch is not rebased onto %s: %v: %s", conflict.BaseSHA, err, strings.TrimSpace(string(output)))
+	}
+	changed, err := gitCommandOutput(is.wsPath, "diff", "--name-only", conflict.BaseSHA+"..HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, name := range strings.Fields(changed) {
+		if !matchesAny(approved.Globs, filepath.ToSlash(name)) {
+			return "", fmt.Errorf("rebased path %q is outside approved touchset", name)
+		}
+	}
+	complete = true
+	return "resolved", nil
+}
+
+func (e *Engine) writeConflictContext(is *issueState, conflict *marshal.ConflictError, paths []string) error {
 	body := fmt.Sprintf(
-		"# Merge conflict\n\n"+
-			"- Issue branch: `%s`\n"+
-			"- Current base branch: `%s`\n"+
-			"- Current base SHA: `%s`\n"+
-			"- Original base SHA: `%s`\n"+
-			"- Error: `%s`\n"+
-			"- Conflicting files:\n",
-		is.branch, conflict.BaseBranch, conflict.BaseSHA, is.baseRef, conflict.Error())
-	for _, name := range conflict.Files {
+		"# Merge conflict\n\n- Issue branch: `%s`\n- Current base branch: `%s`\n- Current base SHA: `%s`\n- Original base SHA: `%s`\n- Error: merge conflict requires bounded resolution\n- Conflicting files:\n",
+		is.branch, conflict.BaseBranch, conflict.BaseSHA, is.baseRef)
+	for _, name := range paths {
 		body += fmt.Sprintf("  - `%s`\n", name)
 	}
-	body += "\n## Merge output\n\n```\n" + conflict.Output + "\n```\n"
+	body += "\nThe engine owns rebase start, add, continue, and abort. Edit only the listed files.\n"
 	if err := os.WriteFile(filepath.Join(is.wsPath, "CONFLICT.md"), []byte(body), 0o644); err != nil {
-		return "", err
+		return err
 	}
 	artifacts, err := contextpack.Archive(is.wsPath, e.issueDir(is.id), []string{"CONFLICT.md"})
 	if err != nil {
-		return "", fmt.Errorf("archive conflict context: %w", err)
+		return fmt.Errorf("archive conflict context: %w", err)
 	}
 	for _, artifact := range artifacts {
 		e.emit(core.EvArtifactProduced, is.id, map[string]string{
@@ -4717,42 +5030,7 @@ func (e *Engine) resolveConflict(
 			"path": filepath.Join(e.issueDir(is.id), "artifacts", artifact.Name),
 		})
 	}
-	stage := flow.Stage{
-		Name: "conflict-resolution",
-		Agents: []flow.AgentRef{{
-			Package: "conflict-resolver",
-		}},
-		Workspace:  "worktree",
-		Gate:       flow.GateAuto,
-		Completion: flow.CompletionAll,
-		Artifacts:  []string{"conflict-report.md", "conflict-decision.json"},
-	}
-	if err := e.runStage(ctx, is, stage, nil); err != nil {
-		return "", err
-	}
-	decision, err := loadConflictDecision(filepath.Join(is.wsPath, "conflict-decision.json"))
-	if err != nil {
-		return "", err
-	}
-	if decision == "hold" {
-		return decision, nil
-	}
-	if decision != "resolved" {
-		return "", fmt.Errorf("invalid conflict decision %q: want resolved or hold", decision)
-	}
-	if status, err := gitCommandOutput(is.wsPath, "status", "--porcelain", "--untracked-files=no"); err != nil {
-		return "", err
-	} else if status != "" {
-		return "", fmt.Errorf("resolved issue branch is dirty: %s", status)
-	}
-	if output, err := exec.Command(
-		"git", "-C", is.wsPath, "merge-base", "--is-ancestor", conflict.BaseSHA, "HEAD",
-	).CombinedOutput(); err != nil {
-		return "", fmt.Errorf(
-			"resolved issue branch is not rebased onto %s: %v: %s",
-			conflict.BaseSHA, err, strings.TrimSpace(string(output)))
-	}
-	return decision, nil
+	return nil
 }
 
 func loadConflictDecision(path string) (string, error) {

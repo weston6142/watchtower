@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
@@ -1415,7 +1416,119 @@ func oneAgentFlow(pkg string) flow.Flow {
 	return flow.Flow{Name: "default", Stages: []flow.Stage{{
 		Name: "run", Agents: []flow.AgentRef{{Package: pkg}},
 		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
+		CapabilityProfile: flow.ProfileArtifact,
 	}}}
+}
+
+func TestSetupProjectsDeclaredAndEffectiveCapabilitiesSeparately(t *testing.T) {
+	c, st := newConfigClient(t, oneAgentFlow("agent"), overridePackages(), fixtureRepoSetup())
+	created, err := c.Do(Command{Op: "create_issue", Title: "capability view", Flow: "default", Preset: "regular"})
+	if err != nil || !created.OK {
+		t.Fatalf("create issue: %+v err=%v", created, err)
+	}
+	attempt := store.BeginAttempt(created.IssueID, "run", "1")
+	if err := st.CreateStageLifecycleAttempt(attempt); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := capability.Compile(capability.CompileInput{
+		IssueID: created.IssueID, Stage: "run", AttemptID: "1", Profile: flow.ProfileArtifact,
+		WorkspaceRoot: t.TempDir(), Repository: capability.RepositoryIdentity{
+			IssueID: created.IssueID, Canonical: "/repo", Branch: "issue/" + created.IssueID,
+			BaseCommit: strings.Repeat("a", 40), StartCommit: strings.Repeat("b", 40), Tree: strings.Repeat("c", 40),
+		}, ReadableRepositoryPaths: []string{"safe.txt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := capability.AttemptIdentity{IssueID: created.IssueID, Stage: "run", AttemptID: "1"}
+	if err := st.CreateCapabilityAttempt(capability.AttemptRecord{Identity: identity, SchemaVersion: capability.ContractVersion, Contract: compiled}); err != nil {
+		t.Fatal(err)
+	}
+	controls := runner.RequiredControls(compiled)
+	proofs := make([]capability.ControlProof, 0, len(controls))
+	for _, control := range controls {
+		proofs = append(proofs, capability.ControlProof{Control: control, Proven: true})
+	}
+	plan, err := runner.NewEnforcementPlan(compiled, "fake", "test-boundary", "1", proofs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordCapabilityPreflight(identity, plan); err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("d", 64)
+	if err := st.BindCapabilityValidation(identity, digest, capability.ValidationResult{Passed: true, ResultDigest: digest, DeltaDigest: strings.Repeat("e", 64)}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := c.Do(Command{Op: "setup_outline", IssueID: created.IssueID})
+	if err != nil || !response.OK || response.Setup == nil {
+		t.Fatalf("setup response = %+v err=%v", response, err)
+	}
+	stage := response.Setup.Stages[0]
+	if stage.CapabilityProfile != string(flow.ProfileArtifact) || stage.EffectiveCapability == nil {
+		t.Fatalf("declared/effective capability = %+v", stage)
+	}
+	effective := stage.EffectiveCapability
+	if effective.ContractID != compiled.ContractID || effective.AuthorityDigest != compiled.AuthorityDigest ||
+		effective.Preflight != "passed" || effective.Validation != "passed" || effective.Provider != "fake" {
+		t.Fatalf("effective capability = %+v", effective)
+	}
+	encoded, _ := json.Marshal(effective)
+	for _, secret := range []string{"prompt secret", "environment-secret", "remote URL", "socket"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("effective capability leaked %q", secret)
+		}
+	}
+}
+
+func TestSetupLabelsLegacyToolsDeprecatedAndSubtractive(t *testing.T) {
+	c, _ := newConfigClient(t, oneAgentFlow("agent"), overridePackages(), fixtureRepoSetup())
+	response, err := c.Do(Command{Op: "setup_outline"})
+	if err != nil || response.Setup == nil {
+		t.Fatal(err)
+	}
+	agent := response.Setup.Stages[0].Agents[0]
+	if len(agent.LegacyAllowedTools) == 0 || agent.LegacyToolsNotice != "deprecated restriction — cannot grant authority" || len(agent.AllowedTools) != 0 {
+		t.Fatalf("legacy tool projection = %+v", agent)
+	}
+}
+
+func TestCapabilityFailureProjectionUsesStableSafeFields(t *testing.T) {
+	projection := EffectiveCapabilitySetup{
+		SchemaVersion: 1, ContractID: strings.Repeat("a", 64), AuthorityDigest: strings.Repeat("b", 64),
+		Preflight: "passed", Validation: "failed", FailureReason: string(capability.ReasonPostStageViolation),
+		FailurePhase: "post-stage", FailureOperation: string(capability.OpWorkspaceMutate),
+		FailurePaths: []string{"docs/safe.md"}, RecoveryRequired: "trusted_workspace",
+	}
+	encoded, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, required := range []string{"capability_post_stage_violation", "post-stage", "workspace-mutate", "docs/safe.md", "trusted_workspace"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("safe projection missing %q: %s", required, text)
+		}
+	}
+	for _, secret := range []string{"file contents", "command payload", "credential-secret", "socket-secret"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("safe projection leaked %q", secret)
+		}
+	}
+}
+
+func TestSetupWorksBeforeCompilationAndAfterRestart(t *testing.T) {
+	c, _ := newConfigClient(t, oneAgentFlow("agent"), overridePackages(), fixtureRepoSetup())
+	created, err := c.Do(Command{Op: "create_issue", Title: "uncompiled", Flow: "default", Preset: "regular"})
+	if err != nil || !created.OK {
+		t.Fatal(err)
+	}
+	for range 2 {
+		response, err := c.Do(Command{Op: "setup_outline", IssueID: created.IssueID})
+		if err != nil || response.Setup == nil || response.Setup.Stages[0].EffectiveCapability != nil {
+			t.Fatalf("uncompiled setup = %+v err=%v", response.Setup, err)
+		}
+	}
 }
 
 // overrideFlow is a one-stage flow whose AgentRef.Model contradicts the
@@ -1599,7 +1712,8 @@ func TestCodexSetupResolvesRepoDefaultsAndLabelsClaudeTools(t *testing.T) {
 	if ag.Model != "gpt-5.6-luna" || ag.Effort != "xhigh" || ag.ThinkingTokens != "" {
 		t.Fatalf("effective Codex agent = %+v", ag)
 	}
-	if len(ag.AllowedTools) != 0 || len(ag.DeclaredAllowedTools) == 0 || ag.ToolSource != "codex config" {
+	if len(ag.AllowedTools) != 0 || len(ag.LegacyAllowedTools) == 0 ||
+		ag.LegacyToolsNotice != "deprecated restriction — cannot grant authority" {
 		t.Fatalf("Codex tools = %+v", ag)
 	}
 }
@@ -1621,8 +1735,8 @@ func TestClaudeSetupRetainsThinkingBudgetAndEffectiveAllowedTools(t *testing.T) 
 	c, _ := newConfigClient(t, reviewFlow(), reviewPackages(), fixtureRepoSetup())
 	r, _ := c.Do(Command{Op: "setup_outline"})
 	ag := r.Setup.Stages[0].Agents[0]
-	if ag.ThinkingTokens != "8192" || len(ag.AllowedTools) == 0 ||
-		len(ag.DeclaredAllowedTools) != 0 || ag.ToolSource != "" {
+	if ag.ThinkingTokens != "8192" || len(ag.AllowedTools) != 0 ||
+		len(ag.LegacyAllowedTools) == 0 || ag.LegacyToolsNotice == "" {
 		t.Fatalf("effective Claude agent = %+v", ag)
 	}
 }

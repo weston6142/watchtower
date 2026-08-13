@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,6 +32,7 @@ func TestDecisionsJSONIncludesContext(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: review
+    capability_profile: artifact
     agents: [{package: correctness-reviewer}]
     gate: approve_artifact
     artifacts: [review.md]
@@ -319,6 +321,7 @@ func TestDecisionContextSurvivesDaemonRestart(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: review
+    capability_profile: artifact
     agents: [{package: correctness-reviewer}]
     gate: approve_artifact
     artifacts: [review.md]
@@ -474,6 +477,7 @@ func TestVerificationCacheDaemonUsesRepositoryDataRoot(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: merge-verification
+    capability_profile: artifact
     agents: [{package: merge-verifier}]
     workspace: worktree
     gate: auto
@@ -515,6 +519,20 @@ func TestFinishClaimMergesPushesMarksDoneAndCleansWorkspace(t *testing.T) {
 	run(t, "git", repo, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "config.yaml"),
 		[]byte("runner: fake\ntest_cmd: true\npull: false\npush: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flowBody := `name: default
+stages:
+  - name: merge-verification
+    capability_profile: artifact
+    agents: [{package: merge-verifier}]
+    workspace: worktree
+    gate: auto
+    completion: all
+    merge_barrier: true
+    artifacts: [merge-report.md, merge-decision.json, verification.json]
+`
+	if err := os.WriteFile(filepath.Join(repo, ".watchtower", "flows", "default.yaml"), []byte(flowBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	run(t, "git", repo, "add", "-A")
@@ -822,6 +840,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_token
 	flowBody := `name: default
 stages:
   - name: execute
+    capability_profile: artifact
     agents: [{package: executor}]
     gate: auto
     workspace: worktree
@@ -900,44 +919,20 @@ func TestCodexRestartPreservesFallbackAttemptState(t *testing.T) {
 
 	stubDir := t.TempDir()
 	stub := filepath.Join(stubDir, "codex-stub")
-	countFile := filepath.Join(stubDir, "count")
-	kindLog := filepath.Join(stubDir, "kinds.log")
-	lastLog := filepath.Join(stubDir, "last.log")
-	modeFile := filepath.Join(stubDir, "mode")
-	if err := os.WriteFile(modeFile, []byte("block\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(stub, []byte(fmt.Sprintf(`#!/bin/sh
+	if err := os.WriteFile(stub, []byte(`#!/bin/sh
 set -eu
-count_file=%q
-kind_log=%q
-last_log=%q
-mode=%q
-count=0
-if [ -f "$count_file" ]; then
-  count=$(cat "$count_file")
-fi
-count=$((count + 1))
-printf '%%s\n' "$count" > "$count_file"
-if printf '%%s' "$*" | grep -q 'features.unified_exec=true'; then
-  printf '%%s\n' fallback >> "$kind_log"
+if [ "${CODEX_RESTART_MODE:-}" = "success" ]; then
+  printf '%s\n' '{"type":"thread.started","thread_id":"thr-retry"}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"watchtower_stage_result\":{\"schema_version\":1,\"stage_kind\":\"execute\",\"outcome\":\"completed\",\"remaining_work\":[],\"remaining_concerns\":[],\"execute\":{\"plan_tasks\":[{\"id\":\"task-0001\",\"outcome\":\"completed\",\"summary\":\"retry completed the stage\"}],\"commits\":[],\"checks\":[],\"skips\":[{\"activity\":\"commits\",\"explanation\":\"the integration stub makes no repository change\"},{\"activity\":\"checks\",\"explanation\":\"the integration test covers restart behavior\"}]}}}"}}'
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}'
+elif [ ! -f "$TMPDIR/primary-failed" ]; then
+  : > "$TMPDIR/primary-failed"
+  printf '%s\n' '{"type":"thread.started","thread_id":"thr-primary"}'
+  printf '%s\n' '{"type":"turn.failed","error":{"message":"primary execution failed"}}'
 else
-  printf '%%s\n' primary >> "$kind_log"
+  while :; do :; done
 fi
-if printf '%%s' "$*" | grep -q -- '--last'; then
-  printf '%%s\n' last >> "$last_log"
-fi
-if [ "$count" -eq 1 ]; then
-  printf '%%s\n' '{"type":"thread.started","thread_id":"thr-primary"}'
-  printf '%%s\n' '{"type":"turn.failed","error":{"message":"primary execution failed"}}'
-elif [ "$(cat "$mode")" = "block" ]; then
-  sleep 30
-else
-  printf '%%s\n' '{"type":"thread.started","thread_id":"thr-retry"}'
-  printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"retry complete"}}'
-  printf '%%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}'
-fi
-`, countFile, kindLog, lastLog, modeFile)), 0o755); err != nil {
+`), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(repo, ".watchtower", "config.yaml")
@@ -959,6 +954,7 @@ fi
 	flowBody := `name: default
 stages:
   - name: execute
+    capability_profile: artifact
     agents: [{package: executor}]
     gate: auto
     workspace: none
@@ -987,8 +983,6 @@ stages:
 		time.Sleep(25 * time.Millisecond)
 	}
 	if time.Now().After(deadline) {
-		countBytes, _ := os.ReadFile(countFile)
-		kindBytes, _ := os.ReadFile(kindLog)
 		st, openErr := store.Open(database)
 		var issues []store.IssueRow
 		var runs []store.StageRun
@@ -1003,13 +997,11 @@ stages:
 			events, _ = st.EventsSince(0)
 			st.Close()
 		}
-		t.Fatalf("fallback attempt did not reach running state: open=%v count=%q kinds=%q issues=%+v runs=%+v attempts=%+v events=%+v", openErr, countBytes, kindBytes, issues, runs, attempts, events)
+		t.Fatalf("fallback attempt did not reach running state: open=%v issues=%+v runs=%+v attempts=%+v events=%+v", openErr, issues, runs, attempts, events)
 	}
 
 	stopDaemons(base)
-	if err := os.WriteFile(modeFile, []byte("success\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("CODEX_RESTART_MODE", "success")
 	_ = run(t, bin, repo, "status", "--data", base)
 	sock := filepath.Join(repocfg.RepoDataDir(base, repo), "watchtower.sock")
 	client, err := proto.Dial(sock)
@@ -1025,19 +1017,35 @@ stages:
 		setup.Setup.Repo.CodexPrimary.FeatureOverrides["unified_exec"] || !setup.Setup.Repo.CodexFallback.FeatureOverrides["unified_exec"] {
 		t.Fatalf("reloaded Codex setup = %+v", setup.Setup.Repo)
 	}
-	countBytes, err := os.ReadFile(countFile)
-	if err != nil {
-		t.Fatal(err)
+	loadAttempts := func() []runner.Attempt {
+		t.Helper()
+		st, openErr := store.Open(database)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		defer st.Close()
+		runs, runsErr := st.StageRuns(issueID)
+		if runsErr != nil {
+			t.Fatal(runsErr)
+		}
+		var attempts []runner.Attempt
+		for _, stageRun := range runs {
+			operation, loadErr := st.LoadOperation(context.Background(), strconv.FormatInt(stageRun.ID, 10))
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			attempts = append(attempts, operation...)
+		}
+		return attempts
 	}
-	kinds, err := os.ReadFile(kindLog)
-	if err != nil {
-		t.Fatal(err)
+	attempts := loadAttempts()
+	if len(attempts) != 2 || attempts[0].Kind != runner.AttemptPrimary || attempts[1].Kind != runner.AttemptFallback {
+		t.Fatalf("restart relaunched or changed fallback attempt history: %+v", attempts)
 	}
-	if strings.TrimSpace(string(countBytes)) != "2" || string(kinds) != "primary\nfallback\n" {
-		t.Fatalf("restart relaunched or changed fallback argv: count=%q kinds=%q", countBytes, kinds)
-	}
-	if _, err := os.Stat(lastLog); !os.IsNotExist(err) {
-		t.Fatalf("restart used --last: err=%v", err)
+	for _, attempt := range attempts {
+		if slices.Contains(attempt.RedactedArgv, "--last") {
+			t.Fatalf("restart used --last: %+v", attempts)
+		}
 	}
 
 	if out := run(t, bin, repo, "retry", "--data", base, issueID); !strings.Contains(out, "retry "+issueID) {
@@ -1050,19 +1058,15 @@ stages:
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	countBytes, err = os.ReadFile(countFile)
-	if err != nil {
-		t.Fatal(err)
+	attempts = loadAttempts()
+	if len(attempts) != 3 || attempts[0].Kind != runner.AttemptPrimary || attempts[1].Kind != runner.AttemptFallback ||
+		attempts[2].Kind != runner.AttemptPrimary || attempts[2].State != runner.AttemptSucceeded {
+		t.Fatalf("explicit retry attempt history: %+v", attempts)
 	}
-	kinds, err = os.ReadFile(kindLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(countBytes)) != "3" || string(kinds) != "primary\nfallback\nprimary\n" {
-		t.Fatalf("explicit retry argv history: count=%q kinds=%q", countBytes, kinds)
-	}
-	if _, err := os.Stat(lastLog); !os.IsNotExist(err) {
-		t.Fatalf("explicit retry used --last: err=%v", err)
+	for _, attempt := range attempts {
+		if slices.Contains(attempt.RedactedArgv, "--last") {
+			t.Fatalf("explicit retry used --last: %+v", attempts)
+		}
 	}
 }
 
@@ -1071,10 +1075,12 @@ func TestPausedLaneSurvivesControlledDaemonRestart(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: plan
+    capability_profile: artifact
     agents: [{package: agent}]
     gate: auto
     workspace: none
   - name: execute
+    capability_profile: artifact
     agents: [{package: agent}]
     gate: auto
     workspace: none
@@ -1433,6 +1439,7 @@ func TestResetYesStillRefusesPendingDecision(t *testing.T) {
 	flowBody := `name: default
 stages:
   - name: review
+    capability_profile: artifact
     agents: [{package: correctness-reviewer}]
     gate: approve_artifact
     artifacts: [review.md]
@@ -1558,7 +1565,7 @@ func TestDependencyWorkflowUsesIsolatedSessionsAndLandedBase(t *testing.T) {
 		).CombinedOutput(); err != nil || strings.TrimSpace(string(output)) != "" {
 			t.Fatalf("%s branch remains: %q err %v", issueID, output, err)
 		}
-		if body, err := os.ReadFile(filepath.Join(repo, "watchtower-fake", issueID+".txt")); err != nil || strings.TrimSpace(string(body)) != issueID {
+		if body, err := os.ReadFile(filepath.Join(repo, "src", "gh40", "task-0001", issueID+".txt")); err != nil || strings.TrimSpace(string(body)) != issueID {
 			t.Fatalf("%s landed file = %q err %v", issueID, body, err)
 		}
 	}
@@ -1599,11 +1606,19 @@ func TestFakeRunnerChangesFirstMutableStageRegardlessOfName(t *testing.T) {
 	}
 	flowBody := `name: synthetic
 stages:
+  - name: plan
+    capability_profile: artifact
+    agents: [{package: planner}]
+    workspace: worktree
+    gate: plan_review
+    artifacts: [plan.md, touchset.json]
   - name: shape-change
+    capability_profile: implementation
     agents: [{package: executor}]
     workspace: worktree
     gate: auto
   - name: ship-safely
+    capability_profile: final-review
     agents: [{package: merge-verifier}]
     workspace: worktree
     gate: auto
@@ -1617,22 +1632,44 @@ stages:
 		"--flow", "synthetic", "--title", "custom fake flow")))
 	deadline := time.Now().Add(10 * time.Second)
 	for {
+		var pending []engine.PendingDecision
+		if err := json.Unmarshal([]byte(run(t, bin, repo, "decisions", "--data", base, "--json")), &pending); err != nil {
+			t.Fatalf("decisions --json: %v", err)
+		}
+		for _, decision := range pending {
+			run(t, bin, repo, "answer", "--data", base, strconv.FormatInt(decision.ID, 10), "0")
+		}
 		issues := run(t, bin, repo, "issues", "--data", base)
 		if strings.Contains(issues, id+"  done") {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("custom fake flow did not finish:\n%s", issues)
+			logPaths, _ := filepath.Glob(filepath.Join(base, "repos", "*", "daemon.log"))
+			var logs strings.Builder
+			for _, path := range logPaths {
+				body, _ := os.ReadFile(path)
+				fmt.Fprintf(&logs, "\n%s:\n%s", path, body)
+			}
+			dbs, dbErr := filepath.Glob(filepath.Join(base, "repos", "*", "watchtower.db"))
+			var history any
+			if dbErr == nil && len(dbs) == 1 {
+				if st, openErr := store.Open(dbs[0]); openErr == nil {
+					history, _ = st.FailureHistory(context.Background(), id)
+					_ = st.Close()
+				}
+			}
+			t.Fatalf("custom fake flow did not finish:\n%s\n%s%sfailures=%+v", issues,
+				run(t, bin, repo, "tail", "--data", base), logs.String(), history)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	body, err := os.ReadFile(filepath.Join(repo, "watchtower-fake", id+".txt"))
+	body, err := os.ReadFile(filepath.Join(repo, "src", "gh40", "task-0001", id+".txt"))
 	if err != nil || strings.TrimSpace(string(body)) != id {
 		t.Fatalf("landed fake change = %q err %v", body, err)
 	}
 }
 
-func TestIntegratingFlowRefusesMissingVerificationCommand(t *testing.T) {
+func TestDaemonRejectsInvalidCapabilityConfigurationBeforeRunner(t *testing.T) {
 	t.Setenv("TMPDIR", "/tmp")
 	bin := buildBinary(t)
 	base, err := os.MkdirTemp("/tmp", "wt-missing-gate-")

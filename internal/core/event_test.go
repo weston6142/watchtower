@@ -50,6 +50,22 @@ func TestPlannerBudgetUpdatedEventTypeIsAdditive(t *testing.T) {
 	}
 }
 
+func TestCapabilityEventsExposeOnlyStableEvidence(t *testing.T) {
+	for _, eventType := range []EventType{EvCapabilityCompiled, EvCapabilityPreflighted, EvCapabilityDenied, EvCapabilityValidated, EvCapabilityRejected} {
+		event, err := NewEvent(eventType, "GH-68", map[string]any{
+			"stage": "execute", "attempt_id": "checkpoint-1", "contract_id": strings.Repeat("a", 64),
+			"reason": "capability_runtime_denied",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := string(event.Payload)
+		if !strings.Contains(payload, "contract_id") || strings.Contains(payload, "secret") || strings.Contains(payload, "command") {
+			t.Fatalf("unsafe capability event %q: %s", eventType, payload)
+		}
+	}
+}
+
 func TestFailureRecordedEventProjectsCanonicalRecord(t *testing.T) {
 	record := failure.FailureRecord{
 		RecordID: 17, SchemaVersion: failure.SchemaVersion, IssueID: "GH-63", Stage: "execute", StageAttempt: 3,

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -228,5 +229,27 @@ func TestRunnerResultBoundaryRetainsEachFailedAgentOccurrence(t *testing.T) {
 	}
 	if len(recorder.records) != 2 {
 		t.Fatalf("runner records = %d, want 2", len(recorder.records))
+	}
+}
+
+func TestCapabilityFailureReasonsUseStablePolicyClassification(t *testing.T) {
+	tests := []struct {
+		reason capability.FailureReason
+		site   failure.Site
+		class  failure.Class
+		state  failure.StateChange
+	}{
+		{capability.ReasonContractInvalid, failure.SiteCapability, failure.ClassPolicy, failure.StateConfiguration},
+		{capability.ReasonProviderUnsupported, failure.SiteCapability, failure.ClassPolicy, failure.StateConfiguration},
+		{capability.ReasonRuntimeDenied, failure.SiteCapability, failure.ClassPolicy, failure.StateTrustedWorkspace},
+		{capability.ReasonPostStageViolation, failure.SiteCapability, failure.ClassPolicy, failure.StateTrustedWorkspace},
+	}
+	for _, test := range tests {
+		t.Run(string(test.reason), func(t *testing.T) {
+			site, class, disposition, state := classifyFailure(&capability.PolicyError{Phase: "test", Reason: test.reason})
+			if site != test.site || class != test.class || disposition != failure.RetryAfterStateChange || state != test.state {
+				t.Fatalf("classification=(%s,%s,%s,%s)", site, class, disposition, state)
+			}
+		})
 	}
 }

@@ -1,14 +1,17 @@
 name: default
 stages:
   - name: brainstorm
+    capability_profile: artifact
     agents: [{package: brainstorm}]
     gate: decision_queue
     artifacts: []
   - name: spec
+    capability_profile: artifact
     agents: [{package: spec-writer}]
     gate: approve_artifact
     artifacts: [spec.md]
   - name: execute
+    capability_profile: artifact
     agents: [{package: executor}]
     workspace: worktree
     gate: auto
@@ -16,6 +19,7 @@ stages:
     retries: 1
     artifacts: [diff]
   - name: review
+    capability_profile: artifact
     agents: [{package: clean-code-reviewer}, {package: reviewer}, {package: doc-writer}]
     parallel: true
     completion: all

@@ -31,6 +31,27 @@ func TestStageBriefIncludesFinalizationContract(t *testing.T) {
 	}
 }
 
+func TestStageBriefSeparatesAgentAndEngineOwnedOutputs(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteStageBrief(dir, Brief{
+		IssueID: "GH-68", Stage: "merge-verification",
+		AgentOwnedOutputs:  []string{"merge-report.md", "merge-decision.json"},
+		EngineOwnedOutputs: []string{"verification.json", "lifecycle state and receipts"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "STAGE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{"## Agent-owned outputs", "merge-report.md", "merge-decision.json", "## Engine-owned outputs", "verification.json", "lifecycle state and receipts"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stage brief missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestArchiveAndMaterializeDeclaredArtifact(t *testing.T) {
 	source := t.TempDir()
 	issueDir := t.TempDir()

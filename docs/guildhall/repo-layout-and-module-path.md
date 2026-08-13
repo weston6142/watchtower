@@ -20,11 +20,12 @@ Layout:
   contract, and the only package both daemon and TUI may depend on for
   agreement.
 - `internal/engine/` — the Conductor: flow execution, stage runs, decisions,
-  rehydration.
+  rehydration, immutable capability-authority resolution, and the private
+  lifecycle executor for verification and integration.
 - `internal/flow/`, `internal/levers/` — flows-as-data (stages, completion
   rules) and the autonomy lever matrix, presets, and escalation routing.
 - `internal/store/` — SQLite issue rows, append-only event log, attachment
-  metadata.
+  metadata, immutable capability attempts, and ordered policy audit evidence.
 - `internal/steward/`, `internal/librarian/`, `internal/marshal/` — the three
   overlords (issue state, project memory, merge train), woken on events.
 - `internal/decision/` — the provider-neutral decision context contract and
@@ -37,10 +38,19 @@ Layout:
 - `internal/projection/` — event log → renderable `State`.
 - `internal/tui/` — Bubble Tea client; goldens in `internal/tui/testdata/`.
 - `internal/proto/` — Unix-socket JSONL commands/ops.
-- `internal/runner/`, `internal/codex/`, `internal/claude/` — the provider-neutral
-  `Runner` interface plus headless Codex JSONL and Claude stream-JSON implementations.
-- `internal/slots/`, `internal/workspace/` — the heavy-slot pool, and workspace
-  provisioning (one per issue, with a release func). Two providers:
+- `internal/capability/` — the canonical effective-capability contract,
+  compiler, complete workspace/Git observer, and provider-independent final
+  validator. `internal/capability/runtime/` owns the scoped MCP operation
+  gateway, contained provider/descendant sessions, mediated local process and
+  Git operations, and platform containment backends; see
+  effective-stage-capabilities.
+- `internal/runner/`, `internal/codex/`, `internal/claude/` — the
+  provider-neutral preflight/run boundary plus headless Codex JSONL and Claude
+  stream-JSON adapters. `internal/runner/conformance/` gives both adapters the
+  same contract and fail-closed enforcement-plan checks.
+- `internal/slots/`, `internal/workspace/` — the heavy-slot pool, workspace
+  provisioning (one per issue, with a release func), and exact-target recovery
+  of capability-rejected issue workspaces. Two providers:
   `workspace.Detect` prefers `treehouse` leases when that binary is on `PATH`
   and otherwise falls back to `git worktree` under `.worktrees/`. Which one won
   is visible only in the setup inspector — see setup-inspector.

@@ -219,3 +219,62 @@ func TestMigrationApplyIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCapabilityMigrationUpdatesOnlyKnownGeneratedFiles(t *testing.T) {
+	root := t.TempDir()
+	seedDefaultsWithoutManifest(t, root)
+	generated := []byte("identity:\n  name: Brainstorm\n  color: cyan\n  symbol: ✦\nincludes: [\"decision-protocol\"]\nallowed_tools: [\"Bash\", \"Read\", \"Glob\", \"Grep\", \"Write\"]\nmodel: \"\"\nmax_turns: 0\n")
+	generatedPath := filepath.Join(root, ".watchtower", "packages", "brainstorm", "package.yaml")
+	if SHA256Bytes(generated) != capabilityV2Hashes["packages/brainstorm/package.yaml"] {
+		t.Fatal("v2 package fixture no longer matches its exact generated hash")
+	}
+	if err := os.WriteFile(generatedPath, generated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	customPath := filepath.Join(root, ".watchtower", "packages", "planner", "prompt.md")
+	custom := []byte("operator-owned planner prompt\n")
+	if err := os.WriteFile(customPath, custom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareMigration(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.Changes) != 1 || prepared.Changes[0].Path != "packages/brainstorm/package.yaml" {
+		t.Fatalf("exact capability changes = %+v", prepared.Changes)
+	}
+	if err := prepared.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(customPath); err != nil || !bytes.Equal(got, custom) {
+		t.Fatalf("custom prompt changed: %q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(generatedPath); err != nil || bytes.Contains(got, []byte("allowed_tools")) {
+		t.Fatalf("generated package was not migrated: %q err=%v", got, err)
+	}
+}
+
+func TestCapabilityMigrationIsTransactionalAndReplaySafe(t *testing.T) {
+	root := t.TempDir()
+	seedDefaultsWithoutManifest(t, root)
+	flowPath := filepath.Join(root, ".watchtower", "flows", "default.yaml")
+	if err := os.WriteFile(flowPath, legacyDefaultFlow(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareMigration(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(flowPath); err != nil || !bytes.Equal(got, legacyDefaultFlow(t)) {
+		t.Fatalf("rollback changed source: %q err=%v", got, err)
+	}
+}

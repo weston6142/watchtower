@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -191,7 +192,7 @@ func TestCompletedStructuredResultResumesLifecycleWithoutRunner(t *testing.T) {
 }
 
 func structuredStage(name, agent string, retries int) flow.Stage {
-	return flow.Stage{Name: name, Agents: []flow.AgentRef{{Package: agent}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll, Retries: retries}
+	return flow.Stage{Name: name, Agents: []flow.AgentRef{{Package: agent}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll, Retries: retries, CapabilityProfile: flow.ProfileArtifact}
 }
 
 func structuredLifecycleEngine(t *testing.T, r runner.Runner, stages []flow.Stage) (*Engine, *store.Store) {
@@ -276,6 +277,31 @@ func lifecycleTestEngine(t *testing.T, r runner.Runner) (*Engine, *store.Store) 
 	return newEngineCfg(t, r, func(cfg *Config) {
 		cfg.Flows = map[string]flow.Flow{f.Name: f}
 	})
+}
+
+func putLifecycleAttemptResult(t *testing.T, s *store.Store, attempt store.StageLifecycleAttempt, result contextpack.AttemptResult) {
+	t.Helper()
+	contract, err := capability.Compile(capability.CompileInput{
+		IssueID: attempt.IssueID, Stage: attempt.Stage, AttemptID: attempt.AttemptID,
+		Profile: flow.ProfileArtifact, WorkspaceRoot: "/tmp/worktree",
+		MaterializedInputs: []string{"ISSUE.md"},
+		Repository:         capability.RepositoryIdentity{Branch: "issue/fixture", BaseCommit: "base", StartCommit: "head", Tree: "tree"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := capability.AttemptIdentity{IssueID: attempt.IssueID, Stage: attempt.Stage, AttemptID: attempt.AttemptID}
+	if err := s.CreateCapabilityAttempt(capability.AttemptRecord{Identity: identity, SchemaVersion: capability.ContractVersion, Contract: contract}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BindCapabilityValidation(identity, result.ResultSHA256, capability.ValidationResult{
+		Passed: true, ResultDigest: result.ResultSHA256, DeltaDigest: strings.Repeat("d", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutStageLifecycleResult(attempt, result); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func lifecycleCommittedSubstates(t *testing.T, s *store.Store, issueID string) []string {
@@ -453,11 +479,9 @@ func TestLifecycleAttemptForUsesNewestNumericAttempt(t *testing.T) {
 		if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.PutStageLifecycleResult(attempt, contextpack.AttemptResult{
+		putLifecycleAttemptResult(t, s, attempt, contextpack.AttemptResult{
 			AttemptID: attemptID, ResultPath: "artifacts/attempts/" + attemptID + "/result/manifest.json", ResultSHA256: strings.Repeat("a", 64),
-		}); err != nil {
-			t.Fatal(err)
-		}
+		})
 		record := stagelifecycle.Record{
 			SchemaVersion: 1, IssueID: attempt.IssueID, Stage: attempt.Stage, AttemptID: attempt.AttemptID,
 			Version: 1, Substate: stagelifecycle.RunnerSucceeded, TransitionID: attemptID + ":runner_succeeded",
@@ -490,11 +514,9 @@ func TestLifecycleAttemptForReusesDurableResultWithoutLedgerRecord(t *testing.T)
 	if err := s.CreateStageLifecycleAttempt(attempt); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutStageLifecycleResult(attempt, contextpack.AttemptResult{
+	putLifecycleAttemptResult(t, s, attempt, contextpack.AttemptResult{
 		AttemptID: attempt.AttemptID, ResultPath: "artifacts/attempts/" + attempt.AttemptID + "/result/manifest.json", ResultSHA256: strings.Repeat("a", 64),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	got, _, err := e.lifecycleAttemptFor(&issueState{id: "GH-66"}, flow.Stage{Name: "execute"}, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -519,11 +541,9 @@ func TestMaterializeStageContextUsesNewestNumericAttempt(t *testing.T) {
 			t.Fatal(err)
 		}
 		resultPath := "artifacts/attempts/" + item.attemptID + "/result/manifest.json"
-		if err := s.PutStageLifecycleResult(attempt, contextpack.AttemptResult{
+		putLifecycleAttemptResult(t, s, attempt, contextpack.AttemptResult{
 			AttemptID: item.attemptID, ResultPath: resultPath, ResultSHA256: strings.Repeat("a", 64),
-		}); err != nil {
-			t.Fatal(err)
-		}
+		})
 		archivePath := filepath.Join(e.issueDir(issueID), "artifacts", "attempts", item.attemptID, "plan.md")
 		if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
 			t.Fatal(err)

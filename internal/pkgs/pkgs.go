@@ -13,14 +13,24 @@ import (
 // Package is an agent package: a system prompt plus CLI options,
 // loaded from a directory containing package.yaml and prompt.md.
 type Package struct {
-	Name         string                 `yaml:"-"`
-	Prompt       string                 `yaml:"-"`
-	Identity     decision.AgentIdentity `yaml:"identity"`
-	Includes     []string               `yaml:"includes"`
-	AllowedTools []string               `yaml:"allowed_tools"`
-	Model        string                 `yaml:"model"`
-	Effort       string                 `yaml:"effort"` // low|medium|high|xhigh; empty = provider default
-	MaxTurns     int                    `yaml:"max_turns"`
+	Name               string                 `yaml:"-"`
+	Prompt             string                 `yaml:"-"`
+	Identity           decision.AgentIdentity `yaml:"identity"`
+	Includes           []string               `yaml:"includes"`
+	AllowedTools       []string               `yaml:"allowed_tools"`
+	LegacyRestrictions LegacyRestrictions     `yaml:"-"`
+	Model              string                 `yaml:"model"`
+	Effort             string                 `yaml:"effort"` // low|medium|high|xhigh; empty = provider default
+	MaxTurns           int                    `yaml:"max_turns"`
+}
+
+// LegacyRestrictions can only remove authority from a compiled stage profile.
+// An absent allowed_tools declaration imposes no compatibility restriction.
+type LegacyRestrictions struct {
+	Declared            bool
+	DenyWorkspaceRead   bool
+	DenyWorkspaceMutate bool
+	DenyLocalProcess    bool
 }
 
 // LoadDir loads all agent packages under root, keyed by directory name.
@@ -53,6 +63,10 @@ func LoadDir(root string) (map[string]Package, error) {
 		if err := decision.ValidateAgentIdentity(p.Identity); err != nil {
 			return nil, fmt.Errorf("package %s: %w", e.Name(), err)
 		}
+		p.LegacyRestrictions, err = legacyRestrictions(p.AllowedTools)
+		if err != nil {
+			return nil, fmt.Errorf("package %s: %w", e.Name(), err)
+		}
 		p.Name = e.Name()
 		p.Prompt, err = composePrompt(filepath.Join(filepath.Dir(root), "shared"), p, string(prompt))
 		if err != nil {
@@ -61,6 +75,26 @@ func LoadDir(root string) (map[string]Package, error) {
 		out[p.Name] = p
 	}
 	return out, nil
+}
+
+func legacyRestrictions(tools []string) (LegacyRestrictions, error) {
+	if tools == nil {
+		return LegacyRestrictions{}, nil
+	}
+	known := map[string]bool{"Read": true, "Glob": true, "Grep": true, "Write": true, "Edit": true, "Bash": true}
+	present := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if !known[tool] {
+			return LegacyRestrictions{}, fmt.Errorf("unknown legacy allowed_tools entry %q", tool)
+		}
+		present[tool] = true
+	}
+	return LegacyRestrictions{
+		Declared:            true,
+		DenyWorkspaceRead:   !present["Read"] && !present["Glob"] && !present["Grep"],
+		DenyWorkspaceMutate: !present["Write"] && !present["Edit"],
+		DenyLocalProcess:    !present["Bash"],
+	}, nil
 }
 
 func composePrompt(sharedRoot string, p Package, prompt string) (string, error) {

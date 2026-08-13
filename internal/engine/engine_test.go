@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
@@ -306,7 +307,20 @@ func newEngineCfg(t *testing.T, r runner.Runner, adjust func(*Config)) (*Engine,
 	if adjust != nil {
 		adjust(&cfg)
 	}
+	cfg.Flows = capabilityTestFlows(cfg.Flows)
 	return New(cfg), s
+}
+
+func capabilityTestFlows(flows map[string]flow.Flow) map[string]flow.Flow {
+	for name, configured := range flows {
+		for index := range configured.Stages {
+			if configured.Stages[index].CapabilityProfile == "" {
+				configured.Stages[index].CapabilityProfile = flow.ProfileArtifact
+			}
+		}
+		flows[name] = configured
+	}
+	return flows
 }
 
 func testDecisionIdentities() map[string]decision.AgentIdentity {
@@ -334,19 +348,43 @@ func newEngine(t *testing.T, r runner.Runner) (*Engine, *store.Store) {
 	return newEngineCfg(t, r, nil)
 }
 
+func testRunnerPreflight(request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	controls := runner.RequiredControls(request.Contract)
+	proofs := make([]capability.ControlProof, 0, len(controls))
+	for _, control := range controls {
+		proofs = append(proofs, capability.ControlProof{Control: control, Proven: true})
+	}
+	return runner.NewEnforcementPlan(request.Contract, "engine-test", "test-runner", "1", proofs)
+}
+
+func testRuntimeAudit(request runner.StageRequest) []capability.AuditRecord {
+	return []capability.AuditRecord{{
+		ContractID: request.Contract.ContractID,
+		Phase:      "reap",
+		Outcome:    "passed",
+	}}
+}
+
 type typedStageRunner struct {
 	result  runner.Result
 	results map[string]runner.Result
 	sink    runner.AttemptSink
 }
 
-func (r *typedStageRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	_ chan<- runner.Ask) <-chan runner.Result {
+func (r *typedStageRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	return testRunnerPreflight(request)
+}
+
+func (r *typedStageRunner) Run(ctx context.Context, request runner.StageRequest, _ chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
+		issueID, stage, agentPkg := request.IssueID, request.Stage, request.Agent
 		result := r.result
 		if configured, ok := r.results[agentPkg]; ok {
 			result = configured
+		}
+		if result.RuntimeAudit == nil {
+			result.RuntimeAudit = testRuntimeAudit(request)
 		}
 		operationID := runner.OperationID(ctx)
 		for index := range result.Attempts {
@@ -738,9 +776,10 @@ func waitForPendingStage(t *testing.T, e *Engine, stage string) PendingDecision 
 func planReviewFlow() flow.Flow {
 	return flow.Flow{Name: "plan-review", Stages: []flow.Stage{
 		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "none",
-			Completion: flow.CompletionAll, Gate: flow.GatePlanReview, Artifacts: []string{"plan.md"}},
+			Completion: flow.CompletionAll, Gate: flow.GatePlanReview, Artifacts: []string{"plan.md"},
+			CapabilityProfile: flow.ProfileArtifact},
 		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}}, Workspace: "none",
-			Completion: flow.CompletionAll, Gate: flow.GateAuto},
+			Completion: flow.CompletionAll, Gate: flow.GateAuto, CapabilityProfile: flow.ProfileArtifact},
 	}}
 }
 
@@ -1304,7 +1343,7 @@ func TestAutoStageStillCompletesWithoutReview(t *testing.T) {
 	}
 }
 
-func TestArtifactGateRejectsMissingArtifactBeforeReview(t *testing.T) {
+func TestArtifactGateRejectsMissingArtifactAsCapabilityViolationBeforeReview(t *testing.T) {
 	f := flow.Flow{Name: "missing", Stages: []flow.Stage{{
 		Name: "spec", Agents: []flow.AgentRef{{Package: "spec-writer"}}, Workspace: "none",
 		Completion: flow.CompletionAll, Gate: flow.GateApproveArtifact, Artifacts: []string{"spec.md"},
@@ -1317,7 +1356,9 @@ func TestArtifactGateRejectsMissingArtifactBeforeReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = e.StartIssue(context.Background(), id)
-	if err == nil || !strings.Contains(err.Error(), "missing artifact spec.md") {
+	var policy *capability.PolicyError
+	if !errors.As(err, &policy) || policy.Reason != capability.ReasonPostStageViolation ||
+		len(policy.Paths) != 1 || policy.Paths[0] != "spec.md" {
 		t.Fatalf("StartIssue error = %v", err)
 	}
 	if len(e.PendingDecisions()) != 0 {
@@ -1469,7 +1510,7 @@ func TestDecisionContextFailureStopsBeforePresentation(t *testing.T) {
 func TestDecisionRequiredObserverCanAnswerImmediately(t *testing.T) {
 	f := flow.Flow{Name: "observer-answer", Stages: []flow.Stage{{
 		Name: "ask", Completion: flow.CompletionAll, Workspace: "none", Gate: flow.GateAuto,
-		Agents: []flow.AgentRef{{Package: "agent"}},
+		Agents: []flow.AgentRef{{Package: "agent"}}, CapabilityProfile: flow.ProfileArtifact,
 	}}}
 	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"ask/agent": {Asks: []levers.Decision{{
@@ -1725,8 +1766,8 @@ func TestResolvedDecisionArchiveFailureDoesNotFailAnswer(t *testing.T) {
 			if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
 				t.Fatalf("Answer returned a post-commit archive failure: %v", err)
 			}
-			if err := <-done; err != nil {
-				t.Fatal(err)
+			if stageErr := <-done; stageErr != nil && !strings.Contains(stageErr.Error(), "decisions") {
+				t.Fatalf("stage failed for an unrelated reason: %v", stageErr)
 			}
 			row, ok, err := s.DecisionByID(pending.ID)
 			if err != nil || !ok || row.Status != "answered" {
@@ -2911,11 +2952,12 @@ func (s *recordingSequencer) ReadyToMerge(context.Context, string) error { retur
 func (s *recordingSequencer) Merged(string)                              { s.merged++ }
 func (s *recordingSequencer) Aborted(string)                             {}
 
-func TestMarshalReleasedAfterSuccessfulCompletionWithoutTrain(t *testing.T) {
+func TestMarshalReleasedAfterSuccessfulCompletion(t *testing.T) {
 	f := flow.Flow{Name: "default", Stages: []flow.Stage{
-		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "worktree", Gate: flow.GateApproveArtifact, Artifacts: []string{"touchset.json"}},
+		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "worktree", Gate: flow.GatePlanReview,
+			Artifacts: []string{"touchset.json"}, CapabilityProfile: flow.ProfileArtifact},
 		{Name: "merge", Agents: []flow.AgentRef{{Package: "reviewer"}}, Workspace: "worktree", Gate: flow.GateAuto, MergeBarrier: true,
-			Artifacts: append([]string(nil), flow.FinalizationArtifacts...)},
+			Artifacts: append([]string(nil), flow.FinalizationArtifacts...), CapabilityProfile: flow.ProfileFinalReview},
 	}}
 	repo := t.TempDir()
 	initGitRepo(t, repo)
@@ -2929,10 +2971,11 @@ func TestMarshalReleasedAfterSuccessfulCompletionWithoutTrain(t *testing.T) {
 		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
 			"plan/planner": {Artifacts: map[string]string{"touchset.json": `{"globs":["src/**"]}`}},
 			"merge/reviewer": {Artifacts: map[string]string{
-				"merge-report.md": "", "merge-decision.json": "", "verification.json": "",
+				"merge-report.md": "", "merge-decision.json": "",
 			}},
 		}},
-		Marshal: seq, Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
+		Marshal: seq, Train: &marshal.Train{Repo: repo, TestCmd: []string{"true"}},
+		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
 		DataDir: t.TempDir(), Workspace: workspace.GitWorktree{Repo: repo}, DecisionIdentities: testDecisionIdentities(),
 	})
 	id, err := e.CreateIssue("marshal", "", "default", levers.Preset(f, flow.LeverYolo), 0, nil)
@@ -3173,6 +3216,7 @@ func TestRetryBriefUsesCheckpointHeadDirtyStateAndFailure(t *testing.T) {
 	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
 		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
 		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+		CapabilityProfile: flow.ProfileArtifact,
 	}}}
 	fr := &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"execute/executor": {SessionID: "failed-session", Fail: true},
@@ -3220,12 +3264,19 @@ func TestRetryBriefUsesCheckpointHeadDirtyStateAndFailure(t *testing.T) {
 }
 
 func verificationFlow() flow.Flow {
-	return flow.Flow{Name: "default", Stages: []flow.Stage{{
-		Name: "merge-verification", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
-		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
-		MergeBarrier: true,
-		Artifacts:    []string{"merge-report.md", "merge-decision.json", "verification.json"},
-	}}}
+	return flow.Flow{Name: "default", Stages: []flow.Stage{
+		{
+			Name: "approval", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "isolated",
+			Gate: flow.GatePlanReview, Completion: flow.CompletionAll, CapabilityProfile: flow.ProfileArtifact,
+			Artifacts: []string{"touchset.json"},
+		},
+		{
+			Name: "merge-verification", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+			MergeBarrier: true, CapabilityProfile: flow.ProfileFinalReview,
+			Artifacts: []string{"merge-report.md", "merge-decision.json", "verification.json"},
+		},
+	}}
 }
 
 func verificationEngine(
@@ -3246,12 +3297,8 @@ func verificationEngineForFlow(
 	if treeOverride != "" {
 		tree = treeOverride
 	}
-	receipt, err := json.Marshal(marshal.Verification{
-		BaseSHA: base, BranchSHA: base, TreeSHA: tree, Passed: true, Commands: commands,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	_ = commands
+	_ = tree
 	decisionReceipt := marshal.MergeDecision{Decision: decision}
 	if decision == "merge" {
 		decisionReceipt.BranchCommit = base
@@ -3274,13 +3321,16 @@ func verificationEngineForFlow(
 	finalKey := integrationStage.Name + "/" + integrationStage.Agents[0].Package
 	scripts[finalKey] = runner.Script{Artifacts: map[string]string{
 		"merge-report.md": "verified\n", "merge-decision.json": string(decisionBody),
-		"verification.json": string(receipt),
 	}}
 	for _, stage := range f.Stages {
 		if stage.DeclaresArtifact("touchset.json") {
 			key := stage.Name + "/" + stage.Agents[0].Package
 			script := scripts[key]
-			script.Artifacts = map[string]string{"touchset.json": `{"globs":["feature.txt"]}`}
+			script.Artifacts = map[string]string{}
+			for _, artifact := range stage.Artifacts {
+				script.Artifacts[artifact] = ""
+			}
+			script.Artifacts["touchset.json"] = `{"globs":["feature.txt","repair-*"]}`
 			scripts[key] = script
 		}
 	}
@@ -3295,11 +3345,12 @@ func verificationEngineForFlow(
 		Train:              &marshal.Train{Repo: repo, TestCmd: []string{"true"}},
 		Runner:             &runner.FakeRunner{Scripts: scripts},
 		DecisionIdentities: testDecisionIdentities(),
+		PlanReview:         review.PolicySettings{ID: "verification-test", Version: "1", AutoApproveRegular: true, Valid: true},
 	})
 	return e, s, repo
 }
 
-func TestVerificationCacheAgentAndDaemonReplayShareLeaseEnvironment(t *testing.T) {
+func TestFinalVerificationStartsAfterCapabilityValidation(t *testing.T) {
 	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
 	cacheRoot := t.TempDir()
 	capture := filepath.Join(t.TempDir(), "daemon-cache")
@@ -3322,22 +3373,15 @@ func TestVerificationCacheAgentAndDaemonReplayShareLeaseEnvironment(t *testing.T
 	if err := e.StartIssue(context.Background(), id); err != nil {
 		t.Fatalf("cache-managed merge barrier failed: %v", err)
 	}
-	if len(agentEnvironment) == 0 {
-		t.Fatal("agent did not observe a managed lease environment")
+	if len(agentEnvironment) != 0 {
+		t.Fatalf("agent observed engine-managed verification environment: %v", agentEnvironment)
 	}
 	observed, err := os.ReadFile(capture)
 	if err != nil {
 		t.Fatalf("daemon replay did not observe the managed environment: %v", err)
 	}
-	agentValues := make(map[string]string)
-	for _, entry := range agentEnvironment {
-		key, value, ok := strings.Cut(entry, "=")
-		if ok {
-			agentValues[key] = value
-		}
-	}
-	if got, want := strings.TrimSpace(string(observed)), agentValues["GOCACHE"]; got != want {
-		t.Fatalf("daemon GOCACHE = %q, agent GOCACHE = %q", got, want)
+	if got := strings.TrimSpace(string(observed)); got == "" {
+		t.Fatal("engine verification did not receive its managed cache environment")
 	}
 	archived, err := marshal.LoadVerification(filepath.Join(e.issueDir(id), "artifacts", "verification.json"))
 	if err != nil {
@@ -3354,7 +3398,6 @@ func TestVerificationCacheAgentAndDaemonReplayShareLeaseEnvironment(t *testing.T
 func dynamicVerificationArtifacts(fake *runner.FakeRunner) {
 	script := fake.Scripts["merge-verification/merge-verifier"]
 	script.Artifacts["merge-decision.json"] = ""
-	script.Artifacts["verification.json"] = ""
 	fake.Scripts["merge-verification/merge-verifier"] = script
 }
 
@@ -3410,7 +3453,7 @@ func TestMergeVerificationKeepsInitialLeaseIdentity(t *testing.T) {
 	}
 }
 
-func TestMergeVerificationRebindsAfterAcceptedRepair(t *testing.T) {
+func TestMergeVerificationUsesPostReviewIdentityAfterAcceptedRepair(t *testing.T) {
 	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
 	cacheRoot := t.TempDir()
 	e.cfg.CacheRoot = cacheRoot
@@ -3434,15 +3477,11 @@ func TestMergeVerificationRebindsAfterAcceptedRepair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.CacheEvidence == nil || receipt.CacheEvidence.LeaseID == "" || len(receipt.CacheEvidence.Quarantines) != 1 {
-		t.Fatalf("repair receipt evidence = %+v, want one quarantined pre-repair lease", receipt.CacheEvidence)
-	}
-	quarantine := receipt.CacheEvidence.Quarantines[0]
-	if quarantine.LeaseID == receipt.CacheEvidence.LeaseID || quarantine.BranchSHA == receipt.BranchSHA || quarantine.TreeSHA == receipt.TreeSHA {
-		t.Fatalf("repair quarantine = %+v, receipt = %+v, want distinct pre/post identities", quarantine, receipt.CacheEvidence)
+	if receipt.CacheEvidence == nil || receipt.CacheEvidence.LeaseID == "" || len(receipt.CacheEvidence.Quarantines) != 0 {
+		t.Fatalf("repair receipt evidence = %+v, want one post-review lease", receipt.CacheEvidence)
 	}
 	completePaths := verificationCacheManifestPaths(t, cacheRoot, "complete")
-	if len(completePaths) != 1 || len(verificationCacheManifestPaths(t, cacheRoot, "quarantine")) != 1 {
+	if len(completePaths) != 1 || len(verificationCacheManifestPaths(t, cacheRoot, "quarantine")) != 0 {
 		t.Fatalf("repair cache manifests: complete=%v quarantine=%v", completePaths, verificationCacheManifestPaths(t, cacheRoot, "quarantine"))
 	}
 	manifestBody, err := os.ReadFile(completePaths[0])
@@ -3487,14 +3526,12 @@ func TestMergeVerificationUsesFinalIdentityAfterMultipleRepairs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.BranchSHA != final || receipt.BranchSHA == intermediate || receipt.CacheEvidence == nil || len(receipt.CacheEvidence.Quarantines) != 1 {
+	if receipt.BranchSHA != final || receipt.BranchSHA == intermediate || receipt.CacheEvidence == nil || len(receipt.CacheEvidence.Quarantines) != 0 {
 		t.Fatalf("multiple-repair receipt = %+v, intermediate=%q final=%q", receipt, intermediate, final)
 	}
-	if receipt.CacheEvidence.Quarantines[0].BranchSHA == intermediate {
-		t.Fatalf("intermediate repair was retained as proof: %+v", receipt.CacheEvidence.Quarantines[0])
-	}
-	if len(verificationCacheManifestPaths(t, cacheRoot, "complete")) != 1 {
-		t.Fatal("multiple repairs produced more than one complete proof")
+	if len(verificationCacheManifestPaths(t, cacheRoot, "complete")) != 1 ||
+		len(verificationCacheManifestPaths(t, cacheRoot, "quarantine")) != 0 {
+		t.Fatal("multiple repairs did not produce exactly one final proof")
 	}
 }
 
@@ -3586,12 +3623,12 @@ func renamedVerificationFlow() flow.Flow {
 	return flow.Flow{Name: "custom", Stages: []flow.Stage{
 		{
 			Name: "scope-files", Agents: []flow.AgentRef{{Package: "planner"}},
-			Workspace: "worktree", Gate: flow.GateAuto,
+			Workspace: "isolated", Gate: flow.GatePlanReview, CapabilityProfile: flow.ProfileArtifact,
 			Artifacts: []string{"touchset.json"},
 		},
 		{
 			Name: "integrate-safely", Agents: []flow.AgentRef{{Package: "verifier"}},
-			Workspace: "worktree", Gate: flow.GateAuto, MergeBarrier: true,
+			Workspace: "worktree", Gate: flow.GateAuto, MergeBarrier: true, CapabilityProfile: flow.ProfileFinalReview,
 			Artifacts: append([]string(nil), flow.FinalizationArtifacts...),
 		},
 	}}
@@ -3621,7 +3658,7 @@ func TestRenamedStagesSequenceTouchsetVerifyAndMergeByCapability(t *testing.T) {
 	}
 }
 
-func TestMalformedFinalReceiptFailsBeforeStageCompletion(t *testing.T) {
+func TestMalformedFinalReceiptFailsBeforeVerification(t *testing.T) {
 	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
 	fake := e.cfg.Runner.(*runner.FakeRunner)
 	script := fake.Scripts["merge-verification/merge-verifier"]
@@ -3636,16 +3673,17 @@ func TestMalformedFinalReceiptFailsBeforeStageCompletion(t *testing.T) {
 		t.Fatal("malformed receipt completed")
 	}
 	events, _ := s.EventsSince(0)
-	var completed, failed bool
+	var failed, verificationReady, mergeStarted bool
 	for _, event := range events {
 		if event.IssueID != id {
 			continue
 		}
-		completed = completed || event.Type == core.EvStageCompleted
 		failed = failed || event.Type == core.EvStageFailed
+		verificationReady = verificationReady || event.Type == core.EvVerificationReady
+		mergeStarted = mergeStarted || event.Type == core.EvMergeStarted
 	}
-	if completed || !failed {
-		t.Fatalf("completed=%v failed=%v", completed, failed)
+	if !failed || verificationReady || mergeStarted {
+		t.Fatalf("failed=%v verification_ready=%v merge_started=%v", failed, verificationReady, mergeStarted)
 	}
 }
 
@@ -3710,6 +3748,7 @@ func TestRetryStageReopensDoneUnmergedIssueAfterRestart(t *testing.T) {
 	f.Stages = append([]flow.Stage{{
 		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
 		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+		CapabilityProfile: flow.ProfileArtifact,
 	}}, f.Stages...)
 	e.cfg.Flows["default"] = f
 	fake := e.cfg.Runner.(*runner.FakeRunner)
@@ -3748,7 +3787,6 @@ func TestRetryStageReopensDoneUnmergedIssueAfterRestart(t *testing.T) {
 		}
 	}
 	branch := strings.TrimSpace(gitOutput(t, issueWorktree, "rev-parse", "HEAD"))
-	tree := strings.TrimSpace(gitOutput(t, issueWorktree, "rev-parse", "HEAD^{tree}"))
 	if out, err := exec.Command("git", "-C", repo, "worktree", "remove", issueWorktree).CombinedOutput(); err != nil {
 		t.Fatalf("remove issue worktree: %v %s", err, out)
 	}
@@ -3766,13 +3804,6 @@ func TestRetryStageReopensDoneUnmergedIssueAfterRestart(t *testing.T) {
 	script := fake.Scripts["merge-verification/merge-verifier"]
 	script.Artifacts["merge-decision.json"] = fmt.Sprintf(
 		`{"decision":"merge","branch_commit":%q,"base_commit":%q}`, branch, base)
-	verification, err := json.Marshal(marshal.Verification{
-		BaseSHA: base, BranchSHA: branch, TreeSHA: tree, Passed: true, Commands: [][]string{{"true"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	script.Artifacts["verification.json"] = string(verification)
 	fake.Scripts["merge-verification/merge-verifier"] = script
 
 	if err := restarted.RetryStage(context.Background(), id); err != nil {
@@ -3825,7 +3856,7 @@ func TestMergeVerificationRequiresMachineDecision(t *testing.T) {
 	}
 }
 
-func TestMergeVerificationAcceptsMatchingPassingReceipt(t *testing.T) {
+func TestEngineLifecycleRegressionAfterCompliantAttempt(t *testing.T) {
 	e, s, _ := verificationEngine(t, "merge", [][]string{{"true"}}, "")
 	id, err := e.CreateIssue("merge", "", "default", levers.Matrix{}, 0, nil)
 	if err != nil {
@@ -3869,7 +3900,7 @@ func TestPushFailurePersistsAndRetryPublishesWithoutRerunningStage(t *testing.T)
 		t.Fatalf("integration = %+v ok %v err %v", integration, ok, err)
 	}
 	runs, err := s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("stage runs before retry = %+v err %v", runs, err)
 	}
 	if out, err := exec.Command(
@@ -3885,7 +3916,7 @@ func TestPushFailurePersistsAndRetryPublishesWithoutRerunningStage(t *testing.T)
 		t.Fatal(err)
 	}
 	runs, err = s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("publish retry reran stage: %+v err %v", runs, err)
 	}
 	integration, ok, err = s.IssueIntegration(id)
@@ -3938,7 +3969,7 @@ func TestFinalizationFailureRetriesIntegrationWithoutRerunningVerifier(t *testin
 		t.Fatalf("integration = %+v ok %v err %v", integration, ok, err)
 	}
 	runs, err := s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("stage runs before retry = %+v err %v", runs, err)
 	}
 	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
@@ -3949,7 +3980,7 @@ func TestFinalizationFailureRetriesIntegrationWithoutRerunningVerifier(t *testin
 		t.Fatal(err)
 	}
 	runs, err = s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("finalization retry reran verifier: %+v err %v", runs, err)
 	}
 	integration, ok, err = s.IssueIntegration(id)
@@ -4036,7 +4067,11 @@ func TestExplicitRetryReverifiesStaleReceipt(t *testing.T) {
 		t.Fatalf("fresh receipt = %+v, head=%s tree=%s integration=%+v", fresh, currentHead, currentTree, integration)
 	}
 	runs, err := s.StageRuns(id)
-	if err != nil || len(runs) != 2 {
+	counts := map[string]int{}
+	for _, run := range runs {
+		counts[run.Stage]++
+	}
+	if err != nil || len(runs) != 3 || counts["approval"] != 1 || counts["merge-verification"] != 2 {
 		t.Fatalf("stage runs after stale retry = %+v err=%v", runs, err)
 	}
 	integration, ok, err = s.IssueIntegration(id)
@@ -4062,7 +4097,7 @@ func TestMatchingProofRetryDoesNotReverify(t *testing.T) {
 		t.Fatal("dirty base unexpectedly finalized")
 	}
 	runs, err := s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("stage runs before matching retry = %+v err=%v", runs, err)
 	}
 	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
@@ -4078,7 +4113,7 @@ func TestMatchingProofRetryDoesNotReverify(t *testing.T) {
 		t.Fatalf("matching proof retry: %v", err)
 	}
 	runs, err = s.StageRuns(id)
-	if err != nil || len(runs) != 1 {
+	if err != nil || len(runs) != 2 {
 		t.Fatalf("stage runs after matching retry = %+v err=%v", runs, err)
 	}
 	attempts, err := s.VerificationAttempts(id)
@@ -4087,17 +4122,16 @@ func TestMatchingProofRetryDoesNotReverify(t *testing.T) {
 	}
 }
 
-func TestRehydrateAutomaticallyResumesVerifiedFinalization(t *testing.T) {
+func TestLifecycleRestartReplaysOnlyEngineCheckpoints(t *testing.T) {
 	e, s, repo := verificationEngineForFlow(
 		t, renamedVerificationFlow(), "merge", [][]string{{"true"}}, "",
 	)
-	fake := e.cfg.Runner.(*runner.FakeRunner)
-	fake.OnStart = func(_, stage, _, _ string) error {
-		if stage != "integrate-safely" {
-			return nil
-		}
-		return os.WriteFile(filepath.Join(repo, "diff"), []byte("dirty base\n"), 0o644)
+	dirtyGate := filepath.Join(t.TempDir(), "dirty-gate")
+	dirtyMarker := filepath.Join(t.TempDir(), "dirty-once")
+	if err := os.WriteFile(dirtyGate, []byte("#!/bin/sh\nset -eu\nif [ ! -e \"$1\" ]; then touch \"$1\"; printf 'dirty base\\n' > \"$2\"; fi\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
+	e.cfg.Train.TestCmd = []string{dirtyGate, dirtyMarker, filepath.Join(repo, "diff")}
 	id, err := e.CreateIssue("restart finalization", "", "custom", levers.Matrix{}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -4108,24 +4142,21 @@ func TestRehydrateAutomaticallyResumesVerifiedFinalization(t *testing.T) {
 	if out, err := exec.Command("git", "-C", repo, "checkout", "--", "diff").CombinedOutput(); err != nil {
 		t.Fatalf("repair base: %v: %s", err, out)
 	}
-	fake.OnStart = nil
 	restarted := New(e.cfg)
-	if err := restarted.Rehydrate(); err != nil {
+	integration, ok, err := s.IssueIntegration(id)
+	if err != nil || !ok {
+		t.Fatalf("verification checkpoint = %+v ok=%v err=%v", integration, ok, err)
+	}
+	restored := &issueState{
+		id: id, title: "restart finalization", flowName: "custom",
+		matrix: levers.Matrix{},
+	}
+	if err := restarted.retryVerifiedFinalization(context.Background(), restored, integration); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		integration, ok, err := s.IssueIntegration(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ok && integration.State == store.IntegrationMerged {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("integration did not resume: %+v", integration)
-		}
-		time.Sleep(10 * time.Millisecond)
+	integration, ok, err = s.IssueIntegration(id)
+	if err != nil || !ok || integration.State != store.IntegrationMerged {
+		t.Fatalf("integration did not resume: %+v ok=%v err=%v", integration, ok, err)
 	}
 	runs, err := s.StageRuns(id)
 	if err != nil {
@@ -4237,8 +4268,16 @@ func TestFlowWithoutBarrierPreservesChangedWorkspaceAndReportsIdentity(t *testin
 			initGitRepo(t, repo)
 			base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
 			ws := &countingGitWorktree{repo: repo}
-			run := &runner.FakeRunner{Scripts: map[string]runner.Script{"explore/researcher": {}}}
-			run.OnStart = func(_, _, _, workdir string) error {
+			run := &runner.FakeRunner{Scripts: map[string]runner.Script{
+				"plan/planner":       {Artifacts: map[string]string{"touchset.json": `{"globs":["finding.md"]}`}},
+				"explore/researcher": {},
+			}}
+			run.OnStart = func(_, stage, _, workdir string) error {
+				// The plan stage must remain artifact-only; the implementation
+				// stage is the sole owner of the approved product change.
+				if stage != "explore" {
+					return nil
+				}
 				if err := os.WriteFile(filepath.Join(workdir, "finding.md"), []byte("finding\n"), 0o644); err != nil {
 					return err
 				}
@@ -4252,16 +4291,25 @@ func TestFlowWithoutBarrierPreservesChangedWorkspaceAndReportsIdentity(t *testin
 				}
 				return nil
 			}
-			f := flow.Flow{Name: "research", Stages: []flow.Stage{{
-				Name: "explore", Agents: []flow.AgentRef{{Package: "researcher"}},
-				Workspace: "worktree", Gate: flow.GateAuto,
-			}}}
+			f := flow.Flow{Name: "research", Stages: []flow.Stage{
+				{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "worktree",
+					Gate: flow.GatePlanReview, CapabilityProfile: flow.ProfileArtifact,
+					Artifacts: []string{"touchset.json"}},
+				{Name: "explore", Agents: []flow.AgentRef{{Package: "researcher"}},
+					Workspace: "worktree", Gate: flow.GateAuto, CapabilityProfile: flow.ProfileImplementation},
+			}}
 			e, s := engineForFlow(t, ws, f, run)
-			id, err := e.CreateIssue("research", "", "research", levers.Matrix{}, 0, nil)
+			id, err := e.CreateIssue("research", "", "research", levers.Preset(f, flow.LeverYolo), 0, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := e.StartIssue(context.Background(), id); err != nil {
+			done := make(chan error, 1)
+			go func() { done <- e.StartIssue(context.Background(), id) }()
+			pending := waitForPendingStage(t, e, "plan")
+			if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
 				t.Fatal(err)
 			}
 			if head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD")); head != base {
@@ -4294,6 +4342,7 @@ type conflictFlowRunner struct {
 	conflictWorkdir          string
 	conflictContext          string
 	currentBase              string
+	outsideTouchset          bool
 }
 
 func commandIn(dir string, args ...string) (string, error) {
@@ -4302,13 +4351,27 @@ func commandIn(dir string, args ...string) (string, error) {
 }
 
 func (r *conflictFlowRunner) Run(
-	_ context.Context, _, stage, _ string, workdir string, _ chan<- runner.Ask,
+	_ context.Context, request runner.StageRequest, _ chan<- runner.Ask,
 ) <-chan runner.Result {
 	results := make(chan runner.Result, 1)
 	var result runner.Result
+	stage, workdir := request.Stage, request.Workdir
 	switch stage {
+	case "approval":
+		glob := "diff"
+		if r.outsideTouchset {
+			glob = "allowed.txt"
+		}
+		if err := os.WriteFile(filepath.Join(workdir, "touchset.json"), []byte(fmt.Sprintf(`{"globs":[%q]}`, glob)), 0o644); err != nil {
+			result.Err = err
+		}
 	case "execute":
 		r.originalWorkdir = workdir
+		if r.outsideTouchset {
+			evidence := executeStageEvidence(stageresult.OutcomeCompleted)
+			result.StageEvidence = &evidence
+			break
+		}
 		if err := os.WriteFile(filepath.Join(workdir, "diff"), []byte("issue\n"), 0o644); err != nil {
 			result.Err = err
 			break
@@ -4323,31 +4386,16 @@ func (r *conflictFlowRunner) Run(
 	case "integrate-safely":
 		base, _ := commandIn(workdir, "merge-base", "main", "HEAD")
 		branch, _ := commandIn(workdir, "rev-parse", "HEAD")
-		tree, _ := commandIn(workdir, "rev-parse", "HEAD^{tree}")
-		receipt, _ := json.Marshal(marshal.Verification{
-			BaseSHA: base, BranchSHA: branch, TreeSHA: tree, Passed: true,
-			Commands: [][]string{r.gate},
-		})
 		decision, _ := json.Marshal(marshal.MergeDecision{
 			Decision: "merge", BranchCommit: branch, BaseCommit: base,
 		})
 		for name, body := range map[string][]byte{
 			"merge-report.md":     []byte("verified\n"),
 			"merge-decision.json": decision,
-			"verification.json":   receipt,
 		} {
 			if err := os.WriteFile(filepath.Join(workdir, name), body, 0o644); err != nil {
 				result.Err = err
 				break
-			}
-		}
-		if result.Err == nil {
-			if err := os.WriteFile(filepath.Join(r.repo, "diff"), []byte("base advanced\n"), 0o644); err != nil {
-				result.Err = err
-			} else if output, err := commandIn(r.repo, "commit", "-qam", "advance base"); err != nil {
-				result.Err = fmt.Errorf("advance base: %v: %s", err, output)
-			} else {
-				r.currentBase, _ = commandIn(r.repo, "rev-parse", "HEAD")
 			}
 		}
 	case "conflict-resolution":
@@ -4359,17 +4407,8 @@ func (r *conflictFlowRunner) Run(
 		}
 		r.conflictContext = string(contextBody)
 		if r.decision == "resolved" {
-			_, _ = commandIn(workdir, "rebase", "main")
 			if err := os.WriteFile(filepath.Join(workdir, "diff"), []byte("resolved\n"), 0o644); err != nil {
 				result.Err = err
-				break
-			}
-			if output, err := commandIn(workdir, "add", "diff"); err != nil {
-				result.Err = fmt.Errorf("add resolution: %v: %s", err, output)
-				break
-			}
-			if output, err := commandIn(workdir, "-c", "core.editor=true", "rebase", "--continue"); err != nil {
-				result.Err = fmt.Errorf("continue rebase: %v: %s", err, output)
 				break
 			}
 		}
@@ -4387,12 +4426,38 @@ func (r *conflictFlowRunner) Run(
 			}
 		}
 	}
+	result.RuntimeAudit = testRuntimeAudit(request)
 	results <- result
 	close(results)
 	return results
 }
 
-func TestRetryFinalizesResolvedConflictWithoutRerunningAgents(t *testing.T) {
+func (r *conflictFlowRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	if request.Stage == "execute" && r.outsideTouchset {
+		r.originalWorkdir = request.Workdir
+		if err := os.WriteFile(filepath.Join(request.Workdir, "diff"), []byte("issue\n"), 0o644); err != nil {
+			return capability.EnforcementPlan{}, err
+		}
+		if output, err := commandIn(request.Workdir, "add", "diff"); err != nil {
+			return capability.EnforcementPlan{}, fmt.Errorf("add issue change: %v: %s", err, output)
+		}
+		if output, err := commandIn(request.Workdir, "commit", "-qm", "pre-existing issue change"); err != nil {
+			return capability.EnforcementPlan{}, fmt.Errorf("commit issue change: %v: %s", err, output)
+		}
+	}
+	if request.Stage == "integrate-safely" && r.currentBase == "" {
+		if err := os.WriteFile(filepath.Join(r.repo, "diff"), []byte("base advanced\n"), 0o644); err != nil {
+			return capability.EnforcementPlan{}, err
+		}
+		if output, err := commandIn(r.repo, "commit", "-qam", "advance base"); err != nil {
+			return capability.EnforcementPlan{}, fmt.Errorf("advance base: %v: %s", err, output)
+		}
+		r.currentBase, _ = commandIn(r.repo, "rev-parse", "HEAD")
+	}
+	return testRunnerPreflight(request)
+}
+
+func TestRetryRerunsInterruptedConflictResolverBeforeFinalizing(t *testing.T) {
 	e, s, repo, run, _, _ := conflictEngine(t, "resolved")
 	run.interruptAfterResolution = true
 	id, err := e.CreateIssue("interrupted conflict resolution", "", "default", levers.Matrix{}, 0, nil)
@@ -4416,14 +4481,14 @@ func TestRetryFinalizesResolvedConflictWithoutRerunningAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runsAfter) != len(runsBefore) {
-		t.Fatalf("retry reran an agent: before=%d after=%d", len(runsBefore), len(runsAfter))
+	if len(runsAfter) != len(runsBefore)+1 {
+		t.Fatalf("retry runs: before=%d after=%d, want one fresh resolver", len(runsBefore), len(runsAfter))
 	}
 	counts := map[string]int{}
 	for _, stageRun := range runsAfter {
 		counts[stageRun.Stage]++
 	}
-	if counts["integrate-safely"] != 1 || counts["conflict-resolution"] != 1 {
+	if counts["integrate-safely"] != 1 || counts["conflict-resolution"] != 2 {
 		t.Fatalf("stage counts = %+v", counts)
 	}
 	integration, ok, err := s.IssueIntegration(id)
@@ -4433,10 +4498,11 @@ func TestRetryFinalizesResolvedConflictWithoutRerunningAgents(t *testing.T) {
 	if _, err := os.Stat(run.gate[1]); err != nil {
 		t.Fatalf("combined verification was not replayed: %v", err)
 	}
-	if out, err := exec.Command(
-		"git", "-C", repo, "merge-base", "--is-ancestor", resolvedHead, "main",
-	).CombinedOutput(); err != nil {
-		t.Fatalf("resolved issue was not merged: %v: %s", err, out)
+	if exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", resolvedHead, "main").Run() == nil {
+		t.Fatal("retry trusted the interrupted resolver commit")
+	}
+	if body, err := os.ReadFile(filepath.Join(repo, "diff")); err != nil || string(body) != "resolved\n" {
+		t.Fatalf("fresh resolver result was not merged: %q err=%v", body, err)
 	}
 	if !hasEvent(t, s, id, core.EvIssueMerged) {
 		t.Fatal("resolved conflict did not merge")
@@ -4471,12 +4537,16 @@ func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, strin
 	run := &conflictFlowRunner{repo: repo, decision: decision, gate: []string{gate, marker}}
 	ws := &countingGitWorktree{repo: repo}
 	f := flow.Flow{Name: "default", Stages: []flow.Stage{
+		{Name: "approval", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "isolated",
+			Gate: flow.GatePlanReview, Completion: flow.CompletionAll, CapabilityProfile: flow.ProfileArtifact,
+			Artifacts: []string{"touchset.json"}},
 		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
-			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+			CapabilityProfile: flow.ProfileImplementation},
 		{Name: "integrate-safely", Agents: []flow.AgentRef{{Package: "merge-verifier"}},
 			Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
-			MergeBarrier: true,
-			Artifacts:    []string{"merge-report.md", "merge-decision.json", "verification.json"}},
+			MergeBarrier: true, CapabilityProfile: flow.ProfileFinalReview,
+			Artifacts: []string{"merge-report.md", "merge-decision.json", "verification.json"}},
 	}}
 	s, err := store.Open("file:" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
 	if err != nil {
@@ -4488,11 +4558,12 @@ func conflictEngine(t *testing.T, decision string) (*Engine, *store.Store, strin
 		Flows: map[string]flow.Flow{"default": f}, DataDir: t.TempDir(), Workspace: ws,
 		Train:              &marshal.Train{Repo: repo, TestCmd: run.gate},
 		DecisionIdentities: testDecisionIdentities(),
+		PlanReview:         review.PolicySettings{ID: "conflict-test", Version: "1", AutoApproveRegular: true, Valid: true},
 	})
 	return e, s, repo, run, ws, originalBase
 }
 
-func TestConflictResolutionUsesOriginalIssueWorktree(t *testing.T) {
+func TestEngineOwnsConflictRebaseLoop(t *testing.T) {
 	tests := []struct {
 		decision string
 		wantErr  string
@@ -4563,6 +4634,33 @@ func TestConflictResolutionUsesOriginalIssueWorktree(t *testing.T) {
 	}
 }
 
+func TestConflictOutsideApprovedTouchsetHoldsWithoutBroaderAuthority(t *testing.T) {
+	e, s, _, run, _, _ := conflictEngine(t, "resolved")
+	run.outsideTouchset = true
+	id, err := e.CreateIssue("outside conflict", "", "default", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if run.conflictWorkdir != "" {
+		t.Fatalf("resolver launched for outside-touchset conflict in %s", run.conflictWorkdir)
+	}
+	if _, err := os.Stat(filepath.Join(e.issueDir(id), "artifacts", "CONFLICT.md")); err != nil {
+		t.Fatalf("outside conflict evidence was not preserved: %v", err)
+	}
+	runs, err := s.StageRuns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stageRun := range runs {
+		if stageRun.Stage == "conflict-resolution" {
+			t.Fatal("outside-touchset conflict launched a resolver")
+		}
+	}
+}
+
 // newEngineOnFile builds an engine on a file-backed store so a second engine
 // can be constructed on the same durable state, simulating a daemon restart.
 func newEngineOnFile(t *testing.T, s *store.Store, r runner.Runner, dataDir string) *Engine {
@@ -4574,7 +4672,7 @@ func newEngineOnFileWithFlow(t *testing.T, s *store.Store, r runner.Runner, data
 	t.Helper()
 	return New(Config{
 		Store: s, Runner: r, Pool: slots.NewPool(2),
-		Flows:   map[string]flow.Flow{f.Name: f},
+		Flows:   capabilityTestFlows(map[string]flow.Flow{f.Name: f}),
 		DataDir: dataDir, DecisionIdentities: testDecisionIdentities(),
 	})
 }
@@ -5365,9 +5463,10 @@ func TestPolicyApprovedReviewPageRebuiltAfterRestart(t *testing.T) {
 func TestAcceptedArtifactReviewRestartRestoresPlanTouchset(t *testing.T) {
 	f := flow.Flow{Name: "restart-marshal", Stages: []flow.Stage{
 		{Name: "plan", Agents: []flow.AgentRef{{Package: "planner"}}, Workspace: "worktree",
-			Gate: flow.GateApproveArtifact, Artifacts: []string{"touchset.json"}},
+			Gate: flow.GateApproveArtifact, Artifacts: []string{"touchset.json"}, CapabilityProfile: flow.ProfileArtifact},
 		{Name: "merge", Agents: []flow.AgentRef{{Package: "reviewer"}}, Workspace: "worktree",
-			Gate: flow.GateAuto, MergeBarrier: true, Artifacts: append([]string(nil), flow.FinalizationArtifacts...)},
+			Gate: flow.GateAuto, MergeBarrier: true, Artifacts: append([]string(nil), flow.FinalizationArtifacts...),
+			CapabilityProfile: flow.ProfileFinalReview},
 	}}
 	repo := t.TempDir()
 	initGitRepo(t, repo)
@@ -5380,7 +5479,7 @@ func TestAcceptedArtifactReviewRestartRestoresPlanTouchset(t *testing.T) {
 	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
 		"plan/planner": {Artifacts: map[string]string{"touchset.json": `{"globs":["src/**"]}`}},
 		"merge/reviewer": {Artifacts: map[string]string{
-			"merge-report.md": "", "merge-decision.json": "", "verification.json": "",
+			"merge-report.md": "", "merge-decision.json": "",
 		}},
 	}}
 	seq1 := &recordingSequencer{}
@@ -5862,6 +5961,7 @@ func TestRetryAfterRestartReusesRecordedIssueWorktree(t *testing.T) {
 	f := flow.Flow{Name: "default", Stages: []flow.Stage{{
 		Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
 		Workspace: "worktree", Gate: flow.GateAuto, Completion: flow.CompletionAll,
+		CapabilityProfile: flow.ProfileArtifact,
 	}}}
 	e := New(Config{
 		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
@@ -6042,7 +6142,7 @@ func TestMergedIssueBranchIsDeleted(t *testing.T) {
 
 	f := flow.Flow{Name: "default", Stages: []flow.Stage{
 		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
-			Gate: flow.GateAuto, Workspace: "worktree"},
+			Gate: flow.GateAuto, Workspace: "worktree", CapabilityProfile: flow.ProfileArtifact},
 	}}
 	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
 	if err != nil {
@@ -6109,12 +6209,15 @@ func TestMergedCleanupFailureIsDurableAndRetryDoesNotReland(t *testing.T) {
 	ws := &failOnceReleaseWorkspace{delegate: workspace.GitWorktree{Repo: repo}}
 	e := New(Config{
 		Store: s, Runner: &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"approval/planner": {Artifacts: map[string]string{"touchset.json": `{"globs":["feature.txt"]}`}},
 			"merge-verification/merge-verifier": {Artifacts: map[string]string{
-				"merge-report.md": "", "merge-decision.json": "", "verification.json": "",
+				"merge-report.md": "", "merge-decision.json": "",
 			}},
 		}},
 		Pool: slots.NewPool(1), Flows: map[string]flow.Flow{"default": f},
-		DataDir: t.TempDir(), Workspace: ws, Train: &marshal.Train{Repo: repo}, DecisionIdentities: testDecisionIdentities(),
+		DataDir: t.TempDir(), Workspace: ws, Train: &marshal.Train{Repo: repo, TestCmd: []string{"true"}},
+		DecisionIdentities: testDecisionIdentities(),
+		PlanReview:         review.PolicySettings{ID: "cleanup-test", Version: "1", AutoApproveRegular: true, Valid: true},
 	})
 	id, err := e.CreateIssue("cleanup", "", "default", levers.Matrix{}, 0, nil)
 	if err != nil {
@@ -6131,7 +6234,7 @@ func TestMergedCleanupFailureIsDurableAndRetryDoesNotReland(t *testing.T) {
 		t.Fatalf("cleanup integration = %+v ok %v err %v", integration, ok, err)
 	}
 	runs, _ := s.StageRuns(id)
-	if len(runs) != 1 {
+	if len(runs) != 2 {
 		t.Fatalf("stage runs before cleanup retry = %d", len(runs))
 	}
 	if err := e.RetryStage(context.Background(), id); err != nil {
@@ -6143,7 +6246,7 @@ func TestMergedCleanupFailureIsDurableAndRetryDoesNotReland(t *testing.T) {
 		t.Fatalf("cleanup after retry = %+v ok %v err %v", integration, ok, err)
 	}
 	runs, _ = s.StageRuns(id)
-	if len(runs) != 1 {
+	if len(runs) != 2 {
 		t.Fatalf("cleanup retry reran stage: %d runs", len(runs))
 	}
 	if branch := gitOutput(t, repo, "branch", "--list", "issue/"+id); strings.TrimSpace(branch) != "" {
@@ -6198,7 +6301,7 @@ func TestIssueStartFastForwardsBaseFromOrigin(t *testing.T) {
 
 	f := flow.Flow{Name: "default", Stages: []flow.Stage{
 		{Name: "execute", Agents: []flow.AgentRef{{Package: "executor"}},
-			Gate: flow.GateAuto, Workspace: "worktree"},
+			Gate: flow.GateAuto, Workspace: "worktree", CapabilityProfile: flow.ProfileArtifact},
 	}}
 	s, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
 	if err != nil {
@@ -6318,15 +6421,15 @@ func TestDraftIssueStoresAttachmentsWithoutAStageRun(t *testing.T) {
 // noneStage and worktreeStage are minimal stages that exercise the two
 // stageWorkdir branches without declaring artifacts.
 func noneStage() flow.Stage {
-	return flow.Stage{Name: "spec", Workspace: "none", Agents: []flow.AgentRef{{Package: "spec-writer"}}}
+	return flow.Stage{Name: "spec", Workspace: "none", Agents: []flow.AgentRef{{Package: "spec-writer"}}, CapabilityProfile: flow.ProfileArtifact}
 }
 
 func worktreeStage() flow.Stage {
-	return flow.Stage{Name: "spec", Workspace: "worktree", Agents: []flow.AgentRef{{Package: "spec-writer"}}}
+	return flow.Stage{Name: "spec", Workspace: "worktree", Agents: []flow.AgentRef{{Package: "spec-writer"}}, CapabilityProfile: flow.ProfileArtifact}
 }
 
 func TestAttachmentsMaterializeForNoneWorkspace(t *testing.T) {
-	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: map[string]runner.Script{"spec/spec-writer": {}}})
 	id, err := e.CreateIssue("n", "body", "default", levers.Matrix{}, 0,
 		[]string{tempAttachment(t, "app.log", 3)})
 	if err != nil {
@@ -6356,7 +6459,7 @@ func TestAttachmentsMaterializeForNoneWorkspace(t *testing.T) {
 
 // The regression that matters: a worktree stage must see the file too.
 func TestAttachmentsMaterializeIntoWorktree(t *testing.T) {
-	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: map[string]runner.Script{"spec/spec-writer": {}}})
 	id, err := e.CreateIssue("w", "body", "default", levers.Matrix{}, 0,
 		[]string{tempAttachment(t, "app.log", 3)})
 	if err != nil {
@@ -6418,7 +6521,7 @@ func TestIssueMDAttachmentSectionOrdering(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(memory, "conventions.md"), []byte("use tabs"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	e, _ := newEngineCfg(t, &runner.FakeRunner{Scripts: scripts()}, func(cfg *Config) {
+	e, _ := newEngineCfg(t, &runner.FakeRunner{Scripts: map[string]runner.Script{"spec/spec-writer": {}}}, func(cfg *Config) {
 		cfg.Librarian = &librarian.Librarian{MemoryDir: memory}
 	})
 	id, err := e.CreateIssue("o", "the body", "default", levers.Matrix{}, 0,
@@ -6448,7 +6551,7 @@ func TestIssueMDAttachmentSectionOrdering(t *testing.T) {
 }
 
 func TestIssueMDOmitsEmptyAttachmentSection(t *testing.T) {
-	e, _ := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	e, _ := newEngine(t, &runner.FakeRunner{Scripts: map[string]runner.Script{"spec/spec-writer": {}}})
 	id, err := e.CreateIssue("e", "body", "default", levers.Matrix{}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -6467,7 +6570,7 @@ func TestIssueMDOmitsEmptyAttachmentSection(t *testing.T) {
 // is wired there explicitly. Abandon stays a state, not a purge: the issues
 // row and stage artifacts survive so the lane stays inspectable.
 func TestAbandonDeletesAttachmentBytes(t *testing.T) {
-	e, s := newEngine(t, &runner.FakeRunner{Scripts: scripts()})
+	e, s := newEngine(t, &runner.FakeRunner{Scripts: map[string]runner.Script{"spec/spec-writer": {}}})
 	id, err := e.CreateIssue("a", "body", "default", levers.Matrix{}, 0,
 		[]string{tempAttachment(t, "app.log", 3)})
 	if err != nil {

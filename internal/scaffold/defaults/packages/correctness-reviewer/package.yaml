@@ -3,6 +3,5 @@ identity:
   color: yellow
   symbol: ✓
 includes: ["decision-protocol", "stage-result-protocol"]
-allowed_tools: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"]
 model: ""
 max_turns: 0

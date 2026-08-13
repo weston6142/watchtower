@@ -16,6 +16,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/archmap"
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/claude"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/engine"
@@ -747,14 +748,22 @@ func (sv *Server) setupView(cmd Command) (*SetupView, error) {
 	}
 	for _, stg := range f.Stages {
 		ss := StageSetup{
-			Name: stg.Name, Gate: string(stg.Gate), Workspace: stg.Workspace,
+			Name: stg.Name, CapabilityProfile: string(stg.CapabilityProfile),
+			DocumentationPaths: append([]string(nil), stg.DocumentationPaths...),
+			Gate:               string(stg.Gate), Workspace: stg.Workspace,
 			Parallel: stg.Parallel, Completion: stg.Completion,
 			HeavySlot: stg.HeavySlot, MergeBarrier: stg.MergeBarrier,
 			Retries: stg.Retries, Artifacts: append([]string(nil), stg.Artifacts...),
 		}
 		if scoped {
 			ss.Lever = issue.Levers[stg.Name]
+			effective, err := sv.effectiveCapability(issue.ID, stg.Name)
+			if err != nil {
+				return nil, err
+			}
+			ss.EffectiveCapability = effective
 		}
+		sort.Strings(ss.DocumentationPaths)
 		for _, ref := range stg.Agents {
 			ss.Agents = append(ss.Agents, sv.agentSetup(ref))
 		}
@@ -774,12 +783,12 @@ func (sv *Server) agentSetup(ref flow.AgentRef) AgentSetup {
 		return out
 	}
 	out.Model, out.Effort = pkg.Model, pkg.Effort
-	if sv.repoSetup.Runner == "codex" {
-		out.DeclaredAllowedTools = append([]string(nil), pkg.AllowedTools...)
-		out.ToolSource = "codex config"
-	} else {
+	if sv.repoSetup.Runner != "codex" {
 		out.ThinkingTokens = claude.ThinkingTokens(pkg.Effort)
-		out.AllowedTools = append([]string(nil), pkg.AllowedTools...)
+	}
+	if pkg.AllowedTools != nil {
+		out.LegacyAllowedTools = append([]string(nil), pkg.AllowedTools...)
+		out.LegacyToolsNotice = "deprecated restriction — cannot grant authority"
 	}
 	out.MaxTurns = pkg.MaxTurns
 	body := strings.TrimSuffix(pkg.Prompt, "\n")
@@ -798,6 +807,74 @@ func (sv *Server) agentSetup(ref flow.AgentRef) AgentSetup {
 		out.PromptPreview = append(out.PromptPreview, truncateRunes(line, promptPreviewRunes))
 	}
 	return out
+}
+
+func (sv *Server) effectiveCapability(issueID, stage string) (*EffectiveCapabilitySetup, error) {
+	attempts, err := sv.st.StageLifecycleAttempts(issueID, stage)
+	if err != nil {
+		return nil, err
+	}
+	for index := len(attempts) - 1; index >= 0; index-- {
+		record, found, err := sv.st.CapabilityAttempt(issueID, stage, attempts[index].AttemptID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		out := &EffectiveCapabilitySetup{
+			SchemaVersion: record.SchemaVersion, ContractID: record.Contract.ContractID,
+			AuthorityDigest: record.Contract.AuthorityDigest,
+			ReadCount:       len(record.Contract.Contract.Reads), WriteCount: len(record.Contract.Contract.Writes),
+			Provider: record.Plan.Provider, Implementation: record.Plan.Implementation, PlanID: record.Plan.PlanID,
+			Preflight: "unavailable", Validation: "unavailable",
+		}
+		for _, operation := range record.Contract.Contract.Operations {
+			out.Operations = append(out.Operations, string(operation))
+		}
+		sort.Strings(out.Operations)
+		for _, output := range record.Contract.Contract.Outputs {
+			if output.Owner == capability.OwnerAgent {
+				out.AgentOutputs++
+			} else {
+				out.EngineOutputs++
+			}
+		}
+		if record.Plan.PlanID != "" {
+			out.Preflight = "passed"
+		}
+		if record.ImmutableResultID != "" && record.Validation.Passed && record.Validation.ResultDigest == record.ImmutableResultID {
+			out.Validation = "passed"
+		}
+		audit, err := sv.st.CapabilityAudit(issueID, stage, attempts[index].AttemptID)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range audit {
+			if item.Outcome != "failed" && item.Outcome != "denied" {
+				continue
+			}
+			out.FailureReason = string(item.Reason)
+			out.FailurePhase = item.Phase
+			out.FailureOperation = string(item.Operation)
+			out.FailurePaths = append([]string(nil), item.Paths...)
+			sort.Strings(out.FailurePaths)
+			if item.Phase == "preflight" {
+				out.Preflight = "failed"
+			} else {
+				out.Validation = "failed"
+			}
+		}
+		integration, found, err := sv.st.IssueIntegration(issueID)
+		if err != nil {
+			return nil, err
+		}
+		if found && integration.State == store.IntegrationCapabilityRecoveryNeeded {
+			out.RecoveryRequired = string(failure.StateTrustedWorkspace)
+		}
+		return out, nil
+	}
+	return nil, nil
 }
 
 // truncateRunes clips s to at most n runes. The preview is a hint on the wire,

@@ -3,16 +3,20 @@ package claude
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
+	"github.com/weston6142/watchtower/internal/capability"
+	capruntime "github.com/weston6142/watchtower/internal/capability/runtime"
 	"github.com/weston6142/watchtower/internal/deps"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/runner"
+	"github.com/weston6142/watchtower/internal/runner/conformance"
 )
 
 // maxLineBytes bounds a single stream-json line; the CLI can emit large
@@ -53,28 +57,60 @@ type CodeRunner struct {
 	OnProposal      func(string, runner.Proposal)
 	OnProposalBatch func(string, []runner.Proposal)
 	OnLine          func(issueID, stage, line string)
+	Backend         capruntime.Backend
 }
 
-func (c *CodeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	asks chan<- runner.Ask) <-chan runner.Result {
+func (c *CodeRunner) LegacyRestrictions(agentPackage string) (pkgs.LegacyRestrictions, bool) {
+	pkg, ok := c.Packages[agentPackage]
+	return pkg.LegacyRestrictions, ok
+}
+
+func (c *CodeRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	return conformance.Preflight(request, c.backend(), "claude", "claude-cli-gateway")
+}
+
+func (c *CodeRunner) Run(ctx context.Context, request runner.StageRequest, asks chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
-		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, nil)
+		done <- c.runWithGate(ctx, request, asks, nil)
 	}()
 	return done
 }
 
-func (c *CodeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, workdir string,
+func (c *CodeRunner) RunPlanner(ctx context.Context, request runner.StageRequest,
 	asks chan<- runner.Ask, gate runner.ExplorationGate) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
 	go func() {
-		done <- c.runWithGate(ctx, issueID, stage, agentPkg, workdir, asks, gate)
+		done <- c.runWithGate(ctx, request, asks, gate)
 	}()
 	return done
 }
 
-func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	asks chan<- runner.Ask, gate runner.ExplorationGate) runner.Result {
+func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageRequest,
+	asks chan<- runner.Ask, gate runner.ExplorationGate) (result runner.Result) {
+	if err := conformance.ValidateRequest(request, "claude"); err != nil {
+		return runner.Result{Err: err, FailureClass: runner.FailureConfiguration}
+	}
+	var runtimeAudit []capability.AuditRecord
+	var runtimeAuditMu sync.Mutex
+	session, err := conformance.StartSession(ctx, request, c.backend(), func(record capability.AuditRecord) {
+		runtimeAuditMu.Lock()
+		runtimeAudit = append(runtimeAudit, record)
+		runtimeAuditMu.Unlock()
+	})
+	if err != nil {
+		return runner.Result{Err: err, FailureClass: runner.FailureConfiguration}
+	}
+	defer func() {
+		if closeErr := session.Close(); closeErr != nil && result.Err == nil {
+			result.Err = fmt.Errorf("close capability runtime: %w", closeErr)
+			result.FailureClass = runner.FailureExecution
+		}
+		runtimeAuditMu.Lock()
+		defer runtimeAuditMu.Unlock()
+		result.RuntimeAudit = append(result.RuntimeAudit, runtimeAudit...)
+	}()
+	issueID, stage, agentPkg := request.IssueID, request.Stage, request.Agent
 	pkg, ok := c.Packages[agentPkg]
 	if !ok {
 		return runner.Result{Err: fmt.Errorf("unknown agent package %q", agentPkg)}
@@ -85,43 +121,45 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 		"--verbose",
 		"--append-system-prompt", pkg.Prompt,
 	}
-	if len(pkg.AllowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(pkg.AllowedTools, ","))
+	gatewayConfig, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
+		"watchtower": map[string]any{"type": "http", "url": session.GatewayEndpoint()},
+	}})
+	if err != nil {
+		return runner.Result{Err: fmt.Errorf("encode gateway configuration: %w", err)}
 	}
+	args = append(args, "--mcp-config", string(gatewayConfig), "--strict-mcp-config", "--bare", "--tools", "")
+	if tools := conformance.GatewayTools(request.Contract); len(tools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(tools, ","))
+	}
+	args = append(args, "--disallowedTools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch")
 	if pkg.Model != "" {
 		args = append(args, "--model", pkg.Model)
 	}
 
-	cmd := exec.CommandContext(ctx, c.Bin, args...)
-	cmd.Dir = workdir
 	extraEnv := append([]string(nil), c.ExtraEnv...)
 	if env := EffortEnv(pkg.Effort); env != "" {
 		extraEnv = append(extraEnv, env)
 	}
-	cmd.Env = runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx))
-	stdin, err := cmd.StdinPipe()
+	process, err := session.StartProvider(ctx, capruntime.ProviderProcessRequest{
+		Path: c.Bin, Args: args, Plan: request.Plan,
+		Environment: runner.MergeEnvironment(os.Environ(), extraEnv, runner.ManagedEnvironment(ctx)),
+		Stderr:      os.Stderr, PipeStdin: true, PipeStdout: true,
+	})
 	if err != nil {
 		return runner.Result{Err: err}
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return runner.Result{Err: err}
-	}
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return runner.Result{Err: err}
-	}
+	stdin, stdout := process.StdinPipe(), process.StdoutPipe()
 
 	task := agentprotocol.TaskMessage(stage, issueID)
 	if _, err := stdin.Write(UserMessage(task)); err != nil {
-		cmd.Process.Kill()
+		_ = process.TerminateAndWait(runner.DefaultTerminationGrace)
 		return runner.Result{Err: err}
 	}
 
 	var res runner.Result
 	// abort kills the subprocess and returns the partial result with err set.
 	abort := func(err error) runner.Result {
-		cmd.Process.Kill()
+		_ = process.TerminateAndWait(runner.DefaultTerminationGrace)
 		res.Err = err
 		return res
 	}
@@ -162,6 +200,12 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 		case KindAssistantText:
 			if res.Err != nil {
 				continue
+			}
+			if policy, record := deniedProviderTool(request, ev.ToolCalls); policy != nil {
+				runtimeAuditMu.Lock()
+				runtimeAudit = append(runtimeAudit, record)
+				runtimeAuditMu.Unlock()
+				return abort(policy)
 			}
 			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
 			if err != nil {
@@ -225,6 +269,12 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 			if res.Err != nil {
 				continue
 			}
+			if policy, record := deniedProviderTool(request, ev.ToolCalls); policy != nil {
+				runtimeAuditMu.Lock()
+				runtimeAudit = append(runtimeAudit, record)
+				runtimeAuditMu.Unlock()
+				return abort(policy)
+			}
 			decisions, err := admitTools(ctx, gate, ev.ToolCalls)
 			if err != nil {
 				return abort(err)
@@ -286,7 +336,7 @@ func (c *CodeRunner) runWithGate(ctx context.Context, issueID, stage, agentPkg, 
 		}
 	}
 	stdin.Close()
-	waitErr := cmd.Wait()
+	waitErr := process.Wait()
 	if res.Err == nil && waitErr != nil {
 		res.Err = fmt.Errorf("claude exited: %w", waitErr)
 	}
@@ -318,3 +368,19 @@ func admitTools(ctx context.Context, gate runner.ExplorationGate, calls []runner
 }
 
 func (c *CodeRunner) SetOnLine(fn func(issueID, stage, line string)) { c.OnLine = fn }
+
+func (c *CodeRunner) backend() capruntime.Backend {
+	if c.Backend != nil {
+		return c.Backend
+	}
+	return capruntime.NewPlatformBackend()
+}
+
+func deniedProviderTool(request runner.StageRequest, calls []runner.ToolCall) (*capability.PolicyError, capability.AuditRecord) {
+	for _, call := range calls {
+		if !conformance.IsGatewayTool(request.Contract, call.Name) {
+			return conformance.RuntimeDenial(request, "claude", call)
+		}
+	}
+	return nil, capability.AuditRecord{}
+}

@@ -21,10 +21,10 @@ func fixtureSetupView() proto.SetupView {
 	agent := func(name string) proto.AgentSetup {
 		return proto.AgentSetup{
 			Package: name, Model: "gpt-5.6-luna", Effort: "xhigh",
-			ToolSource:           "codex config",
-			DeclaredAllowedTools: []string{"Bash", "Read", "Edit", "Glob", "Grep"},
-			PromptLines:          24,
-			PromptPreview:        []string{"Light single-pass clean code review of the branch diff."},
+			LegacyAllowedTools: []string{"Bash", "Read", "Edit", "Glob", "Grep"},
+			LegacyToolsNotice:  "deprecated restriction — cannot grant authority",
+			PromptLines:        24,
+			PromptPreview:      []string{"Light single-pass clean code review of the branch diff."},
 		}
 	}
 	return proto.SetupView{
@@ -69,9 +69,6 @@ func fixtureClaudeSetupView() proto.SetupView {
 		for j := range v.Stages[i].Agents {
 			ag := &v.Stages[i].Agents[j]
 			ag.Model, ag.Effort, ag.ThinkingTokens = "opus", "medium", "8192"
-			ag.AllowedTools = append([]string(nil), ag.DeclaredAllowedTools...)
-			ag.DeclaredAllowedTools = nil
-			ag.ToolSource = ""
 		}
 	}
 	return v
@@ -103,8 +100,8 @@ func TestSetupHeaderNamesResolvedWorkspace(t *testing.T) {
 func TestSetupExpandedStageListsEveryAgent(t *testing.T) {
 	got := ansi.Strip(renderSetup(fixtureSetupState(), 120, 50))
 	for _, want := range []string{"clean-code-reviewer", "reviewer", "doc-writer",
-		"gpt-5.6-luna · xhigh", "tools codex config",
-		"declared tools Bash, Read, Edit, Glob, Grep — not applied", "prompt 24 lines"} {
+		"gpt-5.6-luna · xhigh", "effective tools — supplied by stage capability",
+		"legacy tools Bash, Read, Edit, Glob, Grep", "deprecated restriction", "prompt 24 lines"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expanded review missing %q in:\n%s", want, got)
 		}
@@ -129,10 +126,31 @@ func TestSetupClaudeRenderingRetainsBinaryThinkingAndTools(t *testing.T) {
 	state := setupState{View: &v, Expanded: map[string]bool{"review": true}}
 	got := ansi.Strip(renderSetup(state, 120, 50))
 	for _, want := range []string{
-		"claude_bin claude", "8192 thinking tokens", "tools Bash, Read, Edit, Glob, Grep",
+		"claude_bin claude", "8192 thinking tokens", "effective tools — supplied by stage capability",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Claude setup missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestSetupCapabilityRenderingIsBounded(t *testing.T) {
+	v := fixtureSetupView()
+	stage := &v.Stages[4]
+	stage.CapabilityProfile = "review"
+	stage.DocumentationPaths = []string{strings.Repeat("docs/very-long/", 20) + "**"}
+	stage.EffectiveCapability = &proto.EffectiveCapabilitySetup{
+		Operations: []string{"workspace-read", "workspace-mutate", "local-process"},
+		ReadCount:  999, WriteCount: 123, AgentOutputs: 2, EngineOutputs: 1,
+		Preflight: "passed", Validation: "failed", FailureReason: "capability_post_stage_violation",
+	}
+	rendered := ansi.Strip(renderSetup(setupState{View: &v, Expanded: map[string]bool{"review": true}}, 100, 50))
+	if !strings.Contains(rendered, "profile review") || !strings.Contains(rendered, "policy capability_post_stage_violation") {
+		t.Fatalf("capability rendering omitted priority state:\n%s", rendered)
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		if lipgloss.Width(line) > 100 {
+			t.Fatalf("capability row exceeded viewport: %d %q", lipgloss.Width(line), line)
 		}
 	}
 }

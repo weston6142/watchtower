@@ -56,6 +56,61 @@ func TestInitCreatesTree(t *testing.T) {
 	}
 }
 
+func TestBundledPackagesDoNotGrantProviderTools(t *testing.T) {
+	root := t.TempDir()
+	if _, _, err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	packages, err := pkgs.LoadDir(filepath.Join(root, ".watchtower", "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, pkg := range packages {
+		if pkg.AllowedTools != nil || pkg.LegacyRestrictions.Declared {
+			t.Fatalf("bundled package %s grants legacy provider tools: %+v", name, pkg.AllowedTools)
+		}
+	}
+}
+
+func TestEmbeddedAndDistCapabilityDefaultsMatch(t *testing.T) {
+	for _, name := range []string{"brainstorm", "spec-writer", "planner", "executor", "correctness-reviewer", "clean-code-reviewer", "librarian", "merge-verifier", "conflict-resolver"} {
+		for _, file := range []string{"package.yaml", "prompt.md"} {
+			embedded, err := defaults.ReadFile("defaults/packages/" + name + "/" + file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			distributed, err := os.ReadFile(filepath.Join("..", "..", "dist", "packages", name, file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(embedded, distributed) {
+				t.Fatalf("embedded and dist differ for %s/%s", name, file)
+			}
+		}
+	}
+}
+
+func TestBundledPromptsStayWithinStageAuthority(t *testing.T) {
+	checks := map[string][]string{
+		"brainstorm":        {"Inspect the repository", "recent history"},
+		"spec-writer":       {"relevant repository code", "recent history"},
+		"planner":           {"Inspect the repository", "relevant history"},
+		"merge-verifier":    {"Run the required repository-wide gate", "Write `verification.json` with"},
+		"conflict-resolver": {"Rebase the local issue branch", "rebase `--continue`"},
+	}
+	for name, forbidden := range checks {
+		body, err := defaults.ReadFile("defaults/packages/" + name + "/prompt.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, phrase := range forbidden {
+			if strings.Contains(string(body), phrase) {
+				t.Fatalf("%s prompt retains authority claim %q", name, phrase)
+			}
+		}
+	}
+}
+
 func TestScaffoldCodexDefaultsAreExplicitAndTerminal(t *testing.T) {
 	root := t.TempDir()
 	if _, _, err := Init(root); err != nil {
@@ -331,8 +386,8 @@ func TestDefaultWorkflowSatisfiesDeclaredContracts(t *testing.T) {
 		}
 	}
 	for _, early := range []string{"brainstorm", "spec-writer", "planner"} {
-		if !slices.Contains(packages[early].AllowedTools, "Bash") {
-			t.Errorf("early package %s cannot inspect the repository", early)
+		if packages[early].AllowedTools != nil {
+			t.Errorf("early package %s still declares provider tools", early)
 		}
 	}
 	for name, pkg := range packages {

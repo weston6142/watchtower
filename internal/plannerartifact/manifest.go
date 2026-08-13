@@ -2,9 +2,9 @@ package plannerartifact
 
 import (
 	"fmt"
-	"path"
-	"path/filepath"
 	"strings"
+
+	"github.com/weston6142/watchtower/internal/touchset"
 )
 
 const MaxOperationBytes = 64 * 1024
@@ -152,44 +152,9 @@ func taskNumber(key string) (int, bool) {
 }
 
 func canonicalGlobs(globs []string) ([]string, error) {
-	result := make([]string, 0, len(globs))
-	seen := make(map[string]struct{}, len(globs))
-	for _, glob := range globs {
-		canonical, err := canonicalGlob(glob)
-		if err != nil {
-			return nil, err
-		}
-		if _, ok := seen[canonical]; ok {
-			continue
-		}
-		seen[canonical] = struct{}{}
-		result = append(result, canonical)
-	}
-	return result, nil
+	return touchset.CanonicalGlobs(globs)
 }
 
 func canonicalGlob(glob string) (string, error) {
-	if glob == "" || strings.TrimSpace(glob) == "" {
-		return "", fmt.Errorf("glob is empty")
-	}
-	if strings.ContainsRune(glob, '\x00') || strings.ContainsRune(glob, '\\') {
-		return "", fmt.Errorf("glob is not a repository-relative path")
-	}
-	if filepath.IsAbs(glob) || path.IsAbs(glob) {
-		return "", fmt.Errorf("glob is absolute")
-	}
-	for _, segment := range strings.Split(glob, "/") {
-		if segment == ".." {
-			return "", fmt.Errorf("glob contains traversal")
-		}
-	}
-	cleaned := path.Clean(glob)
-	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return "", fmt.Errorf("glob escapes the repository")
-	}
-	cleaned = strings.TrimPrefix(cleaned, "./")
-	if cleaned == "" {
-		return "", fmt.Errorf("glob is empty")
-	}
-	return cleaned, nil
+	return touchset.CanonicalGlob(glob)
 }

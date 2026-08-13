@@ -9,11 +9,20 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/stageresult"
+	"github.com/weston6142/watchtower/internal/touchset"
 )
+
+type OperationAttempt struct {
+	Operation capability.OperationClass
+	Mutation  capability.MutationClass
+	Path      string
+	Content   string
+}
 
 type Script struct {
 	Asks              []levers.Decision
@@ -32,6 +41,7 @@ type Script struct {
 	PlannerFailure    error
 	StageEvidence     *stageresult.Evidence
 	OmitStageEvidence bool
+	OperationAttempts []OperationAttempt
 }
 
 type FakeRunner struct {
@@ -42,12 +52,35 @@ type FakeRunner struct {
 	OnStart         func(issueID, stage, agentPkg, workdir string) error
 	OnEnvironment   func(issueID, stage, agentPkg, workdir string, env []string)
 	OnLine          func(issueID, stage, line string)
+	PreflightError  error
+	PreflightPlan   *capability.EnforcementPlan
 }
 
-func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	asks chan<- Ask) <-chan Result {
+func (f *FakeRunner) Preflight(_ context.Context, request PreflightRequest) (capability.EnforcementPlan, error) {
+	if f.PreflightError != nil {
+		return capability.EnforcementPlan{}, f.PreflightError
+	}
+	if f.PreflightPlan != nil {
+		plan := *f.PreflightPlan
+		plan.Controls = append([]capability.ControlProof(nil), f.PreflightPlan.Controls...)
+		return plan, ValidateEnforcementPlan(request.Contract, plan)
+	}
+	controls := RequiredControls(request.Contract)
+	proofs := make([]capability.ControlProof, 0, len(controls))
+	for _, control := range controls {
+		proofs = append(proofs, capability.ControlProof{Control: control, Proven: true})
+	}
+	return NewEnforcementPlan(request.Contract, "fake", "deterministic-fake", "1", proofs)
+}
+
+func (f *FakeRunner) Run(ctx context.Context, request StageRequest, asks chan<- Ask) <-chan Result {
 	done := make(chan Result, 1)
 	go func() {
+		if err := ValidateStageRequest(request); err != nil {
+			done <- Result{Err: err}
+			return
+		}
+		issueID, stage, agentPkg, workdir := request.IssueID, request.Stage, request.Agent, request.Workdir
 		sc, ok := f.Scripts[stage+"/"+agentPkg]
 		if !ok {
 			done <- Result{Err: fmt.Errorf("no script for %s/%s", stage, agentPkg)}
@@ -103,6 +136,37 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 				f.OnLine(issueID, stage, line)
 			}
 		}
+		var runtimeAudit []capability.AuditRecord
+		for _, operation := range sc.OperationAttempts {
+			audit := capability.AuditRecord{
+				ContractID: request.Contract.ContractID, Phase: "runtime", Outcome: "passed",
+				Operation: operation.Operation,
+			}
+			if operation.Path != "" {
+				audit.Paths = []string{operation.Path}
+			}
+			if !fakeOperationAllowed(request.Contract, operation) {
+				audit.Outcome = "denied"
+				audit.Reason = capability.ReasonRuntimeDenied
+				runtimeAudit = append(runtimeAudit, audit)
+				done <- Result{RuntimeAudit: runtimeAudit, Err: &capability.PolicyError{
+					Phase: "runtime", Reason: capability.ReasonRuntimeDenied, Operation: operation.Operation, Paths: audit.Paths,
+				}}
+				return
+			}
+			if operation.Operation == capability.OpWorkspaceMutate {
+				path := filepath.Join(workdir, filepath.FromSlash(operation.Path))
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					done <- Result{RuntimeAudit: runtimeAudit, Err: err}
+					return
+				}
+				if err := os.WriteFile(path, []byte(operation.Content), 0o644); err != nil {
+					done <- Result{RuntimeAudit: runtimeAudit, Err: err}
+					return
+				}
+			}
+			runtimeAudit = append(runtimeAudit, audit)
+		}
 		if sc.Fail {
 			done <- Result{Err: fmt.Errorf("scripted failure %s/%s", stage, agentPkg)}
 			return
@@ -132,10 +196,43 @@ func (f *FakeRunner) Run(ctx context.Context, issueID, stage, agentPkg, workdir 
 		done <- Result{
 			Artifacts: out, DependsOn: append([]string(nil), sc.DependsOn...),
 			SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
-			StageEvidence: stageEvidence,
+			StageEvidence: stageEvidence, RuntimeAudit: append(runtimeAudit, fakeReapAudit(request.Contract.ContractID)),
 		}
 	}()
 	return done
+}
+
+func fakeOperationAllowed(contract capability.CompiledContract, attempted OperationAttempt) bool {
+	allowedOperation := false
+	for _, operation := range contract.Contract.Operations {
+		allowedOperation = allowedOperation || operation == attempted.Operation
+	}
+	if !allowedOperation {
+		return false
+	}
+	if attempted.Operation != capability.OpWorkspaceMutate {
+		return true
+	}
+	canonical, err := touchset.CanonicalPath(attempted.Path)
+	if err != nil {
+		return false
+	}
+	mutation := attempted.Mutation
+	if mutation == "" {
+		mutation = capability.MutationModify
+	}
+	for _, grant := range contract.Contract.Writes {
+		matched, matchErr := touchset.Match(grant.Path, canonical)
+		if matchErr != nil || !matched {
+			continue
+		}
+		for _, allowed := range grant.Mutations {
+			if allowed == mutation {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (f *FakeRunner) SetOnLine(fn func(issueID, stage, line string)) { f.OnLine = fn }
@@ -194,10 +291,14 @@ func fakeStageEvidence(script Script, agentPkg string) (*stageresult.Evidence, e
 	return &evidence, nil
 }
 
-func (f *FakeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, workdir string,
-	_asks chan<- Ask, gate ExplorationGate) <-chan Result {
+func (f *FakeRunner) RunPlanner(ctx context.Context, request StageRequest, _asks chan<- Ask, gate ExplorationGate) <-chan Result {
 	done := make(chan Result, 1)
 	go func() {
+		if err := ValidateStageRequest(request); err != nil {
+			done <- Result{Err: err}
+			return
+		}
+		issueID, stage, agentPkg, workdir := request.IssueID, request.Stage, request.Agent, request.Workdir
 		sc, ok := f.Scripts[stage+"/"+agentPkg]
 		if !ok {
 			done <- Result{Err: fmt.Errorf("no script for %s/%s", stage, agentPkg)}
@@ -257,7 +358,8 @@ func (f *FakeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, w
 				"touchset.json": filepath.Join(workdir, "touchset.json"),
 			}
 			done <- Result{Artifacts: artifacts, DependsOn: append([]string(nil), sc.DependsOn...),
-				SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown}
+				SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
+				RuntimeAudit: []capability.AuditRecord{fakeReapAudit(request.Contract.ContractID)}}
 			return
 		}
 		artifacts, err := writeFakeArtifacts(sc.Artifacts, workdir)
@@ -266,9 +368,14 @@ func (f *FakeRunner) RunPlanner(ctx context.Context, issueID, stage, agentPkg, w
 			return
 		}
 		done <- Result{Artifacts: artifacts, DependsOn: append([]string(nil), sc.DependsOn...),
-			SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown}
+			SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
+			RuntimeAudit: []capability.AuditRecord{fakeReapAudit(request.Contract.ContractID)}}
 	}()
 	return done
+}
+
+func fakeReapAudit(contractID string) capability.AuditRecord {
+	return capability.AuditRecord{ContractID: contractID, Phase: "reap", Outcome: "passed"}
 }
 
 func writeFakeArtifacts(declared map[string]string, workdir string) (map[string]string, error) {

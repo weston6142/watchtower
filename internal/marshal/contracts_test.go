@@ -3,6 +3,7 @@ package marshal
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +24,15 @@ func TestCanonicalFinalizationExamplesPassProductionLoaders(t *testing.T) {
 	verification, err := LoadVerification(verificationPath)
 	if err != nil || !verification.Passed || len(verification.Commands) != 1 {
 		t.Fatalf("verification=%+v err=%v", verification, err)
+	}
+}
+
+func TestFinalizationContractSeparatesRecommendationFromEngineEvidence(t *testing.T) {
+	contract := FinalizationContractMarkdown()
+	for _, text := range []string{"Agent recommendation", "Engine-authored evidence", "Agents must not create or modify it"} {
+		if !strings.Contains(contract, text) {
+			t.Fatalf("finalization contract missing %q", text)
+		}
 	}
 }
 

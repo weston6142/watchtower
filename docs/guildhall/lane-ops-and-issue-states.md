@@ -5,7 +5,7 @@ interchangeable:
 |---|---|---|---|
 | pause / resume | `p` (toggle) | `pause_issue` / `resume_issue` | issue keeps its place; reversible |
 | kill | `x` | `kill_stage` | cancels the *running stage* only; the lane stays |
-| retry | `R` | `retry_stage` | re-runs an invalid/unvalidated final verifier or stale-identity reverification, or resumes verified integration/publication/cleanup without a model call |
+| retry | `R` | `retry_stage` | retries a failed stage after its required state change, including trusted-workspace recovery; re-runs invalid final review or stale-identity reverification; or resumes verified integration/publication/cleanup without a model call |
 | retire | `c` | none (TUI-local) | hides a *shipped* lane in this TUI session only; not durable |
 | abandon | `X` | `abandon_issue` | removes the lane everywhere, durably, forever |
 
@@ -128,18 +128,20 @@ their durable checkpoints.
 Finalization has a durable boundary that is independent of an agent transcript:
 
 - `merge-report.md` contains rich human evidence. `merge-decision.json` and
-  `verification.json` are strict machine receipts; unknown fields and missing
-  merge identity are rejected. When `test_cmd` is configured,
-  `verification.json` is authored by the daemon; only repositories without a
-  `test_cmd` retain the agent-authored receipt path.
+  `verification.json` are strict machine contracts; unknown fields and missing
+  merge identity are rejected. The final-review agent authors only the report
+  and merge recommendation. For every integrating flow, `test_cmd` is required
+  and the engine authors `verification.json` after the final-review capability
+  result is validated and durably bound.
 - Cache-managed verification carries strict `cache_evidence` in
-  `verification.json`: one lease spans the merge-verifier agent and daemon
-  replay, and only a passing replay with matching complete lease evidence can
-  create `verification_ready`. A cache hit never replaces the configured
-  command.
-- The engine validates both receipts against the current branch, base, tree,
-  and configured verification command, then persists `verification_ready`
-  before emitting final-stage completion.
+  `verification.json`: the engine acquires the lease only after final-review
+  capability validation, runs the exact configured command, seals the lease,
+  and writes the receipt. The agent never receives the lease or its managed
+  environment. A cache hit never replaces the configured command.
+- The engine validates the recommendation and receipt against the current
+  branch, base, tree, configured verification command, immutable capability
+  result, and cache identity, then persists `verification_ready` before
+  emitting final-stage completion.
 - A failure before that checkpoint belongs to the final verifier, so `R`
   reruns that stage. A failure after it normally belongs to finalization, so
   `R` retries integration without calling a model. If finalization identifies
@@ -161,6 +163,24 @@ Stage attempts also have six ordered v1 checkpoints:
 identity and an immutable model-result slot materialized once before
 `runner_succeeded`; a restart resumes from the latest committed checkpoint
 without requesting the model again.
+
+For new attempts, `runner_succeeded` additionally requires an immutable
+effective-capability record with a matching contract, enforcement plan,
+trusted baseline, passing final delta validation, and the same result digest.
+Provider success or a transcript cannot fill that gap. The contract is
+compiled once per engine attempt and reused unchanged by initial, resumed,
+parallel, and fallback turns.
+
+Capability failures use four stable reasons. Contract-invalid and
+provider-unsupported failures stop before provider launch and require a
+configuration/provider change. Runtime-denied and post-stage-violation failures
+reject the complete attempt, mark the exact issue workspace
+`capability_recovery_needed`, and require `trusted_workspace`. No artifact,
+gate, dependency, verification, or finalization state may consume rejected
+bytes. The engine reconstructs the exact trusted commit/tree through the
+workspace provider before retry; an unchanged retry has a new contract ID but
+the same authority digest. See effective-stage-capabilities for the complete
+boundary.
 Prepared rows and unreferenced filesystem bytes are never recovery authority.
 Checkpoint-finalization failures fail closed and leave the preceding committed
 checkpoint as the retry boundary. Recovery validates the predecessor chain,
@@ -198,6 +218,10 @@ checkpoints.
 
 Flow integration is capability-based, not tied to a stage name or stage count:
 
+- Every stage declares one fixed `capability_profile`; librarian stages also
+  declare explicit `documentation_paths`. Runtime authority comes from the
+  compiled contract, not the stage name, assigned package, prompt, or tool
+  metadata.
 - A flow may have no `merge_barrier`. Watchtower then never merges or pushes on
   that flow's behalf. A clean workspace is released; committed or uncommitted
   work is preserved and reported with its branch and worktree.

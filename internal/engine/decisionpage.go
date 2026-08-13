@@ -610,9 +610,12 @@ func (e *Engine) writeDecisionArchiveContent(issueID string, decisionID int64, c
 	if err := os.MkdirAll(decisionsDir, 0o755); err != nil {
 		return err
 	}
-	return writeFileAtomically(
-		filepath.Join(decisionsDir, fmt.Sprintf("%d.html", decisionID)), content, 0o644,
-	)
+	archive := filepath.Join(decisionsDir, fmt.Sprintf("%d.html", decisionID))
+	if err := writeFileAtomically(archive, content, 0o644); err != nil {
+		return err
+	}
+	e.recordCapabilityEngineWrite(issueID, archive, content)
+	return nil
 }
 
 func writeFileAtomically(filename string, content []byte, mode os.FileMode) error {
@@ -659,6 +662,7 @@ func (e *Engine) writeRenderedDecisionPage(
 	if err := writeFileAtomically(latest, content, 0o644); err != nil {
 		return err
 	}
+	e.recordCapabilityEngineWrite(issueID, latest, content)
 	e.emit(core.EvArtifactProduced, issueID, map[string]any{
 		"stage": stage, "artifact": decisionpage.FileName, "path": latest, "decision_id": decisionID,
 	})

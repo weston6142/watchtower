@@ -59,6 +59,11 @@ const (
 	EvLeverChanged               EventType = "lever_changed"
 	EvRunnerAttempt              EventType = "runner_attempt"
 	EvFailureRecorded            EventType = "failure_recorded"
+	EvCapabilityCompiled         EventType = "capability_compiled"
+	EvCapabilityPreflighted      EventType = "capability_preflighted"
+	EvCapabilityDenied           EventType = "capability_denied"
+	EvCapabilityValidated        EventType = "capability_validated"
+	EvCapabilityRejected         EventType = "capability_rejected"
 )
 
 type Event struct {

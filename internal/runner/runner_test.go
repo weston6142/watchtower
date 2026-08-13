@@ -65,7 +65,9 @@ func TestFakePlannerUsesTypedAuthorityInsteadOfAmbientSession(t *testing.T) {
 	probe := &typedPlannerAuthorityProbe{}
 	fr := &FakeRunner{Scripts: map[string]Script{"plan/planner": {PlannerRequests: []plannerartifact.WriteRequest{request}}}}
 	t.Setenv("WATCHTOWER_PLANNER_SESSION", "agent-private-session")
-	result := <-fr.RunPlanner(WithPlannerArtifactAuthority(context.Background(), probe), "GH-62", "plan", "planner", t.TempDir(), make(chan Ask), &scriptedTestGate{})
+	workdir := t.TempDir()
+	result := <-fr.RunPlanner(WithPlannerArtifactAuthority(context.Background(), probe),
+		fakeStageRequest(t, fr, "GH-62", "plan", "planner", workdir), make(chan Ask), &scriptedTestGate{})
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}

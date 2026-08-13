@@ -2,9 +2,16 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
@@ -79,12 +86,123 @@ type Result struct {
 	Attempts         []Attempt
 	FallbackConsumed bool
 	NextAction       string
+	RuntimeAudit     []capability.AuditRecord
 	Err              error
 }
 
+type PreflightRequest struct {
+	IssueID  string
+	Stage    string
+	Agent    string
+	Workdir  string
+	Contract capability.CompiledContract
+}
+
+type StageRequest struct {
+	IssueID  string
+	Stage    string
+	Agent    string
+	Workdir  string
+	Contract capability.CompiledContract
+	Plan     capability.EnforcementPlan
+}
+
 type Runner interface {
-	Run(ctx context.Context, issueID, stage, agentPkg, workdir string,
-		asks chan<- Ask) <-chan Result
+	Preflight(context.Context, PreflightRequest) (capability.EnforcementPlan, error)
+	Run(context.Context, StageRequest, chan<- Ask) <-chan Result
+}
+
+// LegacyRestrictionSource exposes package compatibility metadata only so the
+// engine can subtract authority before provider preflight.
+type LegacyRestrictionSource interface {
+	LegacyRestrictions(agentPackage string) (pkgs.LegacyRestrictions, bool)
+}
+
+func NewEnforcementPlan(contract capability.CompiledContract, provider, implementation, version string,
+	proofs []capability.ControlProof) (capability.EnforcementPlan, error) {
+	plan := capability.EnforcementPlan{
+		ContractID: contract.ContractID, Provider: provider, Implementation: implementation, Version: version,
+		Controls: append([]capability.ControlProof(nil), proofs...),
+	}
+	if err := canonicalizeAndValidatePlan(contract, &plan); err != nil {
+		return capability.EnforcementPlan{}, err
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		return capability.EnforcementPlan{}, err
+	}
+	sum := sha256.Sum256(encoded)
+	plan.PlanID = hex.EncodeToString(sum[:])
+	return plan, nil
+}
+
+func ValidateEnforcementPlan(contract capability.CompiledContract, plan capability.EnforcementPlan) error {
+	providedID := plan.PlanID
+	plan.PlanID = ""
+	if err := canonicalizeAndValidatePlan(contract, &plan); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(encoded)
+	if providedID != hex.EncodeToString(sum[:]) {
+		return &capability.PolicyError{Phase: "preflight", Reason: capability.ReasonProviderUnsupported, Provider: plan.Provider, Diagnostic: "enforcement plan identity mismatch"}
+	}
+	return nil
+}
+
+func ValidateStageRequest(request StageRequest) error {
+	if err := capability.ValidateCompiledContract(request.Contract); err != nil {
+		return err
+	}
+	if request.IssueID == "" || request.Stage == "" || request.Agent == "" || request.Workdir == "" ||
+		request.Contract.ContractID == "" || request.Contract.Contract.IssueID != request.IssueID ||
+		request.Contract.Contract.Stage != request.Stage || request.Plan.ContractID != request.Contract.ContractID {
+		return &capability.PolicyError{Phase: "launch", Reason: capability.ReasonProviderUnsupported, Diagnostic: "stage request identity mismatch"}
+	}
+	return ValidateEnforcementPlan(request.Contract, request.Plan)
+}
+
+func RequiredControls(contract capability.CompiledContract) []capability.EnforcementControl {
+	controls := []capability.EnforcementControl{
+		capability.ControlCredentials, capability.ControlDescendants, capability.ControlEngineState, capability.ControlGateway, capability.ControlGitCommonDir,
+		capability.ControlNetwork, capability.ControlProcessGroup, capability.ControlScratch,
+	}
+	for _, operation := range contract.Contract.Operations {
+		switch operation {
+		case capability.OpWorkspaceRead, capability.OpVCSRead:
+			controls = append(controls, capability.ControlWorkspaceRead)
+		case capability.OpWorkspaceMutate, capability.OpVCSCommit, capability.OpPlannerArtifactApply:
+			controls = append(controls, capability.ControlWorkspaceWrite)
+		}
+	}
+	sort.Slice(controls, func(i, j int) bool { return controls[i] < controls[j] })
+	result := controls[:0]
+	for _, control := range controls {
+		if len(result) == 0 || result[len(result)-1] != control {
+			result = append(result, control)
+		}
+	}
+	return result
+}
+
+func canonicalizeAndValidatePlan(contract capability.CompiledContract, plan *capability.EnforcementPlan) error {
+	if contract.ContractID == "" || plan.ContractID != contract.ContractID || plan.Provider == "" || plan.Implementation == "" || plan.Version == "" {
+		return &capability.PolicyError{Phase: "preflight", Reason: capability.ReasonProviderUnsupported, Provider: plan.Provider, Diagnostic: "enforcement plan identity is incomplete"}
+	}
+	sort.Slice(plan.Controls, func(i, j int) bool { return plan.Controls[i].Control < plan.Controls[j].Control })
+	required := RequiredControls(contract)
+	if len(plan.Controls) != len(required) {
+		return &capability.PolicyError{Phase: "preflight", Reason: capability.ReasonProviderUnsupported, Provider: plan.Provider, Diagnostic: "complete control proof is required"}
+	}
+	for index, control := range required {
+		if plan.Controls[index].Control != control || !plan.Controls[index].Proven {
+			return &capability.PolicyError{Phase: "preflight", Reason: capability.ReasonProviderUnsupported, Provider: plan.Provider, Diagnostic: fmt.Sprintf("control %s is not proven", control)}
+		}
+	}
+	return nil
 }
 
 // PlannerArtifactAuthority is the only planner-artifact capability a runner
@@ -114,7 +232,7 @@ type ExplorationGate interface {
 }
 
 type PlannerRunner interface {
-	RunPlanner(context.Context, string, string, string, string, chan<- Ask, ExplorationGate) <-chan Result
+	RunPlanner(context.Context, StageRequest, chan<- Ask, ExplorationGate) <-chan Result
 }
 
 // LineSink is implemented by runners that can stream human-readable output.

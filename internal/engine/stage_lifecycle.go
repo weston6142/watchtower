@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,12 +12,167 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
+	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/stageresult"
 	"github.com/weston6142/watchtower/internal/store"
+	"github.com/weston6142/watchtower/internal/workspace"
 )
+
+const capabilityRecoverySchemaVersion = 1
+
+type capabilityRecoveryEnvelope struct {
+	SchemaVersion   int      `json:"schema_version"`
+	Stage           string   `json:"stage"`
+	AttemptID       string   `json:"attempt_id"`
+	TrustedTree     string   `json:"trusted_tree"`
+	AuthorityDigest string   `json:"authority_digest"`
+	Reason          string   `json:"reason"`
+	OriginalState   string   `json:"original_state"`
+	OriginalPreSHA  string   `json:"original_pre_sha"`
+	OriginalCleanup []string `json:"original_cleanup,omitempty"`
+}
+
+func capabilityRecoveryReason(err error) (capability.FailureReason, bool) {
+	var policy *capability.PolicyError
+	if !errors.As(err, &policy) {
+		return "", false
+	}
+	switch policy.Reason {
+	case capability.ReasonRuntimeDenied, capability.ReasonPostStageViolation:
+		return policy.Reason, true
+	default:
+		return "", false
+	}
+}
+
+func (e *Engine) markCapabilityWorkspaceRejected(
+	is *issueState,
+	stage string,
+	identity capability.AttemptIdentity,
+	contract capability.CompiledContract,
+	baseline capability.Baseline,
+	cause error,
+) error {
+	reason, ok := capabilityRecoveryReason(cause)
+	if !ok || is.wsPath == "" || baseline.Git.Head == "" || baseline.Git.Tree == "" {
+		return nil
+	}
+	_, ok = e.cfg.Workspace.(workspace.RecoveryProvider)
+	if !ok {
+		return fmt.Errorf("capability recovery provider is unavailable")
+	}
+	observedRef, _ := gitRevision(is.wsPath, "refs/heads/"+baseline.Git.Branch)
+	integration, found, err := e.cfg.Store.IssueIntegration(is.id)
+	if err != nil {
+		return err
+	}
+	if !found {
+		integration = store.IssueIntegration{
+			IssueID: is.id, State: store.IntegrationClaimed, PreSHA: is.baseRef,
+			Worktree: is.wsPath, Branch: is.branch,
+		}
+	}
+	envelope := capabilityRecoveryEnvelope{
+		SchemaVersion: capabilityRecoverySchemaVersion, Stage: stage, AttemptID: identity.AttemptID,
+		TrustedTree: baseline.Git.Tree, AuthorityDigest: contract.AuthorityDigest,
+		Reason: string(reason), OriginalState: integration.State, OriginalPreSHA: integration.PreSHA,
+		OriginalCleanup: append([]string(nil), integration.Cleanup...),
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	integration.State = store.IntegrationCapabilityRecoveryNeeded
+	integration.PreSHA = baseline.Git.Head
+	integration.LandedSHA = observedRef
+	integration.LastError = string(encoded)
+	integration.Worktree = is.wsPath
+	integration.Branch = baseline.Git.Branch
+	integration.Cleanup = nil
+	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		return err
+	}
+	if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+		Attempt: identity, ContractID: contract.ContractID, Phase: "quarantine", Outcome: "passed", Reason: reason,
+	}); err != nil {
+		return err
+	}
+	e.emit(core.EvCapabilityRejected, is.id, map[string]any{
+		"stage": stage, "attempt_id": identity.AttemptID, "contract_id": contract.ContractID,
+		"reason": reason, "retry_disposition": failure.RetryAfterStateChange, "required_state": failure.StateTrustedWorkspace,
+	})
+	return nil
+}
+
+func (e *Engine) recoverPendingCapabilityWorkspace(_ context.Context, is *issueState) (bool, error) {
+	integration, found, err := e.cfg.Store.IssueIntegration(is.id)
+	if err != nil || !found || integration.State != store.IntegrationCapabilityRecoveryNeeded {
+		return false, err
+	}
+	var envelope capabilityRecoveryEnvelope
+	if json.Unmarshal([]byte(integration.LastError), &envelope) != nil || envelope.SchemaVersion != capabilityRecoverySchemaVersion ||
+		envelope.Stage == "" || envelope.AttemptID == "" || envelope.TrustedTree == "" || envelope.AuthorityDigest == "" {
+		return false, fmt.Errorf("capability recovery evidence is incomplete")
+	}
+	if envelope.Reason != string(capability.ReasonRuntimeDenied) && envelope.Reason != string(capability.ReasonPostStageViolation) {
+		return false, fmt.Errorf("capability recovery reason is invalid")
+	}
+	record, found, err := e.cfg.Store.CapabilityAttempt(is.id, envelope.Stage, envelope.AttemptID)
+	if err != nil || !found || record.Contract.AuthorityDigest != envelope.AuthorityDigest {
+		return false, fmt.Errorf("capability recovery authority mismatch")
+	}
+	provider, ok := e.cfg.Workspace.(workspace.RecoveryProvider)
+	if !ok {
+		return false, fmt.Errorf("capability recovery provider is unavailable")
+	}
+	path, release, err := provider.Recover(workspace.RecoveryRequest{
+		IssueID: is.id, RejectedPath: integration.Worktree, Provider: provider.Name(),
+		Repository: provider.RepositoryRoot(), Branch: integration.Branch,
+		TrustedCommit: integration.PreSHA, TrustedTree: envelope.TrustedTree,
+		ObservedCommit: integration.LandedSHA, ObservedRef: integration.LandedSHA,
+		CapabilityAttemptID: envelope.AttemptID,
+	})
+	if err != nil {
+		return false, err
+	}
+	baseline, err := (capability.Observer{}).Capture(path, nil)
+	if err != nil || baseline.Git.Head != integration.PreSHA || baseline.Git.Tree != envelope.TrustedTree {
+		_ = release()
+		return false, fmt.Errorf("recovered capability workspace does not match trusted baseline")
+	}
+	identity := capability.AttemptIdentity{IssueID: is.id, Stage: envelope.Stage, AttemptID: envelope.AttemptID}
+	if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+		Attempt: identity, ContractID: record.Contract.ContractID, Phase: "recovery", Outcome: "passed",
+	}); err != nil {
+		return false, err
+	}
+	integration.State = envelope.OriginalState
+	if integration.State == "" {
+		integration.State = store.IntegrationClaimed
+	}
+	integration.PreSHA = envelope.OriginalPreSHA
+	integration.LandedSHA = ""
+	integration.LastError = ""
+	integration.Worktree = path
+	integration.Cleanup = append([]string(nil), envelope.OriginalCleanup...)
+	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		return false, err
+	}
+	e.mu.Lock()
+	is.wsPath, is.wsRelease = path, release
+	is.branch = integration.Branch
+	e.mu.Unlock()
+	e.emit(core.EvCapabilityValidated, is.id, map[string]any{
+		"stage": envelope.Stage, "attempt_id": envelope.AttemptID, "contract_id": record.Contract.ContractID,
+		"outcome": "workspace_recovered",
+	})
+	return true, nil
+}
 
 func resultProducerForStage(st flow.Stage) (stageresult.Kind, string, bool, error) {
 	var kind stageresult.Kind

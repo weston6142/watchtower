@@ -2,7 +2,11 @@ package touchset
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"path"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -20,7 +24,112 @@ func Load(path string) (Set, error) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return Set{}, err
 	}
+	canonical, err := CanonicalGlobs(s.Globs)
+	if err != nil {
+		return Set{}, err
+	}
+	s.Globs = canonical
 	return s, nil
+}
+
+// CanonicalPath returns one safe repository-relative slash path.
+func CanonicalPath(value string) (string, error) {
+	return canonical(value, false)
+}
+
+// CanonicalGlob returns one safe repository-relative slash glob.
+func CanonicalGlob(value string) (string, error) {
+	return canonical(value, true)
+}
+
+func canonical(value string, allowGlob bool) (string, error) {
+	if value == "" || value != strings.TrimSpace(value) {
+		return "", fmt.Errorf("scope is empty or padded")
+	}
+	if strings.ContainsRune(value, '\x00') || strings.ContainsRune(value, '\\') {
+		return "", fmt.Errorf("scope is not a repository-relative slash path")
+	}
+	if filepath.IsAbs(value) || path.IsAbs(value) {
+		return "", fmt.Errorf("scope is absolute")
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == ".." {
+			return "", fmt.Errorf("scope contains traversal")
+		}
+	}
+	cleaned := strings.TrimPrefix(path.Clean(value), "./")
+	if cleaned == "" || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("scope escapes the repository")
+	}
+	segments := strings.Split(cleaned, "/")
+	for _, segment := range segments {
+		if segment == ".git" || segment == ".watchtower" {
+			return "", fmt.Errorf("scope enters engine-owned path %q", segment)
+		}
+		if !allowGlob && strings.ContainsAny(segment, "*?[") {
+			return "", fmt.Errorf("path contains glob syntax")
+		}
+		if allowGlob && segment != "**" {
+			if _, err := path.Match(segment, segment); err != nil {
+				return "", fmt.Errorf("invalid glob segment %q: %w", segment, err)
+			}
+		}
+	}
+	if allowGlob && prefix(cleaned) == "" {
+		return "", fmt.Errorf("root-wide glob is not allowed")
+	}
+	return cleaned, nil
+}
+
+// CanonicalGlobs validates and de-duplicates scopes without expanding them.
+func CanonicalGlobs(globs []string) ([]string, error) {
+	result := make([]string, 0, len(globs))
+	seen := make(map[string]struct{}, len(globs))
+	for _, glob := range globs {
+		canonical, err := CanonicalGlob(glob)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		result = append(result, canonical)
+	}
+	return result, nil
+}
+
+// Match reports whether a canonical glob matches a canonical repository path.
+func Match(glob, value string) (bool, error) {
+	canonicalGlob, err := CanonicalGlob(glob)
+	if err != nil {
+		return false, err
+	}
+	canonicalPath, err := CanonicalPath(value)
+	if err != nil {
+		return false, err
+	}
+	return matchSegments(strings.Split(canonicalGlob, "/"), strings.Split(canonicalPath, "/")), nil
+}
+
+func matchSegments(pattern, value []string) bool {
+	if len(pattern) == 0 {
+		return len(value) == 0
+	}
+	if pattern[0] == "**" {
+		if len(pattern) == 1 {
+			return len(value) > 0
+		}
+		if len(value) == 0 {
+			return matchSegments(pattern[1:], value)
+		}
+		return matchSegments(pattern[1:], value) || matchSegments(pattern, value[1:])
+	}
+	if len(value) == 0 {
+		return false
+	}
+	matched, err := path.Match(pattern[0], value[0])
+	return err == nil && matched && matchSegments(pattern[1:], value[1:])
 }
 
 // prefix strips a glob to its literal leading path (everything before the
@@ -48,6 +157,83 @@ func Overlap(a, b Set) bool {
 		}
 	}
 	return false
+}
+
+// IntersectGlobs returns a fail-closed intersection that is representable by
+// the canonical glob grammar. It never substitutes a merely overlapping glob,
+// because that can grant paths outside one side of the intersection.
+func IntersectGlobs(left, right []string) ([]string, error) {
+	left, err := CanonicalGlobs(left)
+	if err != nil {
+		return nil, err
+	}
+	right, err = CanonicalGlobs(right)
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, leftGlob := range left {
+		for _, rightGlob := range right {
+			switch {
+			case globContains(leftGlob, rightGlob):
+				result = append(result, rightGlob)
+			case globContains(rightGlob, leftGlob):
+				result = append(result, leftGlob)
+			case Overlap(Set{Globs: []string{leftGlob}}, Set{Globs: []string{rightGlob}}):
+				return nil, fmt.Errorf("glob intersection %q and %q cannot be represented safely", leftGlob, rightGlob)
+			}
+		}
+	}
+	sort.Strings(result)
+	unique := result[:0]
+	for _, value := range result {
+		if len(unique) == 0 || unique[len(unique)-1] != value {
+			unique = append(unique, value)
+		}
+	}
+	return unique, nil
+}
+
+func globContains(container, candidate string) bool {
+	if container == candidate {
+		return true
+	}
+	if !strings.ContainsAny(candidate, "*?[") {
+		matched, err := Match(container, candidate)
+		return err == nil && matched
+	}
+	containerSegments := strings.Split(container, "/")
+	candidateSegments := strings.Split(candidate, "/")
+	if len(containerSegments) > 0 && containerSegments[len(containerSegments)-1] == "**" {
+		prefixSegments := containerSegments[:len(containerSegments)-1]
+		if len(candidateSegments) <= len(prefixSegments) {
+			return false
+		}
+		for index, segment := range prefixSegments {
+			if candidateSegments[index] != segment {
+				return false
+			}
+		}
+		return true
+	}
+	if len(containerSegments) != len(candidateSegments) {
+		return false
+	}
+	for index, segment := range containerSegments {
+		candidateSegment := candidateSegments[index]
+		switch {
+		case segment == candidateSegment:
+		case segment == "*" && candidateSegment != "**":
+		case !strings.ContainsAny(candidateSegment, "*?["):
+			matched, err := path.Match(segment, candidateSegment)
+			if err != nil || !matched {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func pathPrefix(p, of string) bool {

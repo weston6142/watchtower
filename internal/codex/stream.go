@@ -155,7 +155,16 @@ func requestToolCall(kind, command, server, tool, query string, changes []string
 	if source == "" {
 		return runner.ToolCall{}, false
 	}
-	return runner.ToolCall{Name: kind, SourceID: source, Fingerprint: fingerprint, Reservation: 1}, true
+	name := kind
+	if kind == "mcp_tool_call" {
+		name = "mcp__" + normalizeToolPart(server) + "__" + normalizeToolPart(tool)
+	}
+	return runner.ToolCall{Name: name, SourceID: source, Fingerprint: fingerprint, Reservation: 1}, true
+}
+
+func normalizeToolPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.NewReplacer("-", "_", " ", "_", "/", "_").Replace(value)
 }
 
 func toolEvent(summary string) Event {
