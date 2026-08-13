@@ -141,6 +141,24 @@ func TestAuthorizeRetryRequiresMeaningfulDeterministicChange(t *testing.T) {
 	}
 }
 
+func TestAuthorizeRetryReportsExhaustedDeterministicCapBeforeStateGuidance(t *testing.T) {
+	state := testVector("a", "b", "c", "d")
+	stored := activeContext(failure.RetryAfterStateChange, state)
+	stored.SharedUsed = 1
+	store := &memoryContextStore{context: stored}
+	gate := retry.MustNewGate(store, testPolicy(1))
+
+	result, err := gate.Authorize(context.Background(), retry.Request{
+		IssueID: "GH-65", Stage: "execute", Kind: retry.KindExplicit, Current: state,
+	})
+	if err != nil || result.Rejection == nil || result.Rejection.Reason != retry.ReasonCapExhausted {
+		t.Fatalf("exhausted deterministic retry = %+v, err=%v", result, err)
+	}
+	if store.context.SharedUsed != 1 {
+		t.Fatalf("exhausted retry changed shared usage to %d", store.context.SharedUsed)
+	}
+}
+
 func TestAuthorizeRetryFailsClosedAndReloadsOnlyOnce(t *testing.T) {
 	prior := testVector("a", "b", "c", "d")
 	current := prior

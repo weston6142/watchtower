@@ -75,23 +75,46 @@ func (e *Engine) recordRunnerFailure(
 	if result.Err == nil {
 		return nil
 	}
-	site, class, disposition, stateChange := failure.SiteRunner, failure.NormalizeClass(failure.Class(result.FailureClass)), failure.RetryNow, failure.StateRunnerInput
+	var policyErr *capability.PolicyError
+	if errors.As(result.Err, &policyErr) {
+		site, class, disposition, stateChange := classifyFailure(result.Err)
+		return e.recordFailure(ctx, failureContext{
+			IssueID: is.id, Stage: stage.Name, StageAttempt: attempt,
+			Site: site, Class: class, Disposition: disposition, StateChange: stateChange,
+			FingerprintInputs: stageFailureFingerprintInputs(e, is, stage, site, workdir),
+			Primary:           result.Err,
+		})
+	}
+	class := failure.Class(result.FailureClass)
 	if result.FailureClass == "" {
 		// A runner that reports an error without a more specific typed class
 		// failed while executing the agent. Classify that boundary once when
 		// recording it; retry authorization never reclassifies error text.
-		class = failure.NormalizeClass(failure.ClassExecution)
+		class = failure.ClassExecution
 	}
-	var policyErr *capability.PolicyError
-	if errors.As(result.Err, &policyErr) {
-		site, class, disposition, stateChange = classifyFailure(result.Err)
-	}
+	class = failure.NormalizeClass(class)
+	disposition, stateChange := runnerFailureRetryGuidance(class)
 	return e.recordFailure(ctx, failureContext{
 		IssueID: is.id, Stage: stage.Name, StageAttempt: attempt,
-		Site: site, Class: class, Disposition: disposition, StateChange: stateChange,
-		FingerprintInputs: stageFailureFingerprintInputs(e, is, stage, site, workdir),
+		Site: failure.SiteRunner, Class: class,
+		Disposition: disposition, StateChange: stateChange,
+		FingerprintInputs: stageFailureFingerprintInputs(e, is, stage, failure.SiteRunner, workdir),
 		Primary:           result.Err,
 	})
+}
+
+func runnerFailureRetryGuidance(class failure.Class) (failure.RetryDisposition, failure.StateChange) {
+	switch class {
+	case failure.ClassLaunch, failure.ClassExecution, failure.ClassTransport,
+		failure.ClassProtocol, failure.ClassCancellation:
+		return failure.RetryNow, failure.StateRunnerInput
+	case failure.ClassAuthentication, failure.ClassAuthorization, failure.ClassConfiguration:
+		return failure.RetryAfterStateChange, failure.StateConfiguration
+	case failure.ClassResumeIdentity:
+		return failure.RetryAfterStateChange, failure.StateOperator
+	default:
+		return failure.RetryUnknown, failure.StateUnknown
+	}
 }
 
 func stageFailureFingerprintInputs(
@@ -282,16 +305,48 @@ func (e *Engine) recordBoundaryFailure(ctx context.Context, issueID, stage strin
 	if primary == nil {
 		return nil
 	}
+	inputs := failure.FingerprintInputs{
+		IssueID: issueID, Stage: stage, FailureSite: site,
+		WatchtowerIdentity:    digestFailureIdentity("watchtower"),
+		ConfigurationIdentity: digestFailureIdentity(stage),
+	}
+	if staged, ok := e.boundaryStageFingerprintInputs(issueID, stage, site); ok {
+		inputs = staged
+	}
 	return e.recordFailure(ctx, failureContext{
 		IssueID: issueID, Stage: stage, StageAttempt: attempt,
 		Site: site, Class: class, Disposition: disposition, StateChange: stateChange,
-		FingerprintInputs: failure.FingerprintInputs{
-			IssueID: issueID, Stage: stage, FailureSite: site,
-			WatchtowerIdentity:    digestFailureIdentity("watchtower"),
-			ConfigurationIdentity: digestFailureIdentity(stage),
-		},
-		Primary: primary,
+		FingerprintInputs: inputs,
+		Primary:           primary,
 	})
+}
+
+func (e *Engine) boundaryStageFingerprintInputs(
+	issueID, stage string, site failure.Site,
+) (failure.FingerprintInputs, bool) {
+	if e == nil || strings.TrimSpace(stage) == "" {
+		return failure.FingerprintInputs{}, false
+	}
+	e.mu.Lock()
+	current, ok := e.issues[issueID]
+	if !ok {
+		e.mu.Unlock()
+		return failure.FingerprintInputs{}, false
+	}
+	snapshot := *current
+	e.mu.Unlock()
+	configuredFlow, ok := e.cfg.Flows[snapshot.flowName]
+	if !ok {
+		return failure.FingerprintInputs{}, false
+	}
+	for _, configuredStage := range configuredFlow.Stages {
+		if configuredStage.Name == stage {
+			return stageFailureFingerprintInputs(
+				e, &snapshot, configuredStage, site, e.stageWorkdir(&snapshot, configuredStage),
+			), true
+		}
+	}
+	return failure.FingerprintInputs{}, false
 }
 
 func (e *Engine) recordClassifiedBoundaryFailure(ctx context.Context, issueID, stage string, primary error) error {
@@ -335,7 +390,9 @@ func classifyFailure(err error) (failure.Site, failure.Class, failure.RetryDispo
 	}
 	var runnerErr *runnerStageError
 	if errors.As(err, &runnerErr) {
-		return failure.SiteRunner, failure.NormalizeClass(failure.Class(runnerErr.Result.FailureClass)), failure.RetryNow, failure.StateRunnerInput
+		class := failure.NormalizeClass(failure.Class(runnerErr.Result.FailureClass))
+		disposition, stateChange := runnerFailureRetryGuidance(class)
+		return failure.SiteRunner, class, disposition, stateChange
 	}
 	message := strings.ToLower(err.Error())
 	switch {

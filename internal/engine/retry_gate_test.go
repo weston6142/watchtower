@@ -121,6 +121,79 @@ func TestAutomaticAndExplicitRetriesShareOneAllowance(t *testing.T) {
 	}
 }
 
+func TestRunnerDurableFailureClassesWaitForMeaningfulStateChange(t *testing.T) {
+	for _, class := range []runner.FailureClass{
+		runner.FailureAuthentication,
+		runner.FailureAuthorization,
+		runner.FailureResumeIdentity,
+		runner.FailureConfiguration,
+	} {
+		t.Run(string(class), func(t *testing.T) {
+			repo := t.TempDir()
+			initGitRepo(t, repo)
+			f := retryEngineFlow(1)
+			r := &retryCountingRunner{result: runner.Result{
+				FailureClass: class, Err: errors.New("runner durable state is invalid"),
+			}}
+			e, s := newEngineCfg(t, r, func(cfg *Config) {
+				cfg.Flows = map[string]flow.Flow{f.Name: f}
+				cfg.Workspace = &fakeWS{dir: repo}
+				cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassExecution)
+			})
+			id := prepareRetryEngineBranch(t, e, string(class)+" failure")
+
+			if err := e.StartIssue(context.Background(), id); err == nil {
+				t.Fatalf("%s failure unexpectedly succeeded", class)
+			}
+			if got := r.calls.Load(); got != 1 {
+				t.Fatalf("unchanged %s failure runner calls = %d, want 1", class, got)
+			}
+			rejections := retryEvents(t, s, id, core.EvRetryRejected)
+			if len(rejections) != 1 || !strings.Contains(string(rejections[0].Payload), string(retry.ReasonStateUnchanged)) {
+				t.Fatalf("%s retry rejection = %+v, want state_unchanged", class, rejections)
+			}
+		})
+	}
+}
+
+func TestBoundaryVerificationFailureCanRetryAfterTreeChange(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	f := retryEngineFlow(0)
+	r := &retryCountingRunner{}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.Workspace = &fakeWS{dir: repo}
+		cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassExecution)
+	})
+	id := prepareRetryEngineBranch(t, e, "verification boundary")
+	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	e.mu.Lock()
+	is := e.issues[id]
+	is.wsPath, is.branch, is.baseRef = repo, "issue/"+id, head
+	e.mu.Unlock()
+
+	primary := errors.New("verification receipt is stale")
+	if err := e.recordBoundaryFailure(context.Background(), id, f.Stages[0].Name, 1,
+		failure.SiteVerification, failure.ClassValidation, failure.RetryAfterStateChange,
+		failure.StateVerification, primary); !errors.Is(err, primary) {
+		t.Fatalf("record boundary failure = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "diff"), []byte("repaired\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	is.terminal = true
+	e.mu.Unlock()
+	if err := e.RetryStage(context.Background(), id); err != nil {
+		t.Fatalf("retry repaired verification boundary = %v", err)
+	}
+	if got := r.calls.Load(); got != 1 || len(retryEvents(t, s, id, core.EvRetryAuthorized)) != 1 {
+		t.Fatalf("repaired boundary retry calls=%d authorized=%d, want 1 each",
+			got, len(retryEvents(t, s, id, core.EvRetryAuthorized)))
+	}
+}
+
 func TestDeterministicRetryDoesNotTreatNewLeasePathAsTreeChange(t *testing.T) {
 	repo := t.TempDir()
 	initGitRepo(t, repo)

@@ -191,6 +191,11 @@ func (g *Gate) evaluate(request Request, stored Context) (evaluatedRetry, *Decis
 			"follow operator recovery guidance instead of repeating verification")
 		return evaluatedRetry{}, &rejected
 	}
+	if stored.SharedUsed >= rule.SharedCap {
+		rejected := rejectionDecision(request, stored, rule, ReasonCapExhausted, changed, unchanged,
+			"establish a new failure fingerprint or use specialized lifecycle recovery")
+		return evaluatedRetry{}, &rejected
+	}
 	if request.Kind == KindModelResample {
 		if !rule.ModelResampleEligible || !stateDimensionAvailable("decision", request.DecisionIdentity) ||
 			request.DecisionIdentity == stored.DecisionIdentity {
@@ -204,19 +209,14 @@ func (g *Gate) evaluate(request Request, stored Context) (evaluatedRetry, *Decis
 			return evaluatedRetry{}, &rejected
 		}
 	}
-	if rule.RequiresStateChange && len(changed) == 0 {
-		rejected := rejectionDecision(request, stored, rule, ReasonStateUnchanged, changed, unchanged,
-			"change tree, config, environment, or decision state before retrying verification")
-		return evaluatedRetry{}, &rejected
-	}
-	if stored.SharedUsed >= rule.SharedCap {
-		rejected := rejectionDecision(request, stored, rule, ReasonCapExhausted, changed, unchanged,
-			"establish a new failure fingerprint or use specialized lifecycle recovery")
-		return evaluatedRetry{}, &rejected
-	}
 	if request.Kind == KindModelResample && stored.ModelResampleUsed >= rule.ModelResampleCap {
 		rejected := rejectionDecision(request, stored, rule, ReasonModelResampleExhausted, changed, unchanged,
 			"change non-model state or follow operator recovery guidance")
+		return evaluatedRetry{}, &rejected
+	}
+	if rule.RequiresStateChange && len(changed) == 0 {
+		rejected := rejectionDecision(request, stored, rule, ReasonStateUnchanged, changed, unchanged,
+			"change tree, config, environment, or decision state before retrying verification")
 		return evaluatedRetry{}, &rejected
 	}
 	if request.Kind == KindModelResample {
