@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
@@ -39,10 +40,18 @@ func (w *rotatingRetryWorkspace) Acquire(string) (string, func() error, error) {
 
 func (w *rotatingRetryWorkspace) Name() string { return "rotating retry workspace" }
 
-func (r *retryCountingRunner) Run(context.Context, string, string, string, string, chan<- runner.Ask) <-chan runner.Result {
+func (r *retryCountingRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	return testRunnerPreflight(request)
+}
+
+func (r *retryCountingRunner) Run(_ context.Context, request runner.StageRequest, _ chan<- runner.Ask) <-chan runner.Result {
 	r.calls.Add(1)
 	done := make(chan runner.Result, 1)
-	done <- r.result
+	result := r.result
+	if result.RuntimeAudit == nil {
+		result.RuntimeAudit = testRuntimeAudit(request)
+	}
+	done <- result
 	return done
 }
 
@@ -324,7 +333,7 @@ func TestRetryFailureAtNewSiteGetsNewStableFingerprint(t *testing.T) {
 		t.Fatal("missing artifact unexpectedly succeeded")
 	}
 	before, err := s.FailureHistory(context.Background(), id)
-	if err != nil || len(before) != 1 || before[0].FailureSite != failure.SiteArtifact {
+	if err != nil || len(before) != 1 || before[0].FailureSite != failure.SiteCapability {
 		t.Fatalf("initial failure history = %+v, err=%v", before, err)
 	}
 
@@ -541,7 +550,7 @@ func TestModelResampleIsExplicitAndUsesNewerDurableDecision(t *testing.T) {
 	e, s := newEngineCfg(t, r, func(cfg *Config) {
 		cfg.Flows = map[string]flow.Flow{f.Name: f}
 		cfg.Workspace = &fakeWS{dir: repo}
-		cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassValidation)
+		cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassPolicy)
 	})
 	id := prepareRetryEngineBranch(t, e, "model resample")
 	decisionID, err := s.InsertDecision(store.DecisionRow{
