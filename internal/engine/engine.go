@@ -190,10 +190,14 @@ type issueState struct {
 	capabilityAttemptID string
 	capabilityWorkdir   string
 	capabilityWrites    map[string]string
-	retryStage          string
-	retryFailureSite    failure.Site
-	retryFailureClass   failure.Class
-	retryFingerprint    string
+	retryFailure        authorizedRetryFailure
+}
+
+type authorizedRetryFailure struct {
+	stage       string
+	site        failure.Site
+	class       failure.Class
+	fingerprint string
 }
 
 func planReviewLever(f flow.Flow, matrix levers.Matrix) flow.Lever {
@@ -4219,10 +4223,10 @@ func (e *Engine) authorizeStageRetry(
 	}
 	if decision.Authorized && decision.Authorization != nil {
 		e.mu.Lock()
-		is.retryStage = st.Name
-		is.retryFailureSite = decision.Authorization.FailureSite
-		is.retryFailureClass = decision.Authorization.FailureClass
-		is.retryFingerprint = decision.Authorization.FailureFingerprint
+		is.retryFailure = authorizedRetryFailure{
+			stage: st.Name, site: decision.Authorization.FailureSite,
+			class: decision.Authorization.FailureClass, fingerprint: decision.Authorization.FailureFingerprint,
+		}
 		e.mu.Unlock()
 		e.emit(core.EvRetryAuthorized, is.id, core.RetryAuthorizedPayload(*decision.Authorization))
 		return nil
@@ -4232,6 +4236,36 @@ func (e *Engine) authorizeStageRetry(
 	}
 	e.emit(core.EvRetryRejected, is.id, core.RetryRejectedPayload(*decision.Rejection))
 	return &RetryRejectedError{Rejection: *decision.Rejection}
+}
+
+type acquiredStageWorkspace struct {
+	path    string
+	release func() error
+	branch  string
+	baseRef string
+}
+
+func (e *Engine) acquireStageWorkspace(issueID string) (acquiredStageWorkspace, error) {
+	path, release, err := e.cfg.Workspace.Acquire(issueID)
+	if err != nil {
+		return acquiredStageWorkspace{}, err
+	}
+	branch := ""
+	if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
+		branch = strings.TrimSpace(string(out))
+	}
+	baseRef := ""
+	if out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output(); err == nil {
+		baseRef = strings.TrimSpace(string(out))
+	}
+	if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
+		if baseHead, headErr := gitRevision(e.cfg.Train.Repo, "HEAD"); headErr == nil {
+			if mergeBase, mergeErr := gitCommandOutput(path, "merge-base", "HEAD", baseHead); mergeErr == nil {
+				baseRef = mergeBase
+			}
+		}
+	}
+	return acquiredStageWorkspace{path: path, release: release, branch: branch, baseRef: baseRef}, nil
 }
 
 // prepareRetryWorkspace makes the current worktree identity available before
@@ -4250,35 +4284,20 @@ func (e *Engine) prepareRetryWorkspace(is *issueState, st flow.Stage) bool {
 	if e.cfg.Workspace == nil {
 		return false
 	}
-	path, release, err := e.cfg.Workspace.Acquire(is.id)
+	acquired, err := e.acquireStageWorkspace(is.id)
 	if err != nil {
 		return false
-	}
-	branch := ""
-	if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
-		branch = strings.TrimSpace(string(out))
-	}
-	baseRef := ""
-	if out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output(); err == nil {
-		baseRef = strings.TrimSpace(string(out))
-	}
-	if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
-		if baseHead, headErr := gitRevision(e.cfg.Train.Repo, "HEAD"); headErr == nil {
-			if mergeBase, mergeErr := gitCommandOutput(path, "merge-base", "HEAD", baseHead); mergeErr == nil {
-				baseRef = mergeBase
-			}
-		}
 	}
 	e.mu.Lock()
 	if is.wsPath != "" {
 		e.mu.Unlock()
-		if release != nil {
-			_ = release()
+		if acquired.release != nil {
+			_ = acquired.release()
 		}
 		return false
 	}
-	is.wsPath, is.wsRelease = path, release
-	is.branch, is.baseRef = branch, baseRef
+	is.wsPath, is.wsRelease = acquired.path, acquired.release
+	is.branch, is.baseRef = acquired.branch, acquired.baseRef
 	e.mu.Unlock()
 	return true
 }
@@ -4586,10 +4605,7 @@ func (e *Engine) runFromWithOwnership(
 	defer func() {
 		e.mu.Lock()
 		is.activeTouchset = nil
-		is.retryStage = ""
-		is.retryFailureSite = ""
-		is.retryFailureClass = ""
-		is.retryFingerprint = ""
+		is.retryFailure = authorizedRetryFailure{}
 		release := is.wsRelease
 		preserveExternal := aborted && is.externalSession
 		preserveIdentity := preserveWorkspace || preserveExternal
@@ -4642,33 +4658,16 @@ func (e *Engine) runFromWithOwnership(
 		needsWorkspace := st.Workspace != "none" && e.cfg.Workspace != nil && is.wsPath == ""
 		e.mu.Unlock()
 		if needsWorkspace {
-			path, release, err := e.cfg.Workspace.Acquire(is.id)
+			acquired, err := e.acquireStageWorkspace(is.id)
 			if err != nil {
 				_ = e.recordBoundaryFailure(ctx, is.id, st.Name, 0,
 					failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateWorkspace, err)
 				e.emit(core.EvStageFailed, is.id, map[string]string{"stage": st.Name, "error": "workspace: " + err.Error()})
 				return err
 			}
-			branch := ""
-			if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
-				branch = strings.TrimSpace(string(out))
-			}
-			baseRef := ""
-			if out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output(); err == nil {
-				baseRef = strings.TrimSpace(string(out))
-			}
-			if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
-				if baseHead, headErr := gitRevision(e.cfg.Train.Repo, "HEAD"); headErr == nil {
-					if mergeBase, mergeErr := gitCommandOutput(
-						path, "merge-base", "HEAD", baseHead,
-					); mergeErr == nil {
-						baseRef = mergeBase
-					}
-				}
-			}
 			e.mu.Lock()
-			is.wsPath, is.wsRelease = path, release
-			is.branch, is.baseRef = branch, baseRef
+			is.wsPath, is.wsRelease = acquired.path, acquired.release
+			is.branch, is.baseRef = acquired.branch, acquired.baseRef
 			e.mu.Unlock()
 		}
 		if err := e.persistActiveRun(is, i); err != nil {

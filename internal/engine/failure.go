@@ -438,8 +438,8 @@ func (e *Engine) authorizedFailureFingerprint(issueID, stage string, site failur
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	is, ok := e.issues[issueID]
-	if !ok || is.retryStage != stage || is.retryFailureSite != site || is.retryFailureClass != class {
+	if !ok || is.retryFailure.stage != stage || is.retryFailure.site != site || is.retryFailure.class != class {
 		return ""
 	}
-	return is.retryFingerprint
+	return is.retryFailure.fingerprint
 }

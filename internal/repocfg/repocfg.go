@@ -49,7 +49,6 @@ type RetryPolicyConfig struct {
 	DeterministicLimit   int      `yaml:"deterministic_limit"`
 	ModelResampleLimit   int      `yaml:"model_resample_limit"`
 	ModelResampleClasses []string `yaml:"model_resample_classes"`
-	Present              bool     `yaml:"-"`
 }
 
 func (c *RetryPolicyConfig) UnmarshalYAML(node *yaml.Node) error {
@@ -62,7 +61,6 @@ func (c *RetryPolicyConfig) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	*c = RetryPolicyConfig(value)
-	c.Present = true
 	return nil
 }
 
@@ -80,6 +78,19 @@ func (c RetryPolicyConfig) Policy() (retry.Policy, error) {
 		return retry.Policy{}, err
 	}
 	return policy, nil
+}
+
+func defaultRetryPolicyConfig() RetryPolicyConfig {
+	policy := retry.DefaultPolicy()
+	classes := make([]string, len(policy.ModelResampleClasses))
+	for index, class := range policy.ModelResampleClasses {
+		classes[index] = string(class)
+	}
+	return RetryPolicyConfig{
+		PolicyID: policy.ID, PolicyVersion: policy.Version,
+		TransientLimit: policy.TransientLimit, DeterministicLimit: policy.DeterministicLimit,
+		ModelResampleLimit: policy.ModelResampleLimit, ModelResampleClasses: classes,
+	}
 }
 
 type CodexProfile struct {
@@ -207,11 +218,7 @@ func Default() Config {
 			PolicyID: review.ManualPolicyID, PolicyVersion: review.ManualPolicyVersion, Valid: true,
 		},
 		PlannerBudget: plannerbudget.DefaultProfile(),
-		RetryPolicy: RetryPolicyConfig{
-			PolicyID: "retry-v1", PolicyVersion: "1", TransientLimit: 2,
-			DeterministicLimit: 1, ModelResampleLimit: 1,
-			ModelResampleClasses: []string{"execution", "transport", "protocol"},
-		},
+		RetryPolicy:   defaultRetryPolicyConfig(),
 	}
 }
 

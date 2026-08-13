@@ -3,7 +3,6 @@ package retry_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -87,10 +86,7 @@ func activeContext(disposition failure.RetryDisposition, state retry.StateVector
 func TestAuthorizeRetryUsesDurableContextAndCompareAndUpdate(t *testing.T) {
 	prior := testVector("a", "b", "c", "d")
 	store := &memoryContextStore{context: activeContext(failure.RetryNow, prior)}
-	gate, err := retry.NewGate(store, testPolicy(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	gate := retry.MustNewGate(store, testPolicy(1))
 	current := prior
 	current.TreeDigest = testDigest("e")
 
@@ -114,10 +110,7 @@ func TestAuthorizeRetryRequiresMeaningfulDeterministicChange(t *testing.T) {
 	for _, dimension := range []string{"tree", "config", "environment", "decision"} {
 		t.Run(dimension, func(t *testing.T) {
 			store := &memoryContextStore{context: activeContext(failure.RetryAfterStateChange, prior)}
-			gate, err := retry.NewGate(store, testPolicy(1))
-			if err != nil {
-				t.Fatal(err)
-			}
+			gate := retry.MustNewGate(store, testPolicy(1))
 			unchanged, err := gate.Authorize(context.Background(), retry.Request{
 				IssueID: "GH-65", Stage: "execute", Kind: retry.KindExplicit, Current: prior,
 			})
@@ -154,7 +147,7 @@ func TestAuthorizeRetryFailsClosedAndReloadsOnlyOnce(t *testing.T) {
 	current.TreeDigest = testDigest("e")
 
 	unavailableStore := &memoryContextStore{context: activeContext(failure.RetryNow, prior)}
-	unavailableGate, _ := retry.NewGate(unavailableStore, testPolicy(1))
+	unavailableGate := retry.MustNewGate(unavailableStore, testPolicy(1))
 	unavailable := current
 	unavailable.EnvironmentDigest = failure.Unavailable
 	result, err := unavailableGate.Authorize(context.Background(), retry.Request{
@@ -169,7 +162,7 @@ func TestAuthorizeRetryFailsClosedAndReloadsOnlyOnce(t *testing.T) {
 	}
 
 	oneConflict := &memoryContextStore{context: activeContext(failure.RetryNow, prior), conflicts: 1}
-	oneGate, _ := retry.NewGate(oneConflict, testPolicy(1))
+	oneGate := retry.MustNewGate(oneConflict, testPolicy(1))
 	result, err = oneGate.Authorize(context.Background(), retry.Request{
 		IssueID: "GH-65", Stage: "execute", Kind: retry.KindAutomatic, Current: current,
 	})
@@ -178,7 +171,7 @@ func TestAuthorizeRetryFailsClosedAndReloadsOnlyOnce(t *testing.T) {
 	}
 
 	twoConflicts := &memoryContextStore{context: activeContext(failure.RetryNow, prior), conflicts: 2}
-	twoGate, _ := retry.NewGate(twoConflicts, testPolicy(1))
+	twoGate := retry.MustNewGate(twoConflicts, testPolicy(1))
 	result, err = twoGate.Authorize(context.Background(), retry.Request{
 		IssueID: "GH-65", Stage: "execute", Kind: retry.KindAutomatic, Current: current,
 	})
@@ -277,8 +270,5 @@ func TestRetryEventEvidenceIsStructuredAndSanitized(t *testing.T) {
 		if strings.Contains(string(event.Payload), raw) {
 			t.Fatalf("retry event leaked %q: %s", raw, event.Payload)
 		}
-	}
-	if !errors.Is(retry.ErrAuthorizationConflict, retry.ErrAuthorizationConflict) {
-		t.Fatal("typed retry conflict is not comparable")
 	}
 }
