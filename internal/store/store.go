@@ -255,6 +255,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS verification_attempts_retry_key
 
 type Store struct {
 	db                               *sql.DB
+	clock                            core.Clock
 	mu                               sync.Mutex
 	seq                              int64
 	failNextAppendType               core.EventType
@@ -408,6 +409,13 @@ type IssueIntegration struct {
 }
 
 func Open(path string) (*Store, error) {
+	return OpenWithClock(path, core.SystemClock)
+}
+
+func OpenWithClock(path string, clock core.Clock) (*Store, error) {
+	if clock == nil {
+		clock = core.SystemClock
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -484,7 +492,11 @@ func Open(path string) (*Store, error) {
 	if err := db.QueryRow(`SELECT MAX(seq) FROM events`).Scan(&max); err != nil {
 		return nil, err
 	}
-	return &Store{db: db, seq: max.Int64, failIssueIntegrationWriteAfter: -1}, nil
+	return &Store{db: db, clock: clock, seq: max.Int64, failIssueIntegrationWriteAfter: -1}, nil
+}
+
+func (s *Store) now() time.Time {
+	return s.clock.Now().UTC()
 }
 
 func ensureColumn(db *sql.DB, table, column, alter string) error {
@@ -550,7 +562,7 @@ func (s *Store) AppendFailure(ctx context.Context, input failure.RecordInput) (f
 	// Invalidate prior evidence before attempting the replacement append. If
 	// the append fails or the process stops between these writes, retry remains
 	// closed instead of authorizing from a stale earlier failure context.
-	invalidatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	invalidatedAt := s.now().Format(time.RFC3339Nano)
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE retry_contexts SET lifecycle=?, version=version+1, updated_at=?
 		WHERE issue_id=? AND stage=? AND lifecycle=?`,
@@ -561,7 +573,7 @@ func (s *Store) AppendFailure(ctx context.Context, input failure.RecordInput) (f
 		s.failNextFailureAppend = false
 		return failure.FailureRecord{}, fmt.Errorf("injected failure record append failure")
 	}
-	occurredAt := time.Now().UTC()
+	occurredAt := s.now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return failure.FailureRecord{}, err
@@ -845,7 +857,7 @@ func (s *Store) SetIssueIntegration(integration IssueIntegration) error {
 	}
 	updatedAt := integration.UpdatedAt
 	if updatedAt.IsZero() {
-		updatedAt = time.Now().UTC()
+		updatedAt = s.now()
 	}
 	cleanup, err := json.Marshal(integration.Cleanup)
 	if err != nil {
@@ -1036,7 +1048,7 @@ func (s *Store) RecordAttempt(_ context.Context, attempt runner.Attempt) error {
 			updated_at=excluded.updated_at`,
 		attempt.OperationID, string(attempt.Kind), attempt.IssueID, attempt.Stage, attempt.AgentPackage,
 		string(attempt.State), string(attempt.FailureClass), attempt.SessionID, attempt.Tokens,
-		string(argv), time.Now().UTC().Format(time.RFC3339Nano))
+		string(argv), s.now().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -1086,7 +1098,7 @@ func (s *Store) InsertStageCheckpoint(checkpoint StageCheckpoint) (int64, error)
 	}
 	createdAt := checkpoint.CreatedAt
 	if createdAt.IsZero() {
-		createdAt = time.Now().UTC()
+		createdAt = s.now()
 	}
 	result, err := s.db.Exec(
 		`INSERT INTO stage_checkpoints(
@@ -1300,7 +1312,7 @@ type sqlExecutor interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
-func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
+func insertDecision(exec sqlExecutor, d DecisionRow, now time.Time) (int64, error) {
 	opts, err := json.Marshal(d.Options)
 	if err != nil {
 		return 0, err
@@ -1348,7 +1360,7 @@ func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 		answer = string(encoded)
 	}
 	if d.CreatedAt.IsZero() {
-		d.CreatedAt = time.Now().UTC()
+		d.CreatedAt = now.UTC()
 	}
 	if d.Status == "" {
 		d.Status = "pending"
@@ -1387,7 +1399,7 @@ func insertDecision(exec sqlExecutor, d DecisionRow) (int64, error) {
 func (s *Store) InsertDecision(d DecisionRow) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return insertDecision(s.db, d)
+	return insertDecision(s.db, d, s.now())
 }
 
 // SaveDecisionPageSnapshot freezes the first page snapshot stored for a
@@ -1480,7 +1492,7 @@ func (s *Store) RequestArtifactReview(target review.Target, d DecisionRow) (int6
 		string(encodedArtifacts), "awaiting_review", canonical.CheckpointID); err != nil {
 		return 0, err
 	}
-	id, err := insertDecision(tx, d)
+	id, err := insertDecision(tx, d, s.now())
 	if err != nil {
 		return 0, err
 	}
@@ -1625,7 +1637,7 @@ func (s *Store) ResolveArtifactReview(
 		statusValue = "auto"
 		answeredBy = "policy:" + provenance.PolicyID + "@" + provenance.PolicyVersion
 	}
-	answeredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	answeredAt := s.now().Format(time.RFC3339Nano)
 	result, err := tx.Exec(
 		`UPDATE decisions SET status=?,answer=?,answered_by=?,evidence=?,answered_at=? WHERE id=? AND status='pending'`,
 		statusValue, string(answer), answeredBy, string(updatedEvidence), answeredAt, id)
@@ -1721,7 +1733,7 @@ func (s *Store) AnswerDecision(id int64, response levers.Response, status string
 	if err != nil {
 		return err
 	}
-	answeredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	answeredAt := s.now().Format(time.RFC3339Nano)
 	_, err = s.db.Exec(
 		`UPDATE decisions SET status=?, answer=?, answered_at=? WHERE id=?`,
 		status, string(answer), answeredAt, id,
@@ -2063,7 +2075,7 @@ func (s *Store) PersistPausedRun(run RunState) error {
 	if err := updateIssueState(tx, run.IssueID, "paused"); err != nil {
 		return err
 	}
-	if err := upsertRunState(tx, run, "paused"); err != nil {
+	if err := upsertRunState(tx, run, "paused", s.now()); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -2088,7 +2100,7 @@ func (s *Store) PersistActiveRun(run RunState) error {
 		// A late stage write must not replace an operator-selected pause boundary.
 		return tx.Commit()
 	}
-	if err := upsertRunState(tx, run, "active"); err != nil {
+	if err := upsertRunState(tx, run, "active", s.now()); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -2105,7 +2117,7 @@ func (s *Store) ResumeRun(run RunState) error {
 	if err := updateIssueState(tx, run.IssueID, "running"); err != nil {
 		return err
 	}
-	if err := upsertRunState(tx, run, "active"); err != nil {
+	if err := upsertRunState(tx, run, "active", s.now()); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -2173,7 +2185,7 @@ func updateIssueState(tx *sql.Tx, issueID, state string) error {
 	return nil
 }
 
-func upsertRunState(tx *sql.Tx, run RunState, lifecycle string) error {
+func upsertRunState(tx *sql.Tx, run RunState, lifecycle string, now time.Time) error {
 	artifacts, err := json.Marshal(run.Artifacts)
 	if err != nil {
 		return err
@@ -2194,7 +2206,7 @@ func upsertRunState(tx *sql.Tx, run RunState, lifecycle string) error {
 			updated_at=excluded.updated_at`,
 		run.IssueID, lifecycle, run.Stage, run.StageIndex, run.Boundary,
 		run.Worktree, run.Branch, run.BaseRef, string(artifacts),
-		time.Now().UTC().Format(time.RFC3339Nano))
+		now.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -2354,7 +2366,7 @@ func (s *Store) ReplaceAttachments(issueID string, rows []AttachmentRow) error {
 	for i, r := range rows {
 		at := r.AddedAt
 		if at.IsZero() {
-			at = time.Now().UTC()
+			at = s.now()
 		}
 		if _, err := tx.Exec(
 			`INSERT INTO attachments(issue_id,name,size,source_path,added_at,ord)

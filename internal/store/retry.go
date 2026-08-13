@@ -137,7 +137,7 @@ func (s *Store) AuthorizeRetry(ctx context.Context, update retry.AuthorizationUp
 		modelIncrement = 1
 		modelRequired = 1
 	}
-	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	updatedAt := s.now().Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return retry.Context{}, err
@@ -182,7 +182,7 @@ func (s *Store) CloseRetryContext(ctx context.Context, issueID, stage string) er
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	updatedAt := s.now().Format(time.RFC3339Nano)
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE retry_contexts SET lifecycle=?, version=version+1, updated_at=?
 		WHERE context_key=(

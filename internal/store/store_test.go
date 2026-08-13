@@ -23,6 +23,124 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestStoreUsesInjectedClockForDurableTimestamps(t *testing.T) {
+	fixed := time.Date(2026, 8, 13, 14, 15, 16, 123456789, time.UTC)
+	clock := core.ClockFunc(func() time.Time { return fixed })
+	s, err := OpenWithClock(filepath.Join(t.TempDir(), "clock.db"), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	assertTime := func(label string, got time.Time) {
+		t.Helper()
+		if !got.Equal(fixed) || got.Location() != time.UTC {
+			t.Errorf("%s = %v (%v), want %v (UTC)", label, got, got.Location(), fixed)
+		}
+	}
+	parseTime := func(label, value string) time.Time {
+		t.Helper()
+		got, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			t.Fatalf("parse %s timestamp %q: %v", label, value, err)
+		}
+		return got
+	}
+
+	state := failure.StateVector{
+		TreeDigest: failure.Unavailable, ConfigDigest: failure.Unavailable,
+		EnvironmentDigest: failure.Unavailable, DecisionDigest: failure.Unavailable,
+	}
+	failureRecord, err := s.AppendFailure(context.Background(), failure.RecordInput{
+		IssueID: "GH-69", Stage: "execute", StageAttempt: 1,
+		FailureSite: failure.SiteVerification, FailureClass: failure.ClassExecution,
+		RetryDisposition: failure.RetryNow, RequiredStateChange: failure.StateVerification,
+		Fingerprint: "sha256:" + strings.Repeat("a", 64), StateVector: &state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTime("failure occurred_at", failureRecord.OccurredAt)
+	retryContext, err := s.LoadRetryContext(context.Background(), "GH-69", "execute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTime("retry updated_at", parseTime("retry", retryContext.UpdatedAt))
+
+	decisionID, err := s.InsertDecision(DecisionRow{
+		IssueID: "GH-69", Stage: "execute", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"yes", "no"}, Recommended: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerDecision(decisionID, levers.ChoiceResponse(0), "answered"); err != nil {
+		t.Fatal(err)
+	}
+	decisionRows, err := s.AllDecisionRows()
+	if err != nil || len(decisionRows) != 1 {
+		t.Fatalf("decision rows = %+v, err=%v", decisionRows, err)
+	}
+	assertTime("decision created_at", decisionRows[0].CreatedAt)
+	assertTime("decision answered_at", decisionRows[0].AnsweredAt)
+
+	_, capabilityRecord := capabilityFixture(t)
+	if err := s.CreateCapabilityAttempt(capabilityRecord); err != nil {
+		t.Fatal(err)
+	}
+	var capabilityCreated, capabilityUpdated string
+	if err := s.db.QueryRow(`SELECT created_at,updated_at FROM capability_attempts
+		WHERE issue_id=? AND stage=? AND attempt_id=?`, capabilityRecord.Identity.IssueID,
+		capabilityRecord.Identity.Stage, capabilityRecord.Identity.AttemptID).
+		Scan(&capabilityCreated, &capabilityUpdated); err != nil {
+		t.Fatal(err)
+	}
+	assertTime("capability created_at", parseTime("capability created_at", capabilityCreated))
+	assertTime("capability updated_at", parseTime("capability updated_at", capabilityUpdated))
+
+	worktree := t.TempDir()
+	if err := s.CreatePlannerArtifact("GH-69", "plan", 1, worktree, "active",
+		[]byte("digest"), []byte(`{"sections":[]}`), []byte(`[]`)); err != nil {
+		t.Fatal(err)
+	}
+	var plannerCreated, plannerUpdated string
+	if err := s.db.QueryRow(`SELECT created_at,updated_at FROM planner_artifacts
+		WHERE issue_id=? AND stage=? AND attempt=? AND worktree=?`, "GH-69", "plan", 1, worktree).
+		Scan(&plannerCreated, &plannerUpdated); err != nil {
+		t.Fatal(err)
+	}
+	assertTime("planner artifact created_at", parseTime("planner created_at", plannerCreated))
+	assertTime("planner artifact updated_at", parseTime("planner updated_at", plannerUpdated))
+
+	lifecycleAttempt := BeginAttempt("GH-69", "execute", "clock-attempt")
+	lifecycleAttempt.CreatedAt = time.Time{}
+	if err := s.CreateStageLifecycleAttempt(lifecycleAttempt); err != nil {
+		t.Fatal(err)
+	}
+	lifecycleAttempts, err := s.StageLifecycleAttempts("GH-69", "execute")
+	if err != nil || len(lifecycleAttempts) != 1 {
+		t.Fatalf("lifecycle attempts = %+v, err=%v", lifecycleAttempts, err)
+	}
+	assertTime("lifecycle created_at", lifecycleAttempts[0].CreatedAt)
+
+	if err := s.SetIssueIntegration(IssueIntegration{IssueID: "GH-69", State: IntegrationClaimed}); err != nil {
+		t.Fatal(err)
+	}
+	integration, found, err := s.IssueIntegration("GH-69")
+	if err != nil || !found {
+		t.Fatalf("integration found=%v err=%v", found, err)
+	}
+	assertTime("integration updated_at", integration.UpdatedAt)
+
+	verification, err := s.RecordVerificationAttempt(VerificationAttempt{
+		IssueID: "GH-69", Stage: "merge-verification", ReceiptJSON: []byte(`{"status":"green"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTime("verification created_at", verification.CreatedAt)
+	assertTime("verification updated_at", verification.UpdatedAt)
+}
+
 func TestPlannerArtifactRegistryRoundTrip(t *testing.T) {
 	database := t.TempDir() + "/planner-artifact.db"
 	s, err := Open(database)

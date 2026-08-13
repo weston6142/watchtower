@@ -54,6 +54,7 @@ const (
 
 type Config struct {
 	Store                    *store.Store
+	Clock                    core.Clock
 	FailureRecorder          failure.Recorder
 	Runner                   runner.Runner
 	Marshal                  Sequencer
@@ -254,7 +255,14 @@ type Engine struct {
 	retryGate           *retry.Gate
 }
 
+func (e *Engine) now() time.Time {
+	return e.cfg.Clock.Now().UTC()
+}
+
 func New(cfg Config) *Engine {
+	if cfg.Clock == nil {
+		cfg.Clock = core.SystemClock
+	}
 	if cfg.FailureRecorder == nil {
 		cfg.FailureRecorder = cfg.Store
 	}
@@ -1393,7 +1401,7 @@ func (e *Engine) appendEvent(t core.EventType, issueID string, payload any) (cor
 }
 
 func (e *Engine) storeEvent(t core.EventType, issueID string, payload any) (core.Event, error) {
-	ev, err := core.NewEvent(t, issueID, payload)
+	ev, err := core.NewEventAt(t, issueID, payload, e.now())
 	if err != nil {
 		return core.Event{}, err
 	}
@@ -1450,11 +1458,11 @@ func (e *Engine) publishPendingDecision(p *pending, payload map[string]any) erro
 func (e *Engine) publishPendingPlanReview(
 	p *pending, requestedPayload, decisionPayload map[string]any,
 ) error {
-	requested, err := core.NewEvent(core.EvPlanReviewRequested, p.IssueID, requestedPayload)
+	requested, err := core.NewEventAt(core.EvPlanReviewRequested, p.IssueID, requestedPayload, e.now())
 	if err != nil {
 		return err
 	}
-	required, err := core.NewEvent(core.EvDecisionRequired, p.IssueID, decisionPayload)
+	required, err := core.NewEventAt(core.EvDecisionRequired, p.IssueID, decisionPayload, e.now())
 	if err != nil {
 		return err
 	}
@@ -1555,7 +1563,7 @@ func (e *Engine) CreateIssueWithDependencies(title, body, flowName string, m lev
 		e.rollbackCreate(id)
 		return "", err
 	}
-	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, e.now())); err != nil {
 		e.rollbackCreate(id)
 		return "", err
 	}
@@ -1599,7 +1607,7 @@ func (e *Engine) DraftIssueWithDependencies(title, body, flowName, preset string
 		e.rollbackCreate(id)
 		return "", err
 	}
-	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, e.now())); err != nil {
 		e.rollbackCreate(id)
 		return "", err
 	}
@@ -1689,7 +1697,7 @@ func (e *Engine) UpdateIssueWithDependencies(id, title, body, flowName, preset s
 	}); err != nil {
 		return err
 	}
-	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, e.now())); err != nil {
 		return err
 	}
 	if err := e.SetDependencies(id, dependsOn); err != nil {
@@ -3020,7 +3028,7 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		reportAskError(a, fmt.Errorf("build auto decision page snapshot: %w", err))
 		return
 	}
-	resolvedAt := time.Now().UTC()
+	resolvedAt := e.now()
 	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: is.id, Stage: stage, Question: a.Decision.Question,
 		Options: a.Decision.Options, Recommended: a.Decision.Recommended,
@@ -3459,7 +3467,7 @@ func (e *Engine) runStageOnce(
 			return fmt.Errorf("planner budget configuration: %w", resolveErr)
 		}
 		var controllerErr error
-		plannerController, controllerErr = plannerbudget.NewController(st.Name, attempt, profile, time.Now)
+		plannerController, controllerErr = plannerbudget.NewController(st.Name, attempt, profile, e.now)
 		if controllerErr != nil {
 			return fmt.Errorf("planner budget: %w", controllerErr)
 		}

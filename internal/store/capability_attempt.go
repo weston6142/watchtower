@@ -36,7 +36,7 @@ func (s *Store) CreateCapabilityAttempt(record capability.AttemptRecord) error {
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := s.now().Format(time.RFC3339Nano)
 	_, err = s.db.Exec(`INSERT INTO capability_attempts(
 		issue_id,stage,attempt_id,schema_version,contract_json,contract_digest,authority_digest,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?)`, record.Identity.IssueID, record.Identity.Stage, record.Identity.AttemptID,
@@ -83,7 +83,7 @@ func (s *Store) RecordCapabilityPreflight(identity capability.AttemptIdentity, p
 	}
 	_, err = s.db.Exec(`UPDATE capability_attempts SET enforcement_plan_json=?,enforcement_plan_digest=?,updated_at=?
 		WHERE issue_id=? AND stage=? AND attempt_id=? AND enforcement_plan_json=''`, string(encoded), plan.PlanID,
-		time.Now().UTC().Format(time.RFC3339Nano), identity.IssueID, identity.Stage, identity.AttemptID)
+		s.now().Format(time.RFC3339Nano), identity.IssueID, identity.Stage, identity.AttemptID)
 	return err
 }
 
@@ -125,14 +125,14 @@ func (s *Store) AppendCapabilityAudit(record capability.AuditRecord) error {
 		issue_id,stage,attempt_id,contract_id,phase,outcome,reason,provider,implementation,operation,paths_json,diagnostic,created_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.Attempt.IssueID, record.Attempt.Stage, record.Attempt.AttemptID,
 		record.ContractID, record.Phase, record.Outcome, record.Reason, record.Provider, record.Implementation,
-		record.Operation, string(encoded), record.Diagnostic, time.Now().UTC().Format(time.RFC3339Nano))
+		record.Operation, string(encoded), record.Diagnostic, s.now().Format(time.RFC3339Nano))
 	return err
 }
 
 func (s *Store) BindCapabilityValidation(identity capability.AttemptIdentity, resultSHA string, result capability.ValidationResult) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return bindCapabilityValidationLocked(s.db, identity, resultSHA, result)
+	return bindCapabilityValidationLocked(s.db, identity, resultSHA, result, s.now())
 }
 
 type capabilitySQL interface {
@@ -140,7 +140,7 @@ type capabilitySQL interface {
 	QueryRow(string, ...any) *sql.Row
 }
 
-func bindCapabilityValidationLocked(database capabilitySQL, identity capability.AttemptIdentity, resultSHA string, result capability.ValidationResult) error {
+func bindCapabilityValidationLocked(database capabilitySQL, identity capability.AttemptIdentity, resultSHA string, result capability.ValidationResult, now time.Time) error {
 	if err := validateCapabilityIdentity(identity); err != nil {
 		return err
 	}
@@ -177,7 +177,7 @@ func bindCapabilityValidationLocked(database capabilitySQL, identity capability.
 	}
 	_, err = database.Exec(`UPDATE capability_attempts SET validation_json=?,final_status=?,immutable_result_digest=?,updated_at=?
 		WHERE issue_id=? AND stage=? AND attempt_id=? AND validation_json=''`, string(encoded), status, resultSHA,
-		time.Now().UTC().Format(time.RFC3339Nano), identity.IssueID, identity.Stage, identity.AttemptID)
+		now.UTC().Format(time.RFC3339Nano), identity.IssueID, identity.Stage, identity.AttemptID)
 	return err
 }
 
@@ -259,7 +259,7 @@ func (s *Store) fillCapabilitySlotLocked(identity capability.AttemptIdentity, va
 		return lifecycleDiagnostic(CodeConflict, "capability evidence slot already has different data")
 	}
 	update := fmt.Sprintf(`UPDATE capability_attempts SET %s=?,%s=?,updated_at=? WHERE issue_id=? AND stage=? AND attempt_id=? AND %s=''`, valueColumn, digestColumn, valueColumn)
-	_, err = s.db.Exec(update, value, digest, time.Now().UTC().Format(time.RFC3339Nano), identity.IssueID, identity.Stage, identity.AttemptID)
+	_, err = s.db.Exec(update, value, digest, s.now().Format(time.RFC3339Nano), identity.IssueID, identity.Stage, identity.AttemptID)
 	return err
 }
 

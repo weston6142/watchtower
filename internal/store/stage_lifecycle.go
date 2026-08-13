@@ -68,7 +68,6 @@ func BeginAttempt(issueID, stage, attemptID string) StageLifecycleAttempt {
 	return StageLifecycleAttempt{
 		IssueID: issueID, Stage: stage, AttemptID: attemptID,
 		LegacyCheckpointID: legacyCheckpointID(attemptID), CapabilitySchemaVersion: capabilitySchemaVersion,
-		CreatedAt: time.Now().UTC(),
 	}
 }
 
@@ -80,7 +79,7 @@ func (s *Store) CreateStageLifecycleAttempt(attempt StageLifecycleAttempt) error
 	}
 	created := attempt.CreatedAt
 	if created.IsZero() {
-		created = time.Now().UTC()
+		created = s.now()
 	}
 	var existing StageLifecycleAttempt
 	var createdAt string
@@ -189,7 +188,7 @@ func (s *Store) CommitCapabilityValidatedResult(
 			_ = transaction.Rollback()
 		}
 	}()
-	if err = bindCapabilityValidationLocked(transaction, identity, result.ResultSHA256, validation); err != nil {
+	if err = bindCapabilityValidationLocked(transaction, identity, result.ResultSHA256, validation, s.now()); err != nil {
 		return err
 	}
 	if err = s.putStageLifecycleResultLocked(transaction, attempt, result); err != nil {
@@ -397,7 +396,7 @@ func (s *Store) PutStageArchiveManifest(attempt StageLifecycleAttempt, transitio
 		if _, err := s.db.Exec(`INSERT INTO stage_attempt_archives(
 			issue_id,stage,attempt_id,transition_id,name,path,sha256,created_at)
 			VALUES(?,?,?,?,?,?,?,?)`, attempt.IssueID, attempt.Stage, attempt.AttemptID,
-			transitionID, ref.Name, ref.Path, ref.SHA256, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			transitionID, ref.Name, ref.Path, ref.SHA256, s.now().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}
@@ -446,7 +445,7 @@ func (s *Store) PrepareStageLifecycle(record stagelifecycle.Record) error {
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.IssueID, record.Stage, record.AttemptID,
 		record.SchemaVersion, record.Version, record.Substate, record.PredecessorVersion,
 		record.TransitionID, record.PayloadDigest, record.ResultRef, record.ResultDigest,
-		string(encoded), "prepared", "", time.Now().UTC().Format(time.RFC3339Nano))
+		string(encoded), "prepared", "", s.now().Format(time.RFC3339Nano))
 	return err
 }
 

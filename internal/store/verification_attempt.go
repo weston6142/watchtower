@@ -70,7 +70,7 @@ func (s *Store) RecordVerificationAttempt(attempt VerificationAttempt) (Verifica
 		attempt.Status = VerificationAttemptCurrent
 	}
 	if attempt.CreatedAt.IsZero() {
-		attempt.CreatedAt = time.Now().UTC()
+		attempt.CreatedAt = s.now()
 	}
 	if attempt.UpdatedAt.IsZero() {
 		attempt.UpdatedAt = attempt.CreatedAt
@@ -167,7 +167,7 @@ func (s *Store) BeginVerificationRetry(ctx context.Context, retry VerificationRe
 	}
 
 	var parent VerificationAttempt
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := s.now().Format(time.RFC3339Nano)
 	if retry.ParentID > 0 {
 		parent, err = scanVerificationAttempt(tx.QueryRow(verificationAttemptSelect+` WHERE id=? AND issue_id=?`, retry.ParentID, retry.IssueID))
 		if err != nil {
@@ -185,7 +185,7 @@ func (s *Store) BeginVerificationRetry(ctx context.Context, retry VerificationRe
 	if parent.Status != VerificationAttemptCurrent && parent.Status != VerificationAttemptPassed {
 		return VerificationAttempt{}, fmt.Errorf("verification parent %d is not current", parent.ID)
 	}
-	if _, err := insertFailureTx(ctx, tx, retry.Failure); err != nil {
+	if _, err := insertFailureTx(ctx, tx, retry.Failure, s.now()); err != nil {
 		return VerificationAttempt{}, err
 	}
 	result, err := tx.Exec(`
@@ -275,7 +275,7 @@ func (s *Store) FinishVerificationAttempt(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := s.now().Format(time.RFC3339Nano)
 	result, err := s.db.Exec(`
 		UPDATE verification_attempts SET status=?,reason=?,receipt_json=?,updated_at=?
 		WHERE id=? AND issue_id=? AND status='pending'`,
@@ -393,11 +393,11 @@ func scanVerificationAttempt(row verificationAttemptScanner) (VerificationAttemp
 	return cloneVerificationAttempt(attempt), nil
 }
 
-func insertFailureTx(ctx context.Context, tx *sql.Tx, input failure.RecordInput) (failure.FailureRecord, error) {
+func insertFailureTx(ctx context.Context, tx *sql.Tx, input failure.RecordInput, now time.Time) (failure.FailureRecord, error) {
 	if err := failure.ValidateRecordInput(input); err != nil {
 		return failure.FailureRecord{}, err
 	}
-	occurredAt := time.Now().UTC()
+	occurredAt := now.UTC()
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO failure_records(
 			schema_version,issue_id,stage,stage_attempt,failure_site,failure_class,

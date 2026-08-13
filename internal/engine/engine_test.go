@@ -66,6 +66,28 @@ func mustIssues(t *testing.T, s *store.Store) []store.IssueRow {
 	return rows
 }
 
+func TestEngineUsesConfiguredClock(t *testing.T) {
+	fixed := time.Date(2026, 8, 13, 14, 15, 16, 123456789, time.UTC)
+	s, err := store.Open(filepath.Join(t.TempDir(), "clock.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	var observed core.Event
+	e := New(Config{
+		Store: s,
+		Clock: core.ClockFunc(func() time.Time { return fixed }),
+		Observers: []func(core.Event){func(event core.Event) {
+			observed = event
+		}},
+	})
+
+	e.emit(core.EvIssueCreated, "GH-69", map[string]string{"title": "deterministic"})
+	if !observed.At.Equal(fixed) || observed.At.Location() != time.UTC {
+		t.Fatalf("observed event At = %v (%v), want %v (UTC)", observed.At, observed.At.Location(), fixed)
+	}
+}
+
 func TestPauseBeforeStagePersistsBoundaryAndResumeUsesIt(t *testing.T) {
 	f := flow.Flow{Name: "paused", Stages: []flow.Stage{
 		{Name: "plan", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
