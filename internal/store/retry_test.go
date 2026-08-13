@@ -150,6 +150,13 @@ func TestRetryContextRejectsMismatchedDurableIdentity(t *testing.T) {
 	if _, err := s.LoadRetryContext(context.Background(), "GH-65", "execute"); err == nil {
 		t.Fatal("retry context with mismatched durable identity was accepted")
 	}
+	gate := retry.MustNewGate(s, retryStorePolicy(1))
+	decision, err := gate.Authorize(context.Background(), retry.Request{
+		IssueID: "GH-65", Stage: "execute", Kind: retry.KindExplicit, Current: retryTestVector("b"),
+	})
+	if err != nil || decision.Rejection == nil || decision.Rejection.Reason != retry.ReasonInvalidContext {
+		t.Fatalf("mismatched durable identity decision = %+v, err=%v", decision, err)
+	}
 }
 
 func TestAuthorizeRetryConcurrentRequestsCannotExceedCap(t *testing.T) {

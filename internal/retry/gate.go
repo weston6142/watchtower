@@ -20,6 +20,7 @@ const (
 var (
 	ErrContextNotFound       = errors.New("retry context not found")
 	ErrContextUnavailable    = errors.New("retry context unavailable")
+	ErrInvalidContext        = errors.New("invalid retry context")
 	ErrAuthorizationConflict = errors.New("retry authorization conflict")
 )
 
@@ -117,7 +118,7 @@ func (g *Gate) Authorize(ctx context.Context, request Request) (Decision, error)
 		stored, err := g.store.LoadRetryContext(ctx, request.IssueID, request.Stage)
 		if err != nil {
 			switch {
-			case errors.Is(err, ErrContextNotFound), errors.Is(err, ErrContextUnavailable):
+			case errors.Is(err, ErrContextNotFound), errors.Is(err, ErrContextUnavailable), errors.Is(err, ErrInvalidContext):
 				return rejectionDecision(request, Context{}, Rule{}, ReasonInvalidContext, nil, nil,
 					"record a fresh durable failure context before retrying"), nil
 			default:

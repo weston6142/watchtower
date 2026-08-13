@@ -37,13 +37,13 @@ func scanRetryContext(row *sql.Row) (retry.Context, error) {
 	stored.FailureClass = failure.Class(class)
 	stored.RetryDisposition = failure.RetryDisposition(disposition)
 	if err := json.Unmarshal([]byte(stateJSON), &stored.State); err != nil {
-		return retry.Context{}, fmt.Errorf("decode retry state vector: %w", err)
+		return retry.Context{}, fmt.Errorf("%w: decode retry state vector: %v", retry.ErrInvalidContext, err)
 	}
 	if err := json.Unmarshal([]byte(policyJSON), &stored.Policy); err != nil {
-		return retry.Context{}, fmt.Errorf("decode retry policy evidence: %w", err)
+		return retry.Context{}, fmt.Errorf("%w: decode retry policy evidence: %v", retry.ErrInvalidContext, err)
 	}
 	if err := validateRetryContext(stored); err != nil {
-		return retry.Context{}, err
+		return retry.Context{}, fmt.Errorf("%w: %v", retry.ErrInvalidContext, err)
 	}
 	if stored.Lifecycle == retry.ContextUnavailable {
 		return retry.Context{}, retry.ErrContextUnavailable

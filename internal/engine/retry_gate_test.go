@@ -26,6 +26,19 @@ type retryCountingRunner struct {
 	result runner.Result
 }
 
+type rotatingRetryWorkspace struct {
+	paths []string
+	next  int
+}
+
+func (w *rotatingRetryWorkspace) Acquire(string) (string, func() error, error) {
+	path := w.paths[w.next]
+	w.next++
+	return path, func() error { return nil }, nil
+}
+
+func (w *rotatingRetryWorkspace) Name() string { return "rotating retry workspace" }
+
 func (r *retryCountingRunner) Run(context.Context, string, string, string, string, chan<- runner.Ask) <-chan runner.Result {
 	r.calls.Add(1)
 	done := make(chan runner.Result, 1)
@@ -105,6 +118,79 @@ func TestAutomaticAndExplicitRetriesShareOneAllowance(t *testing.T) {
 	if len(retryEvents(t, s, id, core.EvRetryAuthorized)) != 1 || len(retryEvents(t, s, id, core.EvRetryRejected)) != 1 {
 		t.Fatalf("retry events = authorized %d rejected %d",
 			len(retryEvents(t, s, id, core.EvRetryAuthorized)), len(retryEvents(t, s, id, core.EvRetryRejected)))
+	}
+}
+
+func TestDeterministicRetryDoesNotTreatNewLeasePathAsTreeChange(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	secondWorktree := filepath.Join(t.TempDir(), "second-worktree")
+	if out, err := exec.Command("git", "-C", repo, "worktree", "add", "--detach", secondWorktree, "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("create second worktree: %v: %s", err, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", secondWorktree).Run()
+	})
+
+	f := retryEngineFlow(0, "required.out")
+	var calls atomic.Int32
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/agent": {}}, OnStart: func(_, _, _, _ string) error {
+		calls.Add(1)
+		return nil
+	}}
+	e, _ := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.Workspace = &rotatingRetryWorkspace{paths: []string{repo, secondWorktree}}
+		cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassValidation)
+	})
+	id, err := e.CreateIssue("stable tree across leases", "", f.Name, levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("missing artifact unexpectedly succeeded")
+	}
+
+	err = e.RetryStage(context.Background(), id)
+	if err == nil || !strings.Contains(err.Error(), string(retry.ReasonStateUnchanged)) {
+		t.Fatalf("retry from equivalent lease = %v, want unchanged-state rejection", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("equivalent lease path started runner; calls=%d", calls.Load())
+	}
+}
+
+func TestFailureRecordAppendFaultInvalidatesPriorRetryContext(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	f := retryEngineFlow(0)
+	r := &retryCountingRunner{result: runner.Result{
+		FailureClass: runner.FailureExecution, Err: errors.New("transient execution failed"),
+	}}
+	e, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+		cfg.Workspace = &fakeWS{dir: repo}
+		cfg.RetryPolicy = retryEnginePolicy(2, 1, 1, failure.ClassExecution)
+	})
+	id := prepareRetryEngineBranch(t, e, "failed retry evidence")
+	if err := e.StartIssue(context.Background(), id); err == nil {
+		t.Fatal("transiently failing stage unexpectedly succeeded")
+	}
+
+	s.FailNextFailureAppendForTest()
+	if err := e.RetryStage(context.Background(), id); err == nil {
+		t.Fatal("retry with injected failure-record fault unexpectedly succeeded")
+	}
+	if got := r.calls.Load(); got != 2 {
+		t.Fatalf("runner calls after injected append fault = %d, want 2", got)
+	}
+
+	err := e.RetryStage(context.Background(), id)
+	if err == nil || !strings.Contains(err.Error(), string(retry.ReasonInvalidContext)) {
+		t.Fatalf("retry after missing durable evidence = %v, want invalid context", err)
+	}
+	if got := r.calls.Load(); got != 2 {
+		t.Fatalf("retry after missing durable evidence started runner; calls=%d", got)
 	}
 }
 

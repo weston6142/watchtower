@@ -541,15 +541,25 @@ func (s *Store) Append(ev core.Event) (core.Event, error) {
 func (s *Store) AppendFailure(ctx context.Context, input failure.RecordInput) (failure.FailureRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.failNextFailureAppend {
-		s.failNextFailureAppend = false
-		return failure.FailureRecord{}, fmt.Errorf("injected failure record append failure")
-	}
 	if err := ctx.Err(); err != nil {
 		return failure.FailureRecord{}, err
 	}
 	if err := failure.ValidateRecordInput(input); err != nil {
 		return failure.FailureRecord{}, err
+	}
+	// Invalidate prior evidence before attempting the replacement append. If
+	// the append fails or the process stops between these writes, retry remains
+	// closed instead of authorizing from a stale earlier failure context.
+	invalidatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE retry_contexts SET lifecycle=?, version=version+1, updated_at=?
+		WHERE issue_id=? AND stage=? AND lifecycle=?`,
+		retry.ContextUnavailable, invalidatedAt, input.IssueID, input.Stage, retry.ContextActive); err != nil {
+		return failure.FailureRecord{}, err
+	}
+	if s.failNextFailureAppend {
+		s.failNextFailureAppend = false
+		return failure.FailureRecord{}, fmt.Errorf("injected failure record append failure")
 	}
 	occurredAt := time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)

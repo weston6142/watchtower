@@ -207,11 +207,22 @@ func stageFailureFingerprintInputs(
 		inputs.Git.TreeIdentity = digestFailureIdentity(string(canonical))
 	}
 	if head, branch, _ := repositoryState(workdir, contextPaths); head != "" {
+		inputs.Git.Repository = gitRepositoryIdentity(workdir)
 		inputs.Git.BranchCommit = digestFailureIdentity(head)
 		inputs.Git.Branch = digestFailureIdentity(branch)
 		inputs.Git.TreeIdentity = gitWorktreeIdentity(workdir, contextPaths)
 	}
 	return inputs
+}
+
+// gitRepositoryIdentity remains stable when the same repository state is
+// materialized in a different linked-worktree or lease directory.
+func gitRepositoryIdentity(workdir string) string {
+	commonDir, err := verificationcache.CanonicalRepositoryIdentity(workdir)
+	if err != nil {
+		return failure.Unavailable
+	}
+	return digestFailureIdentity("git-common-dir:" + commonDir)
 }
 
 // gitWorktreeIdentity binds retry evidence to both HEAD and non-context
