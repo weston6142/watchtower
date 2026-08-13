@@ -9,16 +9,16 @@ import (
 
 func TestCanonicalFailureSites(t *testing.T) {
 	want := []Site{
-		SiteRunner, SiteWorkspace, SiteArtifact, SitePlanner, SiteGit,
-		SiteVerification, SiteCache, SiteStore, SiteFinalization,
-		SiteLifecycle, SiteCapability,
+		"runner", "workspace", "artifact", "planner", "git",
+		"verification", "cache", "store", "finalization",
+		"lifecycle", "capability",
 	}
 
 	got := CanonicalSites()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("canonical sites = %v, want %v", got, want)
 	}
-	got[0] = SiteOther
+	got[0] = Site("other")
 	if again := CanonicalSites(); !reflect.DeepEqual(again, want) {
 		t.Fatalf("canonical sites after caller mutation = %v, want %v", again, want)
 	}
