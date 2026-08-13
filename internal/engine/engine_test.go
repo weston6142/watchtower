@@ -67,28 +67,6 @@ func mustIssues(t *testing.T, s *store.Store) []store.IssueRow {
 }
 
 func TestEngineUsesConfiguredClock(t *testing.T) {
-	fixed := time.Date(2026, 8, 13, 14, 15, 16, 123456789, time.UTC)
-	s, err := store.Open(filepath.Join(t.TempDir(), "clock.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	var observed core.Event
-	e := New(Config{
-		Store: s,
-		Clock: core.ClockFunc(func() time.Time { return fixed }),
-		Observers: []func(core.Event){func(event core.Event) {
-			observed = event
-		}},
-	})
-
-	e.emit(core.EvIssueCreated, "GH-69", map[string]string{"title": "deterministic"})
-	if !observed.At.Equal(fixed) || observed.At.Location() != time.UTC {
-		t.Fatalf("observed event At = %v (%v), want %v (UTC)", observed.At, observed.At.Location(), fixed)
-	}
-}
-
-func TestEngineClockControlsDecisionTimestamps(t *testing.T) {
 	fixed := time.Date(2001, 2, 3, 4, 5, 6, 789, time.UTC)
 	assertTimestamp := func(t *testing.T, label string, got time.Time) {
 		t.Helper()
@@ -104,6 +82,25 @@ func TestEngineClockControlsDecisionTimestamps(t *testing.T) {
 		}
 		return row
 	}
+
+	t.Run("emitted event", func(t *testing.T) {
+		s, err := store.Open(filepath.Join(t.TempDir(), "clock.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		var observed core.Event
+		e := New(Config{
+			Store: s,
+			Clock: core.ClockFunc(func() time.Time { return fixed }),
+			Observers: []func(core.Event){func(event core.Event) {
+				observed = event
+			}},
+		})
+
+		e.emit(core.EvIssueCreated, "GH-69", map[string]string{"title": "deterministic"})
+		assertTimestamp(t, "observed event At", observed.At)
+	})
 
 	t.Run("ordinary human decision", func(t *testing.T) {
 		f := flow.Flow{Name: "clock-decision", Stages: []flow.Stage{{
