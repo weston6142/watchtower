@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+const systemClockContract = SystemClock
+
+var _ Clock = systemClockContract
+
 func TestClockFuncReturnsUTC(t *testing.T) {
 	local := time.Date(2026, 8, 13, 9, 30, 0, 123, time.FixedZone("EDT", -4*60*60))
 	clock := ClockFunc(func() time.Time { return local })

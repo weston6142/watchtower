@@ -14,4 +14,10 @@ func (f ClockFunc) Now() time.Time {
 	return f().UTC()
 }
 
-var SystemClock Clock = ClockFunc(time.Now)
+type systemClock uint8
+
+func (systemClock) Now() time.Time {
+	return time.Now().UTC()
+}
+
+const SystemClock systemClock = 0

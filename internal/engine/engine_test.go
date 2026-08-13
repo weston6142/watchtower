@@ -102,6 +102,88 @@ func TestEngineUsesConfiguredClock(t *testing.T) {
 		assertTimestamp(t, "observed event At", observed.At)
 	})
 
+	t.Run("stored attachment", func(t *testing.T) {
+		storeTime := fixed.Add(24 * time.Hour)
+		s, err := store.OpenWithClock(filepath.Join(t.TempDir(), "clock.db"), core.ClockFunc(func() time.Time {
+			return storeTime
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		f := flow.Flow{Name: "clock-attachment"}
+		e := New(Config{
+			Store: s, Clock: core.ClockFunc(func() time.Time { return fixed }),
+			Flows: map[string]flow.Flow{f.Name: f}, DataDir: t.TempDir(),
+		})
+		id, err := e.DraftIssue("attachment clock", "", f.Name, "regular", levers.Matrix{}, 0,
+			[]string{tempAttachment(t, "clock.log", 3)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.Attachments(id)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("attachments = %+v, err=%v", rows, err)
+		}
+		assertTimestamp(t, "attachment AddedAt", rows[0].AddedAt)
+		if rows[0].AddedAt.Equal(storeTime) {
+			t.Fatal("attachment used the store clock instead of Config.Clock")
+		}
+	})
+
+	t.Run("planner budget elapsed", func(t *testing.T) {
+		var elapsedMillis atomic.Int64
+		clock := core.ClockFunc(func() time.Time {
+			return fixed.Add(time.Duration(elapsedMillis.Load()) * time.Millisecond)
+		})
+		f := plannerTestFlow()
+		r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"plan/planner": {
+				Tools:           []runner.ToolCall{{Name: "read", SourceID: "ISSUE.md", Fingerprint: "v1", Reservation: 1}},
+				PlannerRequests: plannerArtifactRequests(), Tokens: 1, TokensKnown: true,
+			},
+		}}
+		r.OnStart = func(_, stage, _, _ string) error {
+			if stage == "plan" {
+				elapsedMillis.Store(3_000)
+			}
+			return nil
+		}
+		e, s := newEngineCfg(t, r, func(cfg *Config) {
+			cfg.Clock = clock
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+			cfg.PlannerBudget = plannerbudget.Profile{
+				Calls:   stageusage.DimensionLimit{Warning: 2, Hard: 10},
+				Tokens:  stageusage.DimensionLimit{Warning: 2, Hard: 10},
+				Elapsed: stageusage.ElapsedLimit{Warning: time.Second, Hard: 10 * time.Second},
+			}
+			cfg.PlanReview = planReviewSettings("clock-policy", "1", true)
+		})
+		id, err := e.CreateIssue("planner clock", "", f.Name, levers.Preset(f, flow.LeverRegular), 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.StartIssue(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+		var elapsedSnapshots []int64
+		for _, event := range mustEvents(t, s, id) {
+			if event.Type != core.EvPlannerBudgetUpdated {
+				continue
+			}
+			var payload struct {
+				Snapshot stageusage.Snapshot `json:"snapshot"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			elapsedSnapshots = append(elapsedSnapshots, payload.Snapshot.ElapsedMillis)
+		}
+		if len(elapsedSnapshots) < 2 || elapsedSnapshots[0] != 0 || elapsedSnapshots[len(elapsedSnapshots)-1] != 3_000 {
+			t.Fatalf("planner elapsed snapshots = %v, want initial 0 and final 3000", elapsedSnapshots)
+		}
+	})
+
 	t.Run("ordinary human decision", func(t *testing.T) {
 		f := flow.Flow{Name: "clock-decision", Stages: []flow.Stage{{
 			Name: "ask", Agents: []flow.AgentRef{{Package: "agent"}},
