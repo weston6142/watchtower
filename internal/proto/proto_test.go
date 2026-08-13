@@ -1416,7 +1416,7 @@ func oneAgentFlow(pkg string) flow.Flow {
 	return flow.Flow{Name: "default", Stages: []flow.Stage{{
 		Name: "run", Agents: []flow.AgentRef{{Package: pkg}},
 		Gate: flow.GateAuto, Completion: flow.CompletionAll, Workspace: "none",
-		CapabilityProfile: flow.ProfileInspect,
+		CapabilityProfile: flow.ProfileArtifact,
 	}}}
 }
 
@@ -1431,7 +1431,7 @@ func TestSetupProjectsDeclaredAndEffectiveCapabilitiesSeparately(t *testing.T) {
 		t.Fatal(err)
 	}
 	compiled, err := capability.Compile(capability.CompileInput{
-		IssueID: created.IssueID, Stage: "run", AttemptID: "1", Profile: flow.ProfileInspect,
+		IssueID: created.IssueID, Stage: "run", AttemptID: "1", Profile: flow.ProfileArtifact,
 		WorkspaceRoot: t.TempDir(), Repository: capability.RepositoryIdentity{
 			IssueID: created.IssueID, Canonical: "/repo", Branch: "issue/" + created.IssueID,
 			BaseCommit: strings.Repeat("a", 40), StartCommit: strings.Repeat("b", 40), Tree: strings.Repeat("c", 40),
@@ -1465,7 +1465,7 @@ func TestSetupProjectsDeclaredAndEffectiveCapabilitiesSeparately(t *testing.T) {
 		t.Fatalf("setup response = %+v err=%v", response, err)
 	}
 	stage := response.Setup.Stages[0]
-	if stage.CapabilityProfile != string(flow.ProfileInspect) || stage.EffectiveCapability == nil {
+	if stage.CapabilityProfile != string(flow.ProfileArtifact) || stage.EffectiveCapability == nil {
 		t.Fatalf("declared/effective capability = %+v", stage)
 	}
 	effective := stage.EffectiveCapability

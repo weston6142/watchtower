@@ -4,6 +4,7 @@ package runner_test
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +15,22 @@ import (
 
 	"github.com/weston6142/watchtower/internal/runner"
 )
+
+func TestProcessTreeStdoutRemainsReadableAfterFastExit(t *testing.T) {
+	tree, err := runner.StartProcessTree(context.Background(), runner.ProcessSpec{
+		Path: "/bin/sh", Args: []string{"-c", "printf 'complete\\n'"}, PipeStdout: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(tree.StdoutPipe())
+	if readErr != nil || string(body) != "complete\n" {
+		t.Fatalf("stdout after fast exit = %q, err=%v", body, readErr)
+	}
+}
 
 func TestProcessTreeTerminateAndWaitReapsDescendants(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")

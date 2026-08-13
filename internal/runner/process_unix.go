@@ -5,6 +5,7 @@ package runner
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -18,6 +19,7 @@ func startProcessTree(spec ProcessSpec) (*ProcessTree, error) {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = spec.Stdin, spec.Stdout, spec.Stderr
 	var stdin io.WriteCloser
 	var stdout io.ReadCloser
+	var stdoutWriter *os.File
 	var err error
 	if spec.PipeStdin {
 		if spec.Stdin != nil {
@@ -32,14 +34,24 @@ func startProcessTree(spec ProcessSpec) (*ProcessTree, error) {
 		if spec.Stdout != nil {
 			return nil, fmt.Errorf("process stdout and piped stdout are mutually exclusive")
 		}
-		stdout, err = cmd.StdoutPipe()
+		stdout, stdoutWriter, err = os.Pipe()
 		if err != nil {
 			return nil, err
 		}
+		cmd.Stdout = stdoutWriter
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
+		if stdout != nil {
+			_ = stdout.Close()
+		}
+		if stdoutWriter != nil {
+			_ = stdoutWriter.Close()
+		}
 		return nil, err
+	}
+	if stdoutWriter != nil {
+		_ = stdoutWriter.Close()
 	}
 	pid := cmd.Process.Pid
 	tree := newProcessTree(cmd, func(force bool) error {
