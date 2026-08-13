@@ -15,6 +15,7 @@ import (
 	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/core"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/stageresult"
@@ -22,7 +23,7 @@ import (
 	"github.com/weston6142/watchtower/internal/workspace"
 )
 
-const capabilityRecoveryNeeded = "capability_recovery_needed"
+const capabilityRecoverySchemaVersion = 1
 
 type capabilityRecoveryEnvelope struct {
 	SchemaVersion   int      `json:"schema_version"`
@@ -77,7 +78,7 @@ func (e *Engine) markCapabilityWorkspaceRejected(
 		}
 	}
 	envelope := capabilityRecoveryEnvelope{
-		SchemaVersion: 1, Stage: stage, AttemptID: identity.AttemptID,
+		SchemaVersion: capabilityRecoverySchemaVersion, Stage: stage, AttemptID: identity.AttemptID,
 		TrustedTree: baseline.Git.Tree, AuthorityDigest: contract.AuthorityDigest,
 		Reason: string(reason), OriginalState: integration.State, OriginalPreSHA: integration.PreSHA,
 		OriginalCleanup: append([]string(nil), integration.Cleanup...),
@@ -86,7 +87,7 @@ func (e *Engine) markCapabilityWorkspaceRejected(
 	if err != nil {
 		return err
 	}
-	integration.State = capabilityRecoveryNeeded
+	integration.State = store.IntegrationCapabilityRecoveryNeeded
 	integration.PreSHA = baseline.Git.Head
 	integration.LandedSHA = observedRef
 	integration.LastError = string(encoded)
@@ -103,18 +104,18 @@ func (e *Engine) markCapabilityWorkspaceRejected(
 	}
 	e.emit(core.EvCapabilityRejected, is.id, map[string]any{
 		"stage": stage, "attempt_id": identity.AttemptID, "contract_id": contract.ContractID,
-		"reason": reason, "retry_disposition": "retry_after_state_change", "required_state": "trusted_workspace",
+		"reason": reason, "retry_disposition": failure.RetryAfterStateChange, "required_state": failure.StateTrustedWorkspace,
 	})
 	return nil
 }
 
 func (e *Engine) recoverPendingCapabilityWorkspace(_ context.Context, is *issueState) (bool, error) {
 	integration, found, err := e.cfg.Store.IssueIntegration(is.id)
-	if err != nil || !found || integration.State != capabilityRecoveryNeeded {
+	if err != nil || !found || integration.State != store.IntegrationCapabilityRecoveryNeeded {
 		return false, err
 	}
 	var envelope capabilityRecoveryEnvelope
-	if json.Unmarshal([]byte(integration.LastError), &envelope) != nil || envelope.SchemaVersion != 1 ||
+	if json.Unmarshal([]byte(integration.LastError), &envelope) != nil || envelope.SchemaVersion != capabilityRecoverySchemaVersion ||
 		envelope.Stage == "" || envelope.AttemptID == "" || envelope.TrustedTree == "" || envelope.AuthorityDigest == "" {
 		return false, fmt.Errorf("capability recovery evidence is incomplete")
 	}

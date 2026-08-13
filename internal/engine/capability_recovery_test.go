@@ -72,7 +72,7 @@ func TestPolicyViolationQuarantineSurvivesRefTampering(t *testing.T) {
 		t.Fatalf("quarantine failed after ref tampering: %v", err)
 	}
 	integration, found, err := fixture.store.IssueIntegration(fixture.issueID)
-	if err != nil || !found || integration.State != capabilityRecoveryNeeded {
+	if err != nil || !found || integration.State != store.IntegrationCapabilityRecoveryNeeded {
 		t.Fatalf("durable quarantine=%+v found=%t err=%v", integration, found, err)
 	}
 }
@@ -100,7 +100,7 @@ func TestRestartRequiresBoundValidationOrRecovery(t *testing.T) {
 		t.Fatalf("stage error = %v", err)
 	}
 	integration, found, loadErr := fixture.store.IssueIntegration(fixture.issueID)
-	if loadErr != nil || !found || integration.State != capabilityRecoveryNeeded {
+	if loadErr != nil || !found || integration.State != store.IntegrationCapabilityRecoveryNeeded {
 		t.Fatalf("durable quarantine = %+v found=%t err=%v", integration, found, loadErr)
 	}
 

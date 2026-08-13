@@ -50,7 +50,7 @@ func (s *Session) Commit(ctx context.Context, message string) (string, error) {
 		switch {
 		case pathAllowedForCommit(s.contract.Contract.Writes, path):
 			paths = append(paths, path)
-		case workflowArtifact(path), pathMatches(s.contract.Contract.Reads, path):
+		case capability.IsWorkflowArtifact(path), pathMatches(s.contract.Contract.Reads, path):
 			continue
 		default:
 			return "", s.deny(capability.OpVCSCommit, path)
@@ -176,14 +176,4 @@ func pathAllowedForCommit(grants []capability.PathGrant, path string) bool {
 		}
 	}
 	return false
-}
-
-func workflowArtifact(path string) bool {
-	base := filepath.Base(path)
-	switch base {
-	case "ISSUE.md", "STAGE.md", "decisions.md", "brainstorm.md", "spec.md", "plan.md", "touchset.json", "verification.json":
-		return true
-	default:
-		return strings.HasPrefix(filepath.ToSlash(path), ".watchtower/")
-	}
 }

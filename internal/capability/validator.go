@@ -139,7 +139,7 @@ func commitPathsAllowed(workspace, before, after string, grants []PathGrant) boo
 		for _, mutation := range []MutationClass{MutationCreate, MutationModify, MutationDelete, MutationRename} {
 			allowed = allowed || grantAllows(grants, filepath.ToSlash(path), mutation)
 		}
-		if !allowed || isWorkflowArtifact(path) {
+		if !allowed || IsWorkflowArtifact(path) {
 			return false
 		}
 	}
@@ -161,16 +161,6 @@ func refsOutsideBranchChanged(delta GitDelta, branch string) bool {
 		}
 	}
 	return false
-}
-
-func isWorkflowArtifact(path string) bool {
-	base := filepath.Base(path)
-	switch base {
-	case "ISSUE.md", "STAGE.md", "decisions.md", "brainstorm.md", "spec.md", "plan.md", "touchset.json", "verification.json":
-		return true
-	default:
-		return strings.HasPrefix(filepath.ToSlash(path), ".watchtower/")
-	}
 }
 
 func gitRun(workspace string, args ...string) error {

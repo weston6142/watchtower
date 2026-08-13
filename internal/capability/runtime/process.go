@@ -12,6 +12,8 @@ import (
 	"github.com/weston6142/watchtower/internal/runner"
 )
 
+const maxOperationOutputBytes = 1 << 20
+
 func (s *Session) Run(ctx context.Context, argv []string) ([]byte, error) {
 	if len(argv) == 0 || !s.hasOperation(capability.OpLocalProcess) || deniedExecutable(argv) {
 		return nil, s.deny(capability.OpLocalProcess)
@@ -42,7 +44,7 @@ func (s *Session) Run(ctx context.Context, argv []string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	output := boundedOutput{remaining: 1 << 20}
+	output := boundedOutput{remaining: maxOperationOutputBytes}
 	process, err := runner.StartProcessTree(ctx, runner.ProcessSpec{
 		Path: request.Path, Args: request.Args, Dir: request.Dir, Env: request.Env,
 		Stdout: &output, Stderr: &output,

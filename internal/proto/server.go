@@ -869,8 +869,8 @@ func (sv *Server) effectiveCapability(issueID, stage string) (*EffectiveCapabili
 		if err != nil {
 			return nil, err
 		}
-		if found && integration.State == "capability_recovery_needed" {
-			out.RecoveryRequired = "trusted_workspace"
+		if found && integration.State == store.IntegrationCapabilityRecoveryNeeded {
+			out.RecoveryRequired = string(failure.StateTrustedWorkspace)
 		}
 		return out, nil
 	}

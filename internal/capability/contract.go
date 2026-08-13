@@ -2,6 +2,7 @@ package capability
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -161,6 +162,18 @@ type AttemptRecord struct {
 	Baseline          BaselineIdentity `json:"baseline,omitempty"`
 	Validation        ValidationResult `json:"validation,omitempty"`
 	ImmutableResultID string           `json:"immutable_result_id,omitempty"`
+}
+
+// IsWorkflowArtifact reports whether a path belongs to Watchtower's
+// materialized workflow protocol rather than the product change set.
+func IsWorkflowArtifact(path string) bool {
+	base := filepath.Base(path)
+	switch base {
+	case "ISSUE.md", "STAGE.md", "decisions.md", "brainstorm.md", "spec.md", "plan.md", "touchset.json", "verification.json":
+		return true
+	default:
+		return strings.HasPrefix(filepath.ToSlash(path), ".watchtower/")
+	}
 }
 
 // PolicyError contains stable, redacted policy facts only.

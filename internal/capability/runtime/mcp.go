@@ -222,7 +222,7 @@ func (s *Session) callMCP(ctx context.Context, raw json.RawMessage) (string, err
 			return "", s.deny(operation)
 		}
 		body, err := s.ReadFile(arguments.Path)
-		if len(body) > 1<<20 {
+		if len(body) > maxOperationOutputBytes {
 			return "", s.deny(operation, arguments.Path)
 		}
 		return string(body), err

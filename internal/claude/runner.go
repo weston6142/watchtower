@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/capability"
@@ -153,14 +152,14 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 
 	task := agentprotocol.TaskMessage(stage, issueID)
 	if _, err := stdin.Write(UserMessage(task)); err != nil {
-		_ = process.TerminateAndWait(250 * time.Millisecond)
+		_ = process.TerminateAndWait(runner.DefaultTerminationGrace)
 		return runner.Result{Err: err}
 	}
 
 	var res runner.Result
 	// abort kills the subprocess and returns the partial result with err set.
 	abort := func(err error) runner.Result {
-		_ = process.TerminateAndWait(250 * time.Millisecond)
+		_ = process.TerminateAndWait(runner.DefaultTerminationGrace)
 		res.Err = err
 		return res
 	}

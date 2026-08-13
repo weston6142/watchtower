@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/weston6142/watchtower/internal/agentprotocol"
 	"github.com/weston6142/watchtower/internal/capability"
@@ -453,7 +452,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, session *capruntime.Session, r
 				result.runtimeAudit = append(result.runtimeAudit, record)
 				result.failed = policy
 				result.failureClass = runner.FailureAuthorization
-				_ = process.TerminateAndWait(250 * time.Millisecond)
+				_ = process.TerminateAndWait(runner.DefaultTerminationGrace)
 				stopReading = true
 				continue
 			}
@@ -463,7 +462,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, session *capruntime.Session, r
 			decision, err := gate.Admit(ctx, event.ToolCall)
 			if err != nil {
 				result.failed = err
-				_ = process.TerminateAndWait(250 * time.Millisecond)
+				_ = process.TerminateAndWait(runner.DefaultTerminationGrace)
 				stopReading = true
 				continue
 			}
@@ -489,7 +488,7 @@ func (c *CodeRunner) runTurn(ctx context.Context, session *capruntime.Session, r
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
-		_ = process.TerminateAndWait(250 * time.Millisecond)
+		_ = process.TerminateAndWait(runner.DefaultTerminationGrace)
 		if result.failed != nil {
 			// A policy denial deliberately tears down the process tree and may
 			// close the JSONL pipe. Preserve the policy outcome as the cause.

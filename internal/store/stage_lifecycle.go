@@ -67,7 +67,7 @@ const (
 func BeginAttempt(issueID, stage, attemptID string) StageLifecycleAttempt {
 	return StageLifecycleAttempt{
 		IssueID: issueID, Stage: stage, AttemptID: attemptID,
-		LegacyCheckpointID: legacyCheckpointID(attemptID), CapabilitySchemaVersion: 1,
+		LegacyCheckpointID: legacyCheckpointID(attemptID), CapabilitySchemaVersion: capabilitySchemaVersion,
 		CreatedAt: time.Now().UTC(),
 	}
 }

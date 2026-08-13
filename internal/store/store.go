@@ -358,14 +358,15 @@ type RunState struct {
 }
 
 const (
-	IntegrationClaimed               = "claimed"
-	IntegrationVerificationReady     = "verification_ready"
-	IntegrationPendingReverification = "pending_reverification"
-	IntegrationReverificationFailed  = "reverification_failed"
-	IntegrationPublishPending        = "publish_pending"
-	IntegrationCleanupNeeded         = "cleanup_needed"
-	IntegrationMerged                = "merged"
-	IntegrationPreserved             = "preserved"
+	IntegrationClaimed                  = "claimed"
+	IntegrationVerificationReady        = "verification_ready"
+	IntegrationPendingReverification    = "pending_reverification"
+	IntegrationReverificationFailed     = "reverification_failed"
+	IntegrationPublishPending           = "publish_pending"
+	IntegrationCleanupNeeded            = "cleanup_needed"
+	IntegrationMerged                   = "merged"
+	IntegrationPreserved                = "preserved"
+	IntegrationCapabilityRecoveryNeeded = "capability_recovery_needed"
 )
 
 type IssueIntegration struct {

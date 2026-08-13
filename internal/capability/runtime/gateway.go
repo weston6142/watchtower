@@ -11,11 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/runner"
 )
+
+const maxProviderRuntimeScanEntries = 10_000
 
 type StartRequest struct {
 	Contract        capability.CompiledContract
@@ -179,7 +180,7 @@ func (s *Session) Close() error {
 	s.mu.Unlock()
 	var reapErr error
 	for _, process := range processes {
-		reapErr = errors.Join(reapErr, process.EnsureReaped(250*time.Millisecond))
+		reapErr = errors.Join(reapErr, process.EnsureReaped(runner.DefaultTerminationGrace))
 	}
 	gatewayErr := s.stopGateway()
 	rootErr := s.root.Close()
@@ -255,7 +256,7 @@ func (s *Session) StartProvider(ctx context.Context, request ProviderProcessRequ
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		_ = process.TerminateAndWait(250 * time.Millisecond)
+		_ = process.TerminateAndWait(runner.DefaultTerminationGrace)
 		return nil, unsupported("runtime session is closed")
 	}
 	s.processes[process] = true
@@ -299,7 +300,7 @@ func (s *Session) terminateProcesses() {
 	}
 	s.mu.Unlock()
 	for _, process := range processes {
-		_ = process.TerminateAndWait(250 * time.Millisecond)
+		_ = process.TerminateAndWait(runner.DefaultTerminationGrace)
 	}
 }
 
@@ -481,7 +482,7 @@ func providerRuntimePaths(path string, environment []string) ([]string, []string
 			reads = append(reads, root)
 			count := 0
 			_ = filepath.WalkDir(root, func(candidate string, entry os.DirEntry, walkErr error) error {
-				if walkErr != nil || count > 10000 {
+				if walkErr != nil || count > maxProviderRuntimeScanEntries {
 					return filepath.SkipDir
 				}
 				count++

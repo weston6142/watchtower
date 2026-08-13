@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/pkgs"
@@ -385,22 +384,7 @@ func uniqueOperations(values []OperationClass) []OperationClass {
 	return result
 }
 
-func uniqueSorted(values []string) []string {
-	sort.Strings(values)
-	result := values[:0]
-	for _, value := range values {
-		if len(result) == 0 || result[len(result)-1] != value {
-			result = append(result, value)
-		}
-	}
-	return result
-}
-
 func digest(value []byte) string {
 	sum := sha256.Sum256(value)
 	return hex.EncodeToString(sum[:])
-}
-
-func safeDiagnostic(value string) string {
-	return strings.TrimSpace(value)
 }

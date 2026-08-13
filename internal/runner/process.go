@@ -26,11 +26,16 @@ type ProcessTree struct {
 	stdout     io.ReadCloser
 	done       chan struct{}
 	waitErr    error
-	waitOnce   sync.Once
 	termMu     sync.Mutex
 	terminate  func(force bool) error
 	groupAlive func() bool
 }
+
+const (
+	DefaultTerminationGrace  = 250 * time.Millisecond
+	exitedGroupReapGrace     = 100 * time.Millisecond
+	processGroupPollInterval = 5 * time.Millisecond
+)
 
 func StartProcessTree(ctx context.Context, spec ProcessSpec) (*ProcessTree, error) {
 	tree, err := startProcessTree(spec)
@@ -40,7 +45,7 @@ func StartProcessTree(ctx context.Context, spec ProcessSpec) (*ProcessTree, erro
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = tree.TerminateAndWait(250 * time.Millisecond)
+			_ = tree.TerminateAndWait(DefaultTerminationGrace)
 		case <-tree.done:
 		}
 	}()
@@ -80,7 +85,7 @@ func (p *ProcessTree) Wait() error {
 	}
 	<-p.done
 	p.termMu.Lock()
-	cleanupErr := p.reapRemaining(100 * time.Millisecond)
+	cleanupErr := p.reapRemaining(exitedGroupReapGrace)
 	p.termMu.Unlock()
 	if p.waitErr == nil {
 		return cleanupErr
@@ -151,7 +156,7 @@ func (p *ProcessTree) reapRemaining(grace time.Duration) error {
 		if !p.groupAlive() {
 			return nil
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(processGroupPollInterval)
 	}
 	if p.terminate != nil {
 		_ = p.terminate(true)
@@ -161,7 +166,7 @@ func (p *ProcessTree) reapRemaining(grace time.Duration) error {
 		if !p.groupAlive() {
 			return nil
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(processGroupPollInterval)
 	}
 	return context.DeadlineExceeded
 }
