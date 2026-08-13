@@ -1,6 +1,7 @@
 package capability
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -44,6 +45,25 @@ func TestValidatorAcceptsOnlyContractMutations(t *testing.T) {
 	}
 	_, err = Validate(contract, baseline, delta, nil, nil)
 	assertPostStageViolation(t, err)
+}
+
+func TestValidatorAllowsAncestorDirectoriesRequiredByApprovedFile(t *testing.T) {
+	repo := observerRepo(t)
+	observerGit(t, repo, "commit", "--allow-empty", "-m", "baseline")
+	contract := validatorContract(t, repo)
+	observer := Observer{}
+	baseline, err := observer.Capture(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeObserverFile(t, filepath.Join(repo, "allowed", "nested", "file.txt"), "created")
+	delta, err := observer.Compare(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := Validate(contract, baseline, delta, nil, nil); err != nil || !result.Passed {
+		t.Fatalf("approved file with new ancestors validation = %+v, %v", result, err)
+	}
 }
 
 func TestValidatorRejectsPathAndLinkEscapes(t *testing.T) {
@@ -112,6 +132,36 @@ func TestValidatorEnforcesLinearCommitHistory(t *testing.T) {
 	assertPostStageViolation(t, err)
 }
 
+func TestValidatorRejectsDeclaredOutputInCommit(t *testing.T) {
+	repo := observerRepo(t)
+	writeObserverFile(t, filepath.Join(repo, "allowed", "file.txt"), "before")
+	observerGit(t, repo, "add", ".")
+	observerGit(t, repo, "commit", "-m", "baseline")
+	contract := validatorContract(t, repo)
+	contract.Contract.Outputs = []RequiredOutput{{Path: "allowed/report.md", Owner: OwnerAgent}}
+	contract.ContractID = digest(mustJSON(t, contract.Contract))
+	authority := contract.Contract
+	authority.AttemptID = ""
+	contract.AuthorityDigest = digest(mustJSON(t, authority))
+	observer := Observer{}
+	baseline, err := observer.Capture(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeObserverFile(t, filepath.Join(repo, "allowed", "file.txt"), "after")
+	writeObserverFile(t, filepath.Join(repo, "allowed", "report.md"), "agent report")
+	observerGit(t, repo, "add", ".")
+	observerGit(t, repo, "commit", "-m", "includes output")
+	delta, err := observer.Compare(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Validate(contract, baseline, delta, nil, map[string]ObservedOutput{
+		"allowed/report.md": {Path: "allowed/report.md", Regular: true, SHA256: digestText("agent report")},
+	})
+	assertPostStageViolation(t, err)
+}
+
 func TestValidatorIgnoresNoEngineWrite(t *testing.T) {
 	repo := observerRepo(t)
 	observerGit(t, repo, "commit", "--allow-empty", "-m", "baseline")
@@ -142,6 +192,26 @@ func TestValidatorIgnoresNoEngineWrite(t *testing.T) {
 	}
 	_, err = Validate(contract, baseline, delta, nil, nil)
 	assertPostStageViolation(t, err)
+}
+
+func TestValidatorAllowsAncestorDirectoryForExactEngineWrite(t *testing.T) {
+	repo := observerRepo(t)
+	observerGit(t, repo, "commit", "--allow-empty", "-m", "baseline")
+	contract := validatorContract(t, repo)
+	observer := Observer{}
+	expected := digestText("engine decision")
+	baseline, err := observer.Capture(repo, []EngineWrite{{Path: "decisions/1.html", SHA256: expected}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeObserverFile(t, filepath.Join(repo, "decisions", "1.html"), "engine decision")
+	delta, err := observer.Compare(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := Validate(contract, baseline, delta, nil, nil); err != nil || !result.Passed {
+		t.Fatalf("engine write with new ancestor validation = %+v, %v", result, err)
+	}
 }
 
 func TestValidatorRejectsGitControlMutation(t *testing.T) {
@@ -216,4 +286,13 @@ func writeObserverFile(t *testing.T, path, contents string) {
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }

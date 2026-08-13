@@ -45,6 +45,10 @@ func Validate(contract CompiledContract, baseline Baseline, delta Delta, runtime
 			}
 			continue
 		}
+		if entry.Mutation == MutationCreate && entry.Kind == "directory" &&
+			directoryIsRequiredAncestor(entry.Path, delta.Entries, contract.Contract.Writes) {
+			continue
+		}
 		if !grantAllows(contract.Contract.Writes, path, entry.Mutation) {
 			return fail(OpWorkspaceMutate, entry.Path)
 		}
@@ -65,7 +69,7 @@ func Validate(contract CompiledContract, baseline Baseline, delta Delta, runtime
 		if !containsOperation(contract.Contract.Operations, OpVCSCommit) ||
 			baseline.Git.Head != contract.Contract.Repository.StartCommit ||
 			!linearDescendant(delta.Workspace, baseline.Git.Head, delta.Git.After.Head) ||
-			!commitPathsAllowed(delta.Workspace, baseline.Git.Head, delta.Git.After.Head, contract.Contract.Writes) {
+			!commitPathsAllowed(delta.Workspace, baseline.Git.Head, delta.Git.After.Head, contract.Contract) {
 			return fail(OpVCSCommit)
 		}
 		if refsOutsideBranchChanged(delta.Git, contract.Contract.Repository.Branch) {
@@ -79,6 +83,28 @@ func Validate(contract CompiledContract, baseline Baseline, delta Delta, runtime
 		return ValidationResult{}, err
 	}
 	return ValidationResult{Passed: true, DeltaDigest: hashObserverBytes(encoded)}, nil
+}
+
+func directoryIsRequiredAncestor(directory string, entries []DeltaEntry, grants []PathGrant) bool {
+	prefix := directory + "/"
+	for _, entry := range entries {
+		if entry.Kind == "directory" || !strings.HasPrefix(entry.Path, prefix) {
+			continue
+		}
+		if entry.EngineOwned {
+			return true
+		}
+		if entry.Mutation == MutationRename {
+			if grantAllows(grants, entry.FromPath, MutationRename) && grantAllows(grants, entry.Path, MutationRename) {
+				return true
+			}
+			continue
+		}
+		if grantAllows(grants, entry.Path, entry.Mutation) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameFilesystemPath(left, right string) bool {
@@ -126,7 +152,7 @@ func linearDescendant(workspace, before, after string) bool {
 	return true
 }
 
-func commitPathsAllowed(workspace, before, after string, grants []PathGrant) bool {
+func commitPathsAllowed(workspace, before, after string, contract Contract) bool {
 	output, err := gitOutput(workspace, "diff", "--name-only", "--format=", before+".."+after)
 	if err != nil {
 		return false
@@ -137,9 +163,9 @@ func commitPathsAllowed(workspace, before, after string, grants []PathGrant) boo
 		}
 		allowed := false
 		for _, mutation := range []MutationClass{MutationCreate, MutationModify, MutationDelete, MutationRename} {
-			allowed = allowed || grantAllows(grants, filepath.ToSlash(path), mutation)
+			allowed = allowed || grantAllows(contract.Writes, filepath.ToSlash(path), mutation)
 		}
-		if !allowed || IsWorkflowArtifact(path) {
+		if !allowed || IsWorkflowArtifact(path) || IsDeclaredOutput(contract, path) {
 			return false
 		}
 	}

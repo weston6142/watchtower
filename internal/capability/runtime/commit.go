@@ -48,9 +48,11 @@ func (s *Session) Commit(ctx context.Context, message string) (string, error) {
 	paths := make([]string, 0, len(observedPaths))
 	for _, path := range observedPaths {
 		switch {
+		case capability.IsWorkflowArtifact(path), capability.IsDeclaredOutput(s.contract.Contract, path):
+			continue
 		case pathAllowedForCommit(s.contract.Contract.Writes, path):
 			paths = append(paths, path)
-		case capability.IsWorkflowArtifact(path), pathMatches(s.contract.Contract.Reads, path):
+		case pathMatches(s.contract.Contract.Reads, path):
 			continue
 		default:
 			return "", s.deny(capability.OpVCSCommit, path)
@@ -162,11 +164,21 @@ func safeVCSReadArgs(args []string) bool {
 	}
 	for _, argument := range args[1:] {
 		if strings.ContainsAny(argument, "\x00\r\n") || argument == "--ext-diff" || argument == "--textconv" ||
-			argument == "--output" || strings.HasPrefix(argument, "--output=") {
+			argument == "--no-index" || argument == "--output" || strings.HasPrefix(argument, "--output=") ||
+			filepath.IsAbs(argument) || hasTraversalSegment(argument) {
 			return false
 		}
 	}
 	return true
+}
+
+func hasTraversalSegment(value string) bool {
+	for _, segment := range strings.Split(filepath.ToSlash(value), "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func pathAllowedForCommit(grants []capability.PathGrant, path string) bool {

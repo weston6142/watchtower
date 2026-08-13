@@ -46,9 +46,9 @@ func (r *recordingPlannerRunner) Preflight(_ context.Context, request runner.Pre
 	return testRunnerPreflight(request)
 }
 
-func (r *recordingPlannerRunner) Run(context.Context, runner.StageRequest, chan<- runner.Ask) <-chan runner.Result {
+func (r *recordingPlannerRunner) Run(_ context.Context, request runner.StageRequest, _ chan<- runner.Ask) <-chan runner.Result {
 	done := make(chan runner.Result, 1)
-	done <- runner.Result{Err: fmt.Errorf("non-planner run requested")}
+	done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: fmt.Errorf("non-planner run requested")}
 	return done
 }
 
@@ -59,7 +59,7 @@ func (r *recordingPlannerRunner) RunPlanner(ctx context.Context, request runner.
 		for _, tool := range r.Tools {
 			decision, err := gate.Admit(ctx, tool)
 			if err != nil {
-				done <- runner.Result{Err: err}
+				done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: err}
 				return
 			}
 			if !decision.Allowed {
@@ -68,7 +68,7 @@ func (r *recordingPlannerRunner) RunPlanner(ctx context.Context, request runner.
 			r.Admitted = append(r.Admitted, tool.SourceID)
 			actual := tool.Reservation
 			if err := gate.Complete(ctx, decision, &actual, nil); err != nil {
-				done <- runner.Result{Err: err}
+				done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: err}
 				return
 			}
 		}
@@ -81,16 +81,16 @@ func (r *recordingPlannerRunner) RunPlanner(ctx context.Context, request runner.
 		r.UnchangedSourceReused = admittedIssueReads == 1
 		authority := runner.PlannerArtifactAuthorityFromContext(ctx)
 		if authority == nil {
-			done <- runner.Result{Err: fmt.Errorf("planner authority unavailable")}
+			done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: fmt.Errorf("planner authority unavailable")}
 			return
 		}
-		for _, request := range plannerArtifactRequests() {
-			if err := authority.ApplyPlannerArtifact(request); err != nil {
-				done <- runner.Result{Err: err}
+		for _, writeRequest := range plannerArtifactRequests() {
+			if err := authority.ApplyPlannerArtifact(writeRequest); err != nil {
+				done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: err}
 				return
 			}
 		}
-		done <- runner.Result{}
+		done <- runner.Result{RuntimeAudit: testRuntimeAudit(request)}
 	}()
 	return done
 }

@@ -176,6 +176,19 @@ func IsWorkflowArtifact(path string) bool {
 	}
 }
 
+// IsDeclaredOutput reports whether a canonical path is a protocol output of
+// the stage. Outputs remain workspace artifacts and never belong in product
+// commits, even when their paths overlap the approved touchset.
+func IsDeclaredOutput(contract Contract, path string) bool {
+	path = filepath.ToSlash(path)
+	for _, output := range contract.Outputs {
+		if output.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
 // PolicyError contains stable, redacted policy facts only.
 type PolicyError struct {
 	Phase      string

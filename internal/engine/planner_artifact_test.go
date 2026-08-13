@@ -44,14 +44,14 @@ func (r *plannerArtifactEngineRunner) Run(_ context.Context, request runner.Stag
 		r.stageRuns[request.Stage]++
 		for name, content := range artifacts {
 			if err := os.WriteFile(filepath.Join(request.Workdir, name), []byte(content), 0o644); err != nil {
-				done <- runner.Result{Err: err}
+				done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: err}
 				return done
 			}
 		}
-		done <- runner.Result{Artifacts: artifacts}
+		done <- runner.Result{Artifacts: artifacts, RuntimeAudit: testRuntimeAudit(request)}
 		return done
 	}
-	done <- runner.Result{Err: fmt.Errorf("non-planner run requested")}
+	done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: fmt.Errorf("non-planner run requested")}
 	return done
 }
 
@@ -64,26 +64,26 @@ func (r *plannerArtifactEngineRunner) RunPlanner(ctx context.Context, request ru
 		r.callCount++
 		authority := runner.PlannerArtifactAuthorityFromContext(ctx)
 		if authority == nil {
-			done <- runner.Result{Err: fmt.Errorf("planner authority unavailable")}
+			done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: fmt.Errorf("planner authority unavailable")}
 			return
 		}
-		for index, request := range r.requests {
+		for index, writeRequest := range r.requests {
 			if r.failOnce && r.callCount == 1 && index == r.failAt {
-				done <- runner.Result{Err: fmt.Errorf("transport failure at %s", request.Key)}
+				done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: fmt.Errorf("transport failure at %s", writeRequest.Key)}
 				return
 			}
-			if err := authority.ApplyPlannerArtifact(request); err != nil {
-				done <- runner.Result{Err: err}
+			if err := authority.ApplyPlannerArtifact(writeRequest); err != nil {
+				done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: err}
 				return
 			}
 		}
 		if r.mutate != nil {
 			if err := r.mutate(workdir); err != nil {
-				done <- runner.Result{Err: err}
+				done <- runner.Result{RuntimeAudit: testRuntimeAudit(request), Err: err}
 				return
 			}
 		}
-		done <- runner.Result{}
+		done <- runner.Result{RuntimeAudit: testRuntimeAudit(request)}
 	}()
 	return done
 }

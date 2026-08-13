@@ -357,6 +357,14 @@ func testRunnerPreflight(request runner.PreflightRequest) (capability.Enforcemen
 	return runner.NewEnforcementPlan(request.Contract, "engine-test", "test-runner", "1", proofs)
 }
 
+func testRuntimeAudit(request runner.StageRequest) []capability.AuditRecord {
+	return []capability.AuditRecord{{
+		ContractID: request.Contract.ContractID,
+		Phase:      "reap",
+		Outcome:    "passed",
+	}}
+}
+
 type typedStageRunner struct {
 	result  runner.Result
 	results map[string]runner.Result
@@ -374,6 +382,9 @@ func (r *typedStageRunner) Run(ctx context.Context, request runner.StageRequest,
 		result := r.result
 		if configured, ok := r.results[agentPkg]; ok {
 			result = configured
+		}
+		if result.RuntimeAudit == nil {
+			result.RuntimeAudit = testRuntimeAudit(request)
 		}
 		operationID := runner.OperationID(ctx)
 		for index := range result.Attempts {
@@ -4415,6 +4426,7 @@ func (r *conflictFlowRunner) Run(
 			}
 		}
 	}
+	result.RuntimeAudit = testRuntimeAudit(request)
 	results <- result
 	close(results)
 	return results

@@ -146,6 +146,24 @@ func TestGatewayVCSReadCannotExecuteExternalDiffHelpers(t *testing.T) {
 	}
 }
 
+func TestGatewayVCSReadRejectsExternalPaths(t *testing.T) {
+	repo := runtimeGitRepo(t)
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside sentinel\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	contract := compileRuntimeContract(t, capability.CompileInput{
+		IssueID: "GH-68", Stage: "inspect", AttemptID: "checkpoint-external-read", Profile: flow.ProfileInspect,
+		WorkspaceRoot: repo, Readonly: true, ReadableRepositoryPaths: []string{"README.md"},
+	})
+	session := startRuntimeSession(t, repo, contract)
+	defer session.Close()
+	body, err := session.VCSRead(context.Background(), "diff", "--no-index", "README.md", outside)
+	if err == nil || len(body) != 0 || !strings.Contains(err.Error(), string(capability.ReasonRuntimeDenied)) {
+		t.Fatalf("external VCS read body=%q err=%v", body, err)
+	}
+}
+
 func TestSessionRemovesScratchAndRedactsAudit(t *testing.T) {
 	workdir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workdir, "ISSUE.md"), []byte("top secret contents\n"), 0o644); err != nil {
