@@ -62,6 +62,14 @@ type Flow struct {
 	Stages []Stage `yaml:"stages"`
 }
 
+func (f Flow) StageNames() []string {
+	names := make([]string, len(f.Stages))
+	for i := range f.Stages {
+		names[i] = f.Stages[i].Name
+	}
+	return names
+}
+
 var FinalizationArtifacts = []string{
 	"merge-report.md",
 	"merge-decision.json",

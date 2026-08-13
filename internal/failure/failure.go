@@ -76,6 +76,14 @@ const (
 	Unavailable   = "unavailable"
 )
 
+func CanonicalSites() []Site {
+	return []Site{
+		SiteRunner, SiteWorkspace, SiteArtifact, SitePlanner, SiteGit,
+		SiteVerification, SiteCache, SiteStore, SiteFinalization,
+		SiteLifecycle, SiteCapability,
+	}
+}
+
 // RecordInput is the safe input accepted by the durable recorder. It contains
 // no raw exception, path, command, configuration, artifact, or decision data.
 type RecordInput struct {

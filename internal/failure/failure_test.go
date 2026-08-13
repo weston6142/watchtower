@@ -2,9 +2,27 @@ package failure
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestCanonicalFailureSites(t *testing.T) {
+	want := []Site{
+		SiteRunner, SiteWorkspace, SiteArtifact, SitePlanner, SiteGit,
+		SiteVerification, SiteCache, SiteStore, SiteFinalization,
+		SiteLifecycle, SiteCapability,
+	}
+
+	got := CanonicalSites()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("canonical sites = %v, want %v", got, want)
+	}
+	got[0] = SiteOther
+	if again := CanonicalSites(); !reflect.DeepEqual(again, want) {
+		t.Fatalf("canonical sites after caller mutation = %v, want %v", again, want)
+	}
+}
 
 func TestFailureFingerprintIsDeterministicAndSortsKeyedInputs(t *testing.T) {
 	inputs := FingerprintInputs{
