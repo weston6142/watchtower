@@ -72,6 +72,117 @@ func TestObserverRequiresReapedDescendants(t *testing.T) {
 	}
 }
 
+func TestObserverNoGitWorkspaceKeepsControlIdentityStable(t *testing.T) {
+	workspace := t.TempDir()
+	writeObserverFile(t, filepath.Join(workspace, "artifact.md"), "baseline")
+	observer := Observer{}
+	baseline, err := observer.Capture(workspace, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta, err := observer.Compare(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta.Git.CommonGitChanged {
+		t.Fatalf("unchanged non-Git workspace reported Git control mutation: %+v", delta.Git)
+	}
+}
+
+func TestObserverDetectsRefsOutsideHeadsAndTags(t *testing.T) {
+	repo := observerRepo(t)
+	observerGit(t, repo, "commit", "--allow-empty", "-m", "baseline")
+	observer := Observer{}
+	baseline, err := observer.Capture(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observerGit(t, repo, "update-ref", "refs/watchtower/escape", "HEAD")
+	delta, err := observer.Compare(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !delta.Git.RefsChanged {
+		t.Fatalf("hidden ref mutation was not observed: %+v", delta.Git)
+	}
+}
+
+func TestObserverDetectsDirectoryMetadataMutation(t *testing.T) {
+	repo := observerRepo(t)
+	writeObserverFile(t, filepath.Join(repo, "locked", "file.txt"), "baseline")
+	observerGit(t, repo, "add", ".")
+	observerGit(t, repo, "commit", "-m", "baseline")
+	observer := Observer{}
+	baseline, err := observer.Capture(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(repo, "locked"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	delta, err := observer.Compare(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range delta.Entries {
+		if entry.Path == "locked" && entry.Mutation == MutationMetadata {
+			return
+		}
+	}
+	t.Fatalf("directory metadata mutation was not observed: %+v", delta.Entries)
+}
+
+func TestObserverDetectsHooksDirectoryReplacement(t *testing.T) {
+	repo := observerRepo(t)
+	observerGit(t, repo, "commit", "--allow-empty", "-m", "baseline")
+	hooks := filepath.Join(repo, ".git", "hooks")
+	if err := os.RemoveAll(hooks); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	observer := Observer{}
+	baseline, err := observer.Capture(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(hooks); err != nil {
+		t.Fatal(err)
+	}
+	externalHooks := filepath.Join(t.TempDir(), "hooks")
+	if err := os.Mkdir(externalHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalHooks, hooks); err != nil {
+		t.Fatal(err)
+	}
+	delta, err := observer.Compare(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !delta.Git.CommonGitChanged {
+		t.Fatalf("hooks directory replacement was not observed: %+v", delta.Git)
+	}
+}
+
+func TestBaselineDigestIncludesGitControlIdentity(t *testing.T) {
+	first := Baseline{Workspace: "/workspace", CommonGitDigest: digestText("first")}
+	second := first
+	second.CommonGitDigest = digestText("second")
+	firstDigest, err := baselineDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := baselineDigest(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == secondDigest {
+		t.Fatal("baseline digest did not bind Git control identity")
+	}
+}
+
 func deltaHasMutation(delta Delta, want MutationClass) bool {
 	for _, entry := range delta.Entries {
 		if entry.Mutation == want {

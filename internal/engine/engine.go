@@ -185,6 +185,9 @@ type issueState struct {
 	dependsOn           []string
 	waitingDependencies bool
 	planReview          review.ResolvedPolicy
+	capabilityAttemptID string
+	capabilityWorkdir   string
+	capabilityWrites    map[string]string
 }
 
 func planReviewLever(f flow.Flow, matrix levers.Matrix) flow.Lever {
@@ -3469,6 +3472,7 @@ func (e *Engine) runStageOnce(
 			ReadableRepositoryPaths: authority.ReadableRepositoryPaths, Outputs: authority.RequiredOutputs,
 			Approval: authority.ApprovalBinding, ApprovedTouchset: authority.ApprovedTouchset,
 			DocumentationPaths: authority.DocumentationPaths, ConflictPaths: authority.ConflictPaths,
+			LegacyRestrictions:      stageLegacyRestrictions(e.cfg.Runner, st.Agents),
 			PlannerArtifactRequired: artifactAuthority != nil,
 		})
 		if err != nil {
@@ -3529,6 +3533,8 @@ func (e *Engine) runStageOnce(
 		if err := e.cfg.Store.RecordCapabilityBaseline(capabilityIdentity, capability.BaselineIdentity{Digest: capabilityBaseline.Digest}); err != nil {
 			return err
 		}
+		e.beginCapabilityWriteTracking(is, lifecycleAttempt.AttemptID, workdir)
+		defer e.endCapabilityWriteTracking(is, lifecycleAttempt.AttemptID)
 	}
 
 	type agentDone struct {
@@ -3542,6 +3548,7 @@ func (e *Engine) runStageOnce(
 	succeeded := 0
 	var discovered []string
 	var stageEvidence *stageresult.Evidence
+	descendantsReaped := true
 	agentCtx, cancelAgents := context.WithCancel(ctx)
 	defer cancelAgents()
 	runAgent := func(a flow.AgentRef) {
@@ -3616,6 +3623,7 @@ func (e *Engine) runStageOnce(
 			}
 			for range st.Agents {
 				d := <-dones
+				descendantsReaped = descendantsReaped && runtimeAuditProvesReap(d.res.RuntimeAudit)
 				runtimeAudit = append(runtimeAudit, d.res.RuntimeAudit...)
 				if d.res.SessionID != "" {
 					sessionIDs = append(sessionIDs, d.res.SessionID)
@@ -3639,6 +3647,7 @@ func (e *Engine) runStageOnce(
 			for _, agent := range st.Agents {
 				go runAgent(agent)
 				d := <-dones
+				descendantsReaped = descendantsReaped && runtimeAuditProvesReap(d.res.RuntimeAudit)
 				runtimeAudit = append(runtimeAudit, d.res.RuntimeAudit...)
 				if d.res.SessionID != "" {
 					sessionIDs = append(sessionIDs, d.res.SessionID)
@@ -3707,12 +3716,25 @@ func (e *Engine) runStageOnce(
 	}
 	if !resumedLifecycle {
 		cancelAgents()
-		engineWrites, engineWriteErr := observeCapabilityEngineWrites(workdir)
-		if engineWriteErr != nil {
-			return engineWriteErr
+		if !descendantsReaped {
+			policyErr := &capability.PolicyError{
+				Phase: "post-stage", Reason: capability.ReasonPostStageViolation,
+				Diagnostic: "agent descendant reaping was not proven",
+			}
+			if bindErr := e.cfg.Store.BindCapabilityValidation(capabilityIdentity, "", capability.ValidationResult{Passed: false}); bindErr != nil {
+				return bindErr
+			}
+			_ = e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
+				Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "post-stage", Outcome: "failed",
+				Reason: capability.ReasonPostStageViolation, Diagnostic: "agent descendant reaping was not proven",
+			})
+			if markErr := e.markCapabilityWorkspaceRejected(is, st.Name, capabilityIdentity, compiledContract, capabilityBaseline, policyErr); markErr != nil {
+				return fmt.Errorf("%w (mark rejected workspace: %v)", policyErr, markErr)
+			}
+			return policyErr
 		}
-		capabilityBaseline.EngineWrites = engineWrites
-		delta, compareErr := (capability.Observer{DescendantsReaped: func() bool { return true }}).Compare(capabilityBaseline)
+		capabilityBaseline.EngineWrites = e.capabilityEngineWrites(is, lifecycleAttempt.AttemptID)
+		delta, compareErr := (capability.Observer{DescendantsReaped: func() bool { return descendantsReaped }}).Compare(capabilityBaseline)
 		if compareErr != nil {
 			return fmt.Errorf("compare capability workspace: %w", compareErr)
 		}
@@ -3779,7 +3801,9 @@ func (e *Engine) runStageOnce(
 			return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeMissingResult, Message: "model result materialization failed"}
 		}
 		capabilityValidation.ResultDigest = lifecycleResult.ResultSHA256
-		if err := e.cfg.Store.BindCapabilityValidation(capabilityIdentity, lifecycleResult.ResultSHA256, capabilityValidation); err != nil {
+		if err := e.cfg.Store.CommitCapabilityValidatedResult(
+			lifecycleAttempt, capabilityIdentity, capabilityValidation, lifecycleResult,
+		); err != nil {
 			return err
 		}
 		if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
@@ -3791,9 +3815,6 @@ func (e *Engine) runStageOnce(
 			"stage": st.Name, "attempt_id": lifecycleAttempt.AttemptID, "contract_id": compiledContract.ContractID,
 			"result_digest": lifecycleResult.ResultSHA256, "delta_digest": capabilityValidation.DeltaDigest,
 		})
-		if err := e.cfg.Store.PutStageLifecycleResult(lifecycleAttempt, lifecycleResult); err != nil {
-			return err
-		}
 		if validatedStageResult != nil && validatedStageResult.Outcome == stageresult.OutcomeRetryable {
 			return &stageResultRetryableError{Kind: validatedStageResult.StageKind, AttemptID: validatedStageResult.AttemptID}
 		}
@@ -3972,39 +3993,61 @@ func observeCapabilityOutputs(workdir string, contract capability.CompiledContra
 	return result, nil
 }
 
-func observeCapabilityEngineWrites(workdir string) (map[string]string, error) {
+func (e *Engine) beginCapabilityWriteTracking(is *issueState, attemptID, workdir string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	is.capabilityAttemptID = attemptID
+	is.capabilityWorkdir = workdir
+	is.capabilityWrites = make(map[string]string)
+}
+
+func (e *Engine) endCapabilityWriteTracking(is *issueState, attemptID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if is.capabilityAttemptID != attemptID {
+		return
+	}
+	is.capabilityAttemptID = ""
+	is.capabilityWorkdir = ""
+	is.capabilityWrites = nil
+}
+
+func (e *Engine) recordCapabilityEngineWrite(issueID, absolutePath string, body []byte) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	is := e.issues[issueID]
+	if is == nil || is.capabilityAttemptID == "" || is.capabilityWorkdir == "" {
+		return
+	}
+	relative, err := filepath.Rel(is.capabilityWorkdir, absolutePath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return
+	}
+	relative = filepath.ToSlash(relative)
+	digest := sha256.Sum256(body)
+	is.capabilityWrites[relative] = hex.EncodeToString(digest[:])
+}
+
+func (e *Engine) capabilityEngineWrites(is *issueState, attemptID string) map[string]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	result := make(map[string]string)
-	candidates := []string{"decision.html"}
-	decisionDir := filepath.Join(workdir, "decisions")
-	if entries, err := os.ReadDir(decisionDir); err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".html") {
-				candidates = append(candidates, filepath.ToSlash(filepath.Join("decisions", entry.Name())))
-			}
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	if is.capabilityAttemptID != attemptID {
+		return result
 	}
-	for _, relative := range candidates {
-		path := filepath.Join(workdir, filepath.FromSlash(relative))
-		info, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("engine capability output %q is not regular", relative)
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		digest := sha256.Sum256(body)
-		result[relative] = hex.EncodeToString(digest[:])
+	for path, digest := range is.capabilityWrites {
+		result[path] = digest
 	}
-	return result, nil
+	return result
+}
+
+func runtimeAuditProvesReap(records []capability.AuditRecord) bool {
+	for _, record := range records {
+		if record.Phase == "reap" && record.Outcome == "passed" {
+			return true
+		}
+	}
+	return false
 }
 
 type stageResultRetryableError struct {

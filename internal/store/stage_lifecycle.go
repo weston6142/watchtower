@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/contextpack"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/stageresult"
@@ -166,6 +167,39 @@ func (s *Store) StageLifecycleResult(attempt StageLifecycleAttempt) (contextpack
 func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results ...contextpack.AttemptResult) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.putStageLifecycleResultLocked(s.db, attempt, results...)
+}
+
+// CommitCapabilityValidatedResult atomically binds successful policy evidence
+// to the immutable result slot that restart recovery consumes.
+func (s *Store) CommitCapabilityValidatedResult(
+	attempt StageLifecycleAttempt,
+	identity capability.AttemptIdentity,
+	validation capability.ValidationResult,
+	result contextpack.AttemptResult,
+) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	transaction, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = transaction.Rollback()
+		}
+	}()
+	if err = bindCapabilityValidationLocked(transaction, identity, result.ResultSHA256, validation); err != nil {
+		return err
+	}
+	if err = s.putStageLifecycleResultLocked(transaction, attempt, result); err != nil {
+		return err
+	}
+	err = transaction.Commit()
+	return err
+}
+
+func (s *Store) putStageLifecycleResultLocked(database capabilitySQL, attempt StageLifecycleAttempt, results ...contextpack.AttemptResult) error {
 	if err := validateAttempt(attempt); err != nil {
 		return err
 	}
@@ -180,10 +214,10 @@ func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results .
 	if strings.TrimSpace(result.ResultPath) == "" || !validDigest(result.ResultSHA256) {
 		return lifecycleDiagnostic(CodeMissingResult, "attempt result identity or digest is missing")
 	}
-	if err := s.requireAttemptLocked(attempt); err != nil {
+	if err := requireAttempt(database, attempt); err != nil {
 		return err
 	}
-	if err := s.requireCapabilityValidationLocked(attempt, result.ResultSHA256); err != nil {
+	if err := requireCapabilityValidation(database, attempt, result.ResultSHA256); err != nil {
 		return err
 	}
 	summary := StageLifecycleAttempt{}
@@ -203,7 +237,7 @@ func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results .
 		summary.PredecessorAttemptID = validated.PredecessorAttemptID
 	}
 	var existing StageLifecycleAttempt
-	err := s.db.QueryRow(`SELECT result_path,result_sha256,stage_result_schema_version,stage_result_kind,
+	err := database.QueryRow(`SELECT result_path,result_sha256,stage_result_schema_version,stage_result_kind,
 		stage_result_outcome,stage_result_status,predecessor_attempt_id FROM stage_lifecycle_attempts
 		WHERE issue_id=? AND stage=? AND attempt_id=?`, attempt.IssueID, attempt.Stage, attempt.AttemptID).
 		Scan(&existing.ResultPath, &existing.ResultSHA256, &existing.StageResultSchemaVersion,
@@ -225,7 +259,7 @@ func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results .
 	}
 	if summary.StageResultStatus == stageresult.ValidationValid {
 		var latestID string
-		err = s.db.QueryRow(`SELECT attempt_id FROM stage_lifecycle_attempts
+		err = database.QueryRow(`SELECT attempt_id FROM stage_lifecycle_attempts
 			WHERE issue_id=? AND stage=? AND attempt_id<>? AND stage_result_schema_version=?
 			AND stage_result_kind=? AND stage_result_status=?
 			ORDER BY created_at DESC,attempt_id DESC LIMIT 1`, attempt.IssueID, attempt.Stage,
@@ -244,7 +278,7 @@ func (s *Store) PutStageLifecycleResult(attempt StageLifecycleAttempt, results .
 		s.failNextStageResultPut = false
 		return lifecycleDiagnostic(CodeIntegrity, "structured stage result persistence failed")
 	}
-	updated, err := s.db.Exec(`UPDATE stage_lifecycle_attempts SET result_path=?,result_sha256=?,
+	updated, err := database.Exec(`UPDATE stage_lifecycle_attempts SET result_path=?,result_sha256=?,
 		stage_result_schema_version=?,stage_result_kind=?,stage_result_outcome=?,stage_result_status=?,predecessor_attempt_id=?
 		WHERE issue_id=? AND stage=? AND attempt_id=?`, result.ResultPath, result.ResultSHA256,
 		summary.StageResultSchemaVersion, summary.StageResultKind, summary.StageResultOutcome,
@@ -566,8 +600,12 @@ func (s *Store) FailNextStageCheckpointFinishForTest() {
 }
 
 func (s *Store) requireAttemptLocked(attempt StageLifecycleAttempt) error {
+	return requireAttempt(s.db, attempt)
+}
+
+func requireAttempt(database capabilitySQL, attempt StageLifecycleAttempt) error {
 	var issue, stage, id string
-	err := s.db.QueryRow(`SELECT issue_id,stage,attempt_id FROM stage_lifecycle_attempts
+	err := database.QueryRow(`SELECT issue_id,stage,attempt_id FROM stage_lifecycle_attempts
 		WHERE issue_id=? AND stage=? AND attempt_id=?`, attempt.IssueID, attempt.Stage, attempt.AttemptID).
 		Scan(&issue, &stage, &id)
 	if errors.Is(err, sql.ErrNoRows) {

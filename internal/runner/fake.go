@@ -196,7 +196,7 @@ func (f *FakeRunner) Run(ctx context.Context, request StageRequest, asks chan<- 
 		done <- Result{
 			Artifacts: out, DependsOn: append([]string(nil), sc.DependsOn...),
 			SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
-			StageEvidence: stageEvidence, RuntimeAudit: runtimeAudit,
+			StageEvidence: stageEvidence, RuntimeAudit: append(runtimeAudit, fakeReapAudit(request.Contract.ContractID)),
 		}
 	}()
 	return done
@@ -358,7 +358,8 @@ func (f *FakeRunner) RunPlanner(ctx context.Context, request StageRequest, _asks
 				"touchset.json": filepath.Join(workdir, "touchset.json"),
 			}
 			done <- Result{Artifacts: artifacts, DependsOn: append([]string(nil), sc.DependsOn...),
-				SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown}
+				SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
+				RuntimeAudit: []capability.AuditRecord{fakeReapAudit(request.Contract.ContractID)}}
 			return
 		}
 		artifacts, err := writeFakeArtifacts(sc.Artifacts, workdir)
@@ -367,9 +368,14 @@ func (f *FakeRunner) RunPlanner(ctx context.Context, request StageRequest, _asks
 			return
 		}
 		done <- Result{Artifacts: artifacts, DependsOn: append([]string(nil), sc.DependsOn...),
-			SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown}
+			SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
+			RuntimeAudit: []capability.AuditRecord{fakeReapAudit(request.Contract.ContractID)}}
 	}()
 	return done
+}
+
+func fakeReapAudit(contractID string) capability.AuditRecord {
+	return capability.AuditRecord{ContractID: contractID, Phase: "reap", Outcome: "passed"}
 }
 
 func writeFakeArtifacts(declared map[string]string, workdir string) (map[string]string, error) {

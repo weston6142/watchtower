@@ -51,6 +51,32 @@ func TestPolicyViolationQuarantinesWorkspaceAndBlocksProgress(t *testing.T) {
 	}
 }
 
+func TestPolicyViolationQuarantineSurvivesRefTampering(t *testing.T) {
+	fixture := newPolicyRecoveryFixture(t, "none", 0)
+	baseline, err := (capability.Observer{}).Capture(fixture.workdir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engineGit(t, fixture.workdir, "checkout", "--detach")
+	if err := os.WriteFile(filepath.Join(fixture.workdir, "tampered.txt"), []byte("tampered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engineGit(t, fixture.workdir, "add", "tampered.txt")
+	engineGit(t, fixture.workdir, "commit", "-m", "tampered detached head")
+	identity := capability.AttemptIdentity{IssueID: fixture.issueID, Stage: fixture.stage.Name, AttemptID: "checkpoint-1"}
+	cause := &capability.PolicyError{Phase: "post-stage", Reason: capability.ReasonPostStageViolation}
+	if err := fixture.engine.markCapabilityWorkspaceRejected(
+		fixture.engine.issues[fixture.issueID], fixture.stage.Name, identity,
+		capability.CompiledContract{ContractID: "contract", AuthorityDigest: "authority"}, baseline, cause,
+	); err != nil {
+		t.Fatalf("quarantine failed after ref tampering: %v", err)
+	}
+	integration, found, err := fixture.store.IssueIntegration(fixture.issueID)
+	if err != nil || !found || integration.State != capabilityRecoveryNeeded {
+		t.Fatalf("durable quarantine=%+v found=%t err=%v", integration, found, err)
+	}
+}
+
 func TestPolicyRetryUsesNewContractWithSameAuthority(t *testing.T) {
 	fixture := runRecoveredPolicyStage(t, "post-stage", 1)
 	attempts, err := fixture.store.StageLifecycleAttempts(fixture.issueID, fixture.stage.Name)

@@ -2,6 +2,8 @@ package claude
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -49,18 +51,15 @@ func (passthroughTestBackend) Wrap(request capruntime.ProcessRequest) (capruntim
 }
 
 func claudeStageRequest(r *CodeRunner, issueID, stage, agent, workdir string) runner.StageRequest {
-	contract := capability.CompiledContract{
-		ContractID: "contract-" + issueID + "-" + stage, AuthorityDigest: "authority-test",
-		Contract: capability.Contract{
-			Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
-			IssueID: issueID, Stage: stage, AttemptID: "attempt-test", Profile: "implementation",
-			WorkspaceRoot: workdir,
-			Operations: []capability.OperationClass{
-				capability.OpWorkspaceRead, capability.OpWorkspaceMutate, capability.OpLocalProcess,
-				capability.OpVCSRead, capability.OpVCSCommit, capability.OpPlannerArtifactApply,
-			},
+	contract := sealClaudeTestContract(capability.Contract{
+		Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
+		IssueID: issueID, Stage: stage, AttemptID: "attempt-test", Profile: "implementation",
+		WorkspaceRoot: workdir,
+		Operations: []capability.OperationClass{
+			capability.OpWorkspaceRead, capability.OpWorkspaceMutate, capability.OpLocalProcess,
+			capability.OpVCSRead, capability.OpVCSCommit, capability.OpPlannerArtifactApply,
 		},
-	}
+	})
 	plan, err := r.Preflight(context.Background(), runner.PreflightRequest{
 		IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract,
 	})
@@ -68,6 +67,17 @@ func claudeStageRequest(r *CodeRunner, issueID, stage, agent, workdir string) ru
 		panic(err)
 	}
 	return runner.StageRequest{IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract, Plan: plan}
+}
+
+func sealClaudeTestContract(contract capability.Contract) capability.CompiledContract {
+	body, _ := json.Marshal(contract)
+	authority := contract
+	authority.AttemptID = ""
+	authorityBody, _ := json.Marshal(authority)
+	contractSum, authoritySum := sha256.Sum256(body), sha256.Sum256(authorityBody)
+	return capability.CompiledContract{
+		Contract: contract, ContractID: hex.EncodeToString(contractSum[:]), AuthorityDigest: hex.EncodeToString(authoritySum[:]),
+	}
 }
 
 func TestCodeRunnerReturnsStageResultEvidence(t *testing.T) {

@@ -57,6 +57,7 @@ func buildInvocation(profile repocfg.CodexProfile, descriptor turnDescriptor) in
 		"-c", configString("approval_policy", "never"),
 		"-c", "tools.web_search=false",
 		"-c", "features.shell_tool=false",
+		"-c", "features.unified_exec=false",
 		"-c", configString("developer_instructions", descriptor.PackagePrompt),
 	)
 	if descriptor.GatewayEndpoint != "" && len(descriptor.GatewayTools) > 0 {
@@ -64,9 +65,6 @@ func buildInvocation(profile repocfg.CodexProfile, descriptor turnDescriptor) in
 			"-c", configString("mcp_servers.watchtower.url", descriptor.GatewayEndpoint),
 			"-c", configStringList("mcp_servers.watchtower.enabled_tools", gatewayLocalToolNames(descriptor.GatewayTools)),
 		)
-	}
-	if value, ok := profile.FeatureOverrides["unified_exec"]; ok {
-		args = append(args, "-c", "features.unified_exec="+boolString(value))
 	}
 	if descriptor.Kind == turnResumed || descriptor.ResumeID != "" {
 		args = append(args, descriptor.ResumeID)
@@ -146,13 +144,6 @@ func redactText(value string, secrets ...string) string {
 }
 
 var sensitiveTextPattern = regexp.MustCompile(`(?i)\b[[:alnum:]_.-]*(secret|token|password|authorization)[[:alnum:]_.-]*\b`)
-
-func boolString(value bool) string {
-	if value {
-		return "true"
-	}
-	return "false"
-}
 
 func cloneCodexFeatures(features map[string]bool) map[string]bool {
 	if features == nil {

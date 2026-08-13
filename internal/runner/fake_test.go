@@ -2,6 +2,9 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -10,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/capability"
+	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/plannerartifact"
@@ -21,10 +25,9 @@ func TestRunnerRejectsMismatchedContractAndPlan(t *testing.T) {
 		Scripts: map[string]Script{"execute/executor": {}},
 		OnStart: func(_, _, _, _ string) error { started = true; return nil },
 	}
-	contract := capability.CompiledContract{
-		ContractID: strings.Repeat("a", 64), AuthorityDigest: strings.Repeat("b", 64),
-		Contract: capability.Contract{Version: capability.ContractVersion, IssueID: "GH-68", Stage: "execute", AttemptID: "checkpoint-1"},
-	}
+	contract := sealRunnerTestContract(capability.Contract{
+		Version: capability.ContractVersion, IssueID: "GH-68", Stage: "execute", AttemptID: "checkpoint-1",
+	})
 	plan, err := r.Preflight(context.Background(), PreflightRequest{
 		IssueID: "GH-68", Stage: "execute", Agent: "executor", Workdir: t.TempDir(), Contract: contract,
 	})
@@ -42,6 +45,36 @@ func TestRunnerRejectsMismatchedContractAndPlan(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsMutatedContractBodyBeforeLaunch(t *testing.T) {
+	started := false
+	r := &FakeRunner{
+		Scripts: map[string]Script{"inspect/agent": {}},
+		OnStart: func(_, _, _, _ string) error { started = true; return nil },
+	}
+	workdir := t.TempDir()
+	contract, err := capability.Compile(capability.CompileInput{
+		IssueID: "GH-68", Stage: "inspect", AttemptID: "checkpoint-1", Profile: flow.ProfileInspect,
+		WorkspaceRoot: workdir, ReadableRepositoryPaths: []string{"allowed.txt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := r.Preflight(context.Background(), PreflightRequest{
+		IssueID: "GH-68", Stage: "inspect", Agent: "agent", Workdir: workdir, Contract: contract,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract.Contract.Reads = append(contract.Contract.Reads, "outside.txt")
+	result := <-r.Run(context.Background(), StageRequest{
+		IssueID: "GH-68", Stage: "inspect", Agent: "agent", Workdir: workdir,
+		Contract: contract, Plan: plan,
+	}, make(chan Ask))
+	if result.Err == nil || started {
+		t.Fatalf("mutated request result=%+v started=%t", result, started)
+	}
+}
+
 func TestFakeRunnerScriptsPermittedAndDeniedOperations(t *testing.T) {
 	workdir := t.TempDir()
 	r := &FakeRunner{Scripts: map[string]Script{
@@ -50,14 +83,11 @@ func TestFakeRunnerScriptsPermittedAndDeniedOperations(t *testing.T) {
 			{Operation: capability.OpWorkspaceMutate, Mutation: capability.MutationCreate, Path: "outside.txt", Content: "denied\n"},
 		}},
 	}}
-	contract := capability.CompiledContract{
-		ContractID: strings.Repeat("d", 64), AuthorityDigest: strings.Repeat("e", 64),
-		Contract: capability.Contract{
-			Version: capability.ContractVersion, IssueID: "GH-68", Stage: "execute", AttemptID: "checkpoint-1", WorkspaceRoot: workdir,
-			Operations: []capability.OperationClass{capability.OpWorkspaceMutate},
-			Writes:     []capability.PathGrant{{Path: "allowed.txt", Mutations: []capability.MutationClass{capability.MutationCreate}}},
-		},
-	}
+	contract := sealRunnerTestContract(capability.Contract{
+		Version: capability.ContractVersion, IssueID: "GH-68", Stage: "execute", AttemptID: "checkpoint-1", WorkspaceRoot: workdir,
+		Operations: []capability.OperationClass{capability.OpWorkspaceMutate},
+		Writes:     []capability.PathGrant{{Path: "allowed.txt", Mutations: []capability.MutationClass{capability.MutationCreate}}},
+	})
 	plan, err := r.Preflight(context.Background(), PreflightRequest{IssueID: "GH-68", Stage: "execute", Agent: "executor", Workdir: workdir, Contract: contract})
 	if err != nil {
 		t.Fatal(err)
@@ -281,16 +311,24 @@ func TestFakeRunnerAsksThenProduces(t *testing.T) {
 
 func fakeStageRequest(t *testing.T, r *FakeRunner, issueID, stage, agent, workdir string) StageRequest {
 	t.Helper()
-	contract := capability.CompiledContract{
-		ContractID: strings.Repeat("a", 64), AuthorityDigest: strings.Repeat("b", 64),
-		Contract: capability.Contract{
-			Version: capability.ContractVersion, IssueID: issueID, Stage: stage, AttemptID: "checkpoint-1",
-			WorkspaceRoot: workdir, Operations: []capability.OperationClass{capability.OpWorkspaceRead, capability.OpWorkspaceMutate},
-		},
-	}
+	contract := sealRunnerTestContract(capability.Contract{
+		Version: capability.ContractVersion, IssueID: issueID, Stage: stage, AttemptID: "checkpoint-1",
+		WorkspaceRoot: workdir, Operations: []capability.OperationClass{capability.OpWorkspaceRead, capability.OpWorkspaceMutate},
+	})
 	plan, err := r.Preflight(context.Background(), PreflightRequest{IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return StageRequest{IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract, Plan: plan}
+}
+
+func sealRunnerTestContract(contract capability.Contract) capability.CompiledContract {
+	body, _ := json.Marshal(contract)
+	authority := contract
+	authority.AttemptID = ""
+	authorityBody, _ := json.Marshal(authority)
+	contractSum, authoritySum := sha256.Sum256(body), sha256.Sum256(authorityBody)
+	return capability.CompiledContract{
+		Contract: contract, ContractID: hex.EncodeToString(contractSum[:]), AuthorityDigest: hex.EncodeToString(authoritySum[:]),
+	}
 }

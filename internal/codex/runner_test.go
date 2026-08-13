@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -149,18 +151,15 @@ func (passthroughTestBackend) Wrap(request capruntime.ProcessRequest) (capruntim
 }
 
 func testStageRequest(r *CodeRunner, issueID, stage, agent, workdir string) runner.StageRequest {
-	contract := capability.CompiledContract{
-		ContractID: "contract-" + issueID + "-" + stage, AuthorityDigest: "authority-test",
-		Contract: capability.Contract{
-			Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
-			IssueID: issueID, Stage: stage, AttemptID: "attempt-test", Profile: "implementation",
-			WorkspaceRoot: workdir,
-			Operations: []capability.OperationClass{
-				capability.OpWorkspaceRead, capability.OpWorkspaceMutate, capability.OpLocalProcess,
-				capability.OpVCSRead, capability.OpVCSCommit, capability.OpPlannerArtifactApply,
-			},
+	contract := sealCodexTestContract(capability.Contract{
+		Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
+		IssueID: issueID, Stage: stage, AttemptID: "attempt-test", Profile: "implementation",
+		WorkspaceRoot: workdir,
+		Operations: []capability.OperationClass{
+			capability.OpWorkspaceRead, capability.OpWorkspaceMutate, capability.OpLocalProcess,
+			capability.OpVCSRead, capability.OpVCSCommit, capability.OpPlannerArtifactApply,
 		},
-	}
+	})
 	plan, err := r.Preflight(context.Background(), runner.PreflightRequest{
 		IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract,
 	})
@@ -168,6 +167,17 @@ func testStageRequest(r *CodeRunner, issueID, stage, agent, workdir string) runn
 		panic(err)
 	}
 	return runner.StageRequest{IssueID: issueID, Stage: stage, Agent: agent, Workdir: workdir, Contract: contract, Plan: plan}
+}
+
+func sealCodexTestContract(contract capability.Contract) capability.CompiledContract {
+	body, _ := json.Marshal(contract)
+	authority := contract
+	authority.AttemptID = ""
+	authorityBody, _ := json.Marshal(authority)
+	contractSum, authoritySum := sha256.Sum256(body), sha256.Sum256(authorityBody)
+	return capability.CompiledContract{
+		Contract: contract, ContractID: hex.EncodeToString(contractSum[:]), AuthorityDigest: hex.EncodeToString(authoritySum[:]),
+	}
 }
 
 type recordingGate struct {
@@ -458,8 +468,8 @@ func TestEligibleFailureUsesExactlyOneFallbackAndCompletes(t *testing.T) {
 	if got := readCount(t, state); got != 2 {
 		t.Fatalf("process attempts = %d, want one primary and one fallback", got)
 	}
-	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "features.unified_exec=true") {
-		t.Fatalf("fallback argv = %q", got)
+	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "features.unified_exec=false") || strings.Contains(got, "features.unified_exec=true") {
+		t.Fatalf("fallback widened native execution authority: %q", got)
 	}
 }
 
@@ -539,7 +549,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	if got := strings.Join(readCapturedArgs(t, state, 2), "\n"); !strings.Contains(got, "features.unified_exec=false") {
 		t.Fatalf("primary resumed argv = %q", got)
 	}
-	if got := strings.Join(readCapturedArgs(t, state, 3), "\n"); !strings.Contains(got, "features.unified_exec=true") || !containsArg(readCapturedArgs(t, state, 3), "thr-fallback-resume") {
+	if got := strings.Join(readCapturedArgs(t, state, 3), "\n"); !strings.Contains(got, "features.unified_exec=false") || strings.Contains(got, "features.unified_exec=true") || !containsArg(readCapturedArgs(t, state, 3), "thr-fallback-resume") {
 		t.Fatalf("fallback resumed argv = %q", got)
 	}
 }

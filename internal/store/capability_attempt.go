@@ -132,6 +132,15 @@ func (s *Store) AppendCapabilityAudit(record capability.AuditRecord) error {
 func (s *Store) BindCapabilityValidation(identity capability.AttemptIdentity, resultSHA string, result capability.ValidationResult) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return bindCapabilityValidationLocked(s.db, identity, resultSHA, result)
+}
+
+type capabilitySQL interface {
+	Exec(string, ...any) (sql.Result, error)
+	QueryRow(string, ...any) *sql.Row
+}
+
+func bindCapabilityValidationLocked(database capabilitySQL, identity capability.AttemptIdentity, resultSHA string, result capability.ValidationResult) error {
 	if err := validateCapabilityIdentity(identity); err != nil {
 		return err
 	}
@@ -151,7 +160,7 @@ func (s *Store) BindCapabilityValidation(identity capability.AttemptIdentity, re
 		status = "passed"
 	}
 	var existing, existingStatus, existingResult string
-	err = s.db.QueryRow(`SELECT validation_json,final_status,immutable_result_digest FROM capability_attempts
+	err = database.QueryRow(`SELECT validation_json,final_status,immutable_result_digest FROM capability_attempts
 		WHERE issue_id=? AND stage=? AND attempt_id=?`, identity.IssueID, identity.Stage, identity.AttemptID).
 		Scan(&existing, &existingStatus, &existingResult)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -166,7 +175,7 @@ func (s *Store) BindCapabilityValidation(identity capability.AttemptIdentity, re
 		}
 		return lifecycleDiagnostic(CodeConflict, "capability validation already has different data")
 	}
-	_, err = s.db.Exec(`UPDATE capability_attempts SET validation_json=?,final_status=?,immutable_result_digest=?,updated_at=?
+	_, err = database.Exec(`UPDATE capability_attempts SET validation_json=?,final_status=?,immutable_result_digest=?,updated_at=?
 		WHERE issue_id=? AND stage=? AND attempt_id=? AND validation_json=''`, string(encoded), status, resultSHA,
 		time.Now().UTC().Format(time.RFC3339Nano), identity.IssueID, identity.Stage, identity.AttemptID)
 	return err
@@ -255,9 +264,13 @@ func (s *Store) fillCapabilitySlotLocked(identity capability.AttemptIdentity, va
 }
 
 func (s *Store) requireCapabilityValidationLocked(attempt StageLifecycleAttempt, resultSHA string) error {
+	return requireCapabilityValidation(s.db, attempt, resultSHA)
+}
+
+func requireCapabilityValidation(database capabilitySQL, attempt StageLifecycleAttempt, resultSHA string) error {
 	var schemaVersion int
 	var contractID string
-	err := s.db.QueryRow(`SELECT capability_schema_version,capability_contract_sha256 FROM stage_lifecycle_attempts
+	err := database.QueryRow(`SELECT capability_schema_version,capability_contract_sha256 FROM stage_lifecycle_attempts
 		WHERE issue_id=? AND stage=? AND attempt_id=?`, attempt.IssueID, attempt.Stage, attempt.AttemptID).Scan(&schemaVersion, &contractID)
 	if err != nil {
 		return err
@@ -266,7 +279,7 @@ func (s *Store) requireCapabilityValidationLocked(attempt StageLifecycleAttempt,
 		return lifecycleDiagnostic(CodeInvalidState, "capability validation evidence is required")
 	}
 	var status, boundResult, capabilityContract string
-	err = s.db.QueryRow(`SELECT final_status,immutable_result_digest,contract_digest FROM capability_attempts
+	err = database.QueryRow(`SELECT final_status,immutable_result_digest,contract_digest FROM capability_attempts
 		WHERE issue_id=? AND stage=? AND attempt_id=?`, attempt.IssueID, attempt.Stage, attempt.AttemptID).
 		Scan(&status, &boundResult, &capabilityContract)
 	if errors.Is(err, sql.ErrNoRows) {

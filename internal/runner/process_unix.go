@@ -52,6 +52,10 @@ func startProcessTree(spec ProcessSpec) (*ProcessTree, error) {
 		}
 		return nil
 	})
+	tree.groupAlive = func() bool {
+		err := syscall.Kill(-pid, 0)
+		return err == nil || err == syscall.EPERM
+	}
 	tree.stdin, tree.stdout = stdin, stdout
 	return tree, nil
 }

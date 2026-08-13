@@ -21,14 +21,15 @@ type ProcessSpec struct {
 }
 
 type ProcessTree struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	done      chan struct{}
-	waitErr   error
-	waitOnce  sync.Once
-	termMu    sync.Mutex
-	terminate func(force bool) error
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	done       chan struct{}
+	waitErr    error
+	waitOnce   sync.Once
+	termMu     sync.Mutex
+	terminate  func(force bool) error
+	groupAlive func() bool
 }
 
 func StartProcessTree(ctx context.Context, spec ProcessSpec) (*ProcessTree, error) {
@@ -78,6 +79,12 @@ func (p *ProcessTree) Wait() error {
 		return nil
 	}
 	<-p.done
+	p.termMu.Lock()
+	cleanupErr := p.reapRemaining(100 * time.Millisecond)
+	p.termMu.Unlock()
+	if p.waitErr == nil {
+		return cleanupErr
+	}
 	return p.waitErr
 }
 
@@ -87,26 +94,74 @@ func (p *ProcessTree) TerminateAndWait(grace time.Duration) error {
 	}
 	p.termMu.Lock()
 	defer p.termMu.Unlock()
+	cleanupErr := p.ensureReaped(grace)
+	if p.waitErr == nil {
+		return cleanupErr
+	}
+	return p.waitErr
+}
+
+// EnsureReaped terminates any live process-group members and reports only
+// cleanup failures. The provider's own exit status remains available through
+// Wait and is not itself evidence that descendant cleanup failed.
+func (p *ProcessTree) EnsureReaped(grace time.Duration) error {
+	if p == nil {
+		return nil
+	}
+	p.termMu.Lock()
+	defer p.termMu.Unlock()
+	return p.ensureReaped(grace)
+}
+
+func (p *ProcessTree) ensureReaped(grace time.Duration) error {
 	select {
 	case <-p.done:
-		return p.waitErr
 	default:
+		if p.stdin != nil {
+			_ = p.stdin.Close()
+		}
+		if p.terminate != nil {
+			_ = p.terminate(false)
+		}
+		timer := time.NewTimer(grace)
+		select {
+		case <-p.done:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+			if p.terminate != nil {
+				_ = p.terminate(true)
+			}
+			<-p.done
+		}
 	}
-	if p.stdin != nil {
-		_ = p.stdin.Close()
+	return p.reapRemaining(grace)
+}
+
+func (p *ProcessTree) reapRemaining(grace time.Duration) error {
+	if p.groupAlive == nil || !p.groupAlive() {
+		return nil
 	}
 	if p.terminate != nil {
 		_ = p.terminate(false)
 	}
-	timer := time.NewTimer(grace)
-	defer timer.Stop()
-	select {
-	case <-p.done:
-		return p.waitErr
-	case <-timer.C:
-		if p.terminate != nil {
-			_ = p.terminate(true)
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if !p.groupAlive() {
+			return nil
 		}
-		return p.Wait()
+		time.Sleep(5 * time.Millisecond)
 	}
+	if p.terminate != nil {
+		_ = p.terminate(true)
+	}
+	deadline = time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if !p.groupAlive() {
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return context.DeadlineExceeded
 }

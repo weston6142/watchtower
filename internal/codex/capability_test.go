@@ -26,7 +26,9 @@ func TestCodexCapabilityConformance(t *testing.T) {
 }
 
 func TestProviderUsesGatewayInsteadOfLegacyTools(t *testing.T) {
-	got := buildInvocation(repocfg.CodexProfile{Model: "model", Effort: "high"}, turnDescriptor{
+	got := buildInvocation(repocfg.CodexProfile{
+		Model: "model", Effort: "high", FeatureOverrides: map[string]bool{"unified_exec": true},
+	}, turnDescriptor{
 		Workdir: t.TempDir(), Kind: turnInitial, PackagePrompt: "legacy Bash Read Write",
 		Prompt: "task", GatewayEndpoint: "http://127.0.0.1/private", GatewayTools: []string{"mcp__watchtower__workspace_read"},
 	})
@@ -38,6 +40,9 @@ func TestProviderUsesGatewayInsteadOfLegacyTools(t *testing.T) {
 	}
 	if strings.Contains(joined, "danger-full-access") {
 		t.Fatalf("Codex retained unrestricted sandbox authority: %s", joined)
+	}
+	if strings.Contains(joined, "features.unified_exec=true") {
+		t.Fatalf("Codex profile re-enabled unmanaged native execution: %s", joined)
 	}
 	if strings.Contains(strings.Join(got.RedactedArgv, "\n"), "http://127.0.0.1/private") {
 		t.Fatalf("Codex recorded the private gateway endpoint: %v", got.RedactedArgv)
@@ -108,14 +113,11 @@ func capabilityRequests(root string) []runner.PreflightRequest {
 	profiles := []string{"artifact", "inspect", "implementation", "review", "librarian", "final-review", "conflict-resolution"}
 	requests := make([]runner.PreflightRequest, 0, len(profiles))
 	for _, profile := range profiles {
-		contract := capability.CompiledContract{
-			ContractID: "contract-" + profile, AuthorityDigest: "authority-" + profile,
-			Contract: capability.Contract{
-				Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
-				IssueID: "GH-68", Stage: "execute", AttemptID: "attempt", Profile: profile,
-				WorkspaceRoot: root, Operations: []capability.OperationClass{capability.OpWorkspaceRead},
-			},
-		}
+		contract := sealCodexTestContract(capability.Contract{
+			Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
+			IssueID: "GH-68", Stage: "execute", AttemptID: "attempt", Profile: profile,
+			WorkspaceRoot: root, Operations: []capability.OperationClass{capability.OpWorkspaceRead},
+		})
 		requests = append(requests, runner.PreflightRequest{IssueID: "GH-68", Stage: "execute", Agent: "executor", Workdir: root, Contract: contract})
 	}
 	return requests

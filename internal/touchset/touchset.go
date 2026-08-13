@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -156,6 +157,83 @@ func Overlap(a, b Set) bool {
 		}
 	}
 	return false
+}
+
+// IntersectGlobs returns a fail-closed intersection that is representable by
+// the canonical glob grammar. It never substitutes a merely overlapping glob,
+// because that can grant paths outside one side of the intersection.
+func IntersectGlobs(left, right []string) ([]string, error) {
+	left, err := CanonicalGlobs(left)
+	if err != nil {
+		return nil, err
+	}
+	right, err = CanonicalGlobs(right)
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, leftGlob := range left {
+		for _, rightGlob := range right {
+			switch {
+			case globContains(leftGlob, rightGlob):
+				result = append(result, rightGlob)
+			case globContains(rightGlob, leftGlob):
+				result = append(result, leftGlob)
+			case Overlap(Set{Globs: []string{leftGlob}}, Set{Globs: []string{rightGlob}}):
+				return nil, fmt.Errorf("glob intersection %q and %q cannot be represented safely", leftGlob, rightGlob)
+			}
+		}
+	}
+	sort.Strings(result)
+	unique := result[:0]
+	for _, value := range result {
+		if len(unique) == 0 || unique[len(unique)-1] != value {
+			unique = append(unique, value)
+		}
+	}
+	return unique, nil
+}
+
+func globContains(container, candidate string) bool {
+	if container == candidate {
+		return true
+	}
+	if !strings.ContainsAny(candidate, "*?[") {
+		matched, err := Match(container, candidate)
+		return err == nil && matched
+	}
+	containerSegments := strings.Split(container, "/")
+	candidateSegments := strings.Split(candidate, "/")
+	if len(containerSegments) > 0 && containerSegments[len(containerSegments)-1] == "**" {
+		prefixSegments := containerSegments[:len(containerSegments)-1]
+		if len(candidateSegments) <= len(prefixSegments) {
+			return false
+		}
+		for index, segment := range prefixSegments {
+			if candidateSegments[index] != segment {
+				return false
+			}
+		}
+		return true
+	}
+	if len(containerSegments) != len(candidateSegments) {
+		return false
+	}
+	for index, segment := range containerSegments {
+		candidateSegment := candidateSegments[index]
+		switch {
+		case segment == candidateSegment:
+		case segment == "*" && candidateSegment != "**":
+		case !strings.ContainsAny(candidateSegment, "*?["):
+			matched, err := path.Match(segment, candidateSegment)
+			if err != nil || !matched {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func pathPrefix(p, of string) bool {

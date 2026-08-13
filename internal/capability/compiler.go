@@ -92,7 +92,7 @@ func Compile(input CompileInput) (CompiledContract, error) {
 	case flow.ProfileImplementation, flow.ProfileReview, flow.ProfileFinalReview:
 		contract.Writes = grants(input.ApprovedTouchset)
 	case flow.ProfileLibrarian:
-		intersection, intersectionErr := intersectGlobs(input.ApprovedTouchset, input.DocumentationPaths)
+		intersection, intersectionErr := touchset.IntersectGlobs(input.ApprovedTouchset, input.DocumentationPaths)
 		if intersectionErr != nil || len(intersection) == 0 {
 			return CompiledContract{}, invalid("librarian scope has no approved documentation intersection")
 		}
@@ -107,7 +107,7 @@ func Compile(input CompileInput) (CompiledContract, error) {
 	// Declared agent outputs are bounded protocol paths, independent of the
 	// product touchset. Every mutable profile must be able to create or replace
 	// those exact outputs without broadening product-file authority.
-	if input.Profile != flow.ProfileArtifact {
+	if input.Profile != flow.ProfileArtifact && input.Profile != flow.ProfileInspect {
 		contract.Writes = append(contract.Writes, outputGrants(outputs)...)
 	}
 
@@ -150,6 +150,29 @@ func Compile(input CompileInput) (CompiledContract, error) {
 	return CompiledContract{
 		Contract: contract, ContractID: digest(contractBytes), AuthorityDigest: digest(authorityBytes),
 	}, nil
+}
+
+// ValidateCompiledContract proves that the immutable contract body still
+// matches both identities assigned by Compile.
+func ValidateCompiledContract(compiled CompiledContract) error {
+	contractBytes, err := json.Marshal(compiled.Contract)
+	if err != nil {
+		return err
+	}
+	authority := compiled.Contract
+	authority.AttemptID = ""
+	authorityBytes, err := json.Marshal(authority)
+	if err != nil {
+		return err
+	}
+	if compiled.ContractID == "" || compiled.AuthorityDigest == "" ||
+		compiled.ContractID != digest(contractBytes) || compiled.AuthorityDigest != digest(authorityBytes) {
+		return &PolicyError{
+			Phase: "launch", Reason: ReasonProviderUnsupported,
+			Diagnostic: "compiled contract identity mismatch",
+		}
+	}
+	return nil
 }
 
 func knownProfile(profile flow.CapabilityProfile) bool {
@@ -246,28 +269,6 @@ func grants(paths []string) []PathGrant {
 		result = append(result, PathGrant{Path: path, Mutations: append([]MutationClass(nil), allMutations...)})
 	}
 	return result
-}
-
-func intersectGlobs(approved, declared []string) ([]string, error) {
-	docs, err := touchset.CanonicalGlobs(declared)
-	if err != nil {
-		return nil, err
-	}
-	var result []string
-	for _, approval := range approved {
-		for _, doc := range docs {
-			if !touchset.Overlap(touchset.Set{Globs: []string{approval}}, touchset.Set{Globs: []string{doc}}) {
-				continue
-			}
-			approvalPrefix, docPrefix := touchset.PrefixOf(approval), touchset.PrefixOf(doc)
-			if len(docPrefix) > len(approvalPrefix) {
-				result = append(result, doc)
-			} else {
-				result = append(result, approval)
-			}
-		}
-	}
-	return uniqueSorted(result), nil
 }
 
 func approvedConflictPaths(approved, conflicts []string) ([]string, error) {

@@ -130,7 +130,11 @@ func (s *Session) Symlink(target, path string) error {
 	if _, err := s.root.Lstat(filepath.FromSlash(canonicalTarget)); err != nil {
 		return s.deny(capability.OpWorkspaceMutate, canonicalTarget, canonicalPath)
 	}
-	if err := s.root.Symlink(filepath.FromSlash(canonicalTarget), filepath.FromSlash(canonicalPath)); err != nil {
+	relativeTarget, err := filepath.Rel(filepath.Dir(filepath.FromSlash(canonicalPath)), filepath.FromSlash(canonicalTarget))
+	if err != nil {
+		return s.deny(capability.OpWorkspaceMutate, canonicalTarget, canonicalPath)
+	}
+	if err := s.root.Symlink(relativeTarget, filepath.FromSlash(canonicalPath)); err != nil {
 		return err
 	}
 	s.record("runtime", "passed", "", capability.OpWorkspaceMutate, []string{canonicalTarget, canonicalPath})

@@ -34,3 +34,27 @@ func TestGatewayRejectsHardLinksAndEscapingSymlinks(t *testing.T) {
 		t.Fatal("escaping symlink was followed")
 	}
 }
+
+func TestGatewaySymlinkTargetIsRepositoryRelative(t *testing.T) {
+	workdir := t.TempDir()
+	contract := compileRuntimeContract(t, capability.CompileInput{
+		IssueID: "GH-68", Stage: "spec", AttemptID: "checkpoint-symlink", Profile: flow.ProfileArtifact,
+		WorkspaceRoot: workdir,
+		Outputs: []capability.RequiredOutput{
+			{Path: "nested/target.txt", Owner: capability.OwnerAgent},
+			{Path: "nested/link.txt", Owner: capability.OwnerAgent},
+		},
+	})
+	session := startRuntimeSession(t, workdir, contract)
+	defer session.Close()
+	if err := session.WriteFile("nested/target.txt", []byte("target\n"), capability.MutationCreate); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Symlink("nested/target.txt", "nested/link.txt"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(workdir, "nested", "link.txt"))
+	if err != nil || string(body) != "target\n" {
+		t.Fatalf("nested symlink body=%q err=%v", body, err)
+	}
+}

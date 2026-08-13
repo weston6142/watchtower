@@ -57,6 +57,12 @@ func TestCompileReadonlyOverridesMutationProfiles(t *testing.T) {
 	assertCompileReason(t, input, ReasonContractInvalid)
 }
 
+func TestCompileInspectProfileRejectsAgentOwnedOutputs(t *testing.T) {
+	input := compileInput(flow.ProfileInspect)
+	input.Outputs = []RequiredOutput{{Path: "report.md", Owner: OwnerAgent}}
+	assertCompileReason(t, input, ReasonContractInvalid)
+}
+
 func TestCompileArtifactAndLibrarianScopes(t *testing.T) {
 	artifact := compileInput(flow.ProfileArtifact)
 	artifact.MaterializedInputs = []string{"ISSUE.md", "STAGE.md", "decisions.md", "spec.md"}
@@ -82,6 +88,13 @@ func TestCompileArtifactAndLibrarianScopes(t *testing.T) {
 	if len(compiled.Contract.Writes) != 1 || compiled.Contract.Writes[0].Path != "docs/guildhall/**" {
 		t.Fatalf("librarian intersection = %+v", compiled.Contract.Writes)
 	}
+}
+
+func TestCompileLibrarianIntersectionCannotBroadenApprovedTouchset(t *testing.T) {
+	input := compileInput(flow.ProfileLibrarian)
+	input.ApprovedTouchset = []string{"docs/*.md"}
+	input.DocumentationPaths = []string{"docs/private/**"}
+	assertCompileReason(t, input, ReasonContractInvalid)
 }
 
 func TestCompileRejectsUnapprovedOrEngineOnlyAuthority(t *testing.T) {

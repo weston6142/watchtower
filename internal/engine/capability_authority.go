@@ -13,6 +13,8 @@ import (
 
 	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/pkgs"
+	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/touchset"
 )
@@ -116,7 +118,10 @@ func (e *Engine) resolveCapabilityAuthority(
 		if err != nil {
 			return resolvedCapabilityAuthority{}, fmt.Errorf("librarian documentation paths: %w", err)
 		}
-		authority.AgentWritablePaths = intersectCapabilityGlobs(approved.Globs, authority.DocumentationPaths)
+		authority.AgentWritablePaths, err = touchset.IntersectGlobs(approved.Globs, authority.DocumentationPaths)
+		if err != nil {
+			return resolvedCapabilityAuthority{}, fmt.Errorf("librarian documentation intersection: %w", err)
+		}
 		if len(authority.AgentWritablePaths) == 0 {
 			return resolvedCapabilityAuthority{}, fmt.Errorf("librarian documentation scope has no approved touchset intersection")
 		}
@@ -307,25 +312,6 @@ func canonicalExactPaths(paths []string) ([]string, error) {
 	return result, nil
 }
 
-func intersectCapabilityGlobs(approved, declared []string) []string {
-	var result []string
-	for _, approval := range approved {
-		for _, declaration := range declared {
-			if !touchset.Overlap(touchset.Set{Globs: []string{approval}}, touchset.Set{Globs: []string{declaration}}) {
-				continue
-			}
-			if len(touchset.PrefixOf(declaration)) > len(touchset.PrefixOf(approval)) {
-				result = append(result, declaration)
-			} else {
-				result = append(result, approval)
-			}
-		}
-	}
-	result, _ = touchset.CanonicalGlobs(result)
-	sort.Strings(result)
-	return result
-}
-
 func matchesAny(globs []string, path string) bool {
 	for _, glob := range globs {
 		if matched, err := touchset.Match(glob, path); err == nil && matched {
@@ -333,6 +319,25 @@ func matchesAny(globs []string, path string) bool {
 		}
 	}
 	return false
+}
+
+func stageLegacyRestrictions(stageRunner runner.Runner, agents []flow.AgentRef) pkgs.LegacyRestrictions {
+	source, ok := stageRunner.(runner.LegacyRestrictionSource)
+	if !ok {
+		return pkgs.LegacyRestrictions{}
+	}
+	var result pkgs.LegacyRestrictions
+	for _, agent := range agents {
+		restriction, found := source.LegacyRestrictions(agent.Package)
+		if !found || !restriction.Declared {
+			continue
+		}
+		result.Declared = true
+		result.DenyWorkspaceRead = result.DenyWorkspaceRead || restriction.DenyWorkspaceRead
+		result.DenyWorkspaceMutate = result.DenyWorkspaceMutate || restriction.DenyWorkspaceMutate
+		result.DenyLocalProcess = result.DenyLocalProcess || restriction.DenyLocalProcess
+	}
+	return result
 }
 
 func sha256Hex(value []byte) string {

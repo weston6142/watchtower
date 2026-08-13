@@ -423,6 +423,42 @@ func TestGatewayDeniesLifecycleAndIndirectProcessBypasses(t *testing.T) {
 	}
 }
 
+func TestGatewayLocalProcessCannotMutateWorkspace(t *testing.T) {
+	workdir := t.TempDir()
+	workdir, err := filepath.EvalSymlinks(workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workdir, "allowed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contract := capability.CompiledContract{
+		ContractID: "local-process-write-boundary",
+		Contract: capability.Contract{
+			Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
+			IssueID: "GH-68", Stage: "execute", AttemptID: "checkpoint-1",
+			WorkspaceRoot: workdir,
+			Operations:    []capability.OperationClass{capability.OpLocalProcess, capability.OpWorkspaceMutate},
+			Writes: []capability.PathGrant{{
+				Path: "allowed/**", Mutations: []capability.MutationClass{capability.MutationCreate},
+			}},
+		},
+	}
+	session := startRuntimeSession(t, workdir, contract)
+	defer session.Close()
+	target := filepath.Join(workdir, "allowed", "bypass.txt")
+	touchPath, err := filepath.EvalSymlinks("/usr/bin/touch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Run(context.Background(), []string{touchPath, target}); err == nil {
+		t.Fatal("local process bypassed the mediated workspace mutation operation")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("local process left a workspace mutation: %v", err)
+	}
+}
+
 func compileRuntimeContract(t *testing.T, input capability.CompileInput) capability.CompiledContract {
 	t.Helper()
 	contract, err := capability.Compile(input)

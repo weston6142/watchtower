@@ -11,7 +11,6 @@ import (
 
 	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/runner"
-	"github.com/weston6142/watchtower/internal/touchset"
 )
 
 type seatbeltBackend struct {
@@ -70,13 +69,6 @@ func seatbeltProfile(request ProcessRequest) (string, error) {
 	} else {
 		for _, path := range request.Contract.Contract.Reads {
 			reads = append(reads, filepath.Join(request.Contract.Contract.WorkspaceRoot, filepath.FromSlash(path)))
-		}
-		for _, grant := range request.Contract.Contract.Writes {
-			prefix := touchset.PrefixOf(grant.Path)
-			if prefix == "" {
-				return "", unsupported("write grant has no safe containment prefix")
-			}
-			writes = append(writes, filepath.Join(request.Contract.Contract.WorkspaceRoot, filepath.FromSlash(prefix)))
 		}
 	}
 	sort.Strings(reads)

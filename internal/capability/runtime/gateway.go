@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -176,20 +177,20 @@ func (s *Session) Close() error {
 		processes = append(processes, process)
 	}
 	s.mu.Unlock()
+	var reapErr error
 	for _, process := range processes {
-		_ = process.TerminateAndWait(250 * time.Millisecond)
+		reapErr = errors.Join(reapErr, process.EnsureReaped(250*time.Millisecond))
 	}
 	gatewayErr := s.stopGateway()
 	rootErr := s.root.Close()
 	removeErr := os.RemoveAll(s.scratch)
-	s.record("reap", "passed", "", "", nil)
-	if rootErr != nil {
-		return rootErr
+	closeErr := errors.Join(reapErr, gatewayErr, rootErr, removeErr)
+	if closeErr != nil {
+		s.record("reap", "failed", "", "", nil)
+	} else {
+		s.record("reap", "passed", "", "", nil)
 	}
-	if gatewayErr != nil {
-		return gatewayErr
-	}
-	return removeErr
+	return closeErr
 }
 
 // StartProvider launches the provider transport through the same immutable

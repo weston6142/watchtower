@@ -119,6 +119,10 @@ func TestStageResultPersistenceFailureLeavesPreviousLatest(t *testing.T) {
 	if err := putValidatedLifecycleResult(t, s, second, structuredResultRef(t, second, first.AttemptID, stageresult.OutcomeCompleted, "b")); err == nil {
 		t.Fatal("injected persistence failure succeeded")
 	}
+	capabilityRecord, found, err := s.CapabilityAttempt(second.IssueID, second.Stage, second.AttemptID)
+	if err != nil || !found || capabilityRecord.Validation.Passed {
+		t.Fatalf("failed result persistence left successful capability authority: record=%+v found=%t err=%v", capabilityRecord, found, err)
+	}
 	if _, found, err := s.StageLifecycleResult(second); err != nil || found {
 		t.Fatalf("failed attempt result found=%v err=%v", found, err)
 	}
@@ -256,12 +260,9 @@ func createValidatedLifecycleAttempt(t *testing.T, s *Store, attempt StageLifecy
 func putValidatedLifecycleResult(t *testing.T, s *Store, attempt StageLifecycleAttempt, result contextpack.AttemptResult) error {
 	t.Helper()
 	identity := capability.AttemptIdentity{IssueID: attempt.IssueID, Stage: attempt.Stage, AttemptID: attempt.AttemptID}
-	if err := s.BindCapabilityValidation(identity, result.ResultSHA256, capability.ValidationResult{
+	return s.CommitCapabilityValidatedResult(attempt, identity, capability.ValidationResult{
 		Passed: true, ResultDigest: result.ResultSHA256, DeltaDigest: strings.Repeat("d", 64),
-	}); err != nil {
-		return err
-	}
-	return s.PutStageLifecycleResult(attempt, result)
+	}, result)
 }
 
 func lifecycleRecord(attempt StageLifecycleAttempt, substate stagelifecycle.Substate, version, predecessor int, id string) stagelifecycle.Record {

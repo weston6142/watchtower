@@ -64,15 +64,16 @@ type DeltaEntry struct {
 }
 
 type GitDelta struct {
-	Before          GitIdentity `json:"before"`
-	After           GitIdentity `json:"after"`
-	BranchChanged   bool        `json:"branch_changed"`
-	HeadChanged     bool        `json:"head_changed"`
-	TreeChanged     bool        `json:"tree_changed"`
-	IndexChanged    bool        `json:"index_changed"`
-	WorktreeChanged bool        `json:"worktree_changed"`
-	RefsChanged     bool        `json:"refs_changed"`
-	RemoteChanged   bool        `json:"remote_changed"`
+	Before           GitIdentity `json:"before"`
+	After            GitIdentity `json:"after"`
+	BranchChanged    bool        `json:"branch_changed"`
+	HeadChanged      bool        `json:"head_changed"`
+	TreeChanged      bool        `json:"tree_changed"`
+	IndexChanged     bool        `json:"index_changed"`
+	WorktreeChanged  bool        `json:"worktree_changed"`
+	RefsChanged      bool        `json:"refs_changed"`
+	RemoteChanged    bool        `json:"remote_changed"`
+	CommonGitChanged bool        `json:"common_git_changed"`
 }
 
 type Delta struct {
@@ -85,6 +86,8 @@ type Delta struct {
 type Observer struct {
 	DescendantsReaped func() bool
 }
+
+const noGitWorkspaceIdentity = "no-git-workspace"
 
 func (o Observer) Capture(workspace string, engineWrites []EngineWrite) (Baseline, error) {
 	root, err := filepath.EvalSymlinks(workspace)
@@ -105,7 +108,7 @@ func (o Observer) Capture(workspace string, engineWrites []EngineWrite) (Baselin
 			return Baseline{}, err
 		}
 		git = GitIdentity{}
-		commonDigest = hashObserverBytes([]byte("no-git-workspace"))
+		commonDigest = hashObserverBytes([]byte(noGitWorkspaceIdentity))
 	}
 	exclusions := make(map[string]string, len(engineWrites))
 	for _, write := range engineWrites {
@@ -131,12 +134,13 @@ func (o Observer) Compare(baseline Baseline) (Delta, error) {
 	if err != nil {
 		return Delta{}, err
 	}
-	git, _, err := snapshotGit(baseline.Workspace)
+	git, commonDigest, err := snapshotGit(baseline.Workspace)
 	if err != nil {
 		if _, statErr := os.Lstat(filepath.Join(baseline.Workspace, ".git")); !errors.Is(statErr, os.ErrNotExist) {
 			return Delta{}, err
 		}
 		git = GitIdentity{}
+		commonDigest = hashObserverBytes([]byte(noGitWorkspaceIdentity))
 	}
 	delta := Delta{Workspace: baseline.Workspace}
 	deleted := make(map[string]FileIdentity)
@@ -157,7 +161,7 @@ func (o Observer) Compare(baseline Baseline) (Delta, error) {
 		if before.Mode != after.Mode {
 			delta.Entries = append(delta.Entries, deltaEntry(baseline, after, path, "", MutationMetadata))
 		}
-		if before.Inode != after.Inode || before.LinkCount != after.LinkCount {
+		if before.Kind != "directory" && (before.Inode != after.Inode || before.LinkCount != after.LinkCount) {
 			delta.Entries = append(delta.Entries, deltaEntry(baseline, after, path, "", MutationLink))
 		}
 	}
@@ -183,7 +187,7 @@ func (o Observer) Compare(baseline Baseline) (Delta, error) {
 	}
 	for path, after := range created {
 		mutation := MutationCreate
-		if after.Kind == "symlink" || after.LinkCount > 1 {
+		if after.Kind == "symlink" || (after.Kind == "regular" && after.LinkCount > 1) {
 			mutation = MutationLink
 		}
 		delta.Entries = append(delta.Entries, deltaEntry(baseline, after, path, "", mutation))
@@ -196,13 +200,14 @@ func (o Observer) Compare(baseline Baseline) (Delta, error) {
 	})
 	delta.Git = GitDelta{
 		Before: baseline.Git, After: git,
-		BranchChanged:   baseline.Git.Branch != git.Branch,
-		HeadChanged:     baseline.Git.Head != git.Head,
-		TreeChanged:     baseline.Git.Tree != git.Tree,
-		IndexChanged:    baseline.Git.IndexDigest != git.IndexDigest,
-		WorktreeChanged: baseline.Git.WorktreeDigest != git.WorktreeDigest,
-		RefsChanged:     !reflect.DeepEqual(baseline.Git.Refs, git.Refs),
-		RemoteChanged:   baseline.Git.RemoteDigest != git.RemoteDigest,
+		BranchChanged:    baseline.Git.Branch != git.Branch,
+		HeadChanged:      baseline.Git.Head != git.Head,
+		TreeChanged:      baseline.Git.Tree != git.Tree,
+		IndexChanged:     baseline.Git.IndexDigest != git.IndexDigest,
+		WorktreeChanged:  baseline.Git.WorktreeDigest != git.WorktreeDigest,
+		RefsChanged:      !reflect.DeepEqual(baseline.Git.Refs, git.Refs),
+		RemoteChanged:    baseline.Git.RemoteDigest != git.RemoteDigest,
+		CommonGitChanged: baseline.CommonGitDigest != commonDigest,
 	}
 	encoded, err := json.Marshal(struct {
 		Entries []DeltaEntry `json:"entries"`
@@ -238,9 +243,6 @@ func snapshotFiles(root string) (map[string]FileIdentity, error) {
 		info, err := os.Lstat(path)
 		if err != nil {
 			return err
-		}
-		if info.IsDir() {
-			return nil
 		}
 		identity := FileIdentity{Path: rel, Mode: uint32(info.Mode()), Size: info.Size(), Kind: fileKind(info.Mode())}
 		identity.Device, identity.Inode, identity.LinkCount = statIdentity(info.Sys())
@@ -291,7 +293,7 @@ func snapshotGit(root string) (GitIdentity, string, error) {
 	if err != nil {
 		return GitIdentity{}, "", err
 	}
-	refsOutput, err := gitOutput(root, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags")
+	refsOutput, err := gitOutput(root, "for-each-ref", "--format=%(refname) %(objectname)")
 	if err != nil {
 		return GitIdentity{}, "", err
 	}
@@ -314,10 +316,97 @@ func snapshotGit(root string) (GitIdentity, string, error) {
 		commonDir = filepath.Join(root, commonDir)
 	}
 	commonDir, _ = filepath.Abs(commonDir)
+	gitDir, err := gitOutput(root, "rev-parse", "--git-dir")
+	if err != nil {
+		return GitIdentity{}, "", err
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(root, gitDir)
+	}
+	gitDir, _ = filepath.Abs(gitDir)
+	controlDigest, err := gitControlDigest(commonDir, gitDir)
+	if err != nil {
+		return GitIdentity{}, "", err
+	}
 	return GitIdentity{
 		Branch: branch, Head: head, Tree: tree, IndexDigest: indexDigest,
 		WorktreeDigest: hashObserverBytes(status), Refs: refs, RemoteDigest: hashObserverBytes(remote),
-	}, hashObserverBytes([]byte(commonDir)), nil
+	}, controlDigest, nil
+}
+
+func gitControlDigest(commonDir, gitDir string) (string, error) {
+	type controlIdentity struct {
+		Path   string `json:"path"`
+		Kind   string `json:"kind"`
+		Mode   uint32 `json:"mode"`
+		SHA256 string `json:"sha256,omitempty"`
+		Target string `json:"target,omitempty"`
+	}
+	var controls []controlIdentity
+	add := func(label, candidate string) error {
+		info, err := os.Lstat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		identity := controlIdentity{Path: label, Kind: fileKind(info.Mode()), Mode: uint32(info.Mode())}
+		switch {
+		case info.Mode().IsRegular():
+			identity.SHA256, err = hashFile(candidate)
+		case info.Mode()&os.ModeSymlink != 0:
+			identity.Target, err = os.Readlink(candidate)
+			identity.SHA256 = hashObserverBytes([]byte(identity.Target))
+		}
+		if err != nil {
+			return err
+		}
+		controls = append(controls, identity)
+		return nil
+	}
+	for _, item := range []struct{ label, path string }{
+		{"config", filepath.Join(commonDir, "config")},
+		{"info/attributes", filepath.Join(commonDir, "info", "attributes")},
+		{"info/exclude", filepath.Join(commonDir, "info", "exclude")},
+		{"objects/info/alternates", filepath.Join(commonDir, "objects", "info", "alternates")},
+		{"config.worktree", filepath.Join(gitDir, "config.worktree")},
+	} {
+		if err := add(item.label, item.path); err != nil {
+			return "", err
+		}
+	}
+	hooks := filepath.Join(commonDir, "hooks")
+	if err := add("hooks", hooks); err != nil {
+		return "", err
+	}
+	if err := filepath.WalkDir(hooks, func(candidate string, entry os.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, os.ErrNotExist) {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if candidate == hooks || entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(hooks, candidate)
+		if err != nil {
+			return err
+		}
+		return add(filepath.ToSlash(filepath.Join("hooks", relative)), candidate)
+	}); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	sort.Slice(controls, func(i, j int) bool { return controls[i].Path < controls[j].Path })
+	encoded, err := json.Marshal(struct {
+		CommonDir string            `json:"common_dir"`
+		Controls  []controlIdentity `json:"controls"`
+	}{CommonDir: commonDir, Controls: controls})
+	if err != nil {
+		return "", err
+	}
+	return hashObserverBytes(encoded), nil
 }
 
 func deltaEntry(baseline Baseline, identity FileIdentity, path, from string, mutation MutationClass) DeltaEntry {
@@ -353,10 +442,11 @@ func baselineDigest(baseline Baseline) (string, error) {
 		entries = append(entries, baseline.Entries[path])
 	}
 	encoded, err := json.Marshal(struct {
-		Workspace string         `json:"workspace"`
-		Entries   []FileIdentity `json:"entries"`
-		Git       GitIdentity    `json:"git"`
-	}{baseline.Workspace, entries, baseline.Git})
+		Workspace       string         `json:"workspace"`
+		Entries         []FileIdentity `json:"entries"`
+		Git             GitIdentity    `json:"git"`
+		CommonGitDigest string         `json:"common_git_digest"`
+	}{baseline.Workspace, entries, baseline.Git, baseline.CommonGitDigest})
 	if err != nil {
 		return "", err
 	}
@@ -376,6 +466,8 @@ func canonicalObservedPath(value string) (string, error) {
 
 func fileKind(mode os.FileMode) string {
 	switch {
+	case mode.IsDir():
+		return "directory"
 	case mode.IsRegular():
 		return "regular"
 	case mode&os.ModeSymlink != 0:

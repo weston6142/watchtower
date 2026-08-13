@@ -11,6 +11,7 @@ import (
 
 	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/levers"
+	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/stageresult"
 )
 
@@ -111,6 +112,12 @@ type Runner interface {
 	Run(context.Context, StageRequest, chan<- Ask) <-chan Result
 }
 
+// LegacyRestrictionSource exposes package compatibility metadata only so the
+// engine can subtract authority before provider preflight.
+type LegacyRestrictionSource interface {
+	LegacyRestrictions(agentPackage string) (pkgs.LegacyRestrictions, bool)
+}
+
 func NewEnforcementPlan(contract capability.CompiledContract, provider, implementation, version string,
 	proofs []capability.ControlProof) (capability.EnforcementPlan, error) {
 	plan := capability.EnforcementPlan{
@@ -147,6 +154,9 @@ func ValidateEnforcementPlan(contract capability.CompiledContract, plan capabili
 }
 
 func ValidateStageRequest(request StageRequest) error {
+	if err := capability.ValidateCompiledContract(request.Contract); err != nil {
+		return err
+	}
 	if request.IssueID == "" || request.Stage == "" || request.Agent == "" || request.Workdir == "" ||
 		request.Contract.ContractID == "" || request.Contract.Contract.IssueID != request.IssueID ||
 		request.Contract.Contract.Stage != request.Stage || request.Plan.ContractID != request.Contract.ContractID {

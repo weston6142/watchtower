@@ -65,17 +65,7 @@ func (e *Engine) markCapabilityWorkspaceRejected(
 	if !ok {
 		return fmt.Errorf("capability recovery provider is unavailable")
 	}
-	observedCommit, err := gitRevision(is.wsPath, "HEAD")
-	if err != nil {
-		return fmt.Errorf("observe rejected workspace commit: %w", err)
-	}
-	observedRef, err := gitRevision(is.wsPath, "refs/heads/"+baseline.Git.Branch)
-	if err != nil {
-		return fmt.Errorf("observe rejected issue ref: %w", err)
-	}
-	if observedCommit != observedRef {
-		return fmt.Errorf("rejected workspace HEAD and issue ref disagree")
-	}
+	observedRef, _ := gitRevision(is.wsPath, "refs/heads/"+baseline.Git.Branch)
 	integration, found, err := e.cfg.Store.IssueIntegration(is.id)
 	if err != nil {
 		return err

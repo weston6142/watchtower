@@ -144,6 +144,27 @@ func TestValidatorIgnoresNoEngineWrite(t *testing.T) {
 	assertPostStageViolation(t, err)
 }
 
+func TestValidatorRejectsGitControlMutation(t *testing.T) {
+	repo := observerRepo(t)
+	observerGit(t, repo, "commit", "--allow-empty", "-m", "baseline")
+	contract := validatorContract(t, repo)
+	observer := Observer{}
+	baseline, err := observer.Capture(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(repo, ".git", "hooks", "post-commit")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	delta, err := observer.Compare(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Validate(contract, baseline, delta, nil, nil)
+	assertPostStageViolation(t, err)
+}
+
 func validatorContract(t *testing.T, repo string) CompiledContract {
 	t.Helper()
 	compiled, err := Compile(CompileInput{

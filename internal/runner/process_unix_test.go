@@ -46,3 +46,50 @@ func TestProcessTreeTerminateAndWaitReapsDescendants(t *testing.T) {
 		t.Fatalf("descendant %d is still alive", childPID)
 	}
 }
+
+func TestProcessTreeWaitReapsDescendantsAfterLeaderExits(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	tree, err := runner.StartProcessTree(context.Background(), runner.ProcessSpec{
+		Path: "/bin/sh",
+		Args: []string{"-c", `(trap '' TERM; while :; do sleep 1; done) & echo $! > "$1"`, "process-tree", pidFile},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil || childPID <= 0 {
+		t.Fatalf("descendant pid = %q err=%v", body, err)
+	}
+	defer syscall.Kill(childPID, syscall.SIGKILL)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(childPID, 0); err != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("descendant %d survived after the process leader exited", childPID)
+}
+
+func TestProcessTreeEnsureReapedIgnoresLeaderExitStatus(t *testing.T) {
+	tree, err := runner.StartProcessTree(context.Background(), runner.ProcessSpec{
+		Path: "/bin/sh",
+		Args: []string{"-c", "exit 7"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.EnsureReaped(100 * time.Millisecond); err != nil {
+		t.Fatalf("cleanup reported the provider exit status as a reap failure: %v", err)
+	}
+	if err := tree.Wait(); err == nil {
+		t.Fatal("Wait did not preserve the provider exit status")
+	}
+}

@@ -58,7 +58,7 @@ func Validate(contract CompiledContract, baseline Baseline, delta Delta, runtime
 			return fail(OpWorkspaceMutate, required.Path)
 		}
 	}
-	if delta.Git.RemoteChanged || delta.Git.BranchChanged {
+	if delta.Git.RemoteChanged || delta.Git.BranchChanged || delta.Git.CommonGitChanged {
 		return fail(OpVCSCommit)
 	}
 	if delta.Git.HeadChanged {

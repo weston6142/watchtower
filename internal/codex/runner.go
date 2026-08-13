@@ -44,6 +44,11 @@ type CodeRunner struct {
 	Backend         capruntime.Backend
 }
 
+func (c *CodeRunner) LegacyRestrictions(agentPackage string) (pkgs.LegacyRestrictions, bool) {
+	pkg, ok := c.Packages[agentPackage]
+	return pkg.LegacyRestrictions, ok
+}
+
 func (c *CodeRunner) Preflight(_ context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
 	return conformance.Preflight(request, c.backend(), "codex", "codex-cli-gateway")
 }
@@ -93,7 +98,10 @@ func (c *CodeRunner) runWithGate(ctx context.Context, request runner.StageReques
 		return runner.Result{Err: err, FailureClass: runner.FailureConfiguration}
 	}
 	defer func() {
-		_ = session.Close()
+		if closeErr := session.Close(); closeErr != nil && result.Err == nil {
+			result.Err = fmt.Errorf("close capability runtime: %w", closeErr)
+			result.FailureClass = runner.FailureExecution
+		}
 		runtimeAuditMu.Lock()
 		defer runtimeAuditMu.Unlock()
 		providerAudit := append([]capability.AuditRecord(nil), result.RuntimeAudit...)

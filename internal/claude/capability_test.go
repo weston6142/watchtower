@@ -101,14 +101,11 @@ func claudeCapabilityRequests(root string) []runner.PreflightRequest {
 	profiles := []string{"artifact", "inspect", "implementation", "review", "librarian", "final-review", "conflict-resolution"}
 	requests := make([]runner.PreflightRequest, 0, len(profiles))
 	for _, profile := range profiles {
-		contract := capability.CompiledContract{
-			ContractID: "contract-" + profile, AuthorityDigest: "authority-" + profile,
-			Contract: capability.Contract{
-				Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
-				IssueID: "GH-68", Stage: "execute", AttemptID: "attempt", Profile: profile,
-				WorkspaceRoot: root, Operations: []capability.OperationClass{capability.OpWorkspaceRead},
-			},
-		}
+		contract := sealClaudeTestContract(capability.Contract{
+			Version: capability.ContractVersion, EnginePolicyVersion: capability.EnginePolicyVersion,
+			IssueID: "GH-68", Stage: "execute", AttemptID: "attempt", Profile: profile,
+			WorkspaceRoot: root, Operations: []capability.OperationClass{capability.OpWorkspaceRead},
+		})
 		requests = append(requests, runner.PreflightRequest{IssueID: "GH-68", Stage: "execute", Agent: "executor", Workdir: root, Contract: contract})
 	}
 	return requests
