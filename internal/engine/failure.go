@@ -377,6 +377,14 @@ func classifyFailure(err error) (failure.Site, failure.Class, failure.RetryDispo
 			return failure.SiteCapability, failure.ClassPolicy, failure.RetryAfterStateChange, failure.StateTrustedWorkspace
 		}
 	}
+	var retryableResult *stageResultRetryableError
+	if errors.As(err, &retryableResult) {
+		return failure.SiteLifecycle, failure.ClassExecution, failure.RetryNow, failure.StateRunnerInput
+	}
+	var resultPersistence *stageResultPersistenceError
+	if errors.As(err, &resultPersistence) {
+		return failure.SiteStore, failure.ClassUnavailable, failure.RetryNow, failure.StateStore
+	}
 	var lifecycleErr *stagelifecycle.DiagnosticError
 	if errors.As(err, &lifecycleErr) {
 		switch lifecycleErr.Code {

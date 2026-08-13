@@ -3835,7 +3835,7 @@ func (e *Engine) runStageOnce(
 		if err := e.cfg.Store.CommitCapabilityValidatedResult(
 			lifecycleAttempt, capabilityIdentity, capabilityValidation, lifecycleResult,
 		); err != nil {
-			return err
+			return &stageResultPersistenceError{Err: err}
 		}
 		if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
 			Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "post-stage", Outcome: "passed",
@@ -4089,6 +4089,14 @@ type stageResultRetryableError struct {
 func (e *stageResultRetryableError) Error() string {
 	return fmt.Sprintf("structured stage result %s attempt %s is retryable", e.Kind, e.AttemptID)
 }
+
+type stageResultPersistenceError struct{ Err error }
+
+func (e *stageResultPersistenceError) Error() string {
+	return fmt.Sprintf("persist structured stage result: %v", e.Err)
+}
+
+func (e *stageResultPersistenceError) Unwrap() error { return e.Err }
 
 func (e *Engine) stageWorkdir(is *issueState, st flow.Stage) string {
 	workdir := filepath.Join(e.cfg.DataDir, is.id)
@@ -4366,12 +4374,18 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 	of := st.Retries + 1
 	for attempt := 0; attempt <= st.Retries; attempt++ {
 		if attempt > 0 {
-			if gateErr := e.authorizeStageRetry(stageCtx, is, st, retry.KindAutomatic, 0); gateErr != nil {
-				e.emit(core.EvStageFailed, is.id, map[string]any{
-					"stage": st.Name, "error": gateErr.Error(),
-					"attempt": attempt, "of": of, "final": true,
-				})
-				return errors.Join(err, gateErr)
+			resumable, resumeErr := e.hasResumableStageLifecycle(is.id, st.Name)
+			if resumeErr != nil {
+				return errors.Join(err, fmt.Errorf("inspect durable stage recovery: %w", resumeErr))
+			}
+			if !resumable {
+				if gateErr := e.authorizeStageRetry(stageCtx, is, st, retry.KindAutomatic, 0); gateErr != nil {
+					e.emit(core.EvStageFailed, is.id, map[string]any{
+						"stage": st.Name, "error": gateErr.Error(),
+						"attempt": attempt, "of": of, "final": true,
+					})
+					return errors.Join(err, gateErr)
+				}
 			}
 		}
 		err = e.runStageOnce(stageCtx, is, st, attempt+1, of, plannerOverride)
@@ -5109,7 +5123,11 @@ func (e *Engine) RetryStageWithBudgetKind(
 	}
 	e.mu.Unlock()
 	preparedWorkspace := e.prepareRetryWorkspace(is, f.Stages[startIdx])
-	if err := e.authorizeStageRetry(ctx, is, f.Stages[startIdx], kind, decisionID); err != nil {
+	resumable, err := e.hasResumableStageLifecycle(is.id, f.Stages[startIdx].Name)
+	if err == nil && !resumable {
+		err = e.authorizeStageRetry(ctx, is, f.Stages[startIdx], kind, decisionID)
+	}
+	if err != nil {
 		e.mu.Lock()
 		is.running = false
 		e.mu.Unlock()

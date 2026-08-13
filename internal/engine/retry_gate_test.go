@@ -313,7 +313,6 @@ func TestRetryFailureAtNewSiteGetsNewStableFingerprint(t *testing.T) {
 	repo := t.TempDir()
 	initGitRepo(t, repo)
 	f := retryEngineFlow(0, "required.out")
-	f.Stages[0].MergeBarrier = true
 	r := &runner.FakeRunner{Scripts: map[string]runner.Script{"execute/agent": {}}}
 	e, s := newEngineCfg(t, r, func(cfg *Config) {
 		cfg.Flows = map[string]flow.Flow{f.Name: f}
@@ -330,6 +329,9 @@ func TestRetryFailureAtNewSiteGetsNewStableFingerprint(t *testing.T) {
 	}
 
 	r.Scripts["execute/agent"] = runner.Script{Artifacts: map[string]string{"required.out": "repaired\n"}}
+	changed := e.cfg.Flows[f.Name]
+	changed.Stages[0].MergeBarrier = true
+	e.cfg.Flows[f.Name] = changed
 	e.cfg.Train = &marshal.Train{Repo: repo, TestCmd: []string{"false"}}
 	if err := e.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), "verification") {
 		t.Fatalf("retry failure = %v, want verification failure", err)

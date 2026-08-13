@@ -216,6 +216,29 @@ func (e *Engine) latestValidStageResult(issueID, actualStage string, kind stager
 	return &result, nil
 }
 
+// hasResumableStageLifecycle reports whether retrying can continue from a
+// durable model result without starting another runner. Invalid or incomplete
+// results are deliberately excluded and must use the ordinary retry gate.
+func (e *Engine) hasResumableStageLifecycle(issueID, stage string) (bool, error) {
+	attempts, err := e.cfg.Store.StageLifecycleAttempts(issueID, stage)
+	if err != nil {
+		return false, err
+	}
+	for index := len(attempts) - 1; index >= 0; index-- {
+		attempt := attempts[index]
+		if attempt.ResultPath == "" || attempt.ResultSHA256 == "" {
+			continue
+		}
+		if attempt.StageResultSchemaVersion == 0 {
+			return true, nil
+		}
+		return attempt.StageResultSchemaVersion == stageresult.SchemaVersion &&
+			attempt.StageResultStatus == stageresult.ValidationValid &&
+			attempt.StageResultOutcome == stageresult.OutcomeCompleted, nil
+	}
+	return false, nil
+}
+
 func (e *Engine) lifecycleAttemptFor(is *issueState, st flow.Stage, checkpointID int64) (store.StageLifecycleAttempt, []stagelifecycle.Record, error) {
 	records, err := e.cfg.Store.StageLifecycleRecords(is.id, st.Name, "")
 	if err != nil {
