@@ -33,6 +33,7 @@ import (
 	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/repocfg"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
@@ -71,6 +72,7 @@ type Config struct {
 	Workspace                workspace.Provider
 	TokenBudget              int
 	PlannerBudget            plannerbudget.Profile
+	RetryPolicy              retry.Policy
 	OnLine                   func(issueID, stage, line string)
 }
 
@@ -188,6 +190,14 @@ type issueState struct {
 	capabilityAttemptID string
 	capabilityWorkdir   string
 	capabilityWrites    map[string]string
+	retryFailure        authorizedRetryFailure
+}
+
+type authorizedRetryFailure struct {
+	stage       string
+	site        failure.Site
+	class       failure.Class
+	fingerprint string
 }
 
 func planReviewLever(f flow.Flow, matrix levers.Matrix) flow.Lever {
@@ -241,6 +251,7 @@ type Engine struct {
 	reviewContinuations map[int64]bool
 	plannerAuthorities  map[string]*plannerartifact.Authority
 	dependencyReadiness dependencyReadiness
+	retryGate           *retry.Gate
 }
 
 func New(cfg Config) *Engine {
@@ -272,6 +283,11 @@ func New(cfg Config) *Engine {
 	if cfg.PlannerBudget == (plannerbudget.Profile{}) {
 		cfg.PlannerBudget = plannerbudget.DefaultProfile()
 	}
+	if cfg.RetryPolicy.ID == "" && cfg.RetryPolicy.Version == "" &&
+		cfg.RetryPolicy.TransientLimit == 0 && cfg.RetryPolicy.DeterministicLimit == 0 &&
+		cfg.RetryPolicy.ModelResampleLimit == 0 && len(cfg.RetryPolicy.ModelResampleClasses) == 0 {
+		cfg.RetryPolicy = retry.DefaultPolicy()
+	}
 	if cfg.Train != nil && cfg.Train.CacheRoot == "" {
 		cfg.Train.CacheRoot = cfg.CacheRoot
 		if cfg.Train.CacheRoot == "" {
@@ -283,6 +299,9 @@ func New(cfg Config) *Engine {
 		reviewContinuations: map[int64]bool{},
 		plannerAuthorities:  map[string]*plannerartifact.Authority{},
 		dependencyReadiness: durableDependencyReadiness{source: cfg.Store},
+	}
+	if gate, err := retry.NewGate(cfg.Store, cfg.RetryPolicy); err == nil {
+		e.retryGate = gate
 	}
 	if cfg.OnLine != nil {
 		if sink, ok := cfg.Runner.(runner.LineSink); ok {
@@ -712,6 +731,8 @@ func (e *Engine) Rehydrate() error {
 			e.mu.Lock()
 			e.issues[row.ID] = is
 			e.mu.Unlock()
+			configuredFlow := e.cfg.Flows[row.Flow]
+			e.recordInterruptedRetryFailure(is, configuredFlow.Stages[run.StageIndex], attempt, failure.ClassCancellation)
 			e.emit(core.EvStageFailed, row.ID, map[string]any{
 				"stage": stage, "attempt": attempt, "of": of,
 				"error": "daemon restarted — press R to retry", "final": true})
@@ -784,8 +805,12 @@ func (e *Engine) Rehydrate() error {
 			planReview: row.PlanReviewPolicy,
 		}
 		restartError := "daemon restarted — press R to retry"
+		restartClass := failure.ClassCancellation
 		if hasPersistedAttempt {
 			stage = persistedAttempt.Stage
+			if persistedAttempt.FailureClass != "" {
+				restartClass = failure.NormalizeClass(failure.Class(persistedAttempt.FailureClass))
+			}
 			if persistedAttempt.State == runner.AttemptRunning || persistedAttempt.State == runner.AttemptReserved {
 				interrupted := persistedAttempt
 				interrupted.State = runner.AttemptTerminal
@@ -799,6 +824,12 @@ func (e *Engine) Rehydrate() error {
 			}
 		}
 		e.restoreInterruptedWorkspace(is)
+		for _, configured := range f.Stages {
+			if configured.Name == stage {
+				e.recordInterruptedRetryFailure(is, configured, attempt, restartClass)
+				break
+			}
+		}
 		e.mu.Lock()
 		e.issues[row.ID] = is
 		e.mu.Unlock()
@@ -3804,7 +3835,7 @@ func (e *Engine) runStageOnce(
 		if err := e.cfg.Store.CommitCapabilityValidatedResult(
 			lifecycleAttempt, capabilityIdentity, capabilityValidation, lifecycleResult,
 		); err != nil {
-			return err
+			return &stageResultPersistenceError{Err: err}
 		}
 		if err := e.cfg.Store.AppendCapabilityAudit(capability.AuditRecord{
 			Attempt: capabilityIdentity, ContractID: compiledContract.ContractID, Phase: "post-stage", Outcome: "passed",
@@ -4059,6 +4090,14 @@ func (e *stageResultRetryableError) Error() string {
 	return fmt.Sprintf("structured stage result %s attempt %s is retryable", e.Kind, e.AttemptID)
 }
 
+type stageResultPersistenceError struct{ Err error }
+
+func (e *stageResultPersistenceError) Error() string {
+	return fmt.Sprintf("persist structured stage result: %v", e.Err)
+}
+
+func (e *stageResultPersistenceError) Unwrap() error { return e.Err }
+
 func (e *Engine) stageWorkdir(is *issueState, st flow.Stage) string {
 	workdir := filepath.Join(e.cfg.DataDir, is.id)
 	if st.Workspace != "none" && is.wsPath != "" {
@@ -4104,6 +4143,200 @@ func runnerFailurePayload(err error) map[string]any {
 	}
 }
 
+type RetryRejectedError struct {
+	Rejection retry.Rejection
+}
+
+func (e *RetryRejectedError) Error() string {
+	return fmt.Sprintf("retry rejected: %s: %s", e.Rejection.Reason, e.Rejection.NextAction)
+}
+
+func durableDecisionIdentity(row store.DecisionRow) string {
+	canonical, err := json.Marshal(struct {
+		ID         int64           `json:"id"`
+		IssueID    string          `json:"issue_id"`
+		Stage      string          `json:"stage"`
+		Kind       string          `json:"kind"`
+		Question   string          `json:"question"`
+		Options    []string        `json:"options"`
+		Status     string          `json:"status"`
+		Response   levers.Response `json:"response"`
+		CreatedAt  string          `json:"created_at"`
+		AnsweredAt string          `json:"answered_at"`
+	}{
+		ID: row.ID, IssueID: row.IssueID, Stage: row.Stage, Kind: string(row.Kind),
+		Question: row.Question, Options: row.Options, Status: row.Status, Response: row.Response,
+		CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339Nano), AnsweredAt: row.AnsweredAt.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return failure.Unavailable
+	}
+	return "sha256:" + digestFailureIdentity(string(canonical))
+}
+
+func (e *Engine) modelResampleDecisionIdentity(
+	issueID, stage string, decisionID int64, decisions []failure.ContentIdentity,
+) string {
+	if decisionID <= 0 {
+		return ""
+	}
+	stored, err := e.cfg.Store.LoadRetryContext(context.Background(), issueID, stage)
+	if err != nil {
+		return ""
+	}
+	row, found, err := e.cfg.Store.DecisionByID(decisionID)
+	if err != nil || !found || row.IssueID != issueID || row.Stage != stage ||
+		(row.Status != "answered" && row.Status != "auto") || row.AnsweredAt.IsZero() {
+		return ""
+	}
+	contextUpdated, err := time.Parse(time.RFC3339Nano, stored.UpdatedAt)
+	if err != nil || !row.AnsweredAt.After(contextUpdated) {
+		return ""
+	}
+	identity := durableDecisionIdentity(row)
+	wantID := strconv.FormatInt(decisionID, 10)
+	for _, candidate := range decisions {
+		if candidate.Identity == wantID && candidate.ContentHash == identity {
+			return identity
+		}
+	}
+	return ""
+}
+
+func (e *Engine) authorizeStageRetry(
+	ctx context.Context, is *issueState, st flow.Stage, kind retry.Kind, decisionID int64,
+) error {
+	if e.retryGate == nil {
+		rejection := retry.Rejection{
+			Reason: retry.ReasonPersistenceUnavailable, IssueID: is.id, Stage: st.Name, Kind: kind,
+			NextAction: "restore a valid configured retry policy and durable store",
+		}
+		e.emit(core.EvRetryRejected, is.id, core.RetryRejectedPayload(rejection))
+		return &RetryRejectedError{Rejection: rejection}
+	}
+	e.mu.Lock()
+	workdir := e.stageWorkdir(is, st)
+	e.mu.Unlock()
+	inputs := stageFailureFingerprintInputs(e, is, st, failure.SiteUnknown, workdir)
+	request := retry.Request{
+		IssueID: is.id, Stage: st.Name, Kind: kind,
+		Current: retry.BuildStateVector(inputs),
+	}
+	if kind == retry.KindModelResample {
+		request.DecisionIdentity = e.modelResampleDecisionIdentity(is.id, st.Name, decisionID, inputs.Decisions)
+	}
+	decision, err := e.retryGate.Authorize(ctx, request)
+	if err != nil {
+		return err
+	}
+	if decision.Authorized && decision.Authorization != nil {
+		e.mu.Lock()
+		is.retryFailure = authorizedRetryFailure{
+			stage: st.Name, site: decision.Authorization.FailureSite,
+			class: decision.Authorization.FailureClass, fingerprint: decision.Authorization.FailureFingerprint,
+		}
+		e.mu.Unlock()
+		e.emit(core.EvRetryAuthorized, is.id, core.RetryAuthorizedPayload(*decision.Authorization))
+		return nil
+	}
+	if decision.Rejection == nil {
+		return fmt.Errorf("retry gate returned no authorization or rejection")
+	}
+	e.emit(core.EvRetryRejected, is.id, core.RetryRejectedPayload(*decision.Rejection))
+	return &RetryRejectedError{Rejection: *decision.Rejection}
+}
+
+type acquiredStageWorkspace struct {
+	path    string
+	release func() error
+	branch  string
+	baseRef string
+}
+
+func (e *Engine) acquireStageWorkspace(issueID string) (acquiredStageWorkspace, error) {
+	path, release, err := e.cfg.Workspace.Acquire(issueID)
+	if err != nil {
+		return acquiredStageWorkspace{}, err
+	}
+	branch := ""
+	if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
+		branch = strings.TrimSpace(string(out))
+	}
+	baseRef := ""
+	if out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output(); err == nil {
+		baseRef = strings.TrimSpace(string(out))
+	}
+	if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
+		if baseHead, headErr := gitRevision(e.cfg.Train.Repo, "HEAD"); headErr == nil {
+			if mergeBase, mergeErr := gitCommandOutput(path, "merge-base", "HEAD", baseHead); mergeErr == nil {
+				baseRef = mergeBase
+			}
+		}
+	}
+	return acquiredStageWorkspace{path: path, release: release, branch: branch, baseRef: baseRef}, nil
+}
+
+// prepareRetryWorkspace makes the current worktree identity available before
+// authorization without holding the engine mutex across store, workspace, or
+// Git operations. Automatic retries already retain runFrom's workspace.
+func (e *Engine) prepareRetryWorkspace(is *issueState, st flow.Stage) bool {
+	if st.Workspace == "none" {
+		return false
+	}
+	e.mu.Lock()
+	hasWorkspace := is.wsPath != ""
+	e.mu.Unlock()
+	if hasWorkspace {
+		return false
+	}
+	if e.cfg.Workspace == nil {
+		return false
+	}
+	acquired, err := e.acquireStageWorkspace(is.id)
+	if err != nil {
+		return false
+	}
+	e.mu.Lock()
+	if is.wsPath != "" {
+		e.mu.Unlock()
+		if acquired.release != nil {
+			_ = acquired.release()
+		}
+		return false
+	}
+	is.wsPath, is.wsRelease = acquired.path, acquired.release
+	is.branch, is.baseRef = acquired.branch, acquired.baseRef
+	e.mu.Unlock()
+	return true
+}
+
+func (e *Engine) discardPreparedRetryWorkspace(is *issueState) {
+	e.mu.Lock()
+	release := is.wsRelease
+	is.wsPath, is.wsRelease = "", nil
+	is.branch, is.baseRef = "", ""
+	e.mu.Unlock()
+	if release != nil {
+		_ = release()
+	}
+}
+
+func (e *Engine) recordInterruptedRetryFailure(
+	is *issueState, st flow.Stage, attempt int, class failure.Class,
+) {
+	if class == "" || class == failure.ClassUnknown {
+		class = failure.ClassCancellation
+	}
+	primary := errors.New("stage interrupted by daemon restart")
+	_ = e.recordFailure(context.Background(), failureContext{
+		IssueID: is.id, Stage: st.Name, StageAttempt: attempt,
+		Site: failure.SiteRunner, Class: class,
+		Disposition: failure.RetryNow, StateChange: failure.StateRunnerInput,
+		FingerprintInputs: stageFailureFingerprintInputs(e, is, st, failure.SiteRunner, e.stageWorkdir(is, st)),
+		Primary:           primary,
+	})
+}
+
 func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, plannerOverride *plannerbudget.Override) error {
 	stageCtx, cancel := context.WithCancel(ctx)
 	e.mu.Lock()
@@ -4140,6 +4373,21 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 	var err error
 	of := st.Retries + 1
 	for attempt := 0; attempt <= st.Retries; attempt++ {
+		if attempt > 0 {
+			resumable, resumeErr := e.hasResumableStageLifecycle(is.id, st.Name)
+			if resumeErr != nil {
+				return errors.Join(err, fmt.Errorf("inspect durable stage recovery: %w", resumeErr))
+			}
+			if !resumable {
+				if gateErr := e.authorizeStageRetry(stageCtx, is, st, retry.KindAutomatic, 0); gateErr != nil {
+					e.emit(core.EvStageFailed, is.id, map[string]any{
+						"stage": st.Name, "error": gateErr.Error(),
+						"attempt": attempt, "of": of, "final": true,
+					})
+					return errors.Join(err, gateErr)
+				}
+			}
+		}
 		err = e.runStageOnce(stageCtx, is, st, attempt+1, of, plannerOverride)
 		if err == nil {
 			break
@@ -4195,6 +4443,10 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 	}
 	if err != nil {
 		return err
+	}
+	if closeErr := e.cfg.Store.CloseRetryContext(stageCtx, is.id, st.Name); closeErr != nil &&
+		!errors.Is(closeErr, retry.ErrContextNotFound) {
+		return fmt.Errorf("close retry context: %w", closeErr)
 	}
 	if e.wasKilled(is) {
 		e.emit(core.EvStageKilled, is.id, map[string]any{"stage": st.Name})
@@ -4339,15 +4591,19 @@ func (e *Engine) runFromWithOwnership(
 	if err := e.freezeTaskSummary(is); err != nil {
 		return err
 	}
-	if !alreadyRunning {
-		e.mu.Lock()
-		if is.running {
+	e.mu.Lock()
+	if alreadyRunning {
+		if !is.running {
 			e.mu.Unlock()
-			return fmt.Errorf("issue %s is already running", is.id)
+			return fmt.Errorf("issue %s run ownership was lost", is.id)
 		}
-		is.running = true
+	} else if is.running {
 		e.mu.Unlock()
+		return fmt.Errorf("issue %s is already running", is.id)
+	} else {
+		is.running = true
 	}
+	e.mu.Unlock()
 	f := e.cfg.Flows[is.flowName]
 	// Fresh issues should build on the latest shared code. Fast-forward only
 	// and non-fatal: a diverged or dirty base is reported, not a blocker.
@@ -4363,6 +4619,7 @@ func (e *Engine) runFromWithOwnership(
 	defer func() {
 		e.mu.Lock()
 		is.activeTouchset = nil
+		is.retryFailure = authorizedRetryFailure{}
 		release := is.wsRelease
 		preserveExternal := aborted && is.externalSession
 		preserveIdentity := preserveWorkspace || preserveExternal
@@ -4415,33 +4672,16 @@ func (e *Engine) runFromWithOwnership(
 		needsWorkspace := st.Workspace != "none" && e.cfg.Workspace != nil && is.wsPath == ""
 		e.mu.Unlock()
 		if needsWorkspace {
-			path, release, err := e.cfg.Workspace.Acquire(is.id)
+			acquired, err := e.acquireStageWorkspace(is.id)
 			if err != nil {
 				_ = e.recordBoundaryFailure(ctx, is.id, st.Name, 0,
 					failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateWorkspace, err)
 				e.emit(core.EvStageFailed, is.id, map[string]string{"stage": st.Name, "error": "workspace: " + err.Error()})
 				return err
 			}
-			branch := ""
-			if out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
-				branch = strings.TrimSpace(string(out))
-			}
-			baseRef := ""
-			if out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output(); err == nil {
-				baseRef = strings.TrimSpace(string(out))
-			}
-			if e.cfg.Train != nil && e.cfg.Train.Repo != "" {
-				if baseHead, headErr := gitRevision(e.cfg.Train.Repo, "HEAD"); headErr == nil {
-					if mergeBase, mergeErr := gitCommandOutput(
-						path, "merge-base", "HEAD", baseHead,
-					); mergeErr == nil {
-						baseRef = mergeBase
-					}
-				}
-			}
 			e.mu.Lock()
-			is.wsPath, is.wsRelease = path, release
-			is.branch, is.baseRef = branch, baseRef
+			is.wsPath, is.wsRelease = acquired.path, acquired.release
+			is.branch, is.baseRef = acquired.branch, acquired.baseRef
 			e.mu.Unlock()
 		}
 		if err := e.persistActiveRun(is, i); err != nil {
@@ -4513,6 +4753,15 @@ func (e *Engine) runFromWithOwnership(
 			return err
 		}
 		if decision == "hold" {
+			st := f.Stages[len(f.Stages)-1]
+			primary := errors.New("verification held for an explicit later retry")
+			_ = e.recordFailure(context.Background(), failureContext{
+				IssueID: is.id, Stage: st.Name, StageAttempt: 0,
+				Site: failure.SiteVerification, Class: failure.ClassStateMismatch,
+				Disposition: failure.RetryAfterStateChange, StateChange: failure.StateOperator,
+				FingerprintInputs: stageFailureFingerprintInputs(e, is, st, failure.SiteVerification, e.stageWorkdir(is, st)),
+				Primary:           primary,
+			})
 			e.emit(core.EvIssueCompleted, is.id, map[string]string{
 				"merge": "left-unmerged", "branch": is.branch})
 			if e.cfg.Marshal != nil {
@@ -4710,6 +4959,17 @@ func (e *Engine) retryStaleVerification(
 	return true, e.runFromOwned(ctx, is, stageIdx, plannerOverride)
 }
 
+func (e *Engine) runAndRecordReservedWithPlannerBudget(
+	ctx context.Context, is *issueState, startIdx int, plannerOverride *plannerbudget.Override,
+) error {
+	err := e.runFromOwned(ctx, is, startIdx, plannerOverride)
+	e.mu.Lock()
+	is.running = false
+	is.terminal = err != nil
+	e.mu.Unlock()
+	return err
+}
+
 func (e *Engine) StartIssue(ctx context.Context, id string) error {
 	return e.StartIssueWithBudget(ctx, id, nil)
 }
@@ -4765,10 +5025,20 @@ func (e *Engine) loadDoneUnmergedForRetry(issueID string) (*issueState, error) {
 // across daemon restarts until the operator explicitly retries it. Earlier
 // successful stages are not repeated.
 func (e *Engine) RetryStage(ctx context.Context, issueID string) error {
-	return e.RetryStageWithBudget(ctx, issueID, nil)
+	return e.RetryStageWithBudgetKind(ctx, issueID, nil, retry.KindExplicit, 0)
 }
 
 func (e *Engine) RetryStageWithBudget(ctx context.Context, issueID string, plannerOverride *plannerbudget.Override) error {
+	return e.RetryStageWithBudgetKind(ctx, issueID, plannerOverride, retry.KindExplicit, 0)
+}
+
+func (e *Engine) RetryStageWithKind(ctx context.Context, issueID string, kind retry.Kind, decisionID int64) error {
+	return e.RetryStageWithBudgetKind(ctx, issueID, nil, kind, decisionID)
+}
+
+func (e *Engine) RetryStageWithBudgetKind(
+	ctx context.Context, issueID string, plannerOverride *plannerbudget.Override, kind retry.Kind, decisionID int64,
+) error {
 	e.mu.Lock()
 	is, ok := e.issues[issueID]
 	if !ok {
@@ -4789,14 +5059,16 @@ func (e *Engine) RetryStageWithBudget(ctx context.Context, issueID string, plann
 		e.mu.Unlock()
 		return fmt.Errorf("issue %s is already running", issueID)
 	}
+	is.running = true
+	e.mu.Unlock()
 	integration, publishPending, err := e.cfg.Store.IssueIntegration(issueID)
 	if err != nil {
+		e.mu.Lock()
+		is.running = false
 		e.mu.Unlock()
 		return err
 	}
 	if publishPending && integration.State == store.IntegrationCleanupNeeded {
-		is.running = true
-		e.mu.Unlock()
 		err := e.retryCleanup(ctx, is, integration)
 		e.mu.Lock()
 		is.running = false
@@ -4804,8 +5076,6 @@ func (e *Engine) RetryStageWithBudget(ctx context.Context, issueID string, plann
 		return err
 	}
 	if publishPending && integration.State == store.IntegrationPublishPending {
-		is.running = true
-		e.mu.Unlock()
 		err := e.retryPublish(ctx, is, integration)
 		e.mu.Lock()
 		is.running = false
@@ -4814,7 +5084,7 @@ func (e *Engine) RetryStageWithBudget(ctx context.Context, issueID string, plann
 		return err
 	}
 	if publishPending && integration.State == store.IntegrationVerificationReady {
-		is.running = true
+		e.mu.Lock()
 		is.terminal = false
 		is.killRequested = false
 		e.mu.Unlock()
@@ -4838,15 +5108,39 @@ func (e *Engine) RetryStageWithBudget(ctx context.Context, issueID string, plann
 		e.mu.Unlock()
 		return err
 	}
+	e.mu.Lock()
 	if !is.terminal {
+		is.running = false
 		e.mu.Unlock()
 		return fmt.Errorf("issue %s has no failed stage to retry", issueID)
 	}
 	startIdx := is.stageIdx
+	f, exists := e.cfg.Flows[is.flowName]
+	if !exists || startIdx < 0 || startIdx >= len(f.Stages) {
+		is.running = false
+		e.mu.Unlock()
+		return fmt.Errorf("issue %s has no configured retry stage", issueID)
+	}
+	e.mu.Unlock()
+	preparedWorkspace := e.prepareRetryWorkspace(is, f.Stages[startIdx])
+	resumable, err := e.hasResumableStageLifecycle(is.id, f.Stages[startIdx].Name)
+	if err == nil && !resumable {
+		err = e.authorizeStageRetry(ctx, is, f.Stages[startIdx], kind, decisionID)
+	}
+	if err != nil {
+		e.mu.Lock()
+		is.running = false
+		e.mu.Unlock()
+		if preparedWorkspace {
+			e.discardPreparedRetryWorkspace(is)
+		}
+		return err
+	}
+	e.mu.Lock()
 	is.terminal = false
 	is.killRequested = false
 	e.mu.Unlock()
-	return e.runAndRecordWithPlannerBudget(ctx, is, startIdx, plannerOverride)
+	return e.runAndRecordReservedWithPlannerBudget(ctx, is, startIdx, plannerOverride)
 }
 
 // SetLever changes the routing lever for one stage and records the change.

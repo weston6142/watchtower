@@ -7,16 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/stagelifecycle"
 	"github.com/weston6142/watchtower/internal/verificationcache"
@@ -74,27 +75,64 @@ func (e *Engine) recordRunnerFailure(
 	if result.Err == nil {
 		return nil
 	}
-	site, class, disposition, stateChange := failure.SiteRunner, failure.NormalizeClass(failure.Class(result.FailureClass)), failure.RetryNow, failure.StateRunnerInput
 	var policyErr *capability.PolicyError
 	if errors.As(result.Err, &policyErr) {
-		site, class, disposition, stateChange = classifyFailure(result.Err)
+		site, class, disposition, stateChange := classifyFailure(result.Err)
+		return e.recordFailure(ctx, failureContext{
+			IssueID: is.id, Stage: stage.Name, StageAttempt: attempt,
+			Site: site, Class: class, Disposition: disposition, StateChange: stateChange,
+			FingerprintInputs: stageFailureFingerprintInputs(e, is, stage, site, workdir),
+			Primary:           result.Err,
+		})
 	}
+	class := failure.Class(result.FailureClass)
+	if result.FailureClass == "" {
+		// A runner that reports an error without a more specific typed class
+		// failed while executing the agent. Classify that boundary once when
+		// recording it; retry authorization never reclassifies error text.
+		class = failure.ClassExecution
+	}
+	class = failure.NormalizeClass(class)
+	disposition, stateChange := runnerFailureRetryGuidance(class)
 	return e.recordFailure(ctx, failureContext{
 		IssueID: is.id, Stage: stage.Name, StageAttempt: attempt,
-		Site: site, Class: class, Disposition: disposition, StateChange: stateChange,
-		FingerprintInputs: stageFailureFingerprintInputs(e, is, stage, site, workdir),
+		Site: failure.SiteRunner, Class: class,
+		Disposition: disposition, StateChange: stateChange,
+		FingerprintInputs: stageFailureFingerprintInputs(e, is, stage, failure.SiteRunner, workdir),
 		Primary:           result.Err,
 	})
+}
+
+func runnerFailureRetryGuidance(class failure.Class) (failure.RetryDisposition, failure.StateChange) {
+	switch class {
+	case failure.ClassLaunch, failure.ClassExecution, failure.ClassTransport,
+		failure.ClassProtocol, failure.ClassCancellation:
+		return failure.RetryNow, failure.StateRunnerInput
+	case failure.ClassAuthentication, failure.ClassAuthorization, failure.ClassConfiguration:
+		return failure.RetryAfterStateChange, failure.StateConfiguration
+	case failure.ClassResumeIdentity:
+		return failure.RetryAfterStateChange, failure.StateOperator
+	default:
+		return failure.RetryUnknown, failure.StateUnknown
+	}
 }
 
 func stageFailureFingerprintInputs(
 	e *Engine, is *issueState, stage flow.Stage, site failure.Site, workdir string,
 ) failure.FingerprintInputs {
+	var contextPaths []string
 	inputs := failure.FingerprintInputs{
 		IssueID:            is.id,
 		Stage:              stage.Name,
 		FailureSite:        site,
 		WatchtowerIdentity: digestFailureIdentity("watchtower:" + runtime.Version()),
+		EnvironmentIdentity: digestFailureIdentity(strings.Join([]string{
+			runtime.GOOS, runtime.GOARCH, runtime.Version(), e.cfg.DataDir, e.cfg.CacheRoot,
+		}, "\x00")),
+		Verification: failure.VerificationIdentity{
+			CommandIdentity: digestFailureIdentity("verification:none"),
+			CacheIdentity:   digestFailureIdentity("verification-cache:none"),
+		},
 		Git: failure.GitIdentity{
 			Repository: digestFailureIdentity(workdir),
 			BaseCommit: digestFailureIdentity(is.baseRef),
@@ -112,22 +150,36 @@ func stageFailureFingerprintInputs(
 		Retries      int             `json:"retries"`
 		HeavySlot    bool            `json:"heavy_slot"`
 		MergeBarrier bool            `json:"merge_barrier"`
+		RetryPolicy  retry.Policy    `json:"retry_policy"`
 	}{
 		Name: stage.Name, Agents: stage.Agents, Parallel: stage.Parallel,
 		Completion: stage.Completion, Workspace: stage.Workspace, Gate: stage.Gate,
 		Artifacts: stage.Artifacts, Retries: stage.Retries, HeavySlot: stage.HeavySlot,
-		MergeBarrier: stage.MergeBarrier,
+		MergeBarrier: stage.MergeBarrier, RetryPolicy: e.cfg.RetryPolicy,
 	})
 	inputs.ConfigurationIdentity = digestFailureIdentity(string(config))
 
 	if e.cfg.Store != nil {
 		if required, _, err := e.stageContext(is.id); err == nil {
 			for _, name := range required {
+				contextPaths = append(contextPaths, name)
+				digest := fileDigest(filepath.Join(workdir, name))
+				if digest == failure.Unavailable {
+					digest = fileDigest(filepath.Join(e.issueDir(is.id), "artifacts", name))
+				}
 				inputs.StageInputs = append(inputs.StageInputs, failure.InputIdentity{
-					Identity: name, SHA256: fileDigest(filepath.Join(workdir, name)),
+					Identity: name, SHA256: digest,
 				})
 			}
+		} else {
+			inputs.StageInputs = []failure.InputIdentity{{
+				Identity: failure.Unavailable, SHA256: failure.Unavailable,
+			}}
 		}
+	} else {
+		inputs.StageInputs = []failure.InputIdentity{{
+			Identity: failure.Unavailable, SHA256: failure.Unavailable,
+		}}
 	}
 	for _, name := range stage.Artifacts {
 		inputs.Artifacts = append(inputs.Artifacts, failure.ContentIdentity{
@@ -141,23 +193,19 @@ func stageFailureFingerprintInputs(
 				if row.IssueID != is.id {
 					continue
 				}
-				canonical, _ := json.Marshal(struct {
-					ID        int64    `json:"id"`
-					Stage     string   `json:"stage"`
-					Question  string   `json:"question"`
-					Options   []string `json:"options"`
-					Status    string   `json:"status"`
-					Response  any      `json:"response"`
-					CreatedAt string   `json:"created_at"`
-				}{
-					ID: row.ID, Stage: row.Stage, Question: row.Question, Options: row.Options,
-					Status: row.Status, Response: row.Response, CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339Nano),
-				})
 				inputs.Decisions = append(inputs.Decisions, failure.ContentIdentity{
-					Identity: strconv.FormatInt(row.ID, 10), ContentHash: digestFailureIdentity(string(canonical)),
+					Identity: strconv.FormatInt(row.ID, 10), ContentHash: durableDecisionIdentity(row),
 				})
 			}
+		} else {
+			inputs.Decisions = []failure.ContentIdentity{{
+				Identity: failure.Unavailable, ContentHash: failure.Unavailable,
+			}}
 		}
+	} else {
+		inputs.Decisions = []failure.ContentIdentity{{
+			Identity: failure.Unavailable, ContentHash: failure.Unavailable,
+		}}
 	}
 
 	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 {
@@ -168,14 +216,78 @@ func stageFailureFingerprintInputs(
 		}
 		inputs.Verification.CacheIdentity = digestFailureIdentity(cacheRoot + "\x00" + e.cfg.Train.Repo)
 	}
-	if head, branch, _ := repositoryState(workdir, nil); head != "" {
+	if stage.Workspace == "none" {
+		// A stage-local issue directory is still an authoritative tree. Bind
+		// its identity to the materialized inputs and declared artifacts so a
+		// missing Git repository is not confused with missing evidence.
+		canonical, _ := json.Marshal(struct {
+			Inputs    []failure.InputIdentity   `json:"inputs"`
+			Artifacts []failure.ContentIdentity `json:"artifacts"`
+		}{Inputs: inputs.StageInputs, Artifacts: inputs.Artifacts})
+		inputs.Git.Repository = digestFailureIdentity("workspace:none")
+		inputs.Git.BaseCommit = digestFailureIdentity("workspace:none:base")
+		inputs.Git.BranchCommit = digestFailureIdentity("workspace:none:" + is.id)
+		inputs.Git.TreeIdentity = digestFailureIdentity(string(canonical))
+	}
+	if head, branch, _ := repositoryState(workdir, contextPaths); head != "" {
+		inputs.Git.Repository = gitRepositoryIdentity(workdir)
 		inputs.Git.BranchCommit = digestFailureIdentity(head)
 		inputs.Git.Branch = digestFailureIdentity(branch)
-		if tree, err := gitRevision(workdir, "HEAD^{tree}"); err == nil {
-			inputs.Git.TreeIdentity = digestFailureIdentity(tree)
-		}
+		inputs.Git.TreeIdentity = gitWorktreeIdentity(workdir, contextPaths)
 	}
 	return inputs
+}
+
+// gitRepositoryIdentity remains stable when the same repository state is
+// materialized in a different linked-worktree or lease directory.
+func gitRepositoryIdentity(workdir string) string {
+	commonDir, err := verificationcache.CanonicalRepositoryIdentity(workdir)
+	if err != nil {
+		return failure.Unavailable
+	}
+	return digestFailureIdentity("git-common-dir:" + commonDir)
+}
+
+// gitWorktreeIdentity binds retry evidence to both HEAD and non-context
+// tracked or untracked changes. Only the resulting digest leaves this helper;
+// paths, status records, and file contents remain transient.
+func gitWorktreeIdentity(workdir string, contextPaths []string) string {
+	tree, err := gitRevision(workdir, "HEAD^{tree}")
+	if err != nil {
+		return failure.Unavailable
+	}
+	args := []string{"-C", workdir, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".",
+		":(exclude)ISSUE.md", ":(exclude)STAGE.md", ":(exclude)decisions.md", ":(exclude)attachments/**"}
+	for _, name := range contextPaths {
+		if clean := filepath.ToSlash(filepath.Clean(name)); clean != "." && clean != "" {
+			args = append(args, ":(exclude)"+clean)
+		}
+	}
+	status, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return failure.Unavailable
+	}
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(tree))
+	for _, record := range strings.Split(string(status), "\x00") {
+		if record == "" {
+			continue
+		}
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(record))
+		path := record
+		if len(record) >= 4 && record[2] == ' ' {
+			path = record[3:]
+		}
+		body, readErr := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(path)))
+		if readErr != nil {
+			_, _ = hash.Write([]byte("\x00missing"))
+			continue
+		}
+		content := sha256.Sum256(body)
+		_, _ = hash.Write(content[:])
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func fileDigest(path string) string {
@@ -193,16 +305,48 @@ func (e *Engine) recordBoundaryFailure(ctx context.Context, issueID, stage strin
 	if primary == nil {
 		return nil
 	}
+	inputs := failure.FingerprintInputs{
+		IssueID: issueID, Stage: stage, FailureSite: site,
+		WatchtowerIdentity:    digestFailureIdentity("watchtower"),
+		ConfigurationIdentity: digestFailureIdentity(stage),
+	}
+	if staged, ok := e.boundaryStageFingerprintInputs(issueID, stage, site); ok {
+		inputs = staged
+	}
 	return e.recordFailure(ctx, failureContext{
 		IssueID: issueID, Stage: stage, StageAttempt: attempt,
 		Site: site, Class: class, Disposition: disposition, StateChange: stateChange,
-		FingerprintInputs: failure.FingerprintInputs{
-			IssueID: issueID, Stage: stage, FailureSite: site,
-			WatchtowerIdentity:    digestFailureIdentity("watchtower"),
-			ConfigurationIdentity: digestFailureIdentity(stage),
-		},
-		Primary: primary,
+		FingerprintInputs: inputs,
+		Primary:           primary,
 	})
+}
+
+func (e *Engine) boundaryStageFingerprintInputs(
+	issueID, stage string, site failure.Site,
+) (failure.FingerprintInputs, bool) {
+	if e == nil || strings.TrimSpace(stage) == "" {
+		return failure.FingerprintInputs{}, false
+	}
+	e.mu.Lock()
+	current, ok := e.issues[issueID]
+	if !ok {
+		e.mu.Unlock()
+		return failure.FingerprintInputs{}, false
+	}
+	snapshot := *current
+	e.mu.Unlock()
+	configuredFlow, ok := e.cfg.Flows[snapshot.flowName]
+	if !ok {
+		return failure.FingerprintInputs{}, false
+	}
+	for _, configuredStage := range configuredFlow.Stages {
+		if configuredStage.Name == stage {
+			return stageFailureFingerprintInputs(
+				e, &snapshot, configuredStage, site, e.stageWorkdir(&snapshot, configuredStage),
+			), true
+		}
+	}
+	return failure.FingerprintInputs{}, false
 }
 
 func (e *Engine) recordClassifiedBoundaryFailure(ctx context.Context, issueID, stage string, primary error) error {
@@ -233,6 +377,14 @@ func classifyFailure(err error) (failure.Site, failure.Class, failure.RetryDispo
 			return failure.SiteCapability, failure.ClassPolicy, failure.RetryAfterStateChange, failure.StateTrustedWorkspace
 		}
 	}
+	var retryableResult *stageResultRetryableError
+	if errors.As(err, &retryableResult) {
+		return failure.SiteLifecycle, failure.ClassExecution, failure.RetryNow, failure.StateRunnerInput
+	}
+	var resultPersistence *stageResultPersistenceError
+	if errors.As(err, &resultPersistence) {
+		return failure.SiteStore, failure.ClassUnavailable, failure.RetryNow, failure.StateStore
+	}
 	var lifecycleErr *stagelifecycle.DiagnosticError
 	if errors.As(err, &lifecycleErr) {
 		switch lifecycleErr.Code {
@@ -246,10 +398,14 @@ func classifyFailure(err error) (failure.Site, failure.Class, failure.RetryDispo
 	}
 	var runnerErr *runnerStageError
 	if errors.As(err, &runnerErr) {
-		return failure.SiteRunner, failure.NormalizeClass(failure.Class(runnerErr.Result.FailureClass)), failure.RetryNow, failure.StateRunnerInput
+		class := failure.NormalizeClass(failure.Class(runnerErr.Result.FailureClass))
+		disposition, stateChange := runnerFailureRetryGuidance(class)
+		return failure.SiteRunner, class, disposition, stateChange
 	}
 	message := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(message, "artifacts require revision"):
+		return failure.SiteArtifact, failure.ClassValidation, failure.RetryNow, failure.StateOperator
 	case strings.Contains(message, "finaliz"), strings.Contains(message, "merge"), strings.Contains(message, "publish"), strings.Contains(message, "cleanup"):
 		return failure.SiteFinalization, failure.ClassStateMismatch, failure.RetryAfterStateChange, failure.StateOperator
 	case strings.Contains(message, "cache"):
@@ -320,12 +476,17 @@ func (e *Engine) recordFailure(ctx context.Context, failureCtx failureContext) e
 	inputs.FailureSite = site
 	fingerprint := failureCtx.Fingerprint
 	if fingerprint == "" {
+		fingerprint = e.authorizedFailureFingerprint(failureCtx.IssueID, failureCtx.Stage, site, class)
+	}
+	if fingerprint == "" {
 		fingerprint = failure.BuildFingerprint(inputs)
 	}
+	stateVector := retry.BuildStateVector(inputs)
 	record, err := e.cfg.FailureRecorder.AppendFailure(diagnosticCtx, failure.RecordInput{
 		IssueID: failureCtx.IssueID, Stage: failureCtx.Stage, StageAttempt: failureCtx.StageAttempt,
 		FailureSite: site, FailureClass: class, RetryDisposition: disposition,
 		RequiredStateChange: stateChange, Fingerprint: fingerprint,
+		StateVector: &stateVector,
 	})
 	if err != nil {
 		return primary
@@ -336,4 +497,14 @@ func (e *Engine) recordFailure(ctx context.Context, failureCtx failureContext) e
 		}
 	}
 	return primary
+}
+
+func (e *Engine) authorizedFailureFingerprint(issueID, stage string, site failure.Site, class failure.Class) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	is, ok := e.issues[issueID]
+	if !ok || is.retryFailure.stage != stage || is.retryFailure.site != site || is.retryFailure.class != class {
+		return ""
+	}
+	return is.retryFailure.fingerprint
 }

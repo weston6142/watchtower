@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/review"
 )
 
@@ -64,6 +65,8 @@ const (
 	EvCapabilityDenied           EventType = "capability_denied"
 	EvCapabilityValidated        EventType = "capability_validated"
 	EvCapabilityRejected         EventType = "capability_rejected"
+	EvRetryAuthorized            EventType = "retry_authorized"
+	EvRetryRejected              EventType = "retry_rejected"
 )
 
 type Event struct {
@@ -80,6 +83,14 @@ type Event struct {
 // state, so consumers receive the recorded gate fields explicitly.
 func DecisionEvidencePayload(evaluation *review.Evaluation, bindings []review.Binding) map[string]any {
 	return map[string]any{"evaluation": evaluation, "bindings": bindings}
+}
+
+func RetryAuthorizedPayload(authorization retry.Authorization) retry.Authorization {
+	return authorization
+}
+
+func RetryRejectedPayload(rejection retry.Rejection) retry.Rejection {
+	return rejection
 }
 
 func NewEvent(t EventType, issueID string, payload any) (Event, error) {

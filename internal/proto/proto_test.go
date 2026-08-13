@@ -25,6 +25,7 @@ import (
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/pkgs"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
+	"github.com/weston6142/watchtower/internal/retry"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/scaffold"
@@ -131,6 +132,59 @@ func TestPlannerOverrideRoundTripsThroughCommandJSON(t *testing.T) {
 		*got.PlannerBudget.Calls.Hard != hard ||
 		*got.PlannerBudget.Elapsed.Warning != elapsedWarn {
 		t.Fatalf("planner override = %+v from %s", got.PlannerBudget, data)
+	}
+}
+
+func TestRetryCommandRoundTripsModelResampleKind(t *testing.T) {
+	want := Command{Op: "retry_stage", IssueID: "GH-65", RetryKind: retry.KindModelResample, DecisionID: 42}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Command
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RetryKind != retry.KindModelResample || got.DecisionID != 42 || got.IssueID != "GH-65" {
+		t.Fatalf("model-resample command = %+v from %s", got, data)
+	}
+}
+
+func TestRetryCommandRejectsModelResampleWithoutDecision(t *testing.T) {
+	response := NewServer(nil, nil).exec(Command{
+		Op: "retry_stage", IssueID: "GH-65", RetryKind: retry.KindModelResample,
+	})
+	if response.Error == "" || !strings.Contains(response.Error, "decision") {
+		t.Fatalf("model-resample response = %+v", response)
+	}
+}
+
+func TestIssueDetailSurfacesLatestStructuredRetryDecision(t *testing.T) {
+	s, err := store.Open("file:retry-detail?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.UpsertIssue(store.IssueRow{ID: "GH-65", Title: "retry", State: "failed", Flow: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	rejection := retry.Rejection{
+		Reason: retry.ReasonStateUnchanged, IssueID: "GH-65", Stage: "execute", Kind: retry.KindExplicit,
+		FailureClass: failure.ClassValidation, FailureFingerprint: "sha256:" + strings.Repeat("a", 64),
+		SharedUsed: 0, SharedCap: 1, UnchangedDimensions: []string{"tree", "config", "environment", "decision"},
+		NextAction: "change durable state",
+	}
+	event, err := core.NewEvent(core.EvRetryRejected, "GH-65", core.RetryRejectedPayload(rejection))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(event); err != nil {
+		t.Fatal(err)
+	}
+	response := NewServer(nil, s).exec(Command{Op: "issue_detail", IssueID: "GH-65"})
+	if !response.OK || response.Detail == nil || response.Detail.RetryDecision == nil ||
+		response.Detail.RetryDecision.Rejection == nil || response.Detail.RetryDecision.Rejection.Reason != retry.ReasonStateUnchanged {
+		t.Fatalf("retry detail = %+v", response)
 	}
 }
 

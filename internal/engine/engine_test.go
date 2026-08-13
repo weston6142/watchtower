@@ -2212,7 +2212,11 @@ func TestPausedEventNamesUpcomingStage(t *testing.T) {
 func TestFailedAgentRetriesThenFails(t *testing.T) {
 	sc := scripts()
 	sc["execute/executor"] = runner.Script{Fail: true}
-	e, s := newEngine(t, &runner.FakeRunner{Scripts: sc})
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	e, s := newEngineCfg(t, &runner.FakeRunner{Scripts: sc}, func(cfg *Config) {
+		cfg.Workspace = &fakeWS{dir: repo}
+	})
 	id, _ := e.CreateIssue("boom", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 
 	errc := make(chan error, 1)
@@ -2580,8 +2584,11 @@ func TestResumeRestartsKilledLane(t *testing.T) {
 		t.Fatal("expected killed run to return an error")
 	}
 
-	// Unblock the stage, then resume. brainstorm must run a second time.
-	fr.Scripts["brainstorm/brainstorm"] = runner.Script{}
+	// Resume into another blocking decision so the second kill observes a
+	// running stage instead of racing a zero-work fake runner.
+	fr.Scripts["brainstorm/brainstorm"] = runner.Script{Asks: []levers.Decision{
+		{Question: "block again?", Options: []string{"a"}, Recommended: 0, Importance: 1.0},
+	}}
 	if err := e.Resume(id); err != nil {
 		t.Fatal(err)
 	}
@@ -2681,7 +2688,11 @@ func TestRetryStageResumesFromFailure(t *testing.T) {
 	sc := scripts()
 	sc["execute/executor"] = runner.Script{Fail: true}
 	fr := &runner.FakeRunner{Scripts: sc}
-	e, s := newEngine(t, fr)
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	e, s := newEngineCfg(t, fr, func(cfg *Config) {
+		cfg.Workspace = &fakeWS{dir: repo}
+	})
 	id, _ := e.CreateIssue("r", "", "default", levers.Preset(testFlow(), flow.LeverYolo), 0, nil)
 	errC := make(chan error, 1)
 	go func() { errC <- e.StartIssue(context.Background(), id) }()

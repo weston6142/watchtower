@@ -94,3 +94,67 @@ func TestLifecycleFailureSiteIsStableAndSafe(t *testing.T) {
 		t.Fatalf("unknown site = %q, want %q", got, SiteOther)
 	}
 }
+
+func TestStateVectorRequiresStableDigestsOrUnavailable(t *testing.T) {
+	valid := StateVector{
+		TreeDigest:        "sha256:" + strings.Repeat("a", 64),
+		ConfigDigest:      "sha256:" + strings.Repeat("b", 64),
+		EnvironmentDigest: "sha256:" + strings.Repeat("c", 64),
+		DecisionDigest:    Unavailable,
+	}
+	if err := ValidateStateVector(valid); err != nil {
+		t.Fatalf("valid state vector rejected: %v", err)
+	}
+
+	invalid := valid
+	invalid.EnvironmentDigest = "SECRET_API_TOKEN=value"
+	if err := ValidateStateVector(invalid); err == nil {
+		t.Fatal("raw environment value was accepted as a digest")
+	}
+
+	input := RecordInput{
+		IssueID: "GH-65", Stage: "execute", StageAttempt: 1,
+		FailureSite: SiteVerification, FailureClass: ClassValidation,
+		RetryDisposition: RetryAfterStateChange, RequiredStateChange: StateVerification,
+		Fingerprint: "sha256:" + strings.Repeat("d", 64), StateVector: &invalid,
+	}
+	if err := ValidateRecordInput(input); err == nil {
+		t.Fatal("record input with invalid state evidence was accepted")
+	}
+}
+
+func TestStateVectorJSONContainsOnlyDigestEvidence(t *testing.T) {
+	vector := StateVector{
+		TreeDigest:        "sha256:" + strings.Repeat("a", 64),
+		ConfigDigest:      "sha256:" + strings.Repeat("b", 64),
+		EnvironmentDigest: "sha256:" + strings.Repeat("c", 64),
+		DecisionDigest:    "sha256:" + strings.Repeat("d", 64),
+	}
+	encoded, err := json.Marshal(vector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, field := range []string{"tree_digest", "config_digest", "environment_digest", "decision_digest"} {
+		if !strings.Contains(text, `"`+field+`"`) {
+			t.Fatalf("state vector omitted %q: %s", field, text)
+		}
+	}
+	for _, raw := range []string{"SECRET_API_TOKEN", "model sample", "exception text"} {
+		if strings.Contains(text, raw) {
+			t.Fatalf("state vector leaked %q: %s", raw, text)
+		}
+	}
+}
+
+func TestFailureFingerprintIncludesSanitizedEnvironmentIdentity(t *testing.T) {
+	inputs := FingerprintInputs{
+		IssueID: "GH-65", Stage: "execute", FailureSite: SiteVerification,
+		EnvironmentIdentity: "sha256:" + strings.Repeat("a", 64),
+	}
+	first := BuildFingerprint(inputs)
+	inputs.EnvironmentIdentity = "sha256:" + strings.Repeat("b", 64)
+	if second := BuildFingerprint(inputs); second == first {
+		t.Fatal("changing the sanitized environment identity did not change the fingerprint")
+	}
+}

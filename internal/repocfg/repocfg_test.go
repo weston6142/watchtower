@@ -9,9 +9,96 @@ import (
 	"testing"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/plannerbudget"
 	"github.com/weston6142/watchtower/internal/review"
 )
+
+func TestRetryPolicyDefaultsAndCustomFiniteValues(t *testing.T) {
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := cfg.RetryPolicy.Policy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.ID != "retry-v1" || policy.Version != "1" || policy.TransientLimit != 2 ||
+		policy.DeterministicLimit != 1 || policy.ModelResampleLimit != 1 ||
+		!reflect.DeepEqual(policy.ModelResampleClasses, []failure.Class{failure.ClassExecution, failure.ClassTransport, failure.ClassProtocol}) {
+		t.Fatalf("default retry policy = %+v", policy)
+	}
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`retry_policy:
+  policy_id: team-retry
+  policy_version: "7"
+  transient_limit: 3
+  deterministic_limit: 2
+  model_resample_limit: 2
+  model_resample_classes: [execution]
+`)
+	if err := os.WriteFile(filepath.Join(root, ".watchtower", "config.yaml"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err = cfg.RetryPolicy.Policy()
+	if err != nil || policy.ID != "team-retry" || policy.Version != "7" || policy.TransientLimit != 3 ||
+		policy.DeterministicLimit != 2 || policy.ModelResampleLimit != 2 ||
+		!reflect.DeepEqual(policy.ModelResampleClasses, []failure.Class{failure.ClassExecution}) {
+		t.Fatalf("custom retry policy = %+v, err=%v", policy, err)
+	}
+}
+
+func TestRetryPolicyRejectsPresentInvalidConfiguration(t *testing.T) {
+	for name, body := range map[string]string{
+		"zero limit": `retry_policy:
+  policy_id: retry-v1
+  policy_version: "1"
+  transient_limit: 0
+  deterministic_limit: 1
+  model_resample_limit: 1
+  model_resample_classes: [execution]
+`,
+		"negative limit": `retry_policy:
+  policy_id: retry-v1
+  policy_version: "1"
+  transient_limit: 2
+  deterministic_limit: -1
+  model_resample_limit: 1
+  model_resample_classes: [execution]
+`,
+		"unknown class": `retry_policy:
+  policy_id: retry-v1
+  policy_version: "1"
+  transient_limit: 2
+  deterministic_limit: 1
+  model_resample_limit: 1
+  model_resample_classes: [mystery]
+`,
+		"malformed YAML": `retry_policy: [retry-v1]
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, ".watchtower"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, ".watchtower", "config.yaml"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(root); err == nil {
+				t.Fatal("invalid retry policy was accepted")
+			}
+		})
+	}
+}
 
 func TestLoadDecisionPolicySettings(t *testing.T) {
 	root := t.TempDir()
