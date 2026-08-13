@@ -16,10 +16,13 @@ The selected runner injects the composed package prompt differently:
 - Codex receives it as the `developer_instructions` config value.
 - Claude receives it through `--append-system-prompt`.
 
-Both CLIs still load their normal user and repository configuration. In
-particular, Watchtower does not disable Codex user config, `AGENTS.md`, rules,
-skills, or MCP configuration. Provider-owned base instructions remain inside
-the CLI and are not visible to the setup inspector.
+Watchtower starts both CLIs through the stage's capability session. Codex uses
+strict configuration, ignores user config and repository rules, disables its
+native shell and web search, and installs only the contract-derived Watchtower
+MCP tools. Claude uses bare mode, a strict MCP configuration, disables native
+Bash/file/web tools, and allowlists only the same contract-derived gateway
+operations. Provider-owned base instructions remain inside the CLI and are not
+visible to the setup inspector.
 
 ## Model and effort precedence
 
@@ -42,16 +45,28 @@ All setup and issue-detail surfaces must resolve through
 `Server.effectiveAgent`; looking directly in `sv.packages` can make two screens
 report different effective models.
 
-## Tools and unattended execution
+## Effective capabilities and provider execution
 
-`allowed_tools` is effective only for Claude, where it becomes
-`--allowedTools`. Codex uses its normal configured tool environment; the setup
-inspector shows the package list as `declared tools ... — not applied` and
-labels the effective source `codex config`.
+The flow's `capability_profile`, durable approval inputs, output ownership, and
+engine policy compile into the provider-neutral authority described in
+effective-stage-capabilities. Package `allowed_tools` is deprecated
+compatibility metadata: it may subtract read, mutation, or local-process
+authority before compilation, but it is never passed through as provider
+permission and can never add authority. The setup inspector labels it
+`deprecated restriction — cannot grant authority`.
 
-Codex stages explicitly set `sandbox_mode="danger-full-access"` and
-`approval_policy="never"`. Watchtower does not add flags that suppress normal
-Codex configuration or make a thread ephemeral.
+Codex is invoked with `sandbox_mode="read-only"`, `approval_policy="never"`,
+strict/ignored user configuration, and native shell and web features disabled.
+Claude is invoked with `--bare`, strict MCP configuration, an empty native tool
+set, and explicit native Bash/file/web denials. Each adapter receives only the
+MCP operation names present in the immutable contract.
+
+The provider process itself starts inside the capability runtime session.
+Provider transport retains only what it needs to reach the model; agent-requested
+filesystem, process, and Git effects are separately mediated by the gateway.
+Fallback and resumed turns keep the same contract identity, and a fallback
+must preflight its own matching enforcement plan before launch. A missing
+containment control fails the stage before starting the provider.
 
 ## Decisions and continuations
 
