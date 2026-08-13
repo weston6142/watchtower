@@ -7,7 +7,7 @@ class, fingerprint, counter, cap, or state digest.
 
 ## Policy
 
-The repository policy is configured once in `.watchtower/config.yaml`:
+The bundled policy defaults are:
 
 ```yaml
 retry_policy:
@@ -19,14 +19,18 @@ retry_policy:
   model_resample_classes: [execution, transport, protocol]
 ```
 
-All limits are finite and positive. Missing, zero, negative, malformed, or
-unknown values make repository configuration invalid instead of restoring a
-hidden fallback. Automatic and explicit retries consume the same shared count
-for one issue, stage, failure class, and failure fingerprint. A state change
-can unlock the next attempt but does not replenish that count.
+Omitting `retry_policy` from `.watchtower/config.yaml` uses these defaults. If
+the section is present, it must be complete: missing, zero, negative,
+malformed, or unknown values make repository configuration invalid instead of
+restoring a hidden fallback.
+
+Automatic and explicit retries consume the same shared count for one issue,
+stage, failure site, failure class, and failure fingerprint. A state change can
+unlock the next attempt but does not replenish that count.
 
 Transient failures may retry within `transient_limit`. Deterministic failures
-require a change in at least one independently compared state dimension:
+may retry within `deterministic_limit` and require a change in at least one
+independently compared state dimension:
 
 - `tree`: repository, branch commit, and Git tree identity;
 - `config`: stage, flow, retry, and verification configuration identity;
@@ -40,8 +44,9 @@ context; a second conflict rejects without starting work.
 
 ## Model resampling
 
-Model resampling is explicit-only and separately capped. Select a newer durable
-decision that belongs to the failed issue and stage:
+Model resampling is explicit-only, limited to the configured failure classes,
+and separately capped. Select a newer durable decision that belongs to the
+failed issue and stage:
 
 ```text
 watchtower retry GH-65 --model-resample 42
