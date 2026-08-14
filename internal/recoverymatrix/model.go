@@ -75,3 +75,89 @@ type ProductionInventory struct {
 type ValidatedManifest struct {
 	manifest Manifest
 }
+
+// Scenario is an immutable executable copy of a validated manifest declaration.
+type Scenario struct {
+	ID             string
+	Kind           ScenarioKind
+	References     ProductionReferences
+	DriverID       string
+	Seed           int64
+	InitialInputs  map[string]string
+	RecoveryInputs map[string]string
+	AllowedEffects []string
+	Expected       ExpectedContract
+}
+
+type FailureClass string
+
+const (
+	FailureMatrixDefinition      FailureClass = "matrix-definition"
+	FailureHarnessInfrastructure FailureClass = "harness-infrastructure"
+	FailureWorkflowContract      FailureClass = "workflow-contract"
+)
+
+type ResultStatus string
+
+const (
+	ResultPassed  ResultStatus = "passed"
+	ResultFailed  ResultStatus = "failed"
+	ResultSkipped ResultStatus = "skipped"
+)
+
+type Observation struct {
+	PublicOutcome            string   `json:"public_outcome"`
+	DurableState             string   `json:"durable_state"`
+	NormalizedClassification string   `json:"normalized_classification"`
+	ArtifactIdentities       []string `json:"artifact_identities"`
+	Effects                  []string `json:"effects"`
+	DiagnosticCheckpoints    []string `json:"diagnostic_checkpoints,omitempty"`
+}
+
+type ScenarioResult struct {
+	ScenarioID   string       `json:"scenario_id"`
+	Status       ResultStatus `json:"status"`
+	FailureClass FailureClass `json:"failure_class,omitempty"`
+	Failure      string       `json:"failure,omitempty"`
+	Observation  Observation  `json:"observation"`
+}
+
+type RunSummary struct {
+	ManifestIdentity  string           `json:"manifest_identity"`
+	Revision          string           `json:"revision"`
+	Compiled          int              `json:"compiled"`
+	Executed          int              `json:"executed"`
+	Passed            int              `json:"passed"`
+	Failed            int              `json:"failed"`
+	Skipped           int              `json:"skipped"`
+	Filtered          bool             `json:"filtered"`
+	Partial           bool             `json:"partial"`
+	Panics            int              `json:"panics"`
+	Timeouts          int              `json:"timeouts"`
+	UnexpectedCalls   int              `json:"unexpected_calls"`
+	UnconsumedScripts int              `json:"unconsumed_scripts"`
+	MissingResults    int              `json:"missing_results"`
+	Results           []ScenarioResult `json:"results"`
+}
+
+type RepositoryVerification struct {
+	Revision string `json:"revision"`
+	Passed   bool   `json:"passed"`
+}
+
+type ReceiptRun struct {
+	Compiled int `json:"compiled"`
+	Executed int `json:"executed"`
+	Passed   int `json:"passed"`
+	Failed   int `json:"failed"`
+	Skipped  int `json:"skipped"`
+}
+
+type CompletionReceipt struct {
+	ManifestIdentity             string        `json:"manifest_identity"`
+	ProductionRevision           string        `json:"production_revision"`
+	Runs                         [2]ReceiptRun `json:"runs"`
+	MatrixResult                 string        `json:"matrix_result"`
+	DeterminismResult            string        `json:"determinism_result"`
+	RepositoryVerificationResult string        `json:"repository_verification_result"`
+}
