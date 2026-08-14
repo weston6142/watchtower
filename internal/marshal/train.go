@@ -22,9 +22,10 @@ type Train struct {
 	CacheRoot string
 	// Pull enables SyncBase fast-forwarding the default branch from origin
 	// before an issue starts; Push publishes the default branch after a land.
-	Pull bool
-	Push bool
-	mu   sync.Mutex
+	Pull    bool
+	Push    bool
+	Effects EffectSink
+	mu      sync.Mutex
 }
 
 type LandResult struct {
@@ -80,13 +81,21 @@ func (tr *Train) SyncBase() error {
 	if err != nil {
 		return err
 	}
-	if out, err := tr.git("fetch", "-q", "origin", def); err != nil {
-		return fmt.Errorf("fetch origin %s: %v: %s", def, err, out)
+	effect := Effect{Kind: EffectSyncBase, Target: def}
+	if err := tr.admitEffect(effect); err != nil {
+		return err
 	}
-	if out, err := tr.git("merge", "--ff-only", "origin/"+def); err != nil {
-		return fmt.Errorf("fast-forward %s from origin: %v: %s", def, err, out)
-	}
-	return nil
+	err = func() error {
+		if out, err := tr.git("fetch", "-q", "origin", def); err != nil {
+			return fmt.Errorf("fetch origin %s: %v: %s", def, err, out)
+		}
+		if out, err := tr.git("merge", "--ff-only", "origin/"+def); err != nil {
+			return fmt.Errorf("fast-forward %s from origin: %v: %s", def, err, out)
+		}
+		return nil
+	}()
+	tr.completeEffect(effect, err)
+	return err
 }
 
 func (tr *Train) git(args ...string) (string, error) {
@@ -126,13 +135,17 @@ func (tr *Train) Land(ctx context.Context, issueID, branch string) error {
 // local merge so Publish can retry without merging again.
 func (tr *Train) LandVerified(
 	ctx context.Context, issueID, branch string, verification Verification,
-) (LandResult, error) {
+) (result LandResult, returnErr error) {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	var result LandResult
 	if branch == "" || branch == "HEAD" {
 		return result, fmt.Errorf("no branch to merge: worktree is detached (HEAD); commits were not landed")
 	}
+	landEffect := Effect{Kind: EffectLand, Target: branch}
+	if err := tr.admitEffect(landEffect); err != nil {
+		return result, err
+	}
+	defer func() { tr.completeEffect(landEffect, returnErr) }()
 	def, err := tr.defaultBranch()
 	if err != nil {
 		return result, err
@@ -182,8 +195,7 @@ func (tr *Train) LandVerified(
 		result.LandedSHA = landed
 		return nil
 	}
-	err = attempt()
-	if err != nil {
+	if err := attempt(); err != nil {
 		return result, err
 	}
 	if !tr.Push {
@@ -284,10 +296,16 @@ func (tr *Train) push(def string) error {
 	if !tr.Push {
 		return nil
 	}
-	if out, err := tr.git("push", "-q", "origin", def); err != nil {
-		return fmt.Errorf("push %s to origin: %v: %s", def, err, out)
+	effect := Effect{Kind: EffectPublish, Target: def}
+	if err := tr.admitEffect(effect); err != nil {
+		return err
 	}
-	return nil
+	var err error
+	if out, pushErr := tr.git("push", "-q", "origin", def); pushErr != nil {
+		err = fmt.Errorf("push %s to origin: %v: %s", def, pushErr, out)
+	}
+	tr.completeEffect(effect, err)
+	return err
 }
 
 // DeleteBranch removes a landed issue branch. It uses git's safe delete, so
@@ -296,10 +314,29 @@ func (tr *Train) DeleteBranch(branch string) error {
 	if branch == "" || branch == "HEAD" {
 		return nil
 	}
-	if out, err := tr.git("branch", "-d", branch); err != nil {
-		return fmt.Errorf("delete branch %s: %v: %s", branch, err, out)
+	effect := Effect{Kind: EffectDeleteBranch, Target: branch}
+	if err := tr.admitEffect(effect); err != nil {
+		return err
 	}
-	return nil
+	var err error
+	if out, deleteErr := tr.git("branch", "-d", branch); deleteErr != nil {
+		err = fmt.Errorf("delete branch %s: %v: %s", branch, deleteErr, out)
+	}
+	tr.completeEffect(effect, err)
+	return err
+}
+
+func (tr *Train) admitEffect(effect Effect) error {
+	if tr.Effects == nil {
+		return nil
+	}
+	return tr.Effects.Admit(effect)
+}
+
+func (tr *Train) completeEffect(effect Effect, err error) {
+	if tr.Effects != nil {
+		tr.Effects.Complete(effect, err)
+	}
 }
 
 func truncate(s string, n int) string {
