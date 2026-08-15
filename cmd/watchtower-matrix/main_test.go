@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +19,26 @@ func TestMatrixCLI(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
 		t.Fatalf("run diagnostic/evidence error = %v", err)
+	}
+}
+
+func TestMatrixDiagnosticCLIEmitsSummaryAndRejectsUnknownScenario(t *testing.T) {
+	manifestPath := filepath.Join("..", "..", "internal", "engineharness", "testdata", "failure-recovery-matrix.yaml")
+	flowPath := filepath.Join("..", "..", "internal", "scaffold", "defaults", "flows", "default.yaml")
+	var output bytes.Buffer
+	err := runCommandTo([]string{
+		"--manifest", manifestPath, "--flow", flowPath, "--revision", "revision",
+		"--scenario", "unknown/scenario",
+	}, &output)
+	if err == nil || !strings.Contains(err.Error(), "did not execute exactly once and pass") {
+		t.Fatalf("unknown diagnostic error = %v", err)
+	}
+	var summary recoverymatrix.RunSummary
+	if err := json.Unmarshal(output.Bytes(), &summary); err != nil {
+		t.Fatalf("decode diagnostic summary: %v; output=%s", err, output.String())
+	}
+	if summary.Executed != 0 || summary.Passed != 0 || summary.MissingResults != 1 {
+		t.Fatalf("unknown diagnostic summary = %+v", summary)
 	}
 }
 

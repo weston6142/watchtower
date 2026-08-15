@@ -44,6 +44,10 @@ func main() {
 }
 
 func runCommand(args []string) error {
+	return runCommandTo(args, os.Stdout)
+}
+
+func runCommandTo(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	manifestPath := flags.String("manifest", "", "validated recovery matrix manifest")
@@ -70,7 +74,16 @@ func runCommand(args []string) error {
 			ManifestIdentity: identity, Revision: *revision, ScenarioID: *scenarioID,
 			ScenarioTimeout: 15 * 1000000000,
 		})
-		return writeJSON(os.Stdout, summary)
+		if err := writeJSON(output, summary); err != nil {
+			return err
+		}
+		if summary.Executed != 1 || summary.Passed != 1 || summary.Failed != 0 || summary.Skipped != 0 ||
+			summary.Panics != 0 || summary.Timeouts != 0 || summary.UnexpectedCalls != 0 ||
+			summary.UnconsumedScripts != 0 || summary.MissingResults != 0 || len(summary.Results) != 1 ||
+			summary.Results[0].Status != recoverymatrix.ResultPassed {
+			return fmt.Errorf("diagnostic scenario %q did not execute exactly once and pass", *scenarioID)
+		}
+		return nil
 	}
 	first := recoverymatrix.Run(context.Background(), inventory, factory, recoverymatrix.RunOptions{
 		ManifestIdentity: identity, Revision: *revision, ScenarioTimeout: 15 * 1000000000,
@@ -85,7 +98,7 @@ func runCommand(args []string) error {
 	if err := writeAtomicJSON(*evidencePath, evidence); err != nil {
 		return err
 	}
-	return writeJSON(os.Stdout, evidence)
+	return writeJSON(output, evidence)
 }
 
 func completeCommand(args []string) error {
