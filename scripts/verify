@@ -6,7 +6,30 @@ export GOCACHE="${GOCACHE:-/tmp/guildhall-go-build}"
 export GOMODCACHE="${GOMODCACHE:-/tmp/guildhall-go-modcache}"
 export GOSUMDB="${GOSUMDB:-off}"
 
+revision="$(git rev-parse HEAD)"
+matrix_tmp="$(mktemp -d "${TMPDIR}/watchtower-matrix-XXXXXX")"
+trap 'rm -rf "$matrix_tmp"' EXIT
+
+go run ./cmd/watchtower-matrix run \
+  --manifest internal/engineharness/testdata/failure-recovery-matrix.yaml \
+  --flow internal/scaffold/defaults/flows/default.yaml \
+  --revision "$revision" \
+  --evidence "$matrix_tmp/matrix-evidence.json" >/dev/null
+
 go test ./... -race
 go vet ./...
 go build ./...
 git diff --check
+
+if [[ "$(git rev-parse HEAD)" != "$revision" ]]; then
+  echo "repository HEAD changed during verification" >&2
+  exit 1
+fi
+
+receipt_dir="$(git rev-parse --git-path watchtower/matrix-receipts)"
+mkdir -p "$receipt_dir"
+chmod 700 "$receipt_dir"
+go run ./cmd/watchtower-matrix complete \
+  --matrix-evidence "$matrix_tmp/matrix-evidence.json" \
+  --repository-revision "$revision" \
+  --receipt "$receipt_dir/$revision.json" >/dev/null
