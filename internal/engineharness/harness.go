@@ -5,6 +5,7 @@ package engineharness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,6 +34,21 @@ import (
 // scenario. It does not retain engine or store instances between calls.
 type EnvironmentFactory struct {
 	ProductionFlow flow.Flow
+}
+
+var errHarnessRestart = errors.New("deterministic harness restart")
+
+type boundaryInterruptObserver struct {
+	kind  engine.BoundaryKind
+	id    string
+	stage string
+}
+
+func (o boundaryInterruptObserver) AfterCommit(_ context.Context, boundary engine.DurableBoundary) error {
+	if boundary.Kind == o.kind && boundary.ID == o.id && (o.stage == "" || boundary.Stage == o.stage) {
+		return errHarnessRestart
+	}
+	return nil
 }
 
 // NewFactory returns a deterministic environment factory for a production
@@ -86,32 +102,9 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	effects := &effectRecorder{}
 	starts := make([]string, 0, len(f.ProductionFlow.Stages))
 	var startsMu sync.Mutex
-	r := &runner.FakeRunner{Scripts: scriptsForFlow(f.ProductionFlow, scenario), OnStart: func(_, stage, agent, _ string) error {
-		startsMu.Lock()
-		starts = append(starts, stage+"/"+agent)
-		startsMu.Unlock()
-		return nil
-	}}
-	if scenario.Kind == recoverymatrix.ScenarioFailure && scenario.References.FailureFamily == "capability" {
-		r.PreflightError = fmt.Errorf("deterministic capability denial")
-	}
-	configured := engine.New(engine.Config{
-		Store:     database,
-		Clock:     deterministicClock(scenario.Seed),
-		Runner:    r,
-		Pool:      slots.NewPool(1),
-		Flows:     map[string]flow.Flow{f.ProductionFlow.Name: cloneFlow(f.ProductionFlow)},
-		DataDir:   dataDir,
-		Workspace: workspace.GitWorktree{Repo: repo},
-		Train: &marshal.Train{
-			Repo: repo, TestCmd: []string{"true"}, Pull: false, Push: false,
-			Effects: effects,
-		},
-		PlanReview: review.PolicySettings{
-			ID: "deterministic-harness", Version: "1", Valid: true, AutoApproveRegular: true,
-		},
-		DecisionIdentities: deterministicDecisionIdentities(f.ProductionFlow),
-	})
+	storePath := filepath.Join(dataDir, "watchtower.db")
+	observer := observerForScenario(scenario)
+	configured, _ := newHarnessEngine(database, dataDir, repo, f.ProductionFlow, scenario, &starts, &startsMu, effects, observer)
 	matrix := levers.Preset(f.ProductionFlow, flow.LeverYolo)
 	if _, hasPlan := matrix["plan"]; hasPlan {
 		matrix["plan"] = flow.LeverRegular
@@ -124,18 +117,91 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 		_ = database.Close()
 		return fail(fmt.Errorf("create synthetic issue: %w", err))
 	}
-	return &executor{
-			engine: configured, store: database, issueID: id, repo: repo,
-			flow: cloneFlow(f.ProductionFlow), scenario: scenario, starts: &starts, startsMu: &startsMu,
-			expectedStarts: expectedScriptKeys(f.ProductionFlow, scenario),
-			effects:        effects,
-		}, func() error {
-			if err := database.Close(); err != nil {
+	executor := &executor{
+		engine: configured, store: database, issueID: id, repo: repo,
+		dataDir: dataDir, storePath: storePath,
+		flow: cloneFlow(f.ProductionFlow), scenario: scenario, starts: &starts, startsMu: &startsMu,
+		expectedStarts: expectedScriptKeys(f.ProductionFlow, scenario),
+		effects:        effects,
+	}
+	return executor, func() error {
+		if executor.store != nil {
+			if err := executor.store.Close(); err != nil {
 				_ = cleanup()
 				return err
 			}
-			return cleanup()
-		}, nil
+			executor.store = nil
+		}
+		return cleanup()
+	}, nil
+}
+
+func observerForScenario(scenario recoverymatrix.Scenario) engine.BoundaryObserver {
+	switch scenario.Kind {
+	case recoverymatrix.ScenarioRestart:
+		// The planner and the terminal lifecycle checkpoint are covered by
+		// their dedicated planner/finalization recovery cases. Keep this
+		// restart controller on boundaries that the production rehydrator can
+		// resume without inventing transient planner authority.
+		if scenario.References.Stage == "plan" || scenario.References.DurableBoundary == string(store.FinalizationReady) {
+			return nil
+		}
+		return boundaryInterruptObserver{
+			kind:  engine.BoundaryStageLifecycle,
+			id:    scenario.References.DurableBoundary,
+			stage: scenario.References.Stage,
+		}
+	case recoverymatrix.ScenarioFinalization, recoverymatrix.ScenarioFinalizationRecovery:
+		return boundaryInterruptObserver{
+			kind: engine.BoundaryFinalization,
+			id:   scenario.References.FinalizationBoundary,
+		}
+	default:
+		return nil
+	}
+}
+
+func newHarnessEngine(
+	database *store.Store,
+	dataDir, repo string,
+	production flow.Flow,
+	scenario recoverymatrix.Scenario,
+	starts *[]string,
+	startsMu *sync.Mutex,
+	effects *effectRecorder,
+	observer engine.BoundaryObserver,
+) (*engine.Engine, *runner.FakeRunner) {
+	r := &runner.FakeRunner{
+		Scripts: scriptsForFlow(production, scenario),
+		OnStart: func(_, stage, agent, _ string) error {
+			startsMu.Lock()
+			*starts = append(*starts, stage+"/"+agent)
+			startsMu.Unlock()
+			return nil
+		},
+	}
+	if scenario.Kind == recoverymatrix.ScenarioFailure && scenario.References.FailureFamily == "capability" {
+		r.PreflightError = fmt.Errorf("deterministic capability denial")
+	}
+	configured := engine.New(engine.Config{
+		Store:            database,
+		Clock:            deterministicClock(scenario.Seed),
+		Runner:           r,
+		BoundaryObserver: observer,
+		Pool:             slots.NewPool(1),
+		Flows:            map[string]flow.Flow{production.Name: cloneFlow(production)},
+		DataDir:          dataDir,
+		Workspace:        workspace.GitWorktree{Repo: repo},
+		Train: &marshal.Train{
+			Repo: repo, TestCmd: []string{"true"}, Pull: false, Push: false,
+			Effects: effects,
+		},
+		PlanReview: review.PolicySettings{
+			ID: "deterministic-harness", Version: "1", Valid: true, AutoApproveRegular: true,
+		},
+		DecisionIdentities: deterministicDecisionIdentities(production),
+	})
+	return configured, r
 }
 
 type executor struct {
@@ -143,6 +209,8 @@ type executor struct {
 	store          *store.Store
 	issueID        string
 	repo           string
+	dataDir        string
+	storePath      string
 	flow           flow.Flow
 	scenario       recoverymatrix.Scenario
 	starts         *[]string
@@ -153,6 +221,17 @@ type executor struct {
 
 func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
 	startErr := e.startWithSyntheticApprovals(ctx)
+	if startErr != nil && (e.scenario.Kind == recoverymatrix.ScenarioRestart ||
+		e.scenario.Kind == recoverymatrix.ScenarioFinalization ||
+		e.scenario.Kind == recoverymatrix.ScenarioFinalizationRecovery) && errors.Is(startErr, errHarnessRestart) {
+		if err := e.rebuildAndResume(ctx); err != nil {
+			return recoverymatrix.Observation{}, recoverymatrix.InfrastructureError{
+				Kind: recoverymatrix.InfrastructureFixture,
+				Err:  fmt.Errorf("reconstruct after committed boundary: %w", err),
+			}
+		}
+		startErr = nil
+	}
 	if e.scenario.Kind == recoverymatrix.ScenarioFailure {
 		records, historyErr := e.store.FailureHistory(ctx, e.issueID)
 		if historyErr != nil {
@@ -219,6 +298,160 @@ func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (reco
 		Effects:                  e.effects.kinds(),
 		DiagnosticCheckpoints:    stages,
 	}, nil
+}
+
+func (e *executor) rebuildAndResume(ctx context.Context) error {
+	if e.store == nil {
+		return fmt.Errorf("first runtime store is unavailable")
+	}
+	if e.scenario.Kind == recoverymatrix.ScenarioFinalization && e.scenario.References.FinalizationBoundary == string(store.IntegrationMerged) {
+		return e.rehydrateOnly()
+	}
+	if err := e.ensurePersistedWorktree(); err != nil {
+		return err
+	}
+	if err := e.store.Close(); err != nil {
+		return fmt.Errorf("close first runtime store: %w", err)
+	}
+	database, err := store.OpenWithClock(e.storePath, deterministicClock(e.scenario.Seed))
+	if err != nil {
+		return fmt.Errorf("reopen retained store: %w", err)
+	}
+	e.store = database
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil)
+	if err := e.engine.Rehydrate(); err != nil {
+		return fmt.Errorf("rehydrate retained state: %w", err)
+	}
+	autoFinalization := e.scenario.Kind == recoverymatrix.ScenarioRestart && e.scenario.References.Stage == "merge-verification" &&
+		(e.scenario.References.DurableBoundary == string(store.VerificationPassed) || e.scenario.References.DurableBoundary == string(store.FinalizationReady))
+	if e.scenario.Kind == recoverymatrix.ScenarioRestart && !autoFinalization {
+		if err := e.prepareFreshRestartWorkspace(); err != nil {
+			return err
+		}
+	}
+	if autoFinalization {
+		return e.waitForCompletion(ctx)
+	}
+	if e.scenario.Kind == recoverymatrix.ScenarioFinalization &&
+		(e.scenario.References.FinalizationBoundary == store.IntegrationVerificationReady ||
+			e.scenario.References.FinalizationBoundary == store.IntegrationPendingReverification) {
+		return e.waitForCompletion(ctx)
+	}
+	return e.retryWithSyntheticApprovals(ctx)
+}
+
+func (e *executor) prepareFreshRestartWorkspace() error {
+	provider := workspace.GitWorktree{Repo: e.repo}
+	list, err := exec.Command("git", "-C", e.repo, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return fmt.Errorf("list first-runtime worktrees: %w", err)
+	}
+	var candidate string
+	for _, line := range strings.Split(string(list), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			candidate = strings.TrimPrefix(line, "worktree ")
+		case line == "branch refs/heads/issue/"+e.issueID && candidate != "":
+			if err := provider.ReleasePath(candidate); err != nil {
+				return fmt.Errorf("release first-runtime worktree: %w", err)
+			}
+			candidate = ""
+		}
+	}
+	if err := provider.DiscardIssue(e.issueID); err != nil {
+		return fmt.Errorf("discard first-runtime branch: %w", err)
+	}
+	return nil
+}
+
+func (e *executor) rehydrateOnly() error {
+	if err := e.store.Close(); err != nil {
+		return fmt.Errorf("close terminal runtime store: %w", err)
+	}
+	database, err := store.OpenWithClock(e.storePath, deterministicClock(e.scenario.Seed))
+	if err != nil {
+		return fmt.Errorf("reopen terminal store: %w", err)
+	}
+	e.store = database
+	if err := e.ensurePersistedWorktree(); err != nil {
+		return err
+	}
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil)
+	if err := e.engine.Rehydrate(); err != nil {
+		return fmt.Errorf("rehydrate terminal state: %w", err)
+	}
+	return nil
+}
+
+func (e *executor) waitForCompletion(ctx context.Context) error {
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if integration, found, err := e.store.IssueIntegration(e.issueID); err != nil {
+			return err
+		} else if found && integration.State == store.IntegrationMerged {
+			return nil
+		}
+		rows, err := e.store.Issues()
+		if err != nil {
+			return err
+		}
+		if row, found := findIssue(rows, e.issueID); found && (row.State == "merged" || row.State == "done" || row.State == "done (unmerged)") {
+			return nil
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (e *executor) ensurePersistedWorktree() error {
+	integration, found, err := e.store.IssueIntegration(e.issueID)
+	if err != nil || !found || integration.Worktree == "" || integration.Branch == "" {
+		return nil
+	}
+	if _, err := os.Stat(integration.Worktree); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect persisted worktree: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(integration.Worktree), 0o755); err != nil {
+		return fmt.Errorf("create persisted worktree parent: %w", err)
+	}
+	ref := "refs/heads/" + integration.Branch
+	if output, err := exec.Command("git", "-C", e.repo, "show-ref", "--verify", "--quiet", ref).CombinedOutput(); err != nil {
+		if branchOutput, branchErr := exec.Command("git", "-C", e.repo, "branch", integration.Branch, "HEAD").CombinedOutput(); branchErr != nil {
+			return fmt.Errorf("restore persisted branch: %v: %s (ref check: %v: %s)", branchErr, branchOutput, err, output)
+		}
+	}
+	cmd := exec.Command("git", "-C", e.repo, "worktree", "add", integration.Worktree, integration.Branch)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("restore persisted worktree: %v: %s", err, output)
+	}
+	return nil
+}
+
+func (e *executor) retryWithSyntheticApprovals(ctx context.Context) error {
+	done := make(chan error, 1)
+	go func() { done <- e.engine.RetryStage(ctx, e.issueID) }()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			for _, pending := range e.engine.PendingDecisions() {
+				if err := e.engine.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+					return fmt.Errorf("answer synthetic retry decision %d: %w", pending.ID, err)
+				}
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (e *executor) startWithSyntheticApprovals(ctx context.Context) error {
@@ -399,6 +632,9 @@ func failureScript(stage flow.Stage, script runner.Script, family string) runner
 }
 
 func validateDriver(scenario recoverymatrix.Scenario) error {
+	if scenario.Kind != recoverymatrix.ScenarioFailure && scenario.DriverID != "synthetic/deterministic" && !strings.HasPrefix(scenario.DriverID, "deterministic/") {
+		return fmt.Errorf("unknown deterministic driver %q for %s", scenario.DriverID, scenario.ID)
+	}
 	if scenario.Kind != recoverymatrix.ScenarioFailure {
 		return nil
 	}
