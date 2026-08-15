@@ -627,12 +627,16 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 	if !ok {
 		return nil, false, nil
 	}
+	completedThrough := -1
 	for index, stage := range configured.Stages {
 		records, err := e.cfg.Store.StageLifecycleRecords(row.ID, stage.Name, "")
 		if err != nil {
 			return nil, false, err
 		}
 		if len(records) == 0 {
+			if completedThrough >= 0 {
+				break
+			}
 			continue
 		}
 		attemptID := ""
@@ -660,7 +664,11 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			predecessor = &copy
 			latest = record
 		}
-		if latest.Substate == "" || lifecycleReached(latest.Substate, stagelifecycle.FinalizationReady) {
+		if latest.Substate == "" {
+			continue
+		}
+		if lifecycleReached(latest.Substate, stagelifecycle.FinalizationReady) {
+			completedThrough = index
 			continue
 		}
 		if _, err := validateDurableLifecycleRecord(e.issueDir(row.ID), latest); err != nil {
@@ -670,6 +678,14 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
 			matrix: matrixFromStrings(row.Levers), priority: row.Priority,
 			dependsOn: append([]string(nil), row.DependsOn...), stageIdx: index,
+			terminal: true, planReview: row.PlanReviewPolicy,
+		}, true, nil
+	}
+	if next := completedThrough + 1; completedThrough >= 0 && next < len(configured.Stages) {
+		return &issueState{
+			id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+			matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+			dependsOn: append([]string(nil), row.DependsOn...), stageIdx: next,
 			terminal: true, planReview: row.PlanReviewPolicy,
 		}, true, nil
 	}

@@ -382,6 +382,21 @@ func (e *Engine) rehydrateArtifactReview(
 	if checkpoint == nil {
 		return false, false, fmt.Errorf("checkpoint %d is missing", row.Review.CheckpointID)
 	}
+	lifecycleRecords, err := e.cfg.Store.StageLifecycleRecords(row.IssueID, row.Stage, "")
+	if err != nil {
+		return false, false, err
+	}
+	latestAttempt := ""
+	for _, record := range lifecycleRecords {
+		if record.Committed && (latestAttempt == "" || lifecycleAttemptAfter(record.AttemptID, latestAttempt)) {
+			latestAttempt = record.AttemptID
+		}
+	}
+	for _, record := range lifecycleRecords {
+		if record.Committed && record.AttemptID == latestAttempt && lifecycleReached(record.Substate, stagelifecycle.FinalizationReady) {
+			return false, false, nil
+		}
+	}
 	statusActive := (row.Status == "pending" && checkpoint.Status == "awaiting_review") ||
 		((row.Status == "answered" || row.Status == "auto") &&
 			(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "revision_required" || checkpoint.Status == "succeeded"))
@@ -704,15 +719,20 @@ func (e *Engine) Rehydrate() error {
 				"stage": "lifecycle", "error": "lifecycle checkpoint recovery blocked: " + lifecycleErrorMessage(recoveryErr), "final": true})
 			continue
 		} else if found {
+			recoveredStage := e.cfg.Flows[row.Flow].Stages[recovered.stageIdx].Name
+			recoveredRecords, recordsErr := e.cfg.Store.StageLifecycleRecords(row.ID, recoveredStage, "")
+			if recordsErr != nil {
+				return recordsErr
+			}
 			e.mu.Lock()
 			_, known := e.issues[row.ID]
 			if !known {
 				e.issues[row.ID] = recovered
 			}
 			e.mu.Unlock()
-			if !known {
+			if !known && len(recoveredRecords) > 0 {
 				e.emit(core.EvStageFailed, row.ID, map[string]any{
-					"stage": e.cfg.Flows[row.Flow].Stages[recovered.stageIdx].Name,
+					"stage": recoveredStage,
 					"error": "lifecycle checkpoint recovered — press R to retry", "final": true})
 			}
 			continue
@@ -3269,9 +3289,12 @@ func (e *Engine) runStageOnce(
 	}
 	contextPaths := append(append([]string(nil), requiredInputs...), st.Artifacts...)
 	startCommit, branch, dirty := repositoryState(workdir, contextPaths)
-	_, _, _, lastFailure, err := e.cfg.Store.LastStageEvents(is.id)
+	lastEventStage, _, _, lastFailure, err := e.cfg.Store.LastStageEvents(is.id)
 	if err != nil {
 		return err
+	}
+	if lastEventStage != st.Name {
+		lastFailure = ""
 	}
 	expectedResultKind, resultProducer, producesResult, err := resultProducerForStage(st)
 	if err != nil {
@@ -3921,8 +3944,12 @@ func (e *Engine) runStageOnce(
 			"stage": st.Name, "artifact": artifact.Name,
 			"path": filepath.Join(e.issueDir(is.id), "artifacts", "attempts", lifecycleAttempt.AttemptID, artifact.Name)})
 	}
+	reviewCheckpointID := checkpointID
+	if resumedLifecycle && st.Gate == flow.GatePlanReview {
+		reviewCheckpointID = lifecycleAttempt.LegacyCheckpointID
+	}
 	if st.Gate == flow.GatePlanReview {
-		response, err := e.requestPlanReview(is, st, checkpointID, checkpointArtifacts)
+		response, err := e.requestPlanReview(is, st, reviewCheckpointID, checkpointArtifacts)
 		if err != nil {
 			return err
 		}
@@ -3934,7 +3961,7 @@ func (e *Engine) runStageOnce(
 			return fmt.Errorf("plan review rejected")
 		}
 	} else if st.Gate == flow.GateApproveArtifact {
-		response, err := e.requestArtifactReview(is, st, checkpointID, checkpointArtifacts)
+		response, err := e.requestArtifactReview(is, st, reviewCheckpointID, checkpointArtifacts)
 		if err != nil {
 			return err
 		}

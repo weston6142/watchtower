@@ -158,15 +158,21 @@ func (e *Engine) materializeIntegrationArtifacts(is *issueState, stageName, work
 	if err != nil {
 		return err
 	}
-	for index := len(records) - 1; index >= 0; index-- {
-		record := records[index]
+	var selected *stagelifecycle.Record
+	for index := range records {
+		record := &records[index]
 		if !record.Committed || !lifecycleReached(record.Substate, stagelifecycle.ArtifactsArchived) || len(record.Artifacts) == 0 {
 			continue
 		}
-		refs := attemptArtifactRefs(record.Artifacts)
-		return contextpack.MaterializeAttemptArtifacts(e.issueDir(is.id), workdir, refs)
+		if selected == nil || lifecycleAttemptAfter(record.AttemptID, selected.AttemptID) ||
+			(record.AttemptID == selected.AttemptID && record.Version > selected.Version) {
+			selected = record
+		}
 	}
-	return nil
+	if selected == nil {
+		return nil
+	}
+	return contextpack.MaterializeAttemptArtifacts(e.issueDir(is.id), workdir, attemptArtifactRefs(selected.Artifacts))
 }
 
 func (e *Engine) validateFinalIdentity(
@@ -203,12 +209,14 @@ func (e *Engine) validateFinalIdentityForAttempt(
 				receipt.TreeSHA, treeSHA))
 	}
 	if decision.BranchCommit != "" && decision.BranchCommit != branchSHA {
-		return fmt.Errorf("merge decision branch %s does not match current branch %s",
-			decision.BranchCommit, branchSHA)
+		return staleVerificationIdentity(StaleVerificationBranch, attemptID,
+			fmt.Errorf("merge decision branch %s does not match current branch %s",
+				decision.BranchCommit, branchSHA))
 	}
 	if decision.BaseCommit != "" && decision.BaseCommit != is.baseRef {
-		return fmt.Errorf("merge decision base %s does not match issue base %s",
-			decision.BaseCommit, is.baseRef)
+		return staleVerificationIdentity(StaleVerificationBranch, attemptID,
+			fmt.Errorf("merge decision base %s does not match issue base %s",
+				decision.BaseCommit, is.baseRef))
 	}
 	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 &&
 		!receipt.Includes(e.cfg.Train.TestCmd) {

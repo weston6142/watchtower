@@ -5,6 +5,9 @@ package engineharness
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/weston6142/watchtower/internal/capability"
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
@@ -26,6 +30,8 @@ import (
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
 	"github.com/weston6142/watchtower/internal/slots"
+	"github.com/weston6142/watchtower/internal/stagelifecycle"
+	"github.com/weston6142/watchtower/internal/stageresult"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/workspace"
 )
@@ -39,16 +45,55 @@ type EnvironmentFactory struct {
 var errHarnessRestart = errors.New("deterministic harness restart")
 
 type boundaryInterruptObserver struct {
-	kind  engine.BoundaryKind
-	id    string
-	stage string
+	mu       sync.Mutex
+	kind     engine.BoundaryKind
+	id       string
+	stage    string
+	scenario recoverymatrix.Scenario
+	repo     string
+	fired    bool
+	mutated  bool
 }
 
-func (o boundaryInterruptObserver) AfterCommit(_ context.Context, boundary engine.DurableBoundary) error {
-	if boundary.Kind == o.kind && boundary.ID == o.id && (o.stage == "" || boundary.Stage == o.stage) {
+func (o *boundaryInterruptObserver) AfterCommit(_ context.Context, boundary engine.DurableBoundary) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.needsStaleVerification() && !o.mutated && boundary.Kind == engine.BoundaryFinalization && boundary.ID == store.IntegrationVerificationReady {
+		if err := mutateVerifiedWorktree(o.repo, boundary.IssueID); err != nil {
+			return err
+		}
+		o.mutated = true
+		return errHarnessRestart
+	}
+	if strings.TrimSpace(boundary.ID) == strings.TrimSpace(o.id) &&
+		(strings.TrimSpace(o.stage) == "" || strings.TrimSpace(boundary.Stage) == strings.TrimSpace(o.stage)) {
+		o.fired = true
+		if o.needsStaleVerification() {
+			return nil
+		}
+		if o.scenario.Kind == recoverymatrix.ScenarioFailure || isCrossCutFailure(o.scenario.Kind) {
+			return failureBoundaryError(o.scenario.References.FailureFamily)
+		}
 		return errHarnessRestart
 	}
 	return nil
+}
+
+func (o *boundaryInterruptObserver) needsStaleVerification() bool {
+	return o.scenario.References.FinalizationBoundary == store.IntegrationPendingReverification ||
+		o.scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed
+}
+
+func (o *boundaryInterruptObserver) wasFired() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.fired
+}
+
+func (o *boundaryInterruptObserver) preparedStaleVerification() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.mutated
 }
 
 // NewFactory returns a deterministic environment factory for a production
@@ -99,18 +144,19 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 		return fail(fmt.Errorf("open scenario store: %w", err))
 	}
 
-	effects := &effectRecorder{}
+	scenarioFlow := flowForScenario(f.ProductionFlow, scenario)
+	effects := newEffectRecorder(scenario)
 	starts := make([]string, 0, len(f.ProductionFlow.Stages))
 	var startsMu sync.Mutex
 	storePath := filepath.Join(dataDir, "watchtower.db")
-	observer := observerForScenario(scenario)
-	configured, _ := newHarnessEngine(database, dataDir, repo, f.ProductionFlow, scenario, &starts, &startsMu, effects, observer)
-	matrix := levers.Preset(f.ProductionFlow, flow.LeverYolo)
+	observer := observerForScenario(scenario, repo)
+	configured, _ := newHarnessEngine(database, dataDir, repo, scenarioFlow, scenario, &starts, &startsMu, effects, observer, false)
+	matrix := levers.Preset(scenarioFlow, flow.LeverYolo)
 	if _, hasPlan := matrix["plan"]; hasPlan {
 		matrix["plan"] = flow.LeverRegular
 	}
 	id, err := configured.CreateIssue(
-		"deterministic matrix scenario", "synthetic scenario", f.ProductionFlow.Name,
+		"deterministic matrix scenario", "synthetic scenario", scenarioFlow.Name,
 		matrix, 0, nil,
 	)
 	if err != nil {
@@ -120,9 +166,9 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	executor := &executor{
 		engine: configured, store: database, issueID: id, repo: repo,
 		dataDir: dataDir, storePath: storePath,
-		flow: cloneFlow(f.ProductionFlow), scenario: scenario, starts: &starts, startsMu: &startsMu,
-		expectedStarts: expectedScriptKeys(f.ProductionFlow, scenario),
-		effects:        effects,
+		flow: cloneFlow(scenarioFlow), scenario: scenario, starts: &starts, startsMu: &startsMu,
+		expectedStarts: expectedScriptKeys(scenarioFlow, scenario),
+		effects:        effects, observer: observer,
 	}
 	return executor, func() error {
 		if executor.store != nil {
@@ -136,25 +182,35 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	}, nil
 }
 
-func observerForScenario(scenario recoverymatrix.Scenario) engine.BoundaryObserver {
+func observerForScenario(scenario recoverymatrix.Scenario, repo string) *boundaryInterruptObserver {
 	switch scenario.Kind {
 	case recoverymatrix.ScenarioRestart:
-		// The planner and the terminal lifecycle checkpoint are covered by
-		// their dedicated planner/finalization recovery cases. Keep this
-		// restart controller on boundaries that the production rehydrator can
-		// resume without inventing transient planner authority.
-		if scenario.References.Stage == "plan" || scenario.References.DurableBoundary == string(store.FinalizationReady) {
-			return nil
-		}
-		return boundaryInterruptObserver{
-			kind:  engine.BoundaryStageLifecycle,
-			id:    scenario.References.DurableBoundary,
-			stage: scenario.References.Stage,
+		return &boundaryInterruptObserver{
+			kind:     engine.BoundaryStageLifecycle,
+			id:       scenario.References.DurableBoundary,
+			stage:    scenario.References.Stage,
+			scenario: scenario, repo: repo,
 		}
 	case recoverymatrix.ScenarioFinalization, recoverymatrix.ScenarioFinalizationRecovery:
-		return boundaryInterruptObserver{
-			kind: engine.BoundaryFinalization,
-			id:   scenario.References.FinalizationBoundary,
+		return &boundaryInterruptObserver{
+			kind:     engine.BoundaryFinalization,
+			id:       scenario.References.FinalizationBoundary,
+			scenario: scenario, repo: repo,
+		}
+	case recoverymatrix.ScenarioFailure:
+		if scenario.References.FailureFamily == "runner" {
+			return nil
+		}
+		return &boundaryInterruptObserver{
+			kind: engine.BoundaryStageLifecycle, id: string(store.RunnerSucceeded),
+			stage: scenario.References.Stage, scenario: scenario, repo: repo,
+		}
+	case recoverymatrix.ScenarioChangedStateRecovery, recoverymatrix.ScenarioPlannerCapabilityLoss,
+		recoverymatrix.ScenarioConfigurationDrift, recoverymatrix.ScenarioCapabilityViolation,
+		recoverymatrix.ScenarioArtifactIdentity:
+		return &boundaryInterruptObserver{
+			kind: engine.BoundaryStageLifecycle, id: string(store.RunnerSucceeded),
+			stage: scenario.References.Stage, scenario: scenario, repo: repo,
 		}
 	default:
 		return nil
@@ -169,31 +225,59 @@ func newHarnessEngine(
 	starts *[]string,
 	startsMu *sync.Mutex,
 	effects *effectRecorder,
-	observer engine.BoundaryObserver,
+	observer *boundaryInterruptObserver,
+	recovered bool,
 ) (*engine.Engine, *runner.FakeRunner) {
+	var configuredObserver engine.BoundaryObserver
+	if observer != nil {
+		configuredObserver = observer
+	}
 	r := &runner.FakeRunner{
-		Scripts: scriptsForFlow(production, scenario),
+		Scripts: scriptsForFlow(production, scenario, recovered),
 		OnStart: func(_, stage, agent, _ string) error {
 			startsMu.Lock()
 			*starts = append(*starts, stage+"/"+agent)
+			count := 0
+			for _, key := range *starts {
+				if key == stage+"/"+agent {
+					count++
+				}
+			}
 			startsMu.Unlock()
+			if scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed && stage == "merge-verification" {
+				if count == 2 {
+					return fmt.Errorf("verification recovery failed")
+				}
+			}
 			return nil
 		},
 	}
-	if scenario.Kind == recoverymatrix.ScenarioFailure && scenario.References.FailureFamily == "capability" {
-		r.PreflightError = fmt.Errorf("deterministic capability denial")
+	var preflightErr error
+	if !recovered && scenario.Kind == recoverymatrix.ScenarioFailure && scenario.References.FailureFamily == "capability" {
+		preflightErr = &capability.PolicyError{Phase: "preflight", Reason: capability.ReasonProviderUnsupported}
+	}
+	adapter := &stageBoundRunner{FakeRunner: r, stage: scenario.References.Stage, preflightErr: preflightErr}
+	workspaceProvider := workspace.Provider(workspace.GitWorktree{Repo: repo})
+	if recovered || scenario.References.FinalizationBoundary == store.IntegrationPendingReverification ||
+		scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed {
+		workspaceProvider = reusableWorkspace{GitWorktree: workspace.GitWorktree{Repo: repo}}
+	} else if scenario.References.FinalizationBoundary == store.IntegrationCleanupNeeded {
+		workspaceProvider = &recoverableWorkspace{GitWorktree: workspace.GitWorktree{Repo: repo}, failRelease: true}
+	} else if !recovered && scenario.Kind == recoverymatrix.ScenarioUnchangedRetryRefusal {
+		workspaceProvider = retainedWorkspace{GitWorktree: workspace.GitWorktree{Repo: repo}}
 	}
 	configured := engine.New(engine.Config{
 		Store:            database,
 		Clock:            deterministicClock(scenario.Seed),
-		Runner:           r,
-		BoundaryObserver: observer,
+		Runner:           adapter,
+		BoundaryObserver: configuredObserver,
 		Pool:             slots.NewPool(1),
 		Flows:            map[string]flow.Flow{production.Name: cloneFlow(production)},
 		DataDir:          dataDir,
-		Workspace:        workspace.GitWorktree{Repo: repo},
+		Workspace:        workspaceProvider,
 		Train: &marshal.Train{
-			Repo: repo, TestCmd: []string{"true"}, Pull: false, Push: false,
+			Repo: repo, TestCmd: []string{"true"}, Pull: false,
+			Push:    !recovered && scenario.References.FinalizationBoundary == store.IntegrationPublishPending,
 			Effects: effects,
 		},
 		PlanReview: review.PolicySettings{
@@ -217,10 +301,36 @@ type executor struct {
 	startsMu       *sync.Mutex
 	expectedStarts []string
 	effects        *effectRecorder
+	observer       *boundaryInterruptObserver
 }
 
 func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
 	startErr := e.startWithSyntheticApprovals(ctx)
+	if isCrossCutScenario(e.scenario.Kind) && e.scenario.Kind != recoverymatrix.ScenarioFinalizationRecovery {
+		if err := e.driveCrossCutRecovery(ctx, startErr); err != nil {
+			return recoverymatrix.Observation{}, err
+		}
+		startErr = nil
+	}
+	boundaryPrepared := e.observer != nil && e.observer.wasFired()
+	if e.observer != nil && e.observer.needsStaleVerification() {
+		boundaryPrepared = e.observer.preparedStaleVerification()
+	}
+	if requiresBoundaryInterruption(e.scenario) && (!boundaryPrepared || !errors.Is(startErr, errHarnessRestart)) {
+		return recoverymatrix.Observation{}, recoverymatrix.InfrastructureError{
+			Kind: recoverymatrix.InfrastructureFixture,
+			Err:  fmt.Errorf("selected boundary %q did not interrupt execution", selectedBoundary(e.scenario)),
+		}
+	}
+	if startErr != nil && errors.Is(startErr, errHarnessRestart) && e.observer != nil && e.observer.needsStaleVerification() {
+		if err := e.driveStaleFinalizationRecovery(ctx); err != nil {
+			return recoverymatrix.Observation{}, recoverymatrix.InfrastructureError{
+				Kind: recoverymatrix.InfrastructureFixture,
+				Err:  fmt.Errorf("recover selected finalization boundary: %w", err),
+			}
+		}
+		startErr = nil
+	}
 	if startErr != nil && (e.scenario.Kind == recoverymatrix.ScenarioRestart ||
 		e.scenario.Kind == recoverymatrix.ScenarioFinalization ||
 		e.scenario.Kind == recoverymatrix.ScenarioFinalizationRecovery) && errors.Is(startErr, errHarnessRestart) {
@@ -233,6 +343,9 @@ func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (reco
 		startErr = nil
 	}
 	if e.scenario.Kind == recoverymatrix.ScenarioFailure {
+		if startErr == nil {
+			return recoverymatrix.Observation{}, fmt.Errorf("expected failure unexpectedly completed")
+		}
 		records, historyErr := e.store.FailureHistory(ctx, e.issueID)
 		if historyErr != nil {
 			return recoverymatrix.Observation{}, fmt.Errorf("read expected failure record: %w", historyErr)
@@ -243,13 +356,31 @@ func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (reco
 			}
 			return recoverymatrix.Observation{}, fmt.Errorf("expected failure unexpectedly completed without a durable failure record")
 		}
+		latest := records[len(records)-1]
+		if string(latest.FailureSite) != e.scenario.References.FailureFamily {
+			return recoverymatrix.Observation{}, fmt.Errorf("failure family %q recorded at site %q", e.scenario.References.FailureFamily, latest.FailureSite)
+		}
+		rows, err := e.store.Issues()
+		if err != nil {
+			return recoverymatrix.Observation{}, fmt.Errorf("read failed issue: %w", err)
+		}
+		row, found := findIssue(rows, e.issueID)
+		if !found {
+			return recoverymatrix.Observation{}, fmt.Errorf("failed issue %s is missing", e.issueID)
+		}
+		durable := row.State
+		if integration, found, err := e.store.IssueIntegration(e.issueID); err != nil {
+			return recoverymatrix.Observation{}, fmt.Errorf("read failed integration: %w", err)
+		} else if found {
+			durable = string(integration.State)
+		}
 		return recoverymatrix.Observation{
-			PublicOutcome:            e.scenario.Expected.PublicOutcome,
-			DurableState:             e.scenario.Expected.DurableState,
-			NormalizedClassification: e.scenario.Expected.NormalizedClassification,
-			ArtifactIdentities:       append([]string(nil), e.scenario.Expected.ArtifactIdentities...),
-			Effects:                  append([]string(nil), e.scenario.AllowedEffects...),
-			DiagnosticCheckpoints:    []string{records[len(records)-1].Stage},
+			PublicOutcome:            publicOutcome(row.State, store.IssueIntegration{}, false),
+			DurableState:             durable,
+			NormalizedClassification: string(latest.FailureSite),
+			ArtifactIdentities:       []string{"failure-site:" + string(latest.FailureSite)},
+			Effects:                  e.effects.kinds(),
+			DiagnosticCheckpoints:    []string{latest.Stage},
 		}, nil
 	}
 	if startErr != nil {
@@ -290,14 +421,133 @@ func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (reco
 	if len(checkpoints) == 0 {
 		stages = startedStages(*e.starts, e.flow)
 	}
+	artifactIdentities := []string{"synthetic/artifact"}
+	if e.scenario.Kind == recoverymatrix.ScenarioArtifactIdentity {
+		body, err := os.ReadFile(filepath.Join(e.dataDir, e.issueID, "artifacts", "artifact-identity.txt"))
+		if err != nil {
+			return recoverymatrix.Observation{}, fmt.Errorf("read recovered artifact identity: %w", err)
+		}
+		digest := sha256.Sum256(body)
+		artifactIdentities = []string{"sha256:" + hex.EncodeToString(digest[:])}
+	}
 	return recoverymatrix.Observation{
 		PublicOutcome:            publicOutcome(row.State, integration, hasIntegration),
 		DurableState:             durable,
 		NormalizedClassification: "success",
-		ArtifactIdentities:       []string{"synthetic/artifact"},
+		ArtifactIdentities:       artifactIdentities,
 		Effects:                  e.effects.kinds(),
 		DiagnosticCheckpoints:    stages,
 	}, nil
+}
+
+func (e *executor) driveStaleFinalizationRecovery(ctx context.Context) error {
+	if err := e.engine.SetLever(e.issueID, "merge-verification", flow.LeverStrict); err != nil {
+		return err
+	}
+	err := e.retryWithSyntheticApprovals(ctx)
+	if !e.observer.wasFired() {
+		return fmt.Errorf("selected finalization boundary %q was not observed", e.scenario.References.FinalizationBoundary)
+	}
+	if e.scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed {
+		if err == nil {
+			return fmt.Errorf("reverification failure unexpectedly succeeded")
+		}
+		return e.recoverFailedReverification(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	return e.rehydrateOnly()
+}
+
+type stageBoundRunner struct {
+	*runner.FakeRunner
+	stage        string
+	preflightErr error
+}
+
+type recoverableWorkspace struct {
+	workspace.GitWorktree
+	mu          sync.Mutex
+	failRelease bool
+}
+
+type retainedWorkspace struct{ workspace.GitWorktree }
+
+func (w retainedWorkspace) Acquire(issueID string) (string, func() error, error) {
+	path, _, err := w.GitWorktree.Acquire(issueID)
+	return path, func() error { return nil }, err
+}
+
+type reusableWorkspace struct{ workspace.GitWorktree }
+
+func (w reusableWorkspace) Acquire(issueID string) (string, func() error, error) {
+	path := filepath.Join(w.Repo, ".worktrees", issueID)
+	branch := "issue/" + issueID
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return path, func() error { return w.ReleasePath(path) }, nil
+	}
+	if _, err := git(w.Repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+		if output, addErr := exec.Command("git", "-C", w.Repo, "worktree", "add", path, branch).CombinedOutput(); addErr != nil {
+			return "", nil, fmt.Errorf("reuse worktree: %v: %s", addErr, output)
+		}
+		return path, func() error { return w.ReleasePath(path) }, nil
+	}
+	return w.GitWorktree.Acquire(issueID)
+}
+
+func (w *recoverableWorkspace) Acquire(issueID string) (string, func() error, error) {
+	path, _, err := w.GitWorktree.Acquire(issueID)
+	if err != nil {
+		return "", nil, err
+	}
+	return path, func() error { return w.ReleasePath(path) }, nil
+}
+
+func (w *recoverableWorkspace) ReleasePath(path string) error {
+	w.mu.Lock()
+	if w.failRelease {
+		w.failRelease = false
+		w.mu.Unlock()
+		return fmt.Errorf("deterministic worktree release failure")
+	}
+	w.mu.Unlock()
+	return w.GitWorktree.ReleasePath(path)
+}
+
+func (r *stageBoundRunner) Preflight(ctx context.Context, request runner.PreflightRequest) (capability.EnforcementPlan, error) {
+	if request.Stage == r.stage && r.preflightErr != nil {
+		return capability.EnforcementPlan{}, r.preflightErr
+	}
+	return r.FakeRunner.Preflight(ctx, request)
+}
+
+func flowForScenario(production flow.Flow, scenario recoverymatrix.Scenario) flow.Flow {
+	configured := cloneFlow(production)
+	if scenario.Kind == recoverymatrix.ScenarioRestart {
+		for index := range configured.Stages {
+			if configured.Stages[index].Name == scenario.References.Stage {
+				configured.Stages[index].Retries = 0
+				if scenario.References.Stage == "execute" {
+					configured.Stages[index].Artifacts = append(configured.Stages[index].Artifacts, "execute.out")
+				}
+			}
+		}
+	}
+	if scenario.Kind != recoverymatrix.ScenarioFailure &&
+		(!isCrossCutScenario(scenario.Kind) || scenario.Kind == recoverymatrix.ScenarioDecisionEscalation ||
+			scenario.Kind == recoverymatrix.ScenarioFinalizationRecovery) {
+		return configured
+	}
+	for index := range configured.Stages {
+		if configured.Stages[index].Name == scenario.References.Stage {
+			configured.Stages[index].Retries = 0
+			if scenario.Kind == recoverymatrix.ScenarioArtifactIdentity {
+				configured.Stages[index].Artifacts = append(configured.Stages[index].Artifacts, "artifact-identity.txt")
+			}
+		}
+	}
+	return configured
 }
 
 func (e *executor) rebuildAndResume(ctx context.Context) error {
@@ -318,13 +568,22 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 		return fmt.Errorf("reopen retained store: %w", err)
 	}
 	e.store = database
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil)
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, e.observer, true)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate retained state: %w", err)
 	}
 	autoFinalization := e.scenario.Kind == recoverymatrix.ScenarioRestart && e.scenario.References.Stage == "merge-verification" &&
 		(e.scenario.References.DurableBoundary == string(store.VerificationPassed) || e.scenario.References.DurableBoundary == string(store.FinalizationReady))
-	if e.scenario.Kind == recoverymatrix.ScenarioRestart && !autoFinalization {
+	completedStageRestart := e.scenario.Kind == recoverymatrix.ScenarioRestart &&
+		e.scenario.References.DurableBoundary == string(store.FinalizationReady) &&
+		e.scenario.References.Stage != "merge-verification"
+	if completedStageRestart {
+		if err := e.engine.Resume(e.issueID); err != nil && !strings.Contains(err.Error(), "unknown issue") {
+			return err
+		}
+		return e.waitForCompletion(ctx)
+	}
+	if e.scenario.Kind == recoverymatrix.ScenarioRestart && !autoFinalization && e.scenario.References.Stage != "plan" {
 		if err := e.prepareFreshRestartWorkspace(); err != nil {
 			return err
 		}
@@ -336,6 +595,190 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 		(e.scenario.References.FinalizationBoundary == store.IntegrationVerificationReady ||
 			e.scenario.References.FinalizationBoundary == store.IntegrationPendingReverification) {
 		return e.waitForCompletion(ctx)
+	}
+	if err := e.retryWithSyntheticApprovals(ctx); err != nil {
+		if errors.Is(err, errHarnessRestart) && e.observer != nil && e.observer.wasFired() {
+			return e.resumeAfterSelectedBoundary(ctx)
+		}
+		if e.observer != nil && e.observer.wasFired() &&
+			e.scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed {
+			return e.recoverFailedReverification(ctx)
+		}
+		if strings.Contains(err.Error(), "is already running") {
+			return e.waitForCompletion(ctx)
+		}
+		return err
+	}
+	if e.observer != nil && e.observer.needsStaleVerification() {
+		if !e.observer.wasFired() {
+			return fmt.Errorf("selected finalization boundary %q was not observed", e.scenario.References.FinalizationBoundary)
+		}
+		return e.rehydrateOnly()
+	}
+	if integration, found, err := e.store.IssueIntegration(e.issueID); err == nil && found && integration.State == store.IntegrationCleanupNeeded {
+		return e.retryWithSyntheticApprovals(ctx)
+	}
+	return nil
+}
+
+func (e *executor) recoverFailedReverification(ctx context.Context) error {
+	integration, found, err := e.store.IssueIntegration(e.issueID)
+	if err != nil {
+		return err
+	}
+	if !found || integration.State != store.IntegrationReverificationFailed {
+		return fmt.Errorf("reverification failure state was not persisted")
+	}
+	integration.State = store.IntegrationVerificationReady
+	integration.LastError = ""
+	if err := e.store.SetIssueIntegration(integration); err != nil {
+		return err
+	}
+	if err := e.ensurePersistedWorktree(); err != nil {
+		return err
+	}
+	branchSHA, err := git(integration.Worktree, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	treeSHA, err := git(integration.Worktree, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return err
+	}
+	receipt, err := json.Marshal(marshal.Verification{
+		BaseSHA: integration.PreSHA, BranchSHA: branchSHA, TreeSHA: treeSHA,
+		Passed: true, Commands: [][]string{{"true"}},
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := e.store.RecordVerificationAttempt(store.VerificationAttempt{
+		IssueID: e.issueID, Stage: "merge-verification", ReceiptJSON: receipt,
+	}); err != nil {
+		return err
+	}
+	if err := e.engine.SetLever(e.issueID, "merge-verification", flow.LeverRegular); err != nil {
+		return err
+	}
+	if err := e.retryWithSyntheticApprovals(ctx); err != nil {
+		return err
+	}
+	return e.rehydrateOnly()
+}
+
+func (e *executor) resumeAfterSelectedBoundary(ctx context.Context) error {
+	if err := e.store.Close(); err != nil {
+		return fmt.Errorf("close interrupted recovery store: %w", err)
+	}
+	database, err := store.OpenWithClock(e.storePath, deterministicClock(e.scenario.Seed))
+	if err != nil {
+		return fmt.Errorf("reopen interrupted recovery store: %w", err)
+	}
+	e.store = database
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, true)
+	if err := e.engine.Rehydrate(); err != nil {
+		return fmt.Errorf("rehydrate interrupted recovery state: %w", err)
+	}
+	if err := e.retryWithSyntheticApprovals(ctx); err != nil {
+		if strings.Contains(err.Error(), "is already running") {
+			return e.waitForCompletion(ctx)
+		}
+		return err
+	}
+	return nil
+}
+
+func (e *executor) driveCrossCutRecovery(ctx context.Context, startErr error) error {
+	initial, initialOK := e.scenario.InitialInputs["state"]
+	recovery, recoveryOK := e.scenario.RecoveryInputs["state"]
+	if !initialOK || !recoveryOK || initial == "" || recovery == "" || initial == recovery {
+		return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureFixture,
+			Err: fmt.Errorf("cross-cutting driver requires distinct initial and recovery state")}
+	}
+	if e.scenario.Kind == recoverymatrix.ScenarioDecisionEscalation {
+		if startErr != nil {
+			return startErr
+		}
+		rows, err := e.store.AllDecisionRows()
+		if err != nil {
+			return fmt.Errorf("read escalated decisions: %w", err)
+		}
+		for _, row := range rows {
+			if row.Stage == e.scenario.References.Stage {
+				return nil
+			}
+		}
+		return fmt.Errorf("decision escalation produced no durable decision for %q", e.scenario.References.Stage)
+	}
+	if startErr == nil {
+		return fmt.Errorf("cross-cutting initial state %q unexpectedly completed", initial)
+	}
+	if e.scenario.Kind == recoverymatrix.ScenarioUnchangedRetryRefusal {
+		e.startsMu.Lock()
+		before := len(*e.starts)
+		e.startsMu.Unlock()
+		err := e.retryWithSyntheticApprovals(ctx)
+		e.startsMu.Lock()
+		after := len(*e.starts)
+		e.startsMu.Unlock()
+		if err == nil || after != before {
+			return fmt.Errorf("unchanged retry was not refused: %v", err)
+		}
+	}
+	if e.scenario.Kind != recoverymatrix.ScenarioDecisionEscalation {
+		if err := e.applyRecoveryState(recovery); err != nil {
+			return err
+		}
+		lever := flow.LeverStrict
+		if e.scenario.References.Stage == "plan" {
+			lever = flow.LeverYolo
+		}
+		if err := e.engine.SetLever(e.issueID, e.scenario.References.Stage, lever); err != nil {
+			return fmt.Errorf("apply recovery configuration %q: %w", recovery, err)
+		}
+	}
+	return e.rebuildForCrossCutRecovery(ctx)
+}
+
+func (e *executor) applyRecoveryState(recovery string) error {
+	if err := e.ensurePersistedWorktree(); err != nil {
+		return err
+	}
+	run, found, err := e.store.LoadRunState(e.issueID)
+	if err != nil {
+		return err
+	}
+	if !found || run.Worktree == "" {
+		return fmt.Errorf("cross-cutting recovery worktree is unavailable")
+	}
+	path := filepath.Join(run.Worktree, "matrix-recovery-state")
+	if err := os.WriteFile(path, []byte(recovery+"\n"), 0o644); err != nil {
+		return err
+	}
+	if _, err := git(run.Worktree, "add", "matrix-recovery-state"); err != nil {
+		return err
+	}
+	if _, err := git(run.Worktree, "commit", "-m", "apply deterministic recovery state"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (e *executor) rebuildForCrossCutRecovery(ctx context.Context) error {
+	if err := e.ensurePersistedWorktree(); err != nil {
+		return err
+	}
+	if err := e.store.Close(); err != nil {
+		return fmt.Errorf("close initial cross-cutting store: %w", err)
+	}
+	database, err := store.OpenWithClock(e.storePath, deterministicClock(e.scenario.Seed))
+	if err != nil {
+		return fmt.Errorf("reopen cross-cutting store: %w", err)
+	}
+	e.store = database
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, true)
+	if err := e.engine.Rehydrate(); err != nil {
+		return fmt.Errorf("rehydrate cross-cutting state: %w", err)
 	}
 	return e.retryWithSyntheticApprovals(ctx)
 }
@@ -376,7 +819,7 @@ func (e *executor) rehydrateOnly() error {
 	if err := e.ensurePersistedWorktree(); err != nil {
 		return err
 	}
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil)
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, true)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate terminal state: %w", err)
 	}
@@ -387,46 +830,93 @@ func (e *executor) waitForCompletion(ctx context.Context) error {
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
+		for _, pending := range e.engine.PendingDecisions() {
+			if err := e.engine.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+				return fmt.Errorf("answer synthetic recovery decision %d: %w", pending.ID, err)
+			}
+		}
 		if integration, found, err := e.store.IssueIntegration(e.issueID); err != nil {
 			return err
 		} else if found && integration.State == store.IntegrationMerged {
 			return nil
+		} else if found && integration.State == store.IntegrationReverificationFailed {
+			return fmt.Errorf("reverification failed: %s", integration.LastError)
 		}
 		rows, err := e.store.Issues()
 		if err != nil {
 			return err
 		}
-		if row, found := findIssue(rows, e.issueID); found && (row.State == "merged" || row.State == "done" || row.State == "done (unmerged)") {
-			return nil
+		if row, found := findIssue(rows, e.issueID); found {
+			if row.State == "merged" || row.State == "done" || row.State == "done (unmerged)" {
+				return nil
+			}
+			if row.State == "failed" {
+				return fmt.Errorf("recovery issue failed")
+			}
 		}
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
-			return ctx.Err()
+			integration, _, _ := e.store.IssueIntegration(e.issueID)
+			e.startsMu.Lock()
+			started := append([]string(nil), (*e.starts)...)
+			e.startsMu.Unlock()
+			events, _ := e.store.EventsSince(0)
+			lastFailure := ""
+			for _, event := range events {
+				if event.IssueID == e.issueID && event.Type == core.EvStageFailed {
+					lastFailure = string(event.Payload)
+				}
+			}
+			return fmt.Errorf("%w while integration is %s with %d pending decisions after %v; last failure %s", ctx.Err(), integration.State, len(e.engine.PendingDecisions()), started, lastFailure)
 		}
 	}
 }
 
 func (e *executor) ensurePersistedWorktree() error {
 	integration, found, err := e.store.IssueIntegration(e.issueID)
-	if err != nil || !found || integration.Worktree == "" || integration.Branch == "" {
-		return nil
+	if err != nil {
+		return err
 	}
-	if _, err := os.Stat(integration.Worktree); err == nil {
+	worktree, branch := integration.Worktree, integration.Branch
+	if !found || worktree == "" || branch == "" {
+		run, runFound, runErr := e.store.LoadRunState(e.issueID)
+		if runErr != nil {
+			return runErr
+		}
+		if runFound && run.Worktree != "" && run.Branch != "" {
+			worktree, branch = run.Worktree, run.Branch
+		} else {
+			runs, runsErr := e.store.StageRuns(e.issueID)
+			if runsErr != nil {
+				return runsErr
+			}
+			for index := len(runs) - 1; index >= 0; index-- {
+				if runs[index].Worktree != "" {
+					worktree, branch = runs[index].Worktree, "issue/"+e.issueID
+					break
+				}
+			}
+			if worktree == "" {
+				return nil
+			}
+		}
+	}
+	if _, err := os.Stat(worktree); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect persisted worktree: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(integration.Worktree), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
 		return fmt.Errorf("create persisted worktree parent: %w", err)
 	}
-	ref := "refs/heads/" + integration.Branch
+	ref := "refs/heads/" + branch
 	if output, err := exec.Command("git", "-C", e.repo, "show-ref", "--verify", "--quiet", ref).CombinedOutput(); err != nil {
-		if branchOutput, branchErr := exec.Command("git", "-C", e.repo, "branch", integration.Branch, "HEAD").CombinedOutput(); branchErr != nil {
+		if branchOutput, branchErr := exec.Command("git", "-C", e.repo, "branch", branch, "HEAD").CombinedOutput(); branchErr != nil {
 			return fmt.Errorf("restore persisted branch: %v: %s (ref check: %v: %s)", branchErr, branchOutput, err, output)
 		}
 	}
-	cmd := exec.Command("git", "-C", e.repo, "worktree", "add", integration.Worktree, integration.Branch)
+	cmd := exec.Command("git", "-C", e.repo, "worktree", "add", worktree, branch)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("restore persisted worktree: %v: %s", err, output)
 	}
@@ -540,6 +1030,9 @@ func verifyFailureScriptsConsumed(started []string, production flow.Flow, scenar
 		}
 	}
 	if !targetReached {
+		if scenario.References.FailureFamily == "capability" {
+			return nil
+		}
 		return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnconsumed,
 			Err: fmt.Errorf("failure driver did not reach stage %q", scenario.References.Stage)}
 	}
@@ -547,17 +1040,32 @@ func verifyFailureScriptsConsumed(started []string, production flow.Flow, scenar
 }
 
 type effectRecorder struct {
-	mu    sync.Mutex
-	admit []marshal.Effect
+	mu         sync.Mutex
+	admit      []marshal.Effect
+	rejectKind marshal.EffectKind
+	rejected   bool
+}
+
+func newEffectRecorder(scenario recoverymatrix.Scenario) *effectRecorder {
+	recorder := &effectRecorder{}
+	switch scenario.References.FinalizationBoundary {
+	case store.IntegrationPublishPending:
+		recorder.rejectKind = marshal.EffectPublish
+	}
+	return recorder
 }
 
 func (r *effectRecorder) Admit(effect marshal.Effect) error {
-	if effect.Kind == marshal.EffectPublish || effect.Kind == marshal.EffectSyncBase {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if effect.Kind == marshal.EffectSyncBase {
 		return fmt.Errorf("offline harness rejected effect %q", effect.Kind)
 	}
-	r.mu.Lock()
+	if effect.Kind == r.rejectKind && !r.rejected {
+		r.rejected = true
+		return fmt.Errorf("offline harness injected %q recovery boundary", effect.Kind)
+	}
 	r.admit = append(r.admit, effect)
-	r.mu.Unlock()
 	return nil
 }
 
@@ -566,19 +1074,14 @@ func (r *effectRecorder) Complete(_ marshal.Effect, _ error) {}
 func (r *effectRecorder) kinds() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	seen := make(map[string]struct{}, len(r.admit))
+	out := make([]string, 0, len(r.admit))
 	for _, effect := range r.admit {
-		seen[string(effect.Kind)] = struct{}{}
+		out = append(out, string(effect.Kind))
 	}
-	out := make([]string, 0, len(seen))
-	for kind := range seen {
-		out = append(out, kind)
-	}
-	sort.Strings(out)
 	return out
 }
 
-func scriptsForFlow(production flow.Flow, scenario recoverymatrix.Scenario) map[string]runner.Script {
+func scriptsForFlow(production flow.Flow, scenario recoverymatrix.Scenario, recovered bool) map[string]runner.Script {
 	scripts := make(map[string]runner.Script)
 	for _, stage := range production.Stages {
 		for _, agent := range stage.Agents {
@@ -601,8 +1104,45 @@ func scriptsForFlow(production flow.Flow, scenario recoverymatrix.Scenario) map[
 					"verification.json":   "",
 				}
 			}
+			if stage.Name == "execute" {
+				script.StageEvidence = &stageresult.Evidence{
+					SchemaVersion: stageresult.SchemaVersion, StageKind: stageresult.KindExecute,
+					Outcome: stageresult.OutcomeCompleted,
+					Execute: &stageresult.ExecutePayload{
+						PlanTasks: []stageresult.PlanTask{{ID: "task-0001", Outcome: stageresult.TaskCompleted, Summary: "completed deterministic task"}},
+						Skips: []stageresult.Skip{
+							{Activity: "commits", Explanation: "deterministic harness makes no source commit"},
+							{Activity: "checks", Explanation: "deterministic harness uses the repository gate"},
+						},
+					},
+				}
+			}
 			if scenario.Kind == recoverymatrix.ScenarioFailure && stage.Name == scenario.References.Stage {
 				script = failureScript(stage, script, scenario.References.FailureFamily)
+			}
+			if !recovered && isCrossCutScenario(scenario.Kind) &&
+				scenario.Kind != recoverymatrix.ScenarioDecisionEscalation && scenario.Kind != recoverymatrix.ScenarioFinalizationRecovery &&
+				stage.Name == scenario.References.Stage {
+				script.Fail = true
+				script.FailureClass = runner.FailureConfiguration
+			}
+			if scenario.Kind == recoverymatrix.ScenarioArtifactIdentity && stage.Name == scenario.References.Stage {
+				content := scenario.InitialInputs["state"]
+				if recovered {
+					content = scenario.RecoveryInputs["state"]
+				}
+				if script.Artifacts == nil {
+					script.Artifacts = map[string]string{}
+				}
+				script.Artifacts["artifact-identity.txt"] = content
+			}
+			for _, name := range stage.Artifacts {
+				if script.Artifacts == nil {
+					script.Artifacts = map[string]string{}
+				}
+				if _, exists := script.Artifacts[name]; !exists {
+					script.Artifacts[name] = "deterministic artifact\n"
+				}
 			}
 			scripts[stage.Name+"/"+agent.Package] = script
 		}
@@ -610,34 +1150,85 @@ func scriptsForFlow(production flow.Flow, scenario recoverymatrix.Scenario) map[
 	return scripts
 }
 
+func isCrossCutScenario(kind recoverymatrix.ScenarioKind) bool {
+	switch kind {
+	case recoverymatrix.ScenarioUnchangedRetryRefusal, recoverymatrix.ScenarioChangedStateRecovery,
+		recoverymatrix.ScenarioPlannerCapabilityLoss, recoverymatrix.ScenarioConfigurationDrift,
+		recoverymatrix.ScenarioCapabilityViolation, recoverymatrix.ScenarioDecisionEscalation,
+		recoverymatrix.ScenarioArtifactIdentity, recoverymatrix.ScenarioFinalizationRecovery:
+		return true
+	default:
+		return false
+	}
+}
+
+func isCrossCutFailure(kind recoverymatrix.ScenarioKind) bool {
+	return isCrossCutScenario(kind) && kind != recoverymatrix.ScenarioDecisionEscalation &&
+		kind != recoverymatrix.ScenarioFinalizationRecovery && kind != recoverymatrix.ScenarioUnchangedRetryRefusal
+}
+
 func failureScript(stage flow.Stage, script runner.Script, family string) runner.Script {
 	switch family {
-	case "artifact":
-		if stage.Name == "plan" {
-			// The planner has a distinct artifact contract. Leave it with no
-			// planner writes so the engine owns the missing-output failure.
-			script.PlannerRequests = nil
-			script.Artifacts = nil
-		} else if stage.Name == "merge-verification" {
-			// Final-review has no agent-owned artifact runner seam; a typed
-			// runner failure keeps the engine-owned failure record immediate.
-			script.Fail = true
-		} else if _, ok := runnerKindForStage(stage); ok {
-			script.OmitStageEvidence = true
-		} else {
-			script.Artifacts = nil
-		}
-	case "planner":
-		script.PlannerFailureAt = 0
-		script.PlannerFailure = fmt.Errorf("planner deterministic failure")
-	case "capability":
-		script.OperationAttempts = []runner.OperationAttempt{{}}
-	default:
-		// The remaining adapters use the fake runner's typed failure boundary;
-		// the failure record remains engine-owned and is inspected after return.
+	case "runner":
 		script.Fail = true
 	}
 	return script
+}
+
+func failureBoundaryError(family string) error {
+	switch family {
+	case "lifecycle":
+		return &stagelifecycle.DiagnosticError{Code: stagelifecycle.CodeIntegrity, Message: "deterministic lifecycle failure"}
+	case "capability":
+		return &capability.PolicyError{Phase: "post-stage", Reason: capability.ReasonPostStageViolation}
+	default:
+		return fmt.Errorf("deterministic %s failure", family)
+	}
+}
+
+func requiresBoundaryInterruption(scenario recoverymatrix.Scenario) bool {
+	return scenario.Kind == recoverymatrix.ScenarioRestart || scenario.Kind == recoverymatrix.ScenarioFinalization ||
+		scenario.Kind == recoverymatrix.ScenarioFinalizationRecovery
+}
+
+func selectedBoundary(scenario recoverymatrix.Scenario) string {
+	if scenario.References.FinalizationBoundary != "" {
+		return scenario.References.FinalizationBoundary
+	}
+	return scenario.References.DurableBoundary
+}
+
+func mutateVerifiedWorktree(repo, issueID string) error {
+	list, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return fmt.Errorf("list verified worktrees: %w", err)
+	}
+	var worktree string
+	found := false
+	for _, line := range strings.Split(string(list), "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			worktree = strings.TrimPrefix(line, "worktree ")
+			continue
+		}
+		if line == "branch refs/heads/issue/"+issueID && worktree != "" {
+			found = true
+			break
+		}
+	}
+	if !found || worktree == "" || worktree == repo {
+		return fmt.Errorf("verified worktree for %s is unavailable", issueID)
+	}
+	path := filepath.Join(worktree, "matrix-verification-change")
+	if err := os.WriteFile(path, []byte("changed\n"), 0o644); err != nil {
+		return fmt.Errorf("write deterministic verification change: %w", err)
+	}
+	if _, err := git(worktree, "add", "matrix-verification-change"); err != nil {
+		return err
+	}
+	if _, err := git(worktree, "commit", "-m", "deterministic verification change"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateDriver(scenario recoverymatrix.Scenario) error {
@@ -693,6 +1284,30 @@ func expectedScriptKeys(production flow.Flow, scenario recoverymatrix.Scenario) 
 		}
 		if scenario.Kind == recoverymatrix.ScenarioFailure && stage.Name == scenario.References.Stage {
 			break
+		}
+	}
+	if isCrossCutScenario(scenario.Kind) && scenario.Kind != recoverymatrix.ScenarioDecisionEscalation &&
+		scenario.Kind != recoverymatrix.ScenarioFinalizationRecovery {
+		for _, stage := range production.Stages {
+			if stage.Name == scenario.References.Stage {
+				for _, agent := range stage.Agents {
+					keys = append(keys, stage.Name+"/"+agent.Package)
+				}
+			}
+		}
+	}
+	if scenario.References.FinalizationBoundary == store.IntegrationPendingReverification ||
+		scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed {
+		for _, stage := range production.Stages {
+			if stage.Name != "merge-verification" {
+				continue
+			}
+			for _, agent := range stage.Agents {
+				keys = append(keys, stage.Name+"/"+agent.Package)
+				if scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed {
+					keys = append(keys, stage.Name+"/"+agent.Package)
+				}
+			}
 		}
 	}
 	return keys

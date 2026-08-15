@@ -327,9 +327,6 @@ func validateScenarioDeclaration(scenario ScenarioDeclaration) error {
 	if len(scenario.RecoveryInputs) == 0 {
 		return fmt.Errorf("declared recovery inputs are empty")
 	}
-	if len(scenario.AllowedEffects) == 0 {
-		return fmt.Errorf("allowed effects are empty")
-	}
 	if strings.TrimSpace(scenario.Expected.PublicOutcome) == "" ||
 		strings.TrimSpace(scenario.Expected.DurableState) == "" ||
 		strings.TrimSpace(scenario.Expected.NormalizedClassification) == "" ||

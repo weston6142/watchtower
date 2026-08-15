@@ -10,10 +10,10 @@ scripts/verify
 The gate captures `HEAD`, runs two complete unfiltered matrix executions at
 that revision, compares normalized observations, then runs race tests, vet,
 build, and `git diff --check`. It writes a completion receipt only after every
-check passes, at the revision-keyed path returned by:
+check passes, in the worktree-local directory:
 
 ```sh
-git rev-parse --git-path watchtower/matrix-receipts
+.watchtower/matrix-receipts
 ```
 
 Receipts are private, atomically written JSON files. A changed revision,

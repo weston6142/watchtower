@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/weston6142/watchtower/internal/flow"
+	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/recoverymatrix"
 )
 
@@ -18,6 +19,19 @@ func shippedHarnessFlow(t *testing.T) flow.Flow {
 		t.Fatal(err)
 	}
 	return loaded
+}
+
+func TestEffectObservationRetainsDuplicateAdmissions(t *testing.T) {
+	recorder := &effectRecorder{}
+	for range 2 {
+		if err := recorder.Admit(marshal.Effect{Kind: marshal.EffectLand, Target: "main"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := recorder.kinds()
+	if len(got) != 2 || got[0] != "land" || got[1] != "land" {
+		t.Fatalf("observed effects = %v", got)
+	}
 }
 
 func TestDeterministicEnvironmentDrivesShippedEngine(t *testing.T) {

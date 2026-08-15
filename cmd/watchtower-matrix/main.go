@@ -60,12 +60,11 @@ func runCommand(args []string) error {
 	if *scenarioID != "" && *evidencePath != "" {
 		return fmt.Errorf("--scenario cannot be combined with --evidence")
 	}
-	production, inventory, err := loadInventory(*manifestPath, *flowPath)
+	production, inventory, identity, err := loadInventory(*manifestPath, *flowPath)
 	if err != nil {
 		return err
 	}
 	factory := engineharness.NewFactory(production)
-	identity := filepath.Clean(*manifestPath)
 	if *scenarioID != "" {
 		summary := recoverymatrix.Run(context.Background(), inventory, factory, recoverymatrix.RunOptions{
 			ManifestIdentity: identity, Revision: *revision, ScenarioID: *scenarioID,
@@ -121,24 +120,28 @@ func completeCommand(args []string) error {
 	return writeJSON(os.Stdout, receipt)
 }
 
-func loadInventory(manifestPath, flowPath string) (flow.Flow, []recoverymatrix.Scenario, error) {
+func loadInventory(manifestPath, flowPath string) (flow.Flow, []recoverymatrix.Scenario, string, error) {
 	production, err := flow.Load(flowPath)
 	if err != nil {
-		return flow.Flow{}, nil, fmt.Errorf("load flow: %w", err)
+		return flow.Flow{}, nil, "", fmt.Errorf("load flow: %w", err)
 	}
 	manifest, err := recoverymatrix.LoadManifest(manifestPath)
 	if err != nil {
-		return flow.Flow{}, nil, fmt.Errorf("load manifest: %w", err)
+		return flow.Flow{}, nil, "", fmt.Errorf("load manifest: %w", err)
 	}
 	validated, err := recoverymatrix.ValidateManifest(manifest, recoverymatrix.ResolveProduction(production))
 	if err != nil {
-		return flow.Flow{}, nil, fmt.Errorf("validate manifest: %w", err)
+		return flow.Flow{}, nil, "", fmt.Errorf("validate manifest: %w", err)
 	}
 	inventory, err := recoverymatrix.Compile(validated)
 	if err != nil {
-		return flow.Flow{}, nil, fmt.Errorf("compile manifest: %w", err)
+		return flow.Flow{}, nil, "", fmt.Errorf("compile manifest: %w", err)
 	}
-	return production, inventory, nil
+	identity, err := recoverymatrix.ManifestIdentity(validated)
+	if err != nil {
+		return flow.Flow{}, nil, "", fmt.Errorf("identify manifest: %w", err)
+	}
+	return production, inventory, identity, nil
 }
 
 func readStrictJSON(path string, target any) error {

@@ -335,12 +335,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
   - id: failure/brainstorm/workspace
     kind: failure
@@ -349,12 +349,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: workspace
+      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/brainstorm/artifact
     kind: failure
@@ -363,12 +363,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
       recovery_behavior: declared-contract
   - id: failure/brainstorm/git
     kind: failure
@@ -377,12 +377,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
       recovery_behavior: declared-contract
   - id: failure/brainstorm/store
     kind: failure
@@ -391,12 +391,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
       recovery_behavior: declared-contract
   - id: failure/brainstorm/lifecycle
     kind: failure
@@ -405,12 +405,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
       recovery_behavior: declared-contract
   - id: failure/brainstorm/capability
     kind: failure
@@ -419,12 +419,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
       recovery_behavior: declared-contract
   - id: failure/spec/runner
     kind: failure
@@ -433,12 +433,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
   - id: failure/spec/workspace
     kind: failure
@@ -447,12 +447,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: workspace
+      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/spec/artifact
     kind: failure
@@ -461,12 +461,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
       recovery_behavior: declared-contract
   - id: failure/spec/git
     kind: failure
@@ -475,12 +475,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
       recovery_behavior: declared-contract
   - id: failure/spec/store
     kind: failure
@@ -489,12 +489,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
       recovery_behavior: declared-contract
   - id: failure/spec/lifecycle
     kind: failure
@@ -503,12 +503,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
       recovery_behavior: declared-contract
   - id: failure/spec/capability
     kind: failure
@@ -517,12 +517,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
       recovery_behavior: declared-contract
   - id: failure/plan/runner
     kind: failure
@@ -531,12 +531,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
   - id: failure/plan/workspace
     kind: failure
@@ -545,12 +545,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: workspace
+      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/plan/artifact
     kind: failure
@@ -559,12 +559,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
       recovery_behavior: declared-contract
   - id: failure/plan/planner
     kind: failure
@@ -573,12 +573,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: planner
+      artifact_identities: [failure-site:planner]
       recovery_behavior: declared-contract
   - id: failure/plan/git
     kind: failure
@@ -587,12 +587,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
       recovery_behavior: declared-contract
   - id: failure/plan/store
     kind: failure
@@ -601,12 +601,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
       recovery_behavior: declared-contract
   - id: failure/plan/lifecycle
     kind: failure
@@ -615,12 +615,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
       recovery_behavior: declared-contract
   - id: failure/plan/capability
     kind: failure
@@ -629,12 +629,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
       recovery_behavior: declared-contract
   - id: failure/execute/runner
     kind: failure
@@ -643,12 +643,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
   - id: failure/execute/workspace
     kind: failure
@@ -657,12 +657,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: workspace
+      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/execute/artifact
     kind: failure
@@ -671,12 +671,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
       recovery_behavior: declared-contract
   - id: failure/execute/git
     kind: failure
@@ -685,12 +685,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
       recovery_behavior: declared-contract
   - id: failure/execute/store
     kind: failure
@@ -699,12 +699,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
       recovery_behavior: declared-contract
   - id: failure/execute/lifecycle
     kind: failure
@@ -713,12 +713,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
       recovery_behavior: declared-contract
   - id: failure/execute/capability
     kind: failure
@@ -727,12 +727,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
       recovery_behavior: declared-contract
   - id: failure/correctness-review/runner
     kind: failure
@@ -741,12 +741,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
   - id: failure/correctness-review/workspace
     kind: failure
@@ -755,12 +755,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: workspace
+      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/correctness-review/artifact
     kind: failure
@@ -769,12 +769,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
       recovery_behavior: declared-contract
   - id: failure/correctness-review/git
     kind: failure
@@ -783,12 +783,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
       recovery_behavior: declared-contract
   - id: failure/correctness-review/store
     kind: failure
@@ -797,12 +797,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
       recovery_behavior: declared-contract
   - id: failure/correctness-review/lifecycle
     kind: failure
@@ -811,12 +811,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
       recovery_behavior: declared-contract
   - id: failure/correctness-review/capability
     kind: failure
@@ -825,12 +825,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
       recovery_behavior: declared-contract
   - id: failure/clean-code-review/runner
     kind: failure
@@ -839,12 +839,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
   - id: failure/clean-code-review/workspace
     kind: failure
@@ -853,12 +853,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: workspace
+      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/clean-code-review/artifact
     kind: failure
@@ -867,12 +867,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
       recovery_behavior: declared-contract
   - id: failure/clean-code-review/git
     kind: failure
@@ -881,12 +881,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
       recovery_behavior: declared-contract
   - id: failure/clean-code-review/store
     kind: failure
@@ -895,12 +895,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
       recovery_behavior: declared-contract
   - id: failure/clean-code-review/lifecycle
     kind: failure
@@ -909,12 +909,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
       recovery_behavior: declared-contract
   - id: failure/clean-code-review/capability
     kind: failure
@@ -923,12 +923,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
       recovery_behavior: declared-contract
   - id: failure/librarian/runner
     kind: failure
@@ -937,12 +937,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
   - id: failure/librarian/workspace
     kind: failure
@@ -951,12 +951,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: workspace
+      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/librarian/artifact
     kind: failure
@@ -965,12 +965,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
       recovery_behavior: declared-contract
   - id: failure/librarian/git
     kind: failure
@@ -979,12 +979,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
       recovery_behavior: declared-contract
   - id: failure/librarian/store
     kind: failure
@@ -993,12 +993,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
       recovery_behavior: declared-contract
   - id: failure/librarian/lifecycle
     kind: failure
@@ -1007,12 +1007,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
       recovery_behavior: declared-contract
   - id: failure/librarian/capability
     kind: failure
@@ -1021,12 +1021,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/runner
     kind: failure
@@ -1035,12 +1035,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/workspace
     kind: failure
@@ -1049,12 +1049,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: workspace
+      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/artifact
     kind: failure
@@ -1063,12 +1063,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/git
     kind: failure
@@ -1077,12 +1077,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/verification
     kind: failure
@@ -1091,12 +1091,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: verification
+      artifact_identities: [failure-site:verification]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/cache
     kind: failure
@@ -1105,12 +1105,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: cache
+      artifact_identities: [failure-site:cache]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/store
     kind: failure
@@ -1119,12 +1119,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/finalization
     kind: failure
@@ -1133,12 +1133,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: finalization
+      artifact_identities: [failure-site:finalization]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/lifecycle
     kind: failure
@@ -1147,12 +1147,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/capability
     kind: failure
@@ -1161,12 +1161,12 @@ scenarios:
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: [declared-durable-state]
+    allowed_effects: []
     expected:
-      public_outcome: declared-contract
-      durable_state: declared-contract
-      normalized_classification: declared-contract
-      artifact_identities: [synthetic/artifact]
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
       recovery_behavior: declared-contract
   - id: restart/brainstorm/runner_succeeded
     kind: restart
@@ -1929,8 +1929,8 @@ scenarios:
     references: {stage: merge-verification, failure_family: verification, durable_boundary: verification_passed, finalization_boundary: verification_ready}
     driver_id: synthetic/deterministic
     seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
+    initial_inputs: {state: unchanged-verification-state}
+    recovery_inputs: {state: changed-verification-state}
     allowed_effects: [delete-branch, land]
     expected:
       public_outcome: merged
@@ -1943,8 +1943,8 @@ scenarios:
     references: {stage: execute, failure_family: store, durable_boundary: artifacts_archived}
     driver_id: synthetic/deterministic
     seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
+    initial_inputs: {state: failing-store-state}
+    recovery_inputs: {state: repaired-configuration-state}
     allowed_effects: [delete-branch, land]
     expected:
       public_outcome: merged
@@ -1957,8 +1957,8 @@ scenarios:
     references: {stage: plan, failure_family: planner}
     driver_id: deterministic/planner
     seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
+    initial_inputs: {state: planner-authority-lost}
+    recovery_inputs: {state: planner-authority-restored}
     allowed_effects: [delete-branch, land]
     expected:
       public_outcome: merged
@@ -1971,8 +1971,8 @@ scenarios:
     references: {stage: execute, failure_family: capability}
     driver_id: deterministic/capability
     seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
+    initial_inputs: {state: unsupported-provider-config}
+    recovery_inputs: {state: supported-provider-config}
     allowed_effects: [delete-branch, land]
     expected:
       public_outcome: merged
@@ -1985,8 +1985,8 @@ scenarios:
     references: {stage: execute, failure_family: capability}
     driver_id: deterministic/capability
     seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
+    initial_inputs: {state: denied-capability-contract}
+    recovery_inputs: {state: corrected-capability-contract}
     allowed_effects: [delete-branch, land]
     expected:
       public_outcome: merged
@@ -1999,8 +1999,8 @@ scenarios:
     references: {stage: spec, failure_family: artifact, durable_boundary: gate_resolved}
     driver_id: synthetic/deterministic
     seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
+    initial_inputs: {state: pending-artifact-decision}
+    recovery_inputs: {state: approved-artifact-decision}
     allowed_effects: [delete-branch, land]
     expected:
       public_outcome: merged
@@ -2013,22 +2013,22 @@ scenarios:
     references: {stage: execute, failure_family: artifact, durable_boundary: artifacts_archived}
     driver_id: synthetic/deterministic
     seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
+    initial_inputs: {state: artifact-v1}
+    recovery_inputs: {state: artifact-v2}
     allowed_effects: [delete-branch, land]
     expected:
       public_outcome: merged
       durable_state: merged
       normalized_classification: success
-      artifact_identities: [synthetic/artifact]
+      artifact_identities: [sha256:b7ee9d3f0df825a24123850165fc646c3e155c6df07df8506526874122e80ac0]
       recovery_behavior: declared-contract
   - id: cross-cutting/finalization-recovery
     kind: finalization-recovery
     references: {stage: merge-verification, failure_family: finalization, finalization_boundary: cleanup_needed}
     driver_id: synthetic/deterministic
     seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
+    initial_inputs: {state: cleanup-effect-rejected}
+    recovery_inputs: {state: cleanup-effect-admitted}
     allowed_effects: [delete-branch, land]
     expected:
       public_outcome: merged
