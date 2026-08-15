@@ -23,7 +23,7 @@ func shippedHarnessFlow(t *testing.T) flow.Flow {
 func TestDeterministicEnvironmentDrivesShippedEngine(t *testing.T) {
 	productionFlow := shippedHarnessFlow(t)
 	factory := NewFactory(productionFlow)
-	scenario := recoverymatrix.Scenario{ID: "success/default", Seed: 690007}
+	scenario := recoverymatrix.Scenario{ID: "success/default", DriverID: "synthetic/deterministic", Seed: 690007}
 	executor, cleanup, err := factory.New(context.Background(), scenario)
 	if err != nil {
 		t.Fatal(err)
@@ -56,13 +56,14 @@ func TestDeterministicEnvironmentDrivesShippedEngine(t *testing.T) {
 func TestDeterministicEnvironmentIsOfflineAndSynthetic(t *testing.T) {
 	productionFlow := shippedHarnessFlow(t)
 	factory := NewFactory(productionFlow)
-	executor, cleanup, err := factory.New(context.Background(), recoverymatrix.Scenario{ID: "offline", Seed: 690008})
+	scenario := recoverymatrix.Scenario{ID: "offline", DriverID: "synthetic/deterministic", Seed: 690008}
+	executor, cleanup, err := factory.New(context.Background(), scenario)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cleanup() })
 
-	observation, err := executor.Execute(context.Background(), recoverymatrix.Scenario{ID: "offline", Seed: 690008})
+	observation, err := executor.Execute(context.Background(), scenario)
 	if err != nil {
 		t.Fatal(err)
 	}
