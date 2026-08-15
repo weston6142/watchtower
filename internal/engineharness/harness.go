@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,7 +88,7 @@ func (o *boundaryInterruptObserver) AfterCommit(_ context.Context, boundary engi
 		if o.needsStaleVerification() {
 			return nil
 		}
-		if o.scenario.Kind == recoverymatrix.ScenarioFailure || isCrossCutFailure(o.scenario.Kind) {
+		if o.scenario.Kind == recoverymatrix.ScenarioFailure {
 			return failureBoundaryError(o.scenario.References.FailureFamily)
 		}
 		return engine.InterruptAfterCommit(errHarnessRestart)
@@ -175,7 +176,7 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	storePath := filepath.Join(dataDir, "watchtower.db")
 	observer := observerForScenario(scenario, repo)
 	driver := &scenarioDriver{state: scenario.InitialInputs["state"]}
-	configured, _ := newHarnessEngine(database, dataDir, repo, scenarioFlow, scenario, &starts, &startsMu, effects, observer, driver)
+	configured, fakeRunner := newHarnessEngine(database, dataDir, repo, scenarioFlow, scenario, &starts, &startsMu, effects, observer, driver)
 	matrix := levers.Preset(scenarioFlow, flow.LeverYolo)
 	if _, hasPlan := matrix["plan"]; hasPlan {
 		matrix["plan"] = flow.LeverRegular
@@ -193,7 +194,7 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 		dataDir: dataDir, storePath: storePath,
 		flow: cloneFlow(scenarioFlow), scenario: scenario, starts: &starts, startsMu: &startsMu,
 		expectedStarts: expectedScriptKeys(scenarioFlow, scenario),
-		effects:        effects, observer: observer, driver: driver,
+		effects:        effects, observer: observer, driver: driver, runner: fakeRunner,
 	}
 	return executor, func() error {
 		if executor.store != nil {
@@ -283,7 +284,7 @@ func newHarnessEngine(
 	}
 	adapter := &stageBoundRunner{FakeRunner: r, stage: scenario.References.Stage, preflightErr: preflightErr}
 	workspaceProvider := workspace.Provider(workspace.GitWorktree{Repo: repo})
-	if driver.get() == scenario.RecoveryInputs["state"] || scenario.References.FinalizationBoundary == store.IntegrationPendingReverification ||
+	if scenario.Kind == recoverymatrix.ScenarioArtifactIdentity || driver.get() == scenario.RecoveryInputs["state"] || scenario.References.FinalizationBoundary == store.IntegrationPendingReverification ||
 		scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed {
 		workspaceProvider = reusableWorkspace{GitWorktree: workspace.GitWorktree{Repo: repo}}
 	} else if scenario.References.FinalizationBoundary == store.IntegrationCleanupNeeded {
@@ -328,6 +329,7 @@ type executor struct {
 	effects        *effectRecorder
 	observer       *boundaryInterruptObserver
 	driver         *scenarioDriver
+	runner         *runner.FakeRunner
 	decisionID     int64
 }
 
@@ -450,12 +452,11 @@ func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (reco
 	}
 	artifactIdentities := []string{"synthetic/artifact"}
 	if e.scenario.Kind == recoverymatrix.ScenarioArtifactIdentity {
-		body, err := os.ReadFile(filepath.Join(e.dataDir, e.issueID, "artifacts", "artifact-identity.txt"))
+		identity, err := e.latestArtifactIdentity()
 		if err != nil {
 			return recoverymatrix.Observation{}, fmt.Errorf("read recovered artifact identity: %w", err)
 		}
-		digest := sha256.Sum256(body)
-		artifactIdentities = []string{"sha256:" + hex.EncodeToString(digest[:])}
+		artifactIdentities = []string{identity}
 	}
 	return recoverymatrix.Observation{
 		PublicOutcome:            publicOutcome(row.State, integration, hasIntegration),
@@ -571,6 +572,7 @@ func flowForScenario(production flow.Flow, scenario recoverymatrix.Scenario) flo
 			configured.Stages[index].Retries = 0
 			if scenario.Kind == recoverymatrix.ScenarioArtifactIdentity {
 				configured.Stages[index].Artifacts = append(configured.Stages[index].Artifacts, "artifact-identity.txt")
+				configured.Stages[index].Gate = flow.GateApproveArtifact
 			}
 		}
 	}
@@ -745,6 +747,14 @@ func (e *executor) driveCrossCutRecovery(ctx context.Context, startErr error) er
 	if startErr == nil {
 		return fmt.Errorf("cross-cutting initial state %q unexpectedly completed", initial)
 	}
+	if e.scenario.Kind == recoverymatrix.ScenarioArtifactIdentity {
+		if !strings.Contains(startErr.Error(), "artifacts require revision") {
+			return fmt.Errorf("artifact identity was not rejected through review: %w", startErr)
+		}
+		if err := e.verifyRejectedArtifactIdentity(initial); err != nil {
+			return err
+		}
+	}
 	if e.scenario.Kind == recoverymatrix.ScenarioUnchangedRetryRefusal {
 		e.startsMu.Lock()
 		before := len(*e.starts)
@@ -757,6 +767,11 @@ func (e *executor) driveCrossCutRecovery(ctx context.Context, startErr error) er
 			return fmt.Errorf("unchanged retry was not refused: %v", err)
 		}
 	}
+	if e.scenario.Kind == recoverymatrix.ScenarioArtifactIdentity {
+		e.driver.set(recovery)
+		e.runner.Scripts = scriptsForFlow(flowForDriverState(e.flow, e.scenario, recovery), e.scenario, recovery)
+		return e.retryWithSyntheticApprovals(ctx)
+	}
 	if e.scenario.Kind != recoverymatrix.ScenarioDecisionEscalation {
 		e.driver.set(recovery)
 		lever := flow.LeverStrict
@@ -768,6 +783,103 @@ func (e *executor) driveCrossCutRecovery(ctx context.Context, startErr error) er
 		}
 	}
 	return e.rebuildForCrossCutRecovery(ctx)
+}
+
+type persistedArtifactIdentity struct {
+	attempt string
+	content string
+	digest  string
+}
+
+func (e *executor) persistedArtifactIdentities() ([]persistedArtifactIdentity, error) {
+	records, err := e.store.StageLifecycleRecords(e.issueID, e.scenario.References.Stage, "")
+	if err != nil {
+		return nil, err
+	}
+	var identities []persistedArtifactIdentity
+	for _, record := range records {
+		if !record.Committed || record.Substate != stagelifecycle.ArtifactsArchived {
+			continue
+		}
+		for _, artifact := range record.Artifacts {
+			if artifact.Name != "artifact-identity.txt" {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(e.dataDir, e.issueID, filepath.FromSlash(artifact.Path)))
+			if err != nil {
+				return nil, err
+			}
+			digest := sha256.Sum256(body)
+			encoded := hex.EncodeToString(digest[:])
+			if encoded != artifact.SHA256 {
+				return nil, fmt.Errorf("persisted artifact %s has digest %s, want %s", record.AttemptID, encoded, artifact.SHA256)
+			}
+			identities = append(identities, persistedArtifactIdentity{
+				attempt: record.AttemptID, content: string(body), digest: "sha256:" + encoded,
+			})
+		}
+	}
+	return identities, nil
+}
+
+func (e *executor) latestArtifactIdentity() (string, error) {
+	identities, err := e.persistedArtifactIdentities()
+	if err != nil {
+		return "", err
+	}
+	if len(identities) == 0 {
+		return "", fmt.Errorf("no durable artifact identity")
+	}
+	latest := identities[0]
+	for _, candidate := range identities[1:] {
+		if harnessAttemptAfter(candidate.attempt, latest.attempt) {
+			latest = candidate
+		}
+	}
+	return latest.digest, nil
+}
+
+func (e *executor) verifyRejectedArtifactIdentity(initial string) error {
+	identities, err := e.persistedArtifactIdentities()
+	if err != nil {
+		return err
+	}
+	if len(identities) != 1 || identities[0].content != initial {
+		return fmt.Errorf("rejected artifact identity was not durably archived: %+v", identities)
+	}
+	reviews, err := e.store.ArtifactReviewRows(e.issueID)
+	if err != nil {
+		return err
+	}
+	for _, row := range reviews {
+		if row.Stage == e.scenario.References.Stage && row.Status == "answered" && row.Response.Option != nil && *row.Response.Option == 1 {
+			return nil
+		}
+	}
+	return fmt.Errorf("durable artifact identity was not rejected through artifact review")
+}
+
+func validateArtifactReviewIdentity(pending engine.PendingDecision, content string) error {
+	if pending.Review == nil {
+		return fmt.Errorf("artifact identity review target is missing")
+	}
+	digest := sha256.Sum256([]byte(content))
+	want := hex.EncodeToString(digest[:])
+	for _, artifact := range pending.Review.Artifacts {
+		if artifact.Name == "artifact-identity.txt" && artifact.SHA256 == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("artifact review target does not bind the persisted identity %s", want)
+}
+
+func harnessAttemptAfter(left, right string) bool {
+	leftNumber, leftErr := strconv.ParseInt(strings.TrimPrefix(left, "checkpoint-"), 10, 64)
+	rightNumber, rightErr := strconv.ParseInt(strings.TrimPrefix(right, "checkpoint-"), 10, 64)
+	if leftErr == nil && rightErr == nil {
+		return leftNumber > rightNumber
+	}
+	return left > right
 }
 
 func (e *executor) rebuildForCrossCutRecovery(ctx context.Context) error {
@@ -961,6 +1073,7 @@ func (e *executor) startWithSyntheticApprovals(ctx context.Context) error {
 			return err
 		case <-ticker.C:
 			for _, pending := range e.engine.PendingDecisions() {
+				response := levers.ChoiceResponse(0)
 				if e.scenario.Kind == recoverymatrix.ScenarioDecisionEscalation && e.driver.get() == "pending-artifact-decision" && pending.Stage == e.scenario.References.Stage {
 					if e.scenario.RecoveryInputs["state"] != "approved-artifact-decision" {
 						return fmt.Errorf("unsupported decision recovery input %q", e.scenario.RecoveryInputs["state"])
@@ -968,7 +1081,13 @@ func (e *executor) startWithSyntheticApprovals(ctx context.Context) error {
 					e.decisionID = pending.ID
 					e.driver.set(e.scenario.RecoveryInputs["state"])
 				}
-				if err := e.engine.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+				if e.scenario.Kind == recoverymatrix.ScenarioArtifactIdentity && e.driver.get() == e.scenario.InitialInputs["state"] && pending.Stage == e.scenario.References.Stage {
+					if err := validateArtifactReviewIdentity(pending, e.scenario.InitialInputs["state"]); err != nil {
+						return err
+					}
+					response = levers.ChoiceResponse(1)
+				}
+				if err := e.engine.Answer(pending.ID, response); err != nil {
 					return fmt.Errorf("answer synthetic decision %d: %w", pending.ID, err)
 				}
 			}
@@ -1190,11 +1309,6 @@ func scriptsForFlow(production flow.Flow, scenario recoverymatrix.Scenario, stat
 					if operation.Path != "" {
 						script.OperationAttempts = []runner.OperationAttempt{operation}
 					}
-				case recoverymatrix.ScenarioArtifactIdentity:
-					if state == scenario.InitialInputs["state"] {
-						script.Fail = true
-						script.FailureClass = runner.FailureConfiguration
-					}
 				}
 			}
 			if scenario.Kind == recoverymatrix.ScenarioArtifactIdentity && stage.Name == scenario.References.Stage {
@@ -1227,10 +1341,6 @@ func isCrossCutScenario(kind recoverymatrix.ScenarioKind) bool {
 	default:
 		return false
 	}
-}
-
-func isCrossCutFailure(kind recoverymatrix.ScenarioKind) bool {
-	return false
 }
 
 func failureScript(stage flow.Stage, script runner.Script, family string) runner.Script {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -500,8 +501,16 @@ func TestLifecycleRecoveryRejectsMissingLeadingStage(t *testing.T) {
 			row = candidate
 		}
 	}
-	if recovered, found, err := e2.lifecycleRecoveryState(row); err != nil || found || recovered != nil {
-		t.Fatalf("recovery with missing leading stage = %+v, %t, %v", recovered, found, err)
+	recovered, found, err := e2.lifecycleRecoveryState(row)
+	var diagnostic *stagelifecycle.DiagnosticError
+	if recovered != nil || !found || !errors.As(err, &diagnostic) || diagnostic.Code != stagelifecycle.CodeInvalidState {
+		t.Fatalf("lifecycle gap recovery = %+v, %t, %v", recovered, found, err)
+	}
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), "unknown issue") {
+		t.Fatalf("rehydration restored legacy state across lifecycle gap: %v", err)
 	}
 }
 

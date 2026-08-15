@@ -249,7 +249,20 @@ func (e *Engine) lifecycleAttemptFor(is *issueState, st flow.Stage, checkpointID
 		return store.StageLifecycleAttempt{}, nil, err
 	}
 	attemptID := fmt.Sprintf("checkpoint-%d", checkpointID)
-	if !(is.retryUnmerged && st.MergeBarrier) {
+	revisionRequired := false
+	checkpoints, err := e.cfg.Store.StageCheckpoints(is.id)
+	if err != nil {
+		return store.StageLifecycleAttempt{}, nil, err
+	}
+	for index := len(checkpoints) - 1; index >= 0; index-- {
+		checkpoint := checkpoints[index]
+		if checkpoint.ID == checkpointID || checkpoint.Stage != st.Name {
+			continue
+		}
+		revisionRequired = checkpoint.Status == "revision_required"
+		break
+	}
+	if !revisionRequired && !(is.retryUnmerged && st.MergeBarrier) {
 		var latestAttempt *store.StageLifecycleAttempt
 		for _, candidate := range attempts {
 			if candidate.ResultPath != "" &&
@@ -627,6 +640,23 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 	if !ok {
 		return nil, false, nil
 	}
+	rejectGap := func(index int) error {
+		for _, later := range configured.Stages[index+1:] {
+			records, err := e.cfg.Store.StageLifecycleRecords(row.ID, later.Name, "")
+			if err != nil {
+				return err
+			}
+			for _, record := range records {
+				if record.Committed {
+					return &stagelifecycle.DiagnosticError{
+						Code:    stagelifecycle.CodeInvalidState,
+						Message: fmt.Sprintf("stage %q has committed lifecycle state after missing predecessor %q", later.Name, configured.Stages[index].Name),
+					}
+				}
+			}
+		}
+		return nil
+	}
 	completedThrough := -1
 	for index, stage := range configured.Stages {
 		records, err := e.cfg.Store.StageLifecycleRecords(row.ID, stage.Name, "")
@@ -634,6 +664,9 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			return nil, false, err
 		}
 		if len(records) == 0 {
+			if err := rejectGap(index); err != nil {
+				return nil, true, err
+			}
 			break
 		}
 		attemptID := ""
@@ -643,6 +676,9 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			}
 		}
 		if attemptID == "" {
+			if err := rejectGap(index); err != nil {
+				return nil, true, err
+			}
 			break
 		}
 		var latest stagelifecycle.Record
@@ -662,6 +698,9 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			latest = record
 		}
 		if latest.Substate == "" {
+			if err := rejectGap(index); err != nil {
+				return nil, true, err
+			}
 			break
 		}
 		if lifecycleReached(latest.Substate, stagelifecycle.FinalizationReady) {
