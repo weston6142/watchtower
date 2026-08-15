@@ -331,7 +331,7 @@ scenarios:
   - id: failure/brainstorm/runner
     kind: failure
     references: {stage: brainstorm, failure_family: runner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/runner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -345,7 +345,7 @@ scenarios:
   - id: failure/brainstorm/workspace
     kind: failure
     references: {stage: brainstorm, failure_family: workspace}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/workspace
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -359,7 +359,7 @@ scenarios:
   - id: failure/brainstorm/artifact
     kind: failure
     references: {stage: brainstorm, failure_family: artifact}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -373,7 +373,7 @@ scenarios:
   - id: failure/brainstorm/git
     kind: failure
     references: {stage: brainstorm, failure_family: git}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/git
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -387,7 +387,7 @@ scenarios:
   - id: failure/brainstorm/store
     kind: failure
     references: {stage: brainstorm, failure_family: store}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/store
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -401,7 +401,7 @@ scenarios:
   - id: failure/brainstorm/lifecycle
     kind: failure
     references: {stage: brainstorm, failure_family: lifecycle}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/lifecycle
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -415,7 +415,7 @@ scenarios:
   - id: failure/brainstorm/capability
     kind: failure
     references: {stage: brainstorm, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -429,7 +429,7 @@ scenarios:
   - id: failure/spec/runner
     kind: failure
     references: {stage: spec, failure_family: runner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/runner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -443,7 +443,7 @@ scenarios:
   - id: failure/spec/workspace
     kind: failure
     references: {stage: spec, failure_family: workspace}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/workspace
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -457,7 +457,7 @@ scenarios:
   - id: failure/spec/artifact
     kind: failure
     references: {stage: spec, failure_family: artifact}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -471,7 +471,7 @@ scenarios:
   - id: failure/spec/git
     kind: failure
     references: {stage: spec, failure_family: git}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/git
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -485,7 +485,7 @@ scenarios:
   - id: failure/spec/store
     kind: failure
     references: {stage: spec, failure_family: store}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/store
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -499,7 +499,7 @@ scenarios:
   - id: failure/spec/lifecycle
     kind: failure
     references: {stage: spec, failure_family: lifecycle}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/lifecycle
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -513,7 +513,7 @@ scenarios:
   - id: failure/spec/capability
     kind: failure
     references: {stage: spec, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -527,7 +527,7 @@ scenarios:
   - id: failure/plan/runner
     kind: failure
     references: {stage: plan, failure_family: runner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/runner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -541,7 +541,7 @@ scenarios:
   - id: failure/plan/workspace
     kind: failure
     references: {stage: plan, failure_family: workspace}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/workspace
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -555,7 +555,7 @@ scenarios:
   - id: failure/plan/artifact
     kind: failure
     references: {stage: plan, failure_family: artifact}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -569,7 +569,7 @@ scenarios:
   - id: failure/plan/planner
     kind: failure
     references: {stage: plan, failure_family: planner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/planner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -583,7 +583,7 @@ scenarios:
   - id: failure/plan/git
     kind: failure
     references: {stage: plan, failure_family: git}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/git
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -597,7 +597,7 @@ scenarios:
   - id: failure/plan/store
     kind: failure
     references: {stage: plan, failure_family: store}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/store
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -611,7 +611,7 @@ scenarios:
   - id: failure/plan/lifecycle
     kind: failure
     references: {stage: plan, failure_family: lifecycle}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/lifecycle
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -625,7 +625,7 @@ scenarios:
   - id: failure/plan/capability
     kind: failure
     references: {stage: plan, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -639,7 +639,7 @@ scenarios:
   - id: failure/execute/runner
     kind: failure
     references: {stage: execute, failure_family: runner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/runner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -653,7 +653,7 @@ scenarios:
   - id: failure/execute/workspace
     kind: failure
     references: {stage: execute, failure_family: workspace}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/workspace
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -667,7 +667,7 @@ scenarios:
   - id: failure/execute/artifact
     kind: failure
     references: {stage: execute, failure_family: artifact}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -681,7 +681,7 @@ scenarios:
   - id: failure/execute/git
     kind: failure
     references: {stage: execute, failure_family: git}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/git
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -695,7 +695,7 @@ scenarios:
   - id: failure/execute/store
     kind: failure
     references: {stage: execute, failure_family: store}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/store
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -709,7 +709,7 @@ scenarios:
   - id: failure/execute/lifecycle
     kind: failure
     references: {stage: execute, failure_family: lifecycle}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/lifecycle
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -723,7 +723,7 @@ scenarios:
   - id: failure/execute/capability
     kind: failure
     references: {stage: execute, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -737,7 +737,7 @@ scenarios:
   - id: failure/correctness-review/runner
     kind: failure
     references: {stage: correctness-review, failure_family: runner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/runner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -751,7 +751,7 @@ scenarios:
   - id: failure/correctness-review/workspace
     kind: failure
     references: {stage: correctness-review, failure_family: workspace}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/workspace
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -765,7 +765,7 @@ scenarios:
   - id: failure/correctness-review/artifact
     kind: failure
     references: {stage: correctness-review, failure_family: artifact}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -779,7 +779,7 @@ scenarios:
   - id: failure/correctness-review/git
     kind: failure
     references: {stage: correctness-review, failure_family: git}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/git
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -793,7 +793,7 @@ scenarios:
   - id: failure/correctness-review/store
     kind: failure
     references: {stage: correctness-review, failure_family: store}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/store
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -807,7 +807,7 @@ scenarios:
   - id: failure/correctness-review/lifecycle
     kind: failure
     references: {stage: correctness-review, failure_family: lifecycle}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/lifecycle
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -821,7 +821,7 @@ scenarios:
   - id: failure/correctness-review/capability
     kind: failure
     references: {stage: correctness-review, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -835,7 +835,7 @@ scenarios:
   - id: failure/clean-code-review/runner
     kind: failure
     references: {stage: clean-code-review, failure_family: runner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/runner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -849,7 +849,7 @@ scenarios:
   - id: failure/clean-code-review/workspace
     kind: failure
     references: {stage: clean-code-review, failure_family: workspace}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/workspace
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -863,7 +863,7 @@ scenarios:
   - id: failure/clean-code-review/artifact
     kind: failure
     references: {stage: clean-code-review, failure_family: artifact}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -877,7 +877,7 @@ scenarios:
   - id: failure/clean-code-review/git
     kind: failure
     references: {stage: clean-code-review, failure_family: git}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/git
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -891,7 +891,7 @@ scenarios:
   - id: failure/clean-code-review/store
     kind: failure
     references: {stage: clean-code-review, failure_family: store}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/store
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -905,7 +905,7 @@ scenarios:
   - id: failure/clean-code-review/lifecycle
     kind: failure
     references: {stage: clean-code-review, failure_family: lifecycle}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/lifecycle
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -919,7 +919,7 @@ scenarios:
   - id: failure/clean-code-review/capability
     kind: failure
     references: {stage: clean-code-review, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -933,7 +933,7 @@ scenarios:
   - id: failure/librarian/runner
     kind: failure
     references: {stage: librarian, failure_family: runner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/runner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -947,7 +947,7 @@ scenarios:
   - id: failure/librarian/workspace
     kind: failure
     references: {stage: librarian, failure_family: workspace}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/workspace
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -961,7 +961,7 @@ scenarios:
   - id: failure/librarian/artifact
     kind: failure
     references: {stage: librarian, failure_family: artifact}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -975,7 +975,7 @@ scenarios:
   - id: failure/librarian/git
     kind: failure
     references: {stage: librarian, failure_family: git}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/git
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -989,7 +989,7 @@ scenarios:
   - id: failure/librarian/store
     kind: failure
     references: {stage: librarian, failure_family: store}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/store
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1003,7 +1003,7 @@ scenarios:
   - id: failure/librarian/lifecycle
     kind: failure
     references: {stage: librarian, failure_family: lifecycle}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/lifecycle
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1017,7 +1017,7 @@ scenarios:
   - id: failure/librarian/capability
     kind: failure
     references: {stage: librarian, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1031,7 +1031,7 @@ scenarios:
   - id: failure/merge-verification/runner
     kind: failure
     references: {stage: merge-verification, failure_family: runner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/runner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1045,7 +1045,7 @@ scenarios:
   - id: failure/merge-verification/workspace
     kind: failure
     references: {stage: merge-verification, failure_family: workspace}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/workspace
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1059,7 +1059,7 @@ scenarios:
   - id: failure/merge-verification/artifact
     kind: failure
     references: {stage: merge-verification, failure_family: artifact}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1073,7 +1073,7 @@ scenarios:
   - id: failure/merge-verification/git
     kind: failure
     references: {stage: merge-verification, failure_family: git}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/git
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1087,7 +1087,7 @@ scenarios:
   - id: failure/merge-verification/verification
     kind: failure
     references: {stage: merge-verification, failure_family: verification}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/verification
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1101,7 +1101,7 @@ scenarios:
   - id: failure/merge-verification/cache
     kind: failure
     references: {stage: merge-verification, failure_family: cache}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/cache
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1115,7 +1115,7 @@ scenarios:
   - id: failure/merge-verification/store
     kind: failure
     references: {stage: merge-verification, failure_family: store}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/store
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1129,7 +1129,7 @@ scenarios:
   - id: failure/merge-verification/finalization
     kind: failure
     references: {stage: merge-verification, failure_family: finalization}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/finalization
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1143,7 +1143,7 @@ scenarios:
   - id: failure/merge-verification/lifecycle
     kind: failure
     references: {stage: merge-verification, failure_family: lifecycle}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/lifecycle
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1157,7 +1157,7 @@ scenarios:
   - id: failure/merge-verification/capability
     kind: failure
     references: {stage: merge-verification, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1927,7 +1927,7 @@ scenarios:
   - id: cross-cutting/unchanged-retry-refusal
     kind: unchanged-retry-refusal
     references: {stage: merge-verification, failure_family: verification, durable_boundary: verification_passed, finalization_boundary: verification_ready}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/verification, durable_boundary: verification_passed, finalization_boundary: verification_ready
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1941,7 +1941,7 @@ scenarios:
   - id: cross-cutting/changed-state-recovery
     kind: changed-state-recovery
     references: {stage: execute, failure_family: store, durable_boundary: artifacts_archived}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/store, durable_boundary: artifacts_archived
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1955,7 +1955,7 @@ scenarios:
   - id: cross-cutting/planner-capability-loss
     kind: planner-capability-loss
     references: {stage: plan, failure_family: planner}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/planner
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1969,7 +1969,7 @@ scenarios:
   - id: cross-cutting/configuration-drift
     kind: configuration-drift
     references: {stage: execute, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1983,7 +1983,7 @@ scenarios:
   - id: cross-cutting/capability-violation
     kind: capability-violation
     references: {stage: execute, failure_family: capability}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/capability
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -1997,7 +1997,7 @@ scenarios:
   - id: cross-cutting/decision-escalation
     kind: decision-escalation
     references: {stage: spec, failure_family: artifact, durable_boundary: gate_resolved}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact, durable_boundary: gate_resolved
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -2011,7 +2011,7 @@ scenarios:
   - id: cross-cutting/artifact-identity
     kind: artifact-identity
     references: {stage: execute, failure_family: artifact, durable_boundary: artifacts_archived}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/artifact, durable_boundary: artifacts_archived
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}
@@ -2025,7 +2025,7 @@ scenarios:
   - id: cross-cutting/finalization-recovery
     kind: finalization-recovery
     references: {stage: merge-verification, failure_family: finalization, finalization_boundary: cleanup_needed}
-    driver_id: synthetic/deterministic
+    driver_id: deterministic/finalization, finalization_boundary: cleanup_needed
     seed: 690003
     initial_inputs: {state: synthetic-initial}
     recovery_inputs: {state: synthetic-recovery}

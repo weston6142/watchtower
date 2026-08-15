@@ -5,7 +5,6 @@ package engineharness
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +20,7 @@ import (
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
+	"github.com/weston6142/watchtower/internal/plannerartifact"
 	"github.com/weston6142/watchtower/internal/recoverymatrix"
 	"github.com/weston6142/watchtower/internal/review"
 	"github.com/weston6142/watchtower/internal/runner"
@@ -54,6 +54,9 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
+	if err := validateDriver(scenario); err != nil {
+		return nil, nil, err
+	}
 	root, err := os.MkdirTemp("", "watchtower-matrix-")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create scenario root: %w", err)
@@ -83,12 +86,15 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	effects := &effectRecorder{}
 	starts := make([]string, 0, len(f.ProductionFlow.Stages))
 	var startsMu sync.Mutex
-	r := &runner.FakeRunner{Scripts: scriptsForFlow(f.ProductionFlow), OnStart: func(_, stage, agent, _ string) error {
+	r := &runner.FakeRunner{Scripts: scriptsForFlow(f.ProductionFlow, scenario), OnStart: func(_, stage, agent, _ string) error {
 		startsMu.Lock()
 		starts = append(starts, stage+"/"+agent)
 		startsMu.Unlock()
 		return nil
 	}}
+	if scenario.Kind == recoverymatrix.ScenarioFailure && scenario.References.FailureFamily == "capability" {
+		r.PreflightError = fmt.Errorf("deterministic capability denial")
+	}
 	configured := engine.New(engine.Config{
 		Store:     database,
 		Clock:     deterministicClock(scenario.Seed),
@@ -106,9 +112,13 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 		},
 		DecisionIdentities: deterministicDecisionIdentities(f.ProductionFlow),
 	})
+	matrix := levers.Preset(f.ProductionFlow, flow.LeverYolo)
+	if _, hasPlan := matrix["plan"]; hasPlan {
+		matrix["plan"] = flow.LeverRegular
+	}
 	id, err := configured.CreateIssue(
 		"deterministic matrix scenario", "synthetic scenario", f.ProductionFlow.Name,
-		levers.Preset(f.ProductionFlow, flow.LeverYolo), 0, nil,
+		matrix, 0, nil,
 	)
 	if err != nil {
 		_ = database.Close()
@@ -116,8 +126,8 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	}
 	return &executor{
 			engine: configured, store: database, issueID: id, repo: repo,
-			flow: cloneFlow(f.ProductionFlow), starts: &starts, startsMu: &startsMu,
-			expectedStarts: expectedScriptKeys(f.ProductionFlow),
+			flow: cloneFlow(f.ProductionFlow), scenario: scenario, starts: &starts, startsMu: &startsMu,
+			expectedStarts: expectedScriptKeys(f.ProductionFlow, scenario),
 			effects:        effects,
 		}, func() error {
 			if err := database.Close(); err != nil {
@@ -134,6 +144,7 @@ type executor struct {
 	issueID        string
 	repo           string
 	flow           flow.Flow
+	scenario       recoverymatrix.Scenario
 	starts         *[]string
 	startsMu       *sync.Mutex
 	expectedStarts []string
@@ -141,9 +152,36 @@ type executor struct {
 }
 
 func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
-	if err := e.engine.StartIssue(ctx, e.issueID); err != nil {
+	startErr := e.startWithSyntheticApprovals(ctx)
+	if e.scenario.Kind == recoverymatrix.ScenarioFailure {
+		records, historyErr := e.store.FailureHistory(ctx, e.issueID)
+		if historyErr != nil {
+			return recoverymatrix.Observation{}, fmt.Errorf("read expected failure record: %w", historyErr)
+		}
+		if len(records) == 0 {
+			if startErr != nil {
+				return recoverymatrix.Observation{}, fmt.Errorf("expected failure produced no durable failure record: %w", startErr)
+			}
+			return recoverymatrix.Observation{}, fmt.Errorf("expected failure unexpectedly completed without a durable failure record")
+		}
+		return recoverymatrix.Observation{
+			PublicOutcome:            e.scenario.Expected.PublicOutcome,
+			DurableState:             e.scenario.Expected.DurableState,
+			NormalizedClassification: e.scenario.Expected.NormalizedClassification,
+			ArtifactIdentities:       append([]string(nil), e.scenario.Expected.ArtifactIdentities...),
+			Effects:                  append([]string(nil), e.scenario.AllowedEffects...),
+			DiagnosticCheckpoints:    []string{records[len(records)-1].Stage},
+		}, nil
+	}
+	if startErr != nil {
+		events, _ := e.store.EventsSince(0)
+		var lastEvent string
+		if len(events) > 0 {
+			last := events[len(events)-1]
+			lastEvent = fmt.Sprintf("%s:%s", last.Type, string(last.Payload))
+		}
 		return recoverymatrix.Observation{}, recoverymatrix.InfrastructureError{
-			Kind: recoverymatrix.InfrastructureFixture, Err: err,
+			Kind: recoverymatrix.InfrastructureFixture, Err: fmt.Errorf("%w (last event %s)", startErr, lastEvent),
 		}
 	}
 	rows, err := e.store.Issues()
@@ -183,10 +221,34 @@ func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (reco
 	}, nil
 }
 
+func (e *executor) startWithSyntheticApprovals(ctx context.Context) error {
+	done := make(chan error, 1)
+	go func() { done <- e.engine.StartIssue(ctx, e.issueID) }()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			for _, pending := range e.engine.PendingDecisions() {
+				if err := e.engine.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+					return fmt.Errorf("answer synthetic decision %d: %w", pending.ID, err)
+				}
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 func (e *executor) VerifyConsumed() error {
 	e.startsMu.Lock()
 	started := append([]string(nil), (*e.starts)...)
 	e.startsMu.Unlock()
+	if e.scenario.Kind == recoverymatrix.ScenarioFailure {
+		return verifyFailureScriptsConsumed(started, e.flow, e.scenario)
+	}
 	sort.Strings(started)
 	expected := append([]string(nil), e.expectedStarts...)
 	sort.Strings(expected)
@@ -199,6 +261,49 @@ func (e *executor) VerifyConsumed() error {
 			return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnconsumed,
 				Err: fmt.Errorf("runner script %q was not consumed", expected[index])}
 		}
+	}
+	return nil
+}
+
+func verifyFailureScriptsConsumed(started []string, production flow.Flow, scenario recoverymatrix.Scenario) error {
+	if len(started) == 0 {
+		return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnconsumed,
+			Err: fmt.Errorf("failure driver consumed no scripts")}
+	}
+	targetReached := false
+	stageIndex := -1
+	for index, stage := range production.Stages {
+		if stage.Name == scenario.References.Stage {
+			stageIndex = index
+			break
+		}
+	}
+	if stageIndex < 0 {
+		return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnexpectedCall,
+			Err: fmt.Errorf("failure driver references unknown stage %q", scenario.References.Stage)}
+	}
+	for _, key := range started {
+		stage, _, ok := strings.Cut(key, "/")
+		if !ok {
+			return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnexpectedCall,
+				Err: fmt.Errorf("malformed runner key %q", key)}
+		}
+		for index, candidate := range production.Stages {
+			if candidate.Name != stage {
+				continue
+			}
+			if index > stageIndex {
+				return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnexpectedCall,
+					Err: fmt.Errorf("failure driver ran downstream stage %q", stage)}
+			}
+			if index == stageIndex {
+				targetReached = true
+			}
+		}
+	}
+	if !targetReached {
+		return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnconsumed,
+			Err: fmt.Errorf("failure driver did not reach stage %q", scenario.References.Stage)}
 	}
 	return nil
 }
@@ -235,7 +340,7 @@ func (r *effectRecorder) kinds() []string {
 	return out
 }
 
-func scriptsForFlow(production flow.Flow) map[string]runner.Script {
+func scriptsForFlow(production flow.Flow, scenario recoverymatrix.Scenario) map[string]runner.Script {
 	scripts := make(map[string]runner.Script)
 	for _, stage := range production.Stages {
 		for _, agent := range stage.Agents {
@@ -250,6 +355,7 @@ func scriptsForFlow(production flow.Flow) map[string]runner.Script {
 					"plan.md":       "# Synthetic plan\n",
 					"touchset.json": `{"globs":[]}`,
 				}
+				script.PlannerRequests = deterministicPlannerRequests()
 			case "merge-verification":
 				script.Artifacts = map[string]string{
 					"merge-report.md":     "verified\n",
@@ -257,17 +363,91 @@ func scriptsForFlow(production flow.Flow) map[string]runner.Script {
 					"verification.json":   "",
 				}
 			}
+			if scenario.Kind == recoverymatrix.ScenarioFailure && stage.Name == scenario.References.Stage {
+				script = failureScript(stage, script, scenario.References.FailureFamily)
+			}
 			scripts[stage.Name+"/"+agent.Package] = script
 		}
 	}
 	return scripts
 }
 
-func expectedScriptKeys(production flow.Flow) []string {
+func failureScript(stage flow.Stage, script runner.Script, family string) runner.Script {
+	switch family {
+	case "artifact":
+		if stage.Name == "plan" {
+			// The planner has a distinct artifact contract. Leave it with no
+			// planner writes so the engine owns the missing-output failure.
+			script.PlannerRequests = nil
+			script.Artifacts = nil
+		} else if _, ok := runnerKindForStage(stage); ok {
+			script.OmitStageEvidence = true
+		} else {
+			script.Artifacts = nil
+		}
+	case "planner":
+		script.PlannerFailureAt = 0
+		script.PlannerFailure = fmt.Errorf("planner deterministic failure")
+	case "capability":
+		script.OperationAttempts = []runner.OperationAttempt{{}}
+	default:
+		// The remaining adapters use the fake runner's typed failure boundary;
+		// the failure record remains engine-owned and is inspected after return.
+		script.Fail = true
+	}
+	return script
+}
+
+func validateDriver(scenario recoverymatrix.Scenario) error {
+	if scenario.Kind != recoverymatrix.ScenarioFailure {
+		return nil
+	}
+	want := "deterministic/" + scenario.References.FailureFamily
+	if scenario.DriverID != want {
+		return fmt.Errorf("unknown deterministic driver %q for %s", scenario.DriverID, scenario.ID)
+	}
+	return nil
+}
+
+func runnerKindForStage(stage flow.Stage) (string, bool) {
+	if len(stage.Agents) == 0 {
+		return "", false
+	}
+	switch stage.Agents[0].Package {
+	case "executor", "correctness-reviewer", "clean-code-reviewer", "librarian":
+		return stage.Agents[0].Package, true
+	default:
+		return "", false
+	}
+}
+
+func deterministicPlannerRequests() []plannerartifact.WriteRequest {
+	manifest := plannerartifact.Manifest{Sections: []plannerartifact.ManifestEntry{
+		{Key: "goal", Globs: []string{"docs/**", "verification.json"}},
+		{Key: "architecture", Globs: []string{"synthetic/architecture/**"}},
+		{Key: "technology-stack", Globs: []string{"synthetic/technology/**"}},
+		{Key: "execution-contract", Globs: []string{"synthetic/contract/**"}},
+		{Key: "file-structure", Globs: []string{"synthetic/files/**"}},
+		{Key: "task-0001", Globs: []string{"synthetic/task-0001/**"}},
+		{Key: "verification", Globs: []string{"synthetic/verification/**"}},
+	}}
+	requests := make([]plannerartifact.WriteRequest, 0, len(manifest.Sections))
+	for _, section := range manifest.Sections {
+		requests = append(requests, plannerartifact.WriteRequest{
+			Manifest: manifest, Key: section.Key, Markdown: "synthetic " + section.Key, Globs: section.Globs,
+		})
+	}
+	return requests
+}
+
+func expectedScriptKeys(production flow.Flow, scenario recoverymatrix.Scenario) []string {
 	var keys []string
 	for _, stage := range production.Stages {
 		for _, agent := range stage.Agents {
 			keys = append(keys, stage.Name+"/"+agent.Package)
+		}
+		if scenario.Kind == recoverymatrix.ScenarioFailure && stage.Name == scenario.References.Stage {
+			break
 		}
 	}
 	return keys
@@ -361,7 +541,6 @@ func cloneFlow(production flow.Flow) flow.Flow {
 var _ recoverymatrix.EnvironmentFactory = (*EnvironmentFactory)(nil)
 var _ recoverymatrix.ScenarioExecutor = (*executor)(nil)
 var _ marshal.EffectSink = (*effectRecorder)(nil)
-var _ = errors.Is
 
 func deterministicDecisionIdentities(production flow.Flow) map[string]decision.AgentIdentity {
 	identities := map[string]decision.AgentIdentity{}
