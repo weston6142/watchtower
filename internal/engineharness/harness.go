@@ -1110,6 +1110,17 @@ func (e *executor) startWithSyntheticApprovals(ctx context.Context) error {
 				response := levers.ChoiceResponse(0)
 				if e.scenario.Kind == recoverymatrix.ScenarioDecisionEscalation && e.driver.get() == "pending-artifact-decision" && pending.Stage == e.scenario.References.Stage {
 					e.decisionID = pending.ID
+					if err := e.engine.InterruptPendingDecision(e.issueID); err != nil {
+						return fmt.Errorf("interrupt pending decision %d: %w", pending.ID, err)
+					}
+					select {
+					case runErr := <-done:
+						if !errors.Is(runErr, context.Canceled) {
+							return fmt.Errorf("join interrupted initial execution: %w", runErr)
+						}
+					case <-ctx.Done():
+						return fmt.Errorf("join interrupted initial execution: %w", ctx.Err())
+					}
 					return errHarnessDecisionPending
 				}
 				if e.scenario.Kind == recoverymatrix.ScenarioArtifactIdentity && e.driver.get() == e.scenario.InitialInputs["state"] && pending.Stage == e.scenario.References.Stage {

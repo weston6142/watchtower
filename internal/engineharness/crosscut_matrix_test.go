@@ -167,6 +167,9 @@ func TestDecisionEscalationRecoveryRehydratesPendingDecision(t *testing.T) {
 	if got := executor.driver.get(); got != scenario.InitialInputs["state"] {
 		t.Fatalf("initial driver state = %q", got)
 	}
+	if err := initialEngine.CanReset(); err != nil {
+		t.Fatalf("initial runtime remained active after interruption: %v", err)
+	}
 	if err := executor.driveCrossCutRecovery(ctx, startErr); err != nil {
 		t.Fatal(err)
 	}

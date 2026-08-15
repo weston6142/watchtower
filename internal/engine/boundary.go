@@ -53,6 +53,47 @@ func isCommittedInterruption(err error) bool {
 	return errors.As(err, &interruption)
 }
 
+func (e *Engine) InterruptPendingDecision(issueID string) error {
+	e.mu.Lock()
+	is, ok := e.issues[issueID]
+	if !ok {
+		e.mu.Unlock()
+		return errors.New("unknown issue " + issueID)
+	}
+	if is.stageCancel == nil {
+		e.mu.Unlock()
+		return errors.New("issue " + issueID + " has no running stage")
+	}
+	interrupted := false
+	for id, pending := range e.pend {
+		if pending.IssueID != issueID {
+			continue
+		}
+		delete(e.pend, id)
+		if pending.reply != nil {
+			close(pending.reply)
+		}
+		interrupted = true
+	}
+	if !interrupted {
+		e.mu.Unlock()
+		return errors.New("issue " + issueID + " has no pending decision")
+	}
+	is.decisionInterrupted = true
+	cancel := is.stageCancel
+	e.mu.Unlock()
+	cancel()
+	return nil
+}
+
+func (e *Engine) consumeDecisionInterruption(is *issueState) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	interrupted := is.decisionInterrupted
+	is.decisionInterrupted = false
+	return interrupted
+}
+
 func (e *committedBoundaryError) Error() string { return e.err.Error() }
 func (e *committedBoundaryError) Unwrap() error { return e.err }
 

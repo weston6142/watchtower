@@ -172,6 +172,7 @@ type issueState struct {
 	pauseGate           chan struct{}
 	stageCancel         context.CancelFunc
 	killRequested       bool
+	decisionInterrupted bool
 	stageIdx            int
 	paused              bool
 	pauseRequested      bool
@@ -3421,6 +3422,9 @@ func (e *Engine) runStageOnce(
 	var sessionIDs []string
 	legacyFinalizationAttempted := false
 	finishLegacyCheckpoint := func(stageErr error) error {
+		if isCommittedInterruption(stageErr) {
+			return stageErr
+		}
 		if legacyFinalizationAttempted {
 			return stageErr
 		}
@@ -3954,6 +3958,9 @@ func (e *Engine) runStageOnce(
 			return err
 		}
 		if legacyAnswer(response) != 0 {
+			if e.consumeDecisionInterruption(is) {
+				return InterruptAfterCommit(context.Canceled)
+			}
 			if e.wasKilled(is) {
 				e.emit(core.EvStageKilled, is.id, map[string]string{"stage": st.Name})
 				return context.Canceled
@@ -3966,6 +3973,9 @@ func (e *Engine) runStageOnce(
 			return err
 		}
 		if legacyAnswer(response) != 0 {
+			if e.consumeDecisionInterruption(is) {
+				return InterruptAfterCommit(context.Canceled)
+			}
 			if e.wasKilled(is) {
 				e.emit(core.EvStageKilled, is.id, map[string]string{"stage": st.Name})
 				return context.Canceled
@@ -4427,6 +4437,9 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 		err = e.runStageOnce(stageCtx, is, st, attempt+1, of, plannerOverride)
 		if err == nil {
 			break
+		}
+		if isCommittedInterruption(err) {
+			return err
 		}
 		if errors.Is(err, errDependenciesDiscovered) {
 			return err
