@@ -314,3 +314,53 @@ func TestFinalizationBoundaryResumesAfterFreshRuntime(t *testing.T) {
 		t.Fatalf("land effects = %d, want 1", effects.count(marshal.EffectLand))
 	}
 }
+
+func TestMergedBoundaryInterruptionDoesNotRecordFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	s := openBoundaryStore(t, filepath.Join(dataDir, "watchtower.db"))
+	t.Cleanup(func() { _ = s.Close() })
+	interrupted := errors.New("simulated merged interruption")
+	observer := boundaryObserverFunc(func(_ context.Context, boundary DurableBoundary) error {
+		if boundary.Kind == BoundaryFinalization && boundary.ID == store.IntegrationMerged {
+			return InterruptAfterCommit(interrupted)
+		}
+		return nil
+	})
+	effects := &recordingBoundaryEffects{}
+	r := &runner.FakeRunner{Scripts: boundaryVerificationScripts(t, verificationFlow(), base)}
+	r.OnStart = func(_, stage, _, workdir string) error {
+		if stage != "merge-verification" {
+			return nil
+		}
+		branch := strings.TrimSpace(gitOutput(t, workdir, "rev-parse", "HEAD"))
+		decisionBody, err := json.Marshal(marshal.MergeDecision{
+			Decision: "merge", BranchCommit: branch, BaseCommit: base,
+		})
+		if err != nil {
+			return err
+		}
+		r.Scripts["merge-verification/merge-verifier"].Artifacts["merge-decision.json"] = string(decisionBody)
+		return nil
+	}
+	e := boundaryVerificationEngine(t, s, dataDir, repo, r, observer, effects)
+	id, err := e.CreateIssue("merged boundary", "", verificationFlow().Name, levers.Preset(verificationFlow(), flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := startBoundaryWithSyntheticApproval(t, e, id); !errors.Is(err, interrupted) {
+		t.Fatalf("StartIssue error = %v, want interruption", err)
+	}
+	integration, found, err := s.IssueIntegration(id)
+	if err != nil || !found || integration.State != store.IntegrationMerged {
+		t.Fatalf("integration at interruption = %+v, found=%v, err=%v", integration, found, err)
+	}
+	if history, err := s.FailureHistory(context.Background(), id); err != nil || len(history) != 0 {
+		t.Fatalf("interruption failure history = %+v, %v", history, err)
+	}
+	if effects.count(marshal.EffectLand) != 1 {
+		t.Fatalf("land effects = %d, want 1", effects.count(marshal.EffectLand))
+	}
+}

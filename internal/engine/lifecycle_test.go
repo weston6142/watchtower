@@ -514,6 +514,53 @@ func TestLifecycleRecoveryRejectsMissingLeadingStage(t *testing.T) {
 	}
 }
 
+func TestLifecycleRecoveryRejectsRenamedCommittedPrefix(t *testing.T) {
+	var starts atomic.Int32
+	e1, s := lifecycleTestEngine(t, lifecycleTestRunner(&starts))
+	interrupted := errors.New("simulated interruption")
+	e1.cfg.BoundaryObserver = boundaryObserverFunc(func(_ context.Context, boundary DurableBoundary) error {
+		if boundary.Kind == BoundaryStageLifecycle && boundary.ID == string(stagelifecycle.RunnerSucceeded) {
+			return InterruptAfterCommit(interrupted)
+		}
+		return nil
+	})
+	f := lifecycleTestFlow()
+	id, err := e1.CreateIssue("renamed lifecycle prefix", "", f.Name, levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e1.StartIssue(context.Background(), id); !errors.Is(err, interrupted) {
+		t.Fatalf("StartIssue error = %v, want interruption", err)
+	}
+	changed := f
+	changed.Stages = []flow.Stage{
+		{Name: "renamed-leading", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+		{Name: "renamed-trailing", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+	}
+	e2 := newEngineOnFileWithFlow(t, s, lifecycleTestRunner(new(atomic.Int32)), e1.cfg.DataDir, changed)
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row store.IssueRow
+	for _, candidate := range rows {
+		if candidate.ID == id {
+			row = candidate
+		}
+	}
+	recovered, found, err := e2.lifecycleRecoveryState(row)
+	var diagnostic *stagelifecycle.DiagnosticError
+	if recovered != nil || !found || !errors.As(err, &diagnostic) || diagnostic.Code != stagelifecycle.CodeInvalidState {
+		t.Fatalf("renamed lifecycle recovery = %+v, %t, %v", recovered, found, err)
+	}
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), "unknown issue") {
+		t.Fatalf("rehydration restored legacy state across renamed lifecycle gap: %v", err)
+	}
+}
+
 func TestLifecycleAttemptForUsesNewestNumericAttempt(t *testing.T) {
 	e, s := lifecycleTestEngine(t, lifecycleTestRunner(new(atomic.Int32)))
 	for _, attemptID := range []string{"checkpoint-9", "checkpoint-10"} {

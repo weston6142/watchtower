@@ -121,7 +121,7 @@ func (s *Store) StageLifecycleAttempts(issueID, stage string) ([]StageLifecycleA
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query("SELECT "+stageLifecycleAttemptColumns+` FROM stage_lifecycle_attempts
-		WHERE issue_id=? AND stage=? ORDER BY created_at,attempt_id`, issueID, stage)
+		WHERE issue_id=? AND stage=? ORDER BY legacy_checkpoint_id,created_at,attempt_id`, issueID, stage)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +261,7 @@ func (s *Store) putStageLifecycleResultLocked(database capabilitySQL, attempt St
 		err = database.QueryRow(`SELECT attempt_id FROM stage_lifecycle_attempts
 			WHERE issue_id=? AND stage=? AND attempt_id<>? AND stage_result_schema_version=?
 			AND stage_result_kind=? AND stage_result_status=?
-			ORDER BY created_at DESC,attempt_id DESC LIMIT 1`, attempt.IssueID, attempt.Stage,
+			ORDER BY legacy_checkpoint_id DESC,created_at DESC,attempt_id DESC LIMIT 1`, attempt.IssueID, attempt.Stage,
 			attempt.AttemptID, stageresult.SchemaVersion, summary.StageResultKind, stageresult.ValidationValid).Scan(&latestID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -298,7 +298,7 @@ func (s *Store) StageResultAttempts(issueID, stage string, kind stageresult.Kind
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query("SELECT "+stageLifecycleAttemptColumns+` FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND stage_result_schema_version=?
-		AND stage_result_kind=? AND stage_result_status=? ORDER BY created_at,attempt_id`,
+		AND stage_result_kind=? AND stage_result_status=? ORDER BY legacy_checkpoint_id,created_at,attempt_id`,
 		issueID, stage, stageresult.SchemaVersion, kind, stageresult.ValidationValid)
 	if err != nil {
 		return nil, err
@@ -319,7 +319,7 @@ func (s *Store) LatestValidStageResultAttempt(issueID, stage string, kind stager
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	row := s.db.QueryRow("SELECT "+stageLifecycleAttemptColumns+` FROM stage_lifecycle_attempts WHERE issue_id=? AND stage=? AND stage_result_schema_version=?
-		AND stage_result_kind=? AND stage_result_status=? ORDER BY created_at DESC,attempt_id DESC LIMIT 1`,
+		AND stage_result_kind=? AND stage_result_status=? ORDER BY legacy_checkpoint_id DESC,created_at DESC,attempt_id DESC LIMIT 1`,
 		issueID, stage, stageresult.SchemaVersion, kind, stageresult.ValidationValid)
 	attempt, err := scanStageLifecycleAttempt(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -544,6 +544,26 @@ func (s *Store) StageLifecycleRecords(issueID, stage, attemptID string) ([]stage
 		out = append(out, record)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) CommittedStageLifecycleStages(issueID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT DISTINCT stage FROM stage_lifecycle_checkpoints
+		WHERE issue_id=? AND status='committed' ORDER BY stage`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var stages []string
+	for rows.Next() {
+		var stage string
+		if err := rows.Scan(&stage); err != nil {
+			return nil, err
+		}
+		stages = append(stages, stage)
+	}
+	return stages, rows.Err()
 }
 
 // LegacyStageLifecycle exposes the old checkpoint shape through a read-only

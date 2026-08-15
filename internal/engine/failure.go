@@ -305,6 +305,9 @@ func fileDigest(path string) string {
 func (e *Engine) recordBoundaryFailure(ctx context.Context, issueID, stage string, attempt int,
 	site failure.Site, class failure.Class, disposition failure.RetryDisposition,
 	stateChange failure.StateChange, primary error) error {
+	if isCommittedInterruption(primary) {
+		return primary
+	}
 	if primary == nil {
 		return nil
 	}

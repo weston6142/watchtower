@@ -640,18 +640,20 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 	if !ok {
 		return nil, false, nil
 	}
+	committedStages, err := e.cfg.Store.CommittedStageLifecycleStages(row.ID)
+	if err != nil {
+		return nil, false, err
+	}
 	rejectGap := func(index int) error {
-		for _, later := range configured.Stages[index+1:] {
-			records, err := e.cfg.Store.StageLifecycleRecords(row.ID, later.Name, "")
-			if err != nil {
-				return err
-			}
-			for _, record := range records {
-				if record.Committed {
-					return &stagelifecycle.DiagnosticError{
-						Code:    stagelifecycle.CodeInvalidState,
-						Message: fmt.Sprintf("stage %q has committed lifecycle state after missing predecessor %q", later.Name, configured.Stages[index].Name),
-					}
+		prefix := make(map[string]struct{}, index)
+		for _, earlier := range configured.Stages[:index] {
+			prefix[earlier.Name] = struct{}{}
+		}
+		for _, committed := range committedStages {
+			if _, ok := prefix[committed]; !ok {
+				return &stagelifecycle.DiagnosticError{
+					Code:    stagelifecycle.CodeInvalidState,
+					Message: fmt.Sprintf("stage %q has committed lifecycle state outside the valid prefix ending before %q", committed, configured.Stages[index].Name),
 				}
 			}
 		}
