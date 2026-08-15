@@ -643,6 +643,16 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 		}
 		return e.waitForCompletion(ctx)
 	}
+	if e.scenario.Kind == recoverymatrix.ScenarioRestart &&
+		(e.scenario.References.DurableBoundary == string(store.GateResolved) ||
+			e.scenario.References.DurableBoundary == string(store.VerificationPassed)) {
+		for _, stage := range e.flow.Stages {
+			if stage.Name == e.scenario.References.Stage &&
+				(stage.Gate == flow.GatePlanReview || stage.Gate == flow.GateApproveArtifact) {
+				return e.waitForCompletion(ctx)
+			}
+		}
+	}
 	if e.scenario.Kind == recoverymatrix.ScenarioRestart && !autoFinalization && e.scenario.References.Stage != "plan" {
 		if err := e.prepareFreshRestartWorkspace(); err != nil {
 			return err

@@ -407,6 +407,7 @@ func (e *Engine) rehydrateArtifactReview(
 	current, err := (review.Target{
 		IssueID: row.IssueID, Stage: row.Stage, CheckpointID: checkpoint.ID,
 		Artifacts: checkpoint.Artifacts, NextStage: row.Review.NextStage,
+		Operation: row.Review.Operation,
 	}).Canonical()
 	if err != nil || !row.Review.Matches(current) {
 		if err != nil {

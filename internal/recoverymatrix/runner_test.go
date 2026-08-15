@@ -26,12 +26,12 @@ func (f *fakeMatrixFactory) New(_ context.Context, scenario recoverymatrix.Scena
 }
 
 type fakeMatrixExecutor struct {
-	scenario   recoverymatrix.Scenario
+	scenario    recoverymatrix.Scenario
 	observation recoverymatrix.Observation
-	err        error
-	verifyErr  error
-	panicValue any
-	wait       bool
+	err         error
+	verifyErr   error
+	panicValue  any
+	wait        bool
 }
 
 func (e *fakeMatrixExecutor) Execute(ctx context.Context, scenario recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
@@ -91,8 +91,12 @@ func TestRunnerRejectsPartialAndInfrastructureFailures(t *testing.T) {
 	}{
 		{"panic", func(recoverymatrix.Scenario) *fakeMatrixExecutor { return &fakeMatrixExecutor{panicValue: "boom"} }, func(s recoverymatrix.RunSummary) bool { return s.Panics == 1 }},
 		{"timeout", func(recoverymatrix.Scenario) *fakeMatrixExecutor { return &fakeMatrixExecutor{wait: true} }, func(s recoverymatrix.RunSummary) bool { return s.Timeouts == 1 }},
-		{"unexpected call", func(recoverymatrix.Scenario) *fakeMatrixExecutor { return &fakeMatrixExecutor{err: recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnexpectedCall, Err: errors.New("provider called")}} }, func(s recoverymatrix.RunSummary) bool { return s.UnexpectedCalls == 1 }},
-		{"unconsumed", func(scenario recoverymatrix.Scenario) *fakeMatrixExecutor { return &fakeMatrixExecutor{observation: expectedObservation(scenario), verifyErr: errors.New("one response remains")} }, func(s recoverymatrix.RunSummary) bool { return s.UnconsumedScripts == 1 }},
+		{"unexpected call", func(recoverymatrix.Scenario) *fakeMatrixExecutor {
+			return &fakeMatrixExecutor{err: recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnexpectedCall, Err: errors.New("provider called")}}
+		}, func(s recoverymatrix.RunSummary) bool { return s.UnexpectedCalls == 1 }},
+		{"unconsumed", func(scenario recoverymatrix.Scenario) *fakeMatrixExecutor {
+			return &fakeMatrixExecutor{observation: expectedObservation(scenario), verifyErr: errors.New("one response remains")}
+		}, func(s recoverymatrix.RunSummary) bool { return s.UnconsumedScripts == 1 }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -196,7 +200,7 @@ func expectedObservation(scenario recoverymatrix.Scenario) recoverymatrix.Observ
 	return recoverymatrix.Observation{
 		PublicOutcome: scenario.Expected.PublicOutcome, DurableState: scenario.Expected.DurableState,
 		NormalizedClassification: scenario.Expected.NormalizedClassification,
-		ArtifactIdentities: append([]string(nil), scenario.Expected.ArtifactIdentities...),
+		ArtifactIdentities:       append([]string(nil), scenario.Expected.ArtifactIdentities...),
 	}
 }
 

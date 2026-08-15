@@ -5,9 +5,9 @@ package marshal
 type EffectKind string
 
 const (
-	EffectSyncBase    EffectKind = "sync-base"
-	EffectLand        EffectKind = "land"
-	EffectPublish     EffectKind = "publish"
+	EffectSyncBase     EffectKind = "sync-base"
+	EffectLand         EffectKind = "land"
+	EffectPublish      EffectKind = "publish"
 	EffectDeleteBranch EffectKind = "delete-branch"
 )
 
