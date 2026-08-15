@@ -2,6 +2,7 @@ package engineharness
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -127,5 +128,65 @@ func TestArtifactIdentityRecoveryPersistsRejectedAndReplacementArtifacts(t *test
 		identityReviews[0].Review == nil || identityReviews[1].Review == nil ||
 		identityReviews[0].Review.ArtifactVersion == identityReviews[1].Review.ArtifactVersion {
 		t.Fatalf("artifact identity review history = %+v", identityReviews)
+	}
+}
+
+func TestDecisionEscalationRecoveryRehydratesPendingDecision(t *testing.T) {
+	production := shippedHarnessFlow(t)
+	var scenario recoverymatrix.Scenario
+	for _, candidate := range loadCrossCuttingMatrix(t) {
+		if candidate.Kind == recoverymatrix.ScenarioDecisionEscalation {
+			scenario = candidate
+			break
+		}
+	}
+	configured, cleanup, err := NewFactory(production).New(context.Background(), scenario)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Error(err)
+		}
+	}()
+	executor := configured.(*executor)
+	initialEngine := executor.engine
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	startErr := executor.startWithSyntheticApprovals(ctx)
+	if !errors.Is(startErr, errHarnessDecisionPending) {
+		t.Fatalf("initial execution error = %v, want pending interruption", startErr)
+	}
+	rows, err := executor.store.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) == 0 || rows[len(rows)-1].ID != executor.decisionID || rows[len(rows)-1].Status != "pending" || rows[len(rows)-1].Response.Option != nil {
+		t.Fatalf("initial durable decisions = %+v", rows)
+	}
+	if got := executor.driver.get(); got != scenario.InitialInputs["state"] {
+		t.Fatalf("initial driver state = %q", got)
+	}
+	if err := executor.driveCrossCutRecovery(ctx, startErr); err != nil {
+		t.Fatal(err)
+	}
+	if executor.engine == initialEngine {
+		t.Fatal("decision recovery reused the initial engine")
+	}
+	rows, err = executor.store.AllDecisionRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered *store.DecisionRow
+	for index := range rows {
+		if rows[index].ID == executor.decisionID {
+			recovered = &rows[index]
+		}
+	}
+	if recovered == nil || recovered.Status != "answered" || recovered.Response.Option == nil || *recovered.Response.Option != 0 {
+		t.Fatalf("recovered durable decision = %+v", recovered)
+	}
+	if got := executor.driver.get(); got != scenario.RecoveryInputs["state"] {
+		t.Fatalf("recovery driver state = %q", got)
 	}
 }

@@ -42,7 +42,10 @@ type EnvironmentFactory struct {
 	ProductionFlow flow.Flow
 }
 
-var errHarnessRestart = errors.New("deterministic harness restart")
+var (
+	errHarnessRestart         = errors.New("deterministic harness restart")
+	errHarnessDecisionPending = errors.New("deterministic decision pending")
+)
 
 type boundaryInterruptObserver struct {
 	mu       sync.Mutex
@@ -730,19 +733,31 @@ func (e *executor) driveCrossCutRecovery(ctx context.Context, startErr error) er
 			Err: fmt.Errorf("cross-cutting driver requires distinct initial and recovery state")}
 	}
 	if e.scenario.Kind == recoverymatrix.ScenarioDecisionEscalation {
-		if startErr != nil {
-			return startErr
+		if !errors.Is(startErr, errHarnessDecisionPending) {
+			return fmt.Errorf("decision escalation did not interrupt with a pending decision: %w", startErr)
 		}
 		rows, err := e.store.AllDecisionRows()
 		if err != nil {
 			return fmt.Errorf("read escalated decisions: %w", err)
 		}
 		for _, row := range rows {
-			if row.ID == e.decisionID && row.Stage == e.scenario.References.Stage && row.Status == "answered" && row.Response.Option != nil && *row.Response.Option == 0 {
-				return nil
+			if row.ID == e.decisionID && row.Stage == e.scenario.References.Stage && row.Status == "pending" && row.Response.Option == nil {
+				if err := e.rebuildForCrossCutRecovery(ctx); err != nil {
+					return err
+				}
+				resolved, err := e.store.AllDecisionRows()
+				if err != nil {
+					return fmt.Errorf("read recovered decision: %w", err)
+				}
+				for _, recovered := range resolved {
+					if recovered.ID == e.decisionID && recovered.Stage == e.scenario.References.Stage && recovered.Status == "answered" && recovered.Response.Option != nil && *recovered.Response.Option == 0 {
+						return nil
+					}
+				}
+				return fmt.Errorf("fresh runtime did not resolve decision %d", e.decisionID)
 			}
 		}
-		return fmt.Errorf("decision escalation produced no durable decision for %q", e.scenario.References.Stage)
+		return fmt.Errorf("decision escalation produced no pending durable decision for %q", e.scenario.References.Stage)
 	}
 	if startErr == nil {
 		return fmt.Errorf("cross-cutting initial state %q unexpectedly completed", initial)
@@ -894,9 +909,28 @@ func (e *executor) rebuildForCrossCutRecovery(ctx context.Context) error {
 		return fmt.Errorf("reopen cross-cutting store: %w", err)
 	}
 	e.store = database
+	if e.scenario.Kind == recoverymatrix.ScenarioDecisionEscalation {
+		recovery := e.scenario.RecoveryInputs["state"]
+		if recovery != "approved-artifact-decision" {
+			return fmt.Errorf("unsupported decision recovery input %q", recovery)
+		}
+		e.driver.set(recovery)
+	}
 	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate cross-cutting state: %w", err)
+	}
+	if e.scenario.Kind == recoverymatrix.ScenarioDecisionEscalation {
+		for _, pending := range e.engine.PendingDecisions() {
+			if pending.ID != e.decisionID || pending.Stage != e.scenario.References.Stage {
+				continue
+			}
+			if err := e.engine.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+				return fmt.Errorf("resolve recovered decision %d: %w", pending.ID, err)
+			}
+			return e.waitForCompletion(ctx)
+		}
+		return fmt.Errorf("fresh runtime did not rehydrate pending decision %d", e.decisionID)
 	}
 	return e.retryWithSyntheticApprovals(ctx)
 }
@@ -1075,11 +1109,8 @@ func (e *executor) startWithSyntheticApprovals(ctx context.Context) error {
 			for _, pending := range e.engine.PendingDecisions() {
 				response := levers.ChoiceResponse(0)
 				if e.scenario.Kind == recoverymatrix.ScenarioDecisionEscalation && e.driver.get() == "pending-artifact-decision" && pending.Stage == e.scenario.References.Stage {
-					if e.scenario.RecoveryInputs["state"] != "approved-artifact-decision" {
-						return fmt.Errorf("unsupported decision recovery input %q", e.scenario.RecoveryInputs["state"])
-					}
 					e.decisionID = pending.ID
-					e.driver.set(e.scenario.RecoveryInputs["state"])
+					return errHarnessDecisionPending
 				}
 				if e.scenario.Kind == recoverymatrix.ScenarioArtifactIdentity && e.driver.get() == e.scenario.InitialInputs["state"] && pending.Stage == e.scenario.References.Stage {
 					if err := validateArtifactReviewIdentity(pending, e.scenario.InitialInputs["state"]); err != nil {
