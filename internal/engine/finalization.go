@@ -295,11 +295,14 @@ func loadVerificationBytes(data []byte) (marshal.Verification, error) {
 	return verification, nil
 }
 
-func (e *Engine) checkpointVerificationReady(is *issueState) error {
-	return e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
+func (e *Engine) checkpointVerificationReady(ctx context.Context, is *issueState) error {
+	if err := e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
 		IssueID: is.id, State: store.IntegrationVerificationReady, PreSHA: is.baseRef,
 		Worktree: is.wsPath, Branch: is.branch,
-	})
+	}); err != nil {
+		return err
+	}
+	return e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), store.IntegrationVerificationReady)
 }
 
 func (e *Engine) integrationStageName(is *issueState) string {
@@ -349,6 +352,9 @@ func (e *Engine) finalizeIntegration(
 					_ = e.recordBoundaryFailure(ctx, is.id, e.integrationStageName(is), 0,
 						failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateStore, storeErr)
 					return false, true, fmt.Errorf("%v (persist publish pending: %w)", landErr, storeErr)
+				}
+				if boundaryErr := e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), integration.State); boundaryErr != nil {
+					return false, true, boundaryErr
 				}
 				e.emit(core.EvPublishPending, is.id, map[string]string{
 					"branch": result.BaseBranch, "commit": result.LandedSHA,

@@ -472,7 +472,9 @@ func (e *Engine) commitLifecycleSubstate(
 	if err := e.cfg.Store.CommitPreparedStageLifecycle(record); err != nil {
 		return err
 	}
-	return nil
+	return e.notifyBoundary(context.Background(), DurableBoundary{
+		Kind: BoundaryStageLifecycle, ID: string(substate), IssueID: attempt.IssueID, Stage: attempt.Stage,
+	})
 }
 
 func (e *Engine) commitRehydratedArtifactReviewGate(issueID, stage string, checkpointID int64) error {

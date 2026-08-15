@@ -55,6 +55,7 @@ const (
 type Config struct {
 	Store                    *store.Store
 	Clock                    core.Clock
+	BoundaryObserver         BoundaryObserver
 	FailureRecorder          failure.Recorder
 	Runner                   runner.Runner
 	Marshal                  Sequencer
@@ -3971,7 +3972,7 @@ func (e *Engine) runStageOnce(
 			return err
 		}
 		if prepared.Decision.Decision == "merge" {
-			if err := e.checkpointVerificationReady(is); err != nil {
+			if err := e.checkpointVerificationReady(ctx, is); err != nil {
 				return fmt.Errorf("persist verification ready: %w", err)
 			}
 		}
@@ -4741,7 +4742,9 @@ func (e *Engine) runFromWithOwnership(
 			return nil
 		} else if err != nil {
 			if st.MergeBarrier {
-				e.failPendingVerificationAttempt(is, err)
+				if boundaryErr := e.failPendingVerificationAttempt(ctx, is, err); boundaryErr != nil {
+					return boundaryErr
+				}
 			}
 			return err
 		}
@@ -4884,32 +4887,37 @@ func (e *Engine) resumePendingVerification(
 	ctx context.Context, is *issueState, integration store.IssueIntegration, stageIdx int,
 ) error {
 	if err := e.restoreVerifiedWorkspace(is, integration); err != nil {
-		e.failPendingVerificationAttempt(is, err)
+		if boundaryErr := e.failPendingVerificationAttempt(ctx, is, err); boundaryErr != nil {
+			return boundaryErr
+		}
 		return err
 	}
 	return e.runFromOwned(ctx, is, stageIdx, nil)
 }
 
-func (e *Engine) failPendingVerificationAttempt(is *issueState, cause error) {
+func (e *Engine) failPendingVerificationAttempt(ctx context.Context, is *issueState, cause error) error {
 	if cause == nil || e.cfg.Store == nil {
-		return
+		return nil
 	}
 	attempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
 	if err != nil || !found || attempt.Status != store.VerificationAttemptPending {
-		return
+		return nil
 	}
 	if _, err := e.cfg.Store.FinishVerificationAttempt(
 		is.id, attempt.ID, store.VerificationAttemptFailed, nil, verificationAttemptFailedReason,
 	); err != nil {
-		return
+		return nil
 	}
 	integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
 	if err != nil || !ok || integration.State != store.IntegrationPendingReverification {
-		return
+		return nil
 	}
 	integration.State = store.IntegrationReverificationFailed
 	integration.LastError = cause.Error()
-	_ = e.cfg.Store.SetIssueIntegration(integration)
+	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		return nil
+	}
+	return e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), integration.State)
 }
 
 func (e *Engine) retryStaleVerification(
@@ -4954,6 +4962,9 @@ func (e *Engine) retryStaleVerification(
 	})
 	if beginErr != nil {
 		return true, e.recordFinalizationFailure(is, beginErr)
+	}
+	if boundaryErr := e.notifyFinalizationBoundary(ctx, is.id, stage, store.IntegrationPendingReverification); boundaryErr != nil {
+		return true, boundaryErr
 	}
 	_, stageIdx, ok := e.cfg.Flows[is.flowName].IntegrationStage()
 	if !ok {
@@ -5455,7 +5466,10 @@ func (e *Engine) finishLandingCleanup(
 	integration.State = store.IntegrationMerged
 	integration.Cleanup = nil
 	integration.LastError = ""
-	return e.cfg.Store.SetIssueIntegration(integration)
+	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		return err
+	}
+	return e.notifyFinalizationBoundary(context.Background(), issueID, "", integration.State)
 }
 
 func (e *Engine) retryCleanup(
@@ -5504,6 +5518,9 @@ func (e *Engine) retryCleanup(
 			failure.StateStore, err)
 		return err
 	}
+	if boundaryErr := e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), integration.State); boundaryErr != nil {
+		return boundaryErr
+	}
 	e.emit(core.EvCleanupCompleted, is.id, map[string]string{
 		"commit": integration.LandedSHA})
 	return nil
@@ -5523,6 +5540,9 @@ func (e *Engine) recordCleanupNeeded(
 			failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
 			failure.StateStore, err)
 		return fmt.Errorf("%v (persist cleanup: %w)", cleanupErr, err)
+	}
+	if boundaryErr := e.notifyFinalizationBoundary(context.Background(), integration.IssueID, "", integration.State); boundaryErr != nil {
+		return boundaryErr
 	}
 	e.emit(core.EvCleanupNeeded, integration.IssueID, map[string]any{
 		"operations": operations, "error": cleanupErr.Error(),
