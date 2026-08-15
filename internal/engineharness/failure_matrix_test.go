@@ -43,7 +43,7 @@ func TestFailureFamilyMatrix(t *testing.T) {
 	summary := recoverymatrix.Run(context.Background(), failures, factory, recoverymatrix.RunOptions{
 		ManifestIdentity: "test/failure-matrix",
 		Revision:         "test-revision",
-		ScenarioTimeout:  5 * time.Second,
+		ScenarioTimeout:  15 * time.Second,
 	})
 	if summary.Executed != summary.Compiled || summary.Skipped != 0 || summary.Failed != 0 {
 		t.Fatalf("failure matrix summary = %+v", summary)

@@ -30,6 +30,14 @@ type BoundaryObserver interface {
 	AfterCommit(context.Context, DurableBoundary) error
 }
 
+type committedBoundaryError struct {
+	boundary DurableBoundary
+	err      error
+}
+
+func (e *committedBoundaryError) Error() string { return e.err.Error() }
+func (e *committedBoundaryError) Unwrap() error { return e.err }
+
 func (e *Engine) notifyBoundary(ctx context.Context, boundary DurableBoundary) error {
 	if e.cfg.BoundaryObserver == nil {
 		return nil
@@ -37,7 +45,10 @@ func (e *Engine) notifyBoundary(ctx context.Context, boundary DurableBoundary) e
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return e.cfg.BoundaryObserver.AfterCommit(ctx, boundary)
+	if err := e.cfg.BoundaryObserver.AfterCommit(ctx, boundary); err != nil {
+		return &committedBoundaryError{boundary: boundary, err: err}
+	}
+	return nil
 }
 
 func isFinalizationBoundary(state string) bool {
