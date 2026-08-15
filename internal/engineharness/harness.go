@@ -500,6 +500,11 @@ func (e *executor) VerifyConsumed() error {
 
 func verifyFailureScriptsConsumed(started []string, production flow.Flow, scenario recoverymatrix.Scenario) error {
 	if len(started) == 0 {
+		if scenario.References.FailureFamily == "capability" {
+			// Capability preflight is intentionally before provider start; the
+			// durable failure is the consumed target boundary.
+			return nil
+		}
 		return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnconsumed,
 			Err: fmt.Errorf("failure driver consumed no scripts")}
 	}
@@ -613,6 +618,10 @@ func failureScript(stage flow.Stage, script runner.Script, family string) runner
 			// planner writes so the engine owns the missing-output failure.
 			script.PlannerRequests = nil
 			script.Artifacts = nil
+		} else if stage.Name == "merge-verification" {
+			// Final-review has no agent-owned artifact runner seam; a typed
+			// runner failure keeps the engine-owned failure record immediate.
+			script.Fail = true
 		} else if _, ok := runnerKindForStage(stage); ok {
 			script.OmitStageEvidence = true
 		} else {
