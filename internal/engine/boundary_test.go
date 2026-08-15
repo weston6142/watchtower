@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -198,11 +199,31 @@ func boundaryVerificationEngine(
 	})
 }
 
+func startBoundaryWithSyntheticApproval(t *testing.T, e *Engine, issueID string) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- e.StartIssue(context.Background(), issueID) }()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			for _, pending := range e.PendingDecisions() {
+				if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+}
+
 func TestFinalizationBoundaryResumesAfterFreshRuntime(t *testing.T) {
 	dataDir := t.TempDir()
 	repo := t.TempDir()
 	initGitRepo(t, repo)
-	base := gitOutput(t, repo, "rev-parse", "HEAD")
+	base := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
 	storePath := filepath.Join(dataDir, "watchtower.db")
 	s := openBoundaryStore(t, storePath)
 	interrupted := errors.New("simulated finalization interruption")
@@ -215,9 +236,17 @@ func TestFinalizationBoundaryResumesAfterFreshRuntime(t *testing.T) {
 	effects := &recordingBoundaryEffects{}
 	var runnerStarts atomic.Int32
 	firstRunner := &runner.FakeRunner{Scripts: boundaryVerificationScripts(t, verificationFlow(), base)}
-	firstRunner.OnStart = func(_, stage, _, _ string) error {
+	firstRunner.OnStart = func(_, stage, _, workdir string) error {
 		if stage == "merge-verification" {
 			runnerStarts.Add(1)
+			branch := strings.TrimSpace(gitOutput(t, workdir, "rev-parse", "HEAD"))
+			decisionBody, marshalErr := json.Marshal(marshal.MergeDecision{
+				Decision: "merge", BranchCommit: branch, BaseCommit: base,
+			})
+			if marshalErr != nil {
+				return marshalErr
+			}
+			firstRunner.Scripts["merge-verification/merge-verifier"].Artifacts["merge-decision.json"] = string(decisionBody)
 		}
 		return nil
 	}
@@ -226,7 +255,7 @@ func TestFinalizationBoundaryResumesAfterFreshRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e1.StartIssue(context.Background(), id); !errors.Is(err, interrupted) {
+	if err := startBoundaryWithSyntheticApproval(t, e1, id); !errors.Is(err, interrupted) {
 		t.Fatalf("StartIssue error = %v, want interruption", err)
 	}
 	integration, found, err := s.IssueIntegration(id)
@@ -243,9 +272,17 @@ func TestFinalizationBoundaryResumesAfterFreshRuntime(t *testing.T) {
 	s = openBoundaryStore(t, storePath)
 	t.Cleanup(func() { _ = s.Close() })
 	secondRunner := &runner.FakeRunner{Scripts: boundaryVerificationScripts(t, verificationFlow(), base)}
-	secondRunner.OnStart = func(_, stage, _, _ string) error {
+	secondRunner.OnStart = func(_, stage, _, workdir string) error {
 		if stage == "merge-verification" {
 			runnerStarts.Add(1)
+			branch := strings.TrimSpace(gitOutput(t, workdir, "rev-parse", "HEAD"))
+			decisionBody, marshalErr := json.Marshal(marshal.MergeDecision{
+				Decision: "merge", BranchCommit: branch, BaseCommit: base,
+			})
+			if marshalErr != nil {
+				return marshalErr
+			}
+			secondRunner.Scripts["merge-verification/merge-verifier"].Artifacts["merge-decision.json"] = string(decisionBody)
 		}
 		return nil
 	}

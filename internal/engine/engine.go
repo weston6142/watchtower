@@ -4745,6 +4745,14 @@ func (e *Engine) runFromWithOwnership(
 				if boundaryErr := e.failPendingVerificationAttempt(ctx, is, err); boundaryErr != nil {
 					return boundaryErr
 				}
+				// A finalization boundary is written by the merge-verification
+				// stage immediately before its observer is called. If that
+				// observer interrupts the run, retain the verified worktree so a
+				// fresh engine can resume from the durable checkpoint.
+				if integration, found, stateErr := e.cfg.Store.IssueIntegration(is.id); stateErr == nil &&
+					found && isFinalizationBoundary(integration.State) {
+					preserveWorkspace = true
+				}
 			}
 			return err
 		}
