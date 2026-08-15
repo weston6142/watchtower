@@ -54,6 +54,9 @@ func (e *Engine) recordStageFailure(ctx context.Context, is *issueState, stage f
 	if primary == nil || errors.Is(primary, errDependenciesDiscovered) {
 		return primary
 	}
+	if isCommittedInterruption(primary) {
+		return primary
+	}
 	var runnerErr *runnerStageError
 	if errors.As(primary, &runnerErr) {
 		// Each runner result is recorded at its result boundary. The stage
@@ -350,6 +353,9 @@ func (e *Engine) boundaryStageFingerprintInputs(
 }
 
 func (e *Engine) recordClassifiedBoundaryFailure(ctx context.Context, issueID, stage string, primary error) error {
+	if isCommittedInterruption(primary) {
+		return primary
+	}
 	if primary == nil {
 		return nil
 	}

@@ -634,10 +634,7 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			return nil, false, err
 		}
 		if len(records) == 0 {
-			if completedThrough >= 0 {
-				break
-			}
-			continue
+			break
 		}
 		attemptID := ""
 		for _, record := range records {
@@ -646,7 +643,7 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			}
 		}
 		if attemptID == "" {
-			continue
+			break
 		}
 		var latest stagelifecycle.Record
 		var predecessor *stagelifecycle.Record
@@ -665,7 +662,7 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			latest = record
 		}
 		if latest.Substate == "" {
-			continue
+			break
 		}
 		if lifecycleReached(latest.Substate, stagelifecycle.FinalizationReady) {
 			completedThrough = index

@@ -472,6 +472,39 @@ func TestRehydrateRecoversDurableLifecycleBeforeLegacyFallback(t *testing.T) {
 	}
 }
 
+func TestLifecycleRecoveryRejectsMissingLeadingStage(t *testing.T) {
+	var starts atomic.Int32
+	e1, s := lifecycleTestEngine(t, lifecycleTestRunner(&starts))
+	f := lifecycleTestFlow()
+	id, err := e1.CreateIssue("lifecycle prefix", "", f.Name, levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e1.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	changed := f
+	changed.Stages = []flow.Stage{
+		{Name: "leading", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+		f.Stages[0],
+		{Name: "trailing", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+	}
+	e2 := newEngineOnFileWithFlow(t, s, lifecycleTestRunner(new(atomic.Int32)), e1.cfg.DataDir, changed)
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row store.IssueRow
+	for _, candidate := range rows {
+		if candidate.ID == id {
+			row = candidate
+		}
+	}
+	if recovered, found, err := e2.lifecycleRecoveryState(row); err != nil || found || recovered != nil {
+		t.Fatalf("recovery with missing leading stage = %+v, %t, %v", recovered, found, err)
+	}
+}
+
 func TestLifecycleAttemptForUsesNewestNumericAttempt(t *testing.T) {
 	e, s := lifecycleTestEngine(t, lifecycleTestRunner(new(atomic.Int32)))
 	for _, attemptID := range []string{"checkpoint-9", "checkpoint-10"} {

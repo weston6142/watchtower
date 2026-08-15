@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 
 	"github.com/weston6142/watchtower/internal/store"
 )
@@ -33,6 +34,23 @@ type BoundaryObserver interface {
 type committedBoundaryError struct {
 	boundary DurableBoundary
 	err      error
+}
+
+type committedInterruption struct{ err error }
+
+func (e *committedInterruption) Error() string { return e.err.Error() }
+func (e *committedInterruption) Unwrap() error { return e.err }
+
+func InterruptAfterCommit(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &committedInterruption{err: err}
+}
+
+func isCommittedInterruption(err error) bool {
+	var interruption *committedInterruption
+	return errors.As(err, &interruption)
 }
 
 func (e *committedBoundaryError) Error() string { return e.err.Error() }

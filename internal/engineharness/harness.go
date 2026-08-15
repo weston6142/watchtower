@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -55,6 +54,23 @@ type boundaryInterruptObserver struct {
 	mutated  bool
 }
 
+type scenarioDriver struct {
+	mu    sync.Mutex
+	state string
+}
+
+func (d *scenarioDriver) get() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.state
+}
+
+func (d *scenarioDriver) set(state string) {
+	d.mu.Lock()
+	d.state = state
+	d.mu.Unlock()
+}
+
 func (o *boundaryInterruptObserver) AfterCommit(_ context.Context, boundary engine.DurableBoundary) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -63,9 +79,9 @@ func (o *boundaryInterruptObserver) AfterCommit(_ context.Context, boundary engi
 			return err
 		}
 		o.mutated = true
-		return errHarnessRestart
+		return engine.InterruptAfterCommit(errHarnessRestart)
 	}
-	if strings.TrimSpace(boundary.ID) == strings.TrimSpace(o.id) &&
+	if boundary.Kind == o.kind && strings.TrimSpace(boundary.ID) == strings.TrimSpace(o.id) &&
 		(strings.TrimSpace(o.stage) == "" || strings.TrimSpace(boundary.Stage) == strings.TrimSpace(o.stage)) {
 		o.fired = true
 		if o.needsStaleVerification() {
@@ -74,7 +90,7 @@ func (o *boundaryInterruptObserver) AfterCommit(_ context.Context, boundary engi
 		if o.scenario.Kind == recoverymatrix.ScenarioFailure || isCrossCutFailure(o.scenario.Kind) {
 			return failureBoundaryError(o.scenario.References.FailureFamily)
 		}
-		return errHarnessRestart
+		return engine.InterruptAfterCommit(errHarnessRestart)
 	}
 	return nil
 }
@@ -118,6 +134,9 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	if err := validateDriver(scenario); err != nil {
 		return nil, nil, err
 	}
+	if err := validateCrossCutInputs(scenario); err != nil {
+		return nil, nil, err
+	}
 	root, err := os.MkdirTemp("", "watchtower-matrix-")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create scenario root: %w", err)
@@ -135,6 +154,11 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	if err := initializeRepository(repo); err != nil {
 		return fail(err)
 	}
+	if scenario.References.FinalizationBoundary == store.IntegrationPublishPending {
+		if err := initializeLocalRemote(root, repo); err != nil {
+			return fail(err)
+		}
+	}
 	dataDir := filepath.Join(root, "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return fail(fmt.Errorf("create data directory: %w", err))
@@ -150,7 +174,8 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	var startsMu sync.Mutex
 	storePath := filepath.Join(dataDir, "watchtower.db")
 	observer := observerForScenario(scenario, repo)
-	configured, _ := newHarnessEngine(database, dataDir, repo, scenarioFlow, scenario, &starts, &startsMu, effects, observer, false)
+	driver := &scenarioDriver{state: scenario.InitialInputs["state"]}
+	configured, _ := newHarnessEngine(database, dataDir, repo, scenarioFlow, scenario, &starts, &startsMu, effects, observer, driver)
 	matrix := levers.Preset(scenarioFlow, flow.LeverYolo)
 	if _, hasPlan := matrix["plan"]; hasPlan {
 		matrix["plan"] = flow.LeverRegular
@@ -168,7 +193,7 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 		dataDir: dataDir, storePath: storePath,
 		flow: cloneFlow(scenarioFlow), scenario: scenario, starts: &starts, startsMu: &startsMu,
 		expectedStarts: expectedScriptKeys(scenarioFlow, scenario),
-		effects:        effects, observer: observer,
+		effects:        effects, observer: observer, driver: driver,
 	}
 	return executor, func() error {
 		if executor.store != nil {
@@ -205,13 +230,6 @@ func observerForScenario(scenario recoverymatrix.Scenario, repo string) *boundar
 			kind: engine.BoundaryStageLifecycle, id: string(store.RunnerSucceeded),
 			stage: scenario.References.Stage, scenario: scenario, repo: repo,
 		}
-	case recoverymatrix.ScenarioChangedStateRecovery, recoverymatrix.ScenarioPlannerCapabilityLoss,
-		recoverymatrix.ScenarioConfigurationDrift, recoverymatrix.ScenarioCapabilityViolation,
-		recoverymatrix.ScenarioArtifactIdentity:
-		return &boundaryInterruptObserver{
-			kind: engine.BoundaryStageLifecycle, id: string(store.RunnerSucceeded),
-			stage: scenario.References.Stage, scenario: scenario, repo: repo,
-		}
 	default:
 		return nil
 	}
@@ -226,14 +244,15 @@ func newHarnessEngine(
 	startsMu *sync.Mutex,
 	effects *effectRecorder,
 	observer *boundaryInterruptObserver,
-	recovered bool,
+	driver *scenarioDriver,
 ) (*engine.Engine, *runner.FakeRunner) {
+	runtimeFlow := flowForDriverState(production, scenario, driver.get())
 	var configuredObserver engine.BoundaryObserver
 	if observer != nil {
 		configuredObserver = observer
 	}
 	r := &runner.FakeRunner{
-		Scripts: scriptsForFlow(production, scenario, recovered),
+		Scripts: scriptsForFlow(runtimeFlow, scenario, driver.get()),
 		OnStart: func(_, stage, agent, _ string) error {
 			startsMu.Lock()
 			*starts = append(*starts, stage+"/"+agent)
@@ -244,8 +263,11 @@ func newHarnessEngine(
 				}
 			}
 			startsMu.Unlock()
+			if scenario.Kind == recoverymatrix.ScenarioChangedStateRecovery && stage == scenario.References.Stage && driver.get() == "failing-store-state" {
+				database.FailNextStageResultPutForTest()
+			}
 			if scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed && stage == "merge-verification" {
-				if count == 2 {
+				if count == 2 && driver.get() == scenario.InitialInputs["state"] {
 					return fmt.Errorf("verification recovery failed")
 				}
 			}
@@ -253,17 +275,20 @@ func newHarnessEngine(
 		},
 	}
 	var preflightErr error
-	if !recovered && scenario.Kind == recoverymatrix.ScenarioFailure && scenario.References.FailureFamily == "capability" {
+	if scenario.Kind == recoverymatrix.ScenarioFailure && scenario.References.FailureFamily == "capability" {
+		preflightErr = &capability.PolicyError{Phase: "preflight", Reason: capability.ReasonProviderUnsupported}
+	}
+	if scenario.Kind == recoverymatrix.ScenarioConfigurationDrift && driver.get() == "unsupported-provider-config" {
 		preflightErr = &capability.PolicyError{Phase: "preflight", Reason: capability.ReasonProviderUnsupported}
 	}
 	adapter := &stageBoundRunner{FakeRunner: r, stage: scenario.References.Stage, preflightErr: preflightErr}
 	workspaceProvider := workspace.Provider(workspace.GitWorktree{Repo: repo})
-	if recovered || scenario.References.FinalizationBoundary == store.IntegrationPendingReverification ||
+	if driver.get() == scenario.RecoveryInputs["state"] || scenario.References.FinalizationBoundary == store.IntegrationPendingReverification ||
 		scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed {
 		workspaceProvider = reusableWorkspace{GitWorktree: workspace.GitWorktree{Repo: repo}}
 	} else if scenario.References.FinalizationBoundary == store.IntegrationCleanupNeeded {
 		workspaceProvider = &recoverableWorkspace{GitWorktree: workspace.GitWorktree{Repo: repo}, failRelease: true}
-	} else if !recovered && scenario.Kind == recoverymatrix.ScenarioUnchangedRetryRefusal {
+	} else if scenario.Kind == recoverymatrix.ScenarioUnchangedRetryRefusal {
 		workspaceProvider = retainedWorkspace{GitWorktree: workspace.GitWorktree{Repo: repo}}
 	}
 	configured := engine.New(engine.Config{
@@ -272,18 +297,18 @@ func newHarnessEngine(
 		Runner:           adapter,
 		BoundaryObserver: configuredObserver,
 		Pool:             slots.NewPool(1),
-		Flows:            map[string]flow.Flow{production.Name: cloneFlow(production)},
+		Flows:            map[string]flow.Flow{runtimeFlow.Name: runtimeFlow},
 		DataDir:          dataDir,
 		Workspace:        workspaceProvider,
 		Train: &marshal.Train{
-			Repo: repo, TestCmd: []string{"true"}, Pull: false,
-			Push:    !recovered && scenario.References.FinalizationBoundary == store.IntegrationPublishPending,
+			Repo: repo, TestCmd: driverTestCommand(scenario, driver.get()), Pull: false,
+			Push:    scenario.References.FinalizationBoundary == store.IntegrationPublishPending,
 			Effects: effects,
 		},
 		PlanReview: review.PolicySettings{
 			ID: "deterministic-harness", Version: "1", Valid: true, AutoApproveRegular: true,
 		},
-		DecisionIdentities: deterministicDecisionIdentities(production),
+		DecisionIdentities: deterministicDecisionIdentities(runtimeFlow),
 	})
 	return configured, r
 }
@@ -302,6 +327,8 @@ type executor struct {
 	expectedStarts []string
 	effects        *effectRecorder
 	observer       *boundaryInterruptObserver
+	driver         *scenarioDriver
+	decisionID     int64
 }
 
 func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
@@ -550,6 +577,33 @@ func flowForScenario(production flow.Flow, scenario recoverymatrix.Scenario) flo
 	return configured
 }
 
+func flowForDriverState(production flow.Flow, scenario recoverymatrix.Scenario, state string) flow.Flow {
+	configured := cloneFlow(production)
+	for index := range configured.Stages {
+		if configured.Stages[index].Name != scenario.References.Stage {
+			continue
+		}
+		switch scenario.Kind {
+		case recoverymatrix.ScenarioConfigurationDrift, recoverymatrix.ScenarioArtifactIdentity:
+			for agent := range configured.Stages[index].Agents {
+				configured.Stages[index].Agents[agent].Model = state
+			}
+		case recoverymatrix.ScenarioCapabilityViolation:
+			if state == "corrected-capability-contract" {
+				configured.Stages[index].Artifacts = append(configured.Stages[index].Artifacts, "capability-recovery.txt")
+			}
+		}
+	}
+	return configured
+}
+
+func driverTestCommand(scenario recoverymatrix.Scenario, state string) []string {
+	if scenario.Kind == recoverymatrix.ScenarioUnchangedRetryRefusal && state == "unchanged-verification-state" {
+		return []string{"false"}
+	}
+	return []string{"true"}
+}
+
 func (e *executor) rebuildAndResume(ctx context.Context) error {
 	if e.store == nil {
 		return fmt.Errorf("first runtime store is unavailable")
@@ -568,7 +622,8 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 		return fmt.Errorf("reopen retained store: %w", err)
 	}
 	e.store = database
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, e.observer, true)
+	e.driver.set(e.scenario.RecoveryInputs["state"])
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, e.observer, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate retained state: %w", err)
 	}
@@ -629,32 +684,8 @@ func (e *executor) recoverFailedReverification(ctx context.Context) error {
 	if !found || integration.State != store.IntegrationReverificationFailed {
 		return fmt.Errorf("reverification failure state was not persisted")
 	}
-	integration.State = store.IntegrationVerificationReady
-	integration.LastError = ""
-	if err := e.store.SetIssueIntegration(integration); err != nil {
-		return err
-	}
+	e.driver.set(e.scenario.RecoveryInputs["state"])
 	if err := e.ensurePersistedWorktree(); err != nil {
-		return err
-	}
-	branchSHA, err := git(integration.Worktree, "rev-parse", "HEAD")
-	if err != nil {
-		return err
-	}
-	treeSHA, err := git(integration.Worktree, "rev-parse", "HEAD^{tree}")
-	if err != nil {
-		return err
-	}
-	receipt, err := json.Marshal(marshal.Verification{
-		BaseSHA: integration.PreSHA, BranchSHA: branchSHA, TreeSHA: treeSHA,
-		Passed: true, Commands: [][]string{{"true"}},
-	})
-	if err != nil {
-		return err
-	}
-	if _, err := e.store.RecordVerificationAttempt(store.VerificationAttempt{
-		IssueID: e.issueID, Stage: "merge-verification", ReceiptJSON: receipt,
-	}); err != nil {
 		return err
 	}
 	if err := e.engine.SetLever(e.issueID, "merge-verification", flow.LeverRegular); err != nil {
@@ -675,7 +706,8 @@ func (e *executor) resumeAfterSelectedBoundary(ctx context.Context) error {
 		return fmt.Errorf("reopen interrupted recovery store: %w", err)
 	}
 	e.store = database
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, true)
+	e.driver.set(e.scenario.RecoveryInputs["state"])
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate interrupted recovery state: %w", err)
 	}
@@ -704,7 +736,7 @@ func (e *executor) driveCrossCutRecovery(ctx context.Context, startErr error) er
 			return fmt.Errorf("read escalated decisions: %w", err)
 		}
 		for _, row := range rows {
-			if row.Stage == e.scenario.References.Stage {
+			if row.ID == e.decisionID && row.Stage == e.scenario.References.Stage && row.Status == "answered" && row.Response.Option != nil && *row.Response.Option == 0 {
 				return nil
 			}
 		}
@@ -726,9 +758,7 @@ func (e *executor) driveCrossCutRecovery(ctx context.Context, startErr error) er
 		}
 	}
 	if e.scenario.Kind != recoverymatrix.ScenarioDecisionEscalation {
-		if err := e.applyRecoveryState(recovery); err != nil {
-			return err
-		}
+		e.driver.set(recovery)
 		lever := flow.LeverStrict
 		if e.scenario.References.Stage == "plan" {
 			lever = flow.LeverYolo
@@ -738,30 +768,6 @@ func (e *executor) driveCrossCutRecovery(ctx context.Context, startErr error) er
 		}
 	}
 	return e.rebuildForCrossCutRecovery(ctx)
-}
-
-func (e *executor) applyRecoveryState(recovery string) error {
-	if err := e.ensurePersistedWorktree(); err != nil {
-		return err
-	}
-	run, found, err := e.store.LoadRunState(e.issueID)
-	if err != nil {
-		return err
-	}
-	if !found || run.Worktree == "" {
-		return fmt.Errorf("cross-cutting recovery worktree is unavailable")
-	}
-	path := filepath.Join(run.Worktree, "matrix-recovery-state")
-	if err := os.WriteFile(path, []byte(recovery+"\n"), 0o644); err != nil {
-		return err
-	}
-	if _, err := git(run.Worktree, "add", "matrix-recovery-state"); err != nil {
-		return err
-	}
-	if _, err := git(run.Worktree, "commit", "-m", "apply deterministic recovery state"); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (e *executor) rebuildForCrossCutRecovery(ctx context.Context) error {
@@ -776,7 +782,7 @@ func (e *executor) rebuildForCrossCutRecovery(ctx context.Context) error {
 		return fmt.Errorf("reopen cross-cutting store: %w", err)
 	}
 	e.store = database
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, true)
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate cross-cutting state: %w", err)
 	}
@@ -819,7 +825,7 @@ func (e *executor) rehydrateOnly() error {
 	if err := e.ensurePersistedWorktree(); err != nil {
 		return err
 	}
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, true)
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate terminal state: %w", err)
 	}
@@ -955,6 +961,13 @@ func (e *executor) startWithSyntheticApprovals(ctx context.Context) error {
 			return err
 		case <-ticker.C:
 			for _, pending := range e.engine.PendingDecisions() {
+				if e.scenario.Kind == recoverymatrix.ScenarioDecisionEscalation && e.driver.get() == "pending-artifact-decision" && pending.Stage == e.scenario.References.Stage {
+					if e.scenario.RecoveryInputs["state"] != "approved-artifact-decision" {
+						return fmt.Errorf("unsupported decision recovery input %q", e.scenario.RecoveryInputs["state"])
+					}
+					e.decisionID = pending.ID
+					e.driver.set(e.scenario.RecoveryInputs["state"])
+				}
 				if err := e.engine.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
 					return fmt.Errorf("answer synthetic decision %d: %w", pending.ID, err)
 				}
@@ -969,6 +982,14 @@ func (e *executor) VerifyConsumed() error {
 	e.startsMu.Lock()
 	started := append([]string(nil), (*e.starts)...)
 	e.startsMu.Unlock()
+	if e.scenario.References.FinalizationBoundary == store.IntegrationPublishPending {
+		successful := e.effects.successful(marshal.EffectPublish)
+		rejected := e.effects.wasRejected()
+		if !rejected || successful != 1 {
+			return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnconsumed,
+				Err: fmt.Errorf("publish recovery rejected=%t successful=%d", rejected, successful)}
+		}
+	}
 	if e.scenario.Kind == recoverymatrix.ScenarioFailure {
 		return verifyFailureScriptsConsumed(started, e.flow, e.scenario)
 	}
@@ -1042,6 +1063,7 @@ func verifyFailureScriptsConsumed(started []string, production flow.Flow, scenar
 type effectRecorder struct {
 	mu         sync.Mutex
 	admit      []marshal.Effect
+	completed  []marshal.Effect
 	rejectKind marshal.EffectKind
 	rejected   bool
 }
@@ -1069,7 +1091,32 @@ func (r *effectRecorder) Admit(effect marshal.Effect) error {
 	return nil
 }
 
-func (r *effectRecorder) Complete(_ marshal.Effect, _ error) {}
+func (r *effectRecorder) Complete(effect marshal.Effect, err error) {
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	r.completed = append(r.completed, effect)
+	r.mu.Unlock()
+}
+
+func (r *effectRecorder) successful(kind marshal.EffectKind) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, effect := range r.completed {
+		if effect.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *effectRecorder) wasRejected() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rejected
+}
 
 func (r *effectRecorder) kinds() []string {
 	r.mu.Lock()
@@ -1081,7 +1128,7 @@ func (r *effectRecorder) kinds() []string {
 	return out
 }
 
-func scriptsForFlow(production flow.Flow, scenario recoverymatrix.Scenario, recovered bool) map[string]runner.Script {
+func scriptsForFlow(production flow.Flow, scenario recoverymatrix.Scenario, state string) map[string]runner.Script {
 	scripts := make(map[string]runner.Script)
 	for _, stage := range production.Stages {
 		for _, agent := range stage.Agents {
@@ -1120,21 +1167,41 @@ func scriptsForFlow(production flow.Flow, scenario recoverymatrix.Scenario, reco
 			if scenario.Kind == recoverymatrix.ScenarioFailure && stage.Name == scenario.References.Stage {
 				script = failureScript(stage, script, scenario.References.FailureFamily)
 			}
-			if !recovered && isCrossCutScenario(scenario.Kind) &&
-				scenario.Kind != recoverymatrix.ScenarioDecisionEscalation && scenario.Kind != recoverymatrix.ScenarioFinalizationRecovery &&
-				stage.Name == scenario.References.Stage {
-				script.Fail = true
-				script.FailureClass = runner.FailureConfiguration
+			if stage.Name == scenario.References.Stage {
+				switch scenario.Kind {
+				case recoverymatrix.ScenarioUnchangedRetryRefusal:
+					if state == "unchanged-verification-state" {
+						script.Fail = true
+						script.FailureClass = runner.FailureConfiguration
+					}
+				case recoverymatrix.ScenarioPlannerCapabilityLoss:
+					if state == "planner-authority-lost" {
+						script.PlannerFailureAt = 1
+						script.PlannerFailure = fmt.Errorf("planner authority unavailable")
+					}
+				case recoverymatrix.ScenarioCapabilityViolation:
+					operation := runner.OperationAttempt{Operation: capability.OpWorkspaceMutate, Mutation: capability.MutationCreate}
+					if state == "denied-capability-contract" {
+						operation.Path = "outside-capability-contract.txt"
+					} else if state == "corrected-capability-contract" {
+						operation.Path = "capability-recovery.txt"
+						operation.Content = "recovered\n"
+					}
+					if operation.Path != "" {
+						script.OperationAttempts = []runner.OperationAttempt{operation}
+					}
+				case recoverymatrix.ScenarioArtifactIdentity:
+					if state == scenario.InitialInputs["state"] {
+						script.Fail = true
+						script.FailureClass = runner.FailureConfiguration
+					}
+				}
 			}
 			if scenario.Kind == recoverymatrix.ScenarioArtifactIdentity && stage.Name == scenario.References.Stage {
-				content := scenario.InitialInputs["state"]
-				if recovered {
-					content = scenario.RecoveryInputs["state"]
-				}
 				if script.Artifacts == nil {
 					script.Artifacts = map[string]string{}
 				}
-				script.Artifacts["artifact-identity.txt"] = content
+				script.Artifacts["artifact-identity.txt"] = state
 			}
 			for _, name := range stage.Artifacts {
 				if script.Artifacts == nil {
@@ -1163,8 +1230,7 @@ func isCrossCutScenario(kind recoverymatrix.ScenarioKind) bool {
 }
 
 func isCrossCutFailure(kind recoverymatrix.ScenarioKind) bool {
-	return isCrossCutScenario(kind) && kind != recoverymatrix.ScenarioDecisionEscalation &&
-		kind != recoverymatrix.ScenarioFinalizationRecovery && kind != recoverymatrix.ScenarioUnchangedRetryRefusal
+	return false
 }
 
 func failureScript(stage flow.Stage, script runner.Script, family string) runner.Script {
@@ -1245,6 +1311,27 @@ func validateDriver(scenario recoverymatrix.Scenario) error {
 	return nil
 }
 
+func validateCrossCutInputs(scenario recoverymatrix.Scenario) error {
+	expected := map[recoverymatrix.ScenarioKind][2]string{
+		recoverymatrix.ScenarioUnchangedRetryRefusal: {"unchanged-verification-state", "changed-verification-state"},
+		recoverymatrix.ScenarioChangedStateRecovery:  {"failing-store-state", "repaired-configuration-state"},
+		recoverymatrix.ScenarioPlannerCapabilityLoss: {"planner-authority-lost", "planner-authority-restored"},
+		recoverymatrix.ScenarioConfigurationDrift:    {"unsupported-provider-config", "supported-provider-config"},
+		recoverymatrix.ScenarioCapabilityViolation:   {"denied-capability-contract", "corrected-capability-contract"},
+		recoverymatrix.ScenarioDecisionEscalation:    {"pending-artifact-decision", "approved-artifact-decision"},
+		recoverymatrix.ScenarioArtifactIdentity:      {"artifact-v1", "artifact-v2"},
+	}
+	want, ok := expected[scenario.Kind]
+	if !ok {
+		return nil
+	}
+	initial, recovery := scenario.InitialInputs["state"], scenario.RecoveryInputs["state"]
+	if initial != want[0] || recovery != want[1] {
+		return fmt.Errorf("driver %s requires state transition %q to %q", scenario.Kind, want[0], want[1])
+	}
+	return nil
+}
+
 func runnerKindForStage(stage flow.Stage) (string, bool) {
 	if len(stage.Agents) == 0 {
 		return "", false
@@ -1287,7 +1374,7 @@ func expectedScriptKeys(production flow.Flow, scenario recoverymatrix.Scenario) 
 		}
 	}
 	if isCrossCutScenario(scenario.Kind) && scenario.Kind != recoverymatrix.ScenarioDecisionEscalation &&
-		scenario.Kind != recoverymatrix.ScenarioFinalizationRecovery {
+		scenario.Kind != recoverymatrix.ScenarioFinalizationRecovery && scenario.Kind != recoverymatrix.ScenarioConfigurationDrift {
 		for _, stage := range production.Stages {
 			if stage.Name == scenario.References.Stage {
 				for _, agent := range stage.Agents {
@@ -1368,6 +1455,20 @@ func initializeRepository(repo string) error {
 	}
 	if _, err := git(repo, "commit", "-m", "synthetic base"); err != nil {
 		return fmt.Errorf("commit synthetic repository: %w", err)
+	}
+	return nil
+}
+
+func initializeLocalRemote(root, repo string) error {
+	remote := filepath.Join(root, "origin.git")
+	if output, err := exec.Command("git", "init", "--bare", remote).CombinedOutput(); err != nil {
+		return fmt.Errorf("initialize local remote: %v: %s", err, output)
+	}
+	if _, err := git(repo, "remote", "add", "origin", remote); err != nil {
+		return err
+	}
+	if _, err := git(repo, "push", "-q", "-u", "origin", "main"); err != nil {
+		return err
 	}
 	return nil
 }

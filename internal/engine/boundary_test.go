@@ -57,7 +57,7 @@ func TestDurableBoundaryObserverRunsAfterCommit(t *testing.T) {
 	var notifications atomic.Int32
 	observer := boundaryObserverFunc(func(_ context.Context, boundary DurableBoundary) error {
 		if boundary.Kind == BoundaryStageLifecycle && boundary.ID == string(stagelifecycle.RunnerSucceeded) && notifications.Add(1) == 1 {
-			return interrupted
+			return InterruptAfterCommit(interrupted)
 		}
 		return nil
 	})
@@ -72,6 +72,9 @@ func TestDurableBoundaryObserverRunsAfterCommit(t *testing.T) {
 	}
 	if got := lifecycleCommittedSubstates(t, s, id); len(got) != 1 || got[0] != string(stagelifecycle.RunnerSucceeded) {
 		t.Fatalf("committed substates at interruption = %v", got)
+	}
+	if history, err := s.FailureHistory(context.Background(), id); err != nil || len(history) != 0 {
+		t.Fatalf("interruption failure history = %+v, %v", history, err)
 	}
 	events, err := s.EventsSince(0)
 	if err != nil {
