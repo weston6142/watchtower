@@ -10,12 +10,16 @@ import (
 	"time"
 )
 
-const defaultScenarioTimeout = 30 * time.Second
+const (
+	defaultScenarioTimeout   = 30 * time.Second
+	defaultTerminationPeriod = time.Second
+)
 
 // ScenarioExecutor drives one scenario in one freshly allocated environment.
 type ScenarioExecutor interface {
 	Execute(context.Context, Scenario) (Observation, error)
 	VerifyConsumed() error
+	Terminate(context.Context) error
 }
 
 // EnvironmentFactory constructs an isolated executor for each scenario.
@@ -160,11 +164,9 @@ func runScenario(parent context.Context, scenario Scenario, factory EnvironmentF
 	}
 
 	if executionDone != nil {
-		go func() {
-			<-executionDone
-			_ = cleanup()
-		}()
-		return result, counters
+		if err := terminateExecution(parent, executor, executionDone); err != nil {
+			result.Failure += "; " + InfrastructureError{Kind: InfrastructureCleanup, Err: err}.Error()
+		}
 	}
 	if err := cleanup(); err != nil {
 		if result.Status == ResultPassed {
@@ -176,6 +178,27 @@ func runScenario(parent context.Context, scenario Scenario, factory EnvironmentF
 		}
 	}
 	return result, counters
+}
+
+func terminateExecution(parent context.Context, executor ScenarioExecutor, executionDone <-chan struct{}) error {
+	terminationCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), defaultTerminationPeriod)
+	defer cancel()
+	terminated := make(chan error, 1)
+	go func() { terminated <- executor.Terminate(terminationCtx) }()
+	select {
+	case err := <-terminated:
+		if err != nil {
+			return fmt.Errorf("terminate scenario isolation: %w", err)
+		}
+	case <-terminationCtx.Done():
+		return fmt.Errorf("terminate scenario isolation: %w", terminationCtx.Err())
+	}
+	select {
+	case <-executionDone:
+		return nil
+	case <-terminationCtx.Done():
+		return fmt.Errorf("wait for terminated scenario isolation: %w", terminationCtx.Err())
+	}
 }
 
 type executionOutcome struct {

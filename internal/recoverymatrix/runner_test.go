@@ -38,6 +38,7 @@ type fakeMatrixExecutor struct {
 	panicValue  any
 	wait        bool
 	block       <-chan struct{}
+	terminate   func()
 }
 
 func (e *fakeMatrixExecutor) Execute(ctx context.Context, scenario recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
@@ -56,6 +57,13 @@ func (e *fakeMatrixExecutor) Execute(ctx context.Context, scenario recoverymatri
 }
 
 func (e *fakeMatrixExecutor) VerifyConsumed() error { return e.verifyErr }
+
+func (e *fakeMatrixExecutor) Terminate(context.Context) error {
+	if e.terminate != nil {
+		e.terminate()
+	}
+	return nil
+}
 
 func TestRunnerCreatesFreshEnvironmentPerScenario(t *testing.T) {
 	inventory := []recoverymatrix.Scenario{
@@ -120,13 +128,25 @@ func TestRunnerRejectsPartialAndInfrastructureFailures(t *testing.T) {
 
 func TestRunnerEnforcesDeadlineAroundUncooperativeExecutor(t *testing.T) {
 	release := make(chan struct{})
+	terminated := make(chan struct{})
 	cleaned := make(chan struct{})
 	scenario := matrixScenario("failure/brainstorm/runner", 101)
 	factory := &fakeMatrixFactory{
 		build: func(scenario recoverymatrix.Scenario) *fakeMatrixExecutor {
-			return &fakeMatrixExecutor{observation: expectedObservation(scenario), block: release}
+			return &fakeMatrixExecutor{
+				observation: expectedObservation(scenario), block: release,
+				terminate: func() {
+					close(release)
+					close(terminated)
+				},
+			}
 		},
 		cleanup: func() error {
+			select {
+			case <-terminated:
+			default:
+				return errors.New("cleanup preceded termination")
+			}
 			close(cleaned)
 			return nil
 		},
@@ -143,14 +163,8 @@ func TestRunnerEnforcesDeadlineAroundUncooperativeExecutor(t *testing.T) {
 	}
 	select {
 	case <-cleaned:
-		t.Fatal("cleanup ran while executor was still active")
 	default:
-	}
-	close(release)
-	select {
-	case <-cleaned:
-	case <-time.After(time.Second):
-		t.Fatal("cleanup did not run after executor stopped")
+		t.Fatal("cleanup did not run before the timed-out scenario returned")
 	}
 }
 
