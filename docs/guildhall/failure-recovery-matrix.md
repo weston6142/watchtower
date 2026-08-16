@@ -1,13 +1,24 @@
 # Deterministic failure and recovery matrix
 
 GH-69 exercises the shipped Watchtower engine with an offline, disposable Git
-repository and deterministic clock. The normal repository gate is:
+repository and deterministic clock. The default repository smoke gate is:
 
 ```sh
 scripts/verify
 ```
 
-The gate captures `HEAD`, runs two complete unfiltered matrix executions at
+This short gate runs ordinary tests outside the real-engine harness package,
+three cheap deterministic harness checks, vet, build, and `git diff --check`.
+It does not run the full matrix, race the full harness matrix, or create a
+deterministic matrix receipt.
+
+The separate heavy repository job is:
+
+```sh
+scripts/verify-matrix
+```
+
+That job captures `HEAD`, runs two complete unfiltered matrix executions at
 that revision, compares normalized observations, then runs race tests, vet,
 build, and `git diff --check`. It writes a completion receipt only after every
 check passes, in the worktree-local directory:

@@ -99,6 +99,10 @@ if [[ "$*" == "rev-parse HEAD" ]]; then printf 'fixture-revision\n'; fi
 	goStub := `#!/usr/bin/env bash
 set -euo pipefail
 printf 'go %s\n' "$*" >>"$GATE_LOG"
+if [[ "$*" == "list ./..." ]]; then
+  printf 'github.com/weston6142/watchtower/cmd/watchtower-matrix\n'
+  printf 'github.com/weston6142/watchtower/internal/recoverymatrix\n'
+fi
 if [[ "$*" == *"watchtower-matrix complete"* ]]; then
   while (($#)); do
     if [[ "$1" == "--receipt" ]]; then mkdir -p "$(dirname "$2")"; printf '{}\n' >"$2"; break; fi
@@ -126,7 +130,7 @@ fi
 	if err != nil {
 		t.Fatal(err)
 	}
-	ordered := []string{"watchtower-matrix run", "go test ./... -race", "go vet ./...", "go build ./...", "git diff --check", "watchtower-matrix complete"}
+	ordered := []string{"go list ./...", "go test ", "go test ./internal/engineharness -run", "go vet ./...", "go build ./...", "git diff --check"}
 	previous := -1
 	for _, marker := range ordered {
 		index := strings.Index(string(calls), marker)
@@ -135,8 +139,15 @@ fi
 		}
 		previous = index
 	}
+	if strings.Contains(string(calls), "watchtower-matrix run") ||
+		strings.Contains(string(calls), "watchtower-matrix complete") ||
+		strings.Contains(string(calls), "go test ./... -race") {
+		t.Fatalf("default gate ran heavy matrix checks: %s", calls)
+	}
 	if _, err := os.Stat(filepath.Join(root, ".watchtower", "matrix-receipts", "fixture-revision.json")); err != nil {
-		t.Fatalf("worktree-local receipt: %v", err)
+		if !os.IsNotExist(err) {
+			t.Fatalf("default gate wrote a matrix receipt: %v", err)
+		}
 	}
 }
 
