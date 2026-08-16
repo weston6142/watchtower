@@ -563,6 +563,9 @@ func (e *executor) driveStaleFinalizationRecovery(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := e.ensurePersistedWorktree(); err != nil {
+		return err
+	}
 	return e.rehydrateOnly()
 }
 
@@ -689,7 +692,7 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 		return fmt.Errorf("first runtime store is unavailable")
 	}
 	if e.scenario.Kind == recoverymatrix.ScenarioFinalization && e.scenario.References.FinalizationBoundary == string(store.IntegrationMerged) {
-		return e.rehydrateOnly()
+		return e.reopenStore()
 	}
 	if err := e.store.Close(); err != nil {
 		return fmt.Errorf("close first runtime store: %w", err)
@@ -752,6 +755,9 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 		if !e.observer.wasFired() {
 			return fmt.Errorf("selected finalization boundary %q was not observed", e.scenario.References.FinalizationBoundary)
 		}
+		if err := e.ensurePersistedWorktree(); err != nil {
+			return err
+		}
 		return e.rehydrateOnly()
 	}
 	if integration, found, err := e.store.IssueIntegration(e.issueID); err == nil && found && integration.State == store.IntegrationCleanupNeeded {
@@ -773,6 +779,9 @@ func (e *executor) recoverFailedReverification(ctx context.Context) error {
 		return err
 	}
 	if err := e.retryWithSyntheticApprovals(ctx); err != nil {
+		return err
+	}
+	if err := e.ensurePersistedWorktree(); err != nil {
 		return err
 	}
 	return e.rehydrateOnly()
@@ -1036,6 +1045,17 @@ func (e *executor) prepareFreshRestartWorkspace() error {
 }
 
 func (e *executor) rehydrateOnly() error {
+	if err := e.reopenStore(); err != nil {
+		return err
+	}
+	e.engine, _ = newHarnessEngine(e.store, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.failureInjector, e.driver)
+	if err := e.engine.Rehydrate(); err != nil {
+		return fmt.Errorf("rehydrate terminal state: %w", err)
+	}
+	return nil
+}
+
+func (e *executor) reopenStore() error {
 	if err := e.store.Close(); err != nil {
 		return fmt.Errorf("close terminal runtime store: %w", err)
 	}
@@ -1044,10 +1064,6 @@ func (e *executor) rehydrateOnly() error {
 		return fmt.Errorf("reopen terminal store: %w", err)
 	}
 	e.store = database
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.failureInjector, e.driver)
-	if err := e.engine.Rehydrate(); err != nil {
-		return fmt.Errorf("rehydrate terminal state: %w", err)
-	}
 	return nil
 }
 
