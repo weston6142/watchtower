@@ -88,7 +88,7 @@ func (s *Store) CreatePlannerArtifact(issueID, stage string, attempt int, worktr
 		s.failNextPlannerArtifactWrite = false
 		return fmt.Errorf("injected planner artifact registry write failure")
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := s.now().Format(time.RFC3339Nano)
 	_, err := s.db.Exec(`
 		INSERT INTO planner_artifacts(
 			issue_id, stage, attempt, worktree, status, capability_digest,
@@ -114,7 +114,7 @@ func (s *Store) PromotePlannerArtifact(issueID, stage string, priorAttempt, atte
 		return err
 	}
 	defer tx.Rollback()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := s.now().Format(time.RFC3339Nano)
 	result, err := tx.Exec(`
 		UPDATE planner_artifacts SET status=?, updated_at=?
 		WHERE issue_id=? AND stage=? AND attempt=? AND worktree=? AND status=?`,
@@ -156,7 +156,7 @@ func (s *Store) UpdatePlannerArtifact(issueID, stage string, attempt int, worktr
 		SET status=?, capability_digest=?, manifest=?, sections=?, updated_at=?
 		WHERE issue_id=? AND stage=? AND attempt=? AND worktree=?`,
 		status, append([]byte(nil), digest...), string(manifest), string(sections),
-		time.Now().UTC().Format(time.RFC3339Nano), issueID, stage, attempt, worktree)
+		s.now().Format(time.RFC3339Nano), issueID, stage, attempt, worktree)
 	if err != nil {
 		return err
 	}
@@ -178,7 +178,7 @@ func (s *Store) ExpirePlannerArtifact(issueID, stage string, attempt int, worktr
 	result, err := s.db.Exec(`
 		UPDATE planner_artifacts SET status=?, updated_at=?
 		WHERE issue_id=? AND stage=? AND attempt=? AND worktree=?`,
-		"expired", time.Now().UTC().Format(time.RFC3339Nano), issueID, stage, attempt, worktree)
+		"expired", s.now().Format(time.RFC3339Nano), issueID, stage, attempt, worktree)
 	if err != nil {
 		return err
 	}

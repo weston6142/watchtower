@@ -62,6 +62,15 @@ type Flow struct {
 	Stages []Stage `yaml:"stages"`
 }
 
+// StageNames returns stage names in their declared production order as a fresh slice.
+func (f Flow) StageNames() []string {
+	names := make([]string, len(f.Stages))
+	for i := range f.Stages {
+		names[i] = f.Stages[i].Name
+	}
+	return names
+}
+
 var FinalizationArtifacts = []string{
 	"merge-report.md",
 	"merge-decision.json",

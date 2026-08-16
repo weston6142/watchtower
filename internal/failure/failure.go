@@ -76,6 +76,20 @@ const (
 	Unavailable   = "unavailable"
 )
 
+var canonicalSiteRegistry = [...]Site{
+	SiteRunner, SiteWorkspace, SiteArtifact, SitePlanner, SiteGit,
+	SiteVerification, SiteCache, SiteStore, SiteFinalization,
+	SiteLifecycle, SiteCapability,
+}
+
+// CanonicalSites returns meaningful production sites in canonical order as a
+// fresh slice. The unknown and other normalization fallbacks are excluded.
+func CanonicalSites() []Site {
+	sites := make([]Site, len(canonicalSiteRegistry))
+	copy(sites, canonicalSiteRegistry[:])
+	return sites
+}
+
 // RecordInput is the safe input accepted by the durable recorder. It contains
 // no raw exception, path, command, configuration, artifact, or decision data.
 type RecordInput struct {
@@ -365,13 +379,15 @@ func NormalizeStateChange(value StateChange) StateChange {
 }
 
 func isSite(value Site) bool {
-	switch value {
-	case SiteRunner, SiteWorkspace, SiteArtifact, SitePlanner, SiteGit, SiteVerification,
-		SiteCache, SiteStore, SiteFinalization, SiteLifecycle, SiteCapability, SiteUnknown, SiteOther:
+	if value == SiteUnknown || value == SiteOther {
 		return true
-	default:
-		return false
 	}
+	for _, site := range canonicalSiteRegistry {
+		if value == site {
+			return true
+		}
+	}
+	return false
 }
 
 func isClass(value Class) bool {

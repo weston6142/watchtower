@@ -49,11 +49,15 @@ var errDependenciesDiscovered = errors.New("new dependencies discovered")
 var errConflictHeld = errors.New("merge conflict held")
 
 const (
-	verificationAttemptFailedReason = "merge verification attempt failed"
+	verificationAttemptFailedReason   = "merge verification attempt failed"
+	lifecycleCheckpointRecoveryReason = "lifecycle checkpoint recovered — press R to retry"
 )
 
 type Config struct {
 	Store                    *store.Store
+	Clock                    core.Clock
+	BoundaryObserver         BoundaryObserver
+	FailureInjector          FailureInjector
 	FailureRecorder          failure.Recorder
 	Runner                   runner.Runner
 	Marshal                  Sequencer
@@ -170,6 +174,7 @@ type issueState struct {
 	pauseGate           chan struct{}
 	stageCancel         context.CancelFunc
 	killRequested       bool
+	decisionInterrupted bool
 	stageIdx            int
 	paused              bool
 	pauseRequested      bool
@@ -254,7 +259,14 @@ type Engine struct {
 	retryGate           *retry.Gate
 }
 
+func (e *Engine) now() time.Time {
+	return e.cfg.Clock.Now().UTC()
+}
+
 func New(cfg Config) *Engine {
+	if cfg.Clock == nil {
+		cfg.Clock = core.SystemClock
+	}
 	if cfg.FailureRecorder == nil {
 		cfg.FailureRecorder = cfg.Store
 	}
@@ -373,6 +385,21 @@ func (e *Engine) rehydrateArtifactReview(
 	if checkpoint == nil {
 		return false, false, fmt.Errorf("checkpoint %d is missing", row.Review.CheckpointID)
 	}
+	lifecycleRecords, err := e.cfg.Store.StageLifecycleRecords(row.IssueID, row.Stage, "")
+	if err != nil {
+		return false, false, err
+	}
+	latestAttempt := ""
+	for _, record := range lifecycleRecords {
+		if record.Committed && (latestAttempt == "" || lifecycleAttemptAfter(record.AttemptID, latestAttempt)) {
+			latestAttempt = record.AttemptID
+		}
+	}
+	for _, record := range lifecycleRecords {
+		if record.Committed && record.AttemptID == latestAttempt && lifecycleReached(record.Substate, stagelifecycle.FinalizationReady) {
+			return false, false, nil
+		}
+	}
 	statusActive := (row.Status == "pending" && checkpoint.Status == "awaiting_review") ||
 		((row.Status == "answered" || row.Status == "auto") &&
 			(checkpoint.Status == "handoff_authorized" || checkpoint.Status == "revision_required" || checkpoint.Status == "succeeded"))
@@ -382,6 +409,7 @@ func (e *Engine) rehydrateArtifactReview(
 	current, err := (review.Target{
 		IssueID: row.IssueID, Stage: row.Stage, CheckpointID: checkpoint.ID,
 		Artifacts: checkpoint.Artifacts, NextStage: row.Review.NextStage,
+		Operation: row.Review.Operation,
 	}).Canonical()
 	if err != nil || !row.Review.Matches(current) {
 		if err != nil {
@@ -695,6 +723,12 @@ func (e *Engine) Rehydrate() error {
 				"stage": "lifecycle", "error": "lifecycle checkpoint recovery blocked: " + lifecycleErrorMessage(recoveryErr), "final": true})
 			continue
 		} else if found {
+			recoveredStage := e.cfg.Flows[row.Flow].Stages[recovered.stageIdx].Name
+			recoveredRecords, recordsErr := e.cfg.Store.StageLifecycleRecords(row.ID, recoveredStage, "")
+			if recordsErr != nil {
+				return recordsErr
+			}
+			e.restoreInterruptedWorkspace(recovered)
 			e.mu.Lock()
 			_, known := e.issues[row.ID]
 			if !known {
@@ -702,9 +736,11 @@ func (e *Engine) Rehydrate() error {
 			}
 			e.mu.Unlock()
 			if !known {
+				if len(recoveredRecords) == 0 {
+					e.recordInterruptedRetryFailure(recovered, e.cfg.Flows[row.Flow].Stages[recovered.stageIdx], 0, failure.ClassCancellation)
+				}
 				e.emit(core.EvStageFailed, row.ID, map[string]any{
-					"stage": e.cfg.Flows[row.Flow].Stages[recovered.stageIdx].Name,
-					"error": "lifecycle checkpoint recovered — press R to retry", "final": true})
+					"stage": recoveredStage, "error": lifecycleCheckpointRecoveryReason, "final": true})
 			}
 			continue
 		}
@@ -1393,7 +1429,7 @@ func (e *Engine) appendEvent(t core.EventType, issueID string, payload any) (cor
 }
 
 func (e *Engine) storeEvent(t core.EventType, issueID string, payload any) (core.Event, error) {
-	ev, err := core.NewEvent(t, issueID, payload)
+	ev, err := core.NewEventAt(t, issueID, payload, e.now())
 	if err != nil {
 		return core.Event{}, err
 	}
@@ -1450,11 +1486,11 @@ func (e *Engine) publishPendingDecision(p *pending, payload map[string]any) erro
 func (e *Engine) publishPendingPlanReview(
 	p *pending, requestedPayload, decisionPayload map[string]any,
 ) error {
-	requested, err := core.NewEvent(core.EvPlanReviewRequested, p.IssueID, requestedPayload)
+	requested, err := core.NewEventAt(core.EvPlanReviewRequested, p.IssueID, requestedPayload, e.now())
 	if err != nil {
 		return err
 	}
-	required, err := core.NewEvent(core.EvDecisionRequired, p.IssueID, decisionPayload)
+	required, err := core.NewEventAt(core.EvDecisionRequired, p.IssueID, decisionPayload, e.now())
 	if err != nil {
 		return err
 	}
@@ -1555,7 +1591,7 @@ func (e *Engine) CreateIssueWithDependencies(title, body, flowName string, m lev
 		e.rollbackCreate(id)
 		return "", err
 	}
-	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, e.now())); err != nil {
 		e.rollbackCreate(id)
 		return "", err
 	}
@@ -1599,7 +1635,7 @@ func (e *Engine) DraftIssueWithDependencies(title, body, flowName, preset string
 		e.rollbackCreate(id)
 		return "", err
 	}
-	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, e.now())); err != nil {
 		e.rollbackCreate(id)
 		return "", err
 	}
@@ -1689,7 +1725,7 @@ func (e *Engine) UpdateIssueWithDependencies(id, title, body, flowName, preset s
 	}); err != nil {
 		return err
 	}
-	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, time.Now().UTC())); err != nil {
+	if err := e.cfg.Store.ReplaceAttachments(id, attach.Rows(id, set, e.now())); err != nil {
 		return err
 	}
 	if err := e.SetDependencies(id, dependsOn); err != nil {
@@ -2215,7 +2251,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 				return fmt.Errorf("revalidate artifact review %d: %s", decisionID, result.Outcome)
 			}
 		}
-		if _, err := e.cfg.Store.ResolveArtifactReview(decisionID, target, response, provenance); err != nil {
+		if _, err := e.cfg.Store.ResolveArtifactReviewAt(decisionID, target, response, e.now(), provenance); err != nil {
 			if errors.Is(err, review.ErrStaleTarget) {
 				e.emitDecisionGateFailure(p.IssueID, p.ID, p.Stage, p.Evaluation, review.Result{Outcome: review.OutcomeStale, Err: err})
 			}
@@ -2278,7 +2314,7 @@ func (e *Engine) AnswerAs(decisionID int64, response levers.Response, actor stri
 	}
 	delete(e.pend, decisionID)
 	e.mu.Unlock()
-	if err := e.cfg.Store.AnswerDecision(decisionID, response, "answered"); err != nil {
+	if err := e.cfg.Store.AnswerDecisionAt(decisionID, response, "answered", e.now()); err != nil {
 		return err
 	}
 	archiveErr := e.writeResolvedDecisionArchive(p.ID)
@@ -2452,7 +2488,7 @@ func (e *Engine) requestArtifactReview(
 		Why: d.Why, Consequences: d.Consequences,
 		Reversible: d.Reversible, Briefing: d.Briefing, Context: &decisionContext,
 		Evaluation: &evaluation, Bindings: bindings,
-		BlockingCost: e.blockingCost(is.id),
+		CreatedAt: e.now(), BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("request artifact review: %w", err)
@@ -2548,7 +2584,7 @@ func (e *Engine) requestPlanReview(
 		Reversible: d.Reversible, Briefing: d.Briefing,
 		Context: &decisionContext, ReviewPolicy: &policy, PageSnapshot: pageSnapshot,
 		Evaluation: &evaluation, Bindings: bindings,
-		BlockingCost: e.blockingCost(is.id),
+		CreatedAt: e.now(), BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("request plan review: %w", err)
@@ -2573,7 +2609,7 @@ func (e *Engine) requestPlanReview(
 			}
 			return levers.Response{}, fmt.Errorf("authorize plan review policy: %s", result.Outcome)
 		}
-		if _, err := e.cfg.Store.ResolveArtifactReview(rowID, target, levers.ChoiceResponse(0), provenance); err != nil {
+		if _, err := e.cfg.Store.ResolveArtifactReviewAt(rowID, target, levers.ChoiceResponse(0), e.now(), provenance); err != nil {
 			return levers.Response{}, fmt.Errorf("resolve plan review policy: %w", err)
 		}
 		payload := planReviewPayload(rowID, st.Name, policy)
@@ -3020,7 +3056,7 @@ func (e *Engine) handleAsk(is *issueState, stage, agentPkg string, a runner.Ask)
 		reportAskError(a, fmt.Errorf("build auto decision page snapshot: %w", err))
 		return
 	}
-	resolvedAt := time.Now().UTC()
+	resolvedAt := e.now()
 	rowID, err := e.cfg.Store.InsertDecision(store.DecisionRow{
 		IssueID: is.id, Stage: stage, Question: a.Decision.Question,
 		Options: a.Decision.Options, Recommended: a.Decision.Recommended,
@@ -3088,7 +3124,7 @@ func (e *Engine) escalateWithEvaluation(
 		Briefing:           d.Briefing,
 		Context:            &decisionContext,
 		Evaluation:         &evaluation, Bindings: []review.Binding{binding},
-		BlockingCost: e.blockingCost(is.id),
+		CreatedAt: e.now(), BlockingCost: e.blockingCost(is.id),
 	})
 	if err != nil {
 		return levers.Response{}, fmt.Errorf("insert decision: %w", err)
@@ -3220,6 +3256,9 @@ func (e *Engine) runStageOnce(
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return err
 	}
+	if err := e.injectFailure(ctx, failure.SiteStore, is.id, st.Name); err != nil {
+		return err
+	}
 	// Attachment state is not cached in issueState: querying it here is what
 	// lets Rehydrate stay untouched.
 	rows, err := e.cfg.Store.Attachments(is.id)
@@ -3248,6 +3287,9 @@ func (e *Engine) runStageOnce(
 	if err != nil {
 		return err
 	}
+	if err := e.injectFailure(ctx, failure.SiteArtifact, is.id, st.Name); err != nil {
+		return err
+	}
 	if err := e.materializeStageContext(is.id, workdir, requiredInputs); err != nil {
 		return fmt.Errorf("materialize stage context: %w", err)
 	}
@@ -3259,10 +3301,22 @@ func (e *Engine) runStageOnce(
 		return err
 	}
 	contextPaths := append(append([]string(nil), requiredInputs...), st.Artifacts...)
+	if err := e.injectFailure(ctx, failure.SiteGit, is.id, st.Name); err != nil {
+		return err
+	}
 	startCommit, branch, dirty := repositoryState(workdir, contextPaths)
-	_, _, _, lastFailure, err := e.cfg.Store.LastStageEvents(is.id)
+	lastEventStage, _, _, lastFailure, err := e.cfg.Store.LastStageEvents(is.id)
 	if err != nil {
 		return err
+	}
+	if lastEventStage != st.Name {
+		lastFailure = ""
+	}
+	// The plan stage is the first stage that creates durable planner authority.
+	// A lifecycle recovery notice for a next-stage retry is not a prior plan
+	// attempt, so it must not force RequireDurableRecovery before initialization.
+	if st.Name == "plan" && lastFailure == lifecycleCheckpointRecoveryReason {
+		lastFailure = ""
 	}
 	expectedResultKind, resultProducer, producesResult, err := resultProducerForStage(st)
 	if err != nil {
@@ -3389,6 +3443,9 @@ func (e *Engine) runStageOnce(
 	var sessionIDs []string
 	legacyFinalizationAttempted := false
 	finishLegacyCheckpoint := func(stageErr error) error {
+		if isCommittedInterruption(stageErr) {
+			return stageErr
+		}
 		if legacyFinalizationAttempted {
 			return stageErr
 		}
@@ -3446,6 +3503,9 @@ func (e *Engine) runStageOnce(
 	var plannerRunner runner.PlannerRunner
 	var emitPlannerSnapshot func(plannerbudget.Outcome, stageusage.Snapshot)
 	if st.Name == "plan" {
+		if err := e.injectFailure(ctx, failure.SitePlanner, is.id, st.Name); err != nil {
+			return err
+		}
 		emitPlannerSnapshot = func(outcome plannerbudget.Outcome, snapshot stageusage.Snapshot) {
 			e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
 				"stage": st.Name, "attempt": attempt,
@@ -3459,7 +3519,7 @@ func (e *Engine) runStageOnce(
 			return fmt.Errorf("planner budget configuration: %w", resolveErr)
 		}
 		var controllerErr error
-		plannerController, controllerErr = plannerbudget.NewController(st.Name, attempt, profile, time.Now)
+		plannerController, controllerErr = plannerbudget.NewController(st.Name, attempt, profile, e.now)
 		if controllerErr != nil {
 			return fmt.Errorf("planner budget: %w", controllerErr)
 		}
@@ -3912,12 +3972,19 @@ func (e *Engine) runStageOnce(
 			"stage": st.Name, "artifact": artifact.Name,
 			"path": filepath.Join(e.issueDir(is.id), "artifacts", "attempts", lifecycleAttempt.AttemptID, artifact.Name)})
 	}
+	reviewCheckpointID := checkpointID
+	if resumedLifecycle && st.Gate == flow.GatePlanReview {
+		reviewCheckpointID = lifecycleAttempt.LegacyCheckpointID
+	}
 	if st.Gate == flow.GatePlanReview {
-		response, err := e.requestPlanReview(is, st, checkpointID, checkpointArtifacts)
+		response, err := e.requestPlanReview(is, st, reviewCheckpointID, checkpointArtifacts)
 		if err != nil {
 			return err
 		}
 		if legacyAnswer(response) != 0 {
+			if e.consumeDecisionInterruption(is) {
+				return InterruptAfterCommit(context.Canceled)
+			}
 			if e.wasKilled(is) {
 				e.emit(core.EvStageKilled, is.id, map[string]string{"stage": st.Name})
 				return context.Canceled
@@ -3925,11 +3992,14 @@ func (e *Engine) runStageOnce(
 			return fmt.Errorf("plan review rejected")
 		}
 	} else if st.Gate == flow.GateApproveArtifact {
-		response, err := e.requestArtifactReview(is, st, checkpointID, checkpointArtifacts)
+		response, err := e.requestArtifactReview(is, st, reviewCheckpointID, checkpointArtifacts)
 		if err != nil {
 			return err
 		}
 		if legacyAnswer(response) != 0 {
+			if e.consumeDecisionInterruption(is) {
+				return InterruptAfterCommit(context.Canceled)
+			}
 			if e.wasKilled(is) {
 				e.emit(core.EvStageKilled, is.id, map[string]string{"stage": st.Name})
 				return context.Canceled
@@ -3958,12 +4028,15 @@ func (e *Engine) runStageOnce(
 		return errDependenciesDiscovered
 	}
 	if st.MergeBarrier {
+		if err := e.injectFailure(ctx, failure.SiteFinalization, is.id, st.Name); err != nil {
+			return err
+		}
 		prepared, err := e.prepareFinalization(is, nil)
 		if err != nil {
 			return err
 		}
 		if prepared.Decision.Decision == "merge" {
-			if err := e.checkpointVerificationReady(is); err != nil {
+			if err := e.checkpointVerificationReady(ctx, is); err != nil {
 				return fmt.Errorf("persist verification ready: %w", err)
 			}
 		}
@@ -4392,6 +4465,9 @@ func (e *Engine) runStage(ctx context.Context, is *issueState, st flow.Stage, pl
 		if err == nil {
 			break
 		}
+		if isCommittedInterruption(err) {
+			return err
+		}
 		if errors.Is(err, errDependenciesDiscovered) {
 			return err
 		}
@@ -4672,6 +4748,11 @@ func (e *Engine) runFromWithOwnership(
 		needsWorkspace := st.Workspace != "none" && e.cfg.Workspace != nil && is.wsPath == ""
 		e.mu.Unlock()
 		if needsWorkspace {
+			if err := e.injectFailure(ctx, failure.SiteWorkspace, is.id, st.Name); err != nil {
+				_ = e.recordBoundaryFailure(ctx, is.id, st.Name, 0,
+					failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateWorkspace, err)
+				return err
+			}
 			acquired, err := e.acquireStageWorkspace(is.id)
 			if err != nil {
 				_ = e.recordBoundaryFailure(ctx, is.id, st.Name, 0,
@@ -4733,7 +4814,17 @@ func (e *Engine) runFromWithOwnership(
 			return nil
 		} else if err != nil {
 			if st.MergeBarrier {
-				e.failPendingVerificationAttempt(is, err)
+				failedReverification, boundaryErr := e.failPendingVerificationAttempt(ctx, is, err)
+				if failedReverification {
+					preserveWorkspace = true
+				}
+				if boundaryErr != nil {
+					return boundaryErr
+				}
+			}
+			var committed *committedBoundaryError
+			if errors.As(err, &committed) {
+				preserveWorkspace = true
 			}
 			return err
 		}
@@ -4876,32 +4967,46 @@ func (e *Engine) resumePendingVerification(
 	ctx context.Context, is *issueState, integration store.IssueIntegration, stageIdx int,
 ) error {
 	if err := e.restoreVerifiedWorkspace(is, integration); err != nil {
-		e.failPendingVerificationAttempt(is, err)
+		if _, boundaryErr := e.failPendingVerificationAttempt(ctx, is, err); boundaryErr != nil {
+			return boundaryErr
+		}
 		return err
 	}
 	return e.runFromOwned(ctx, is, stageIdx, nil)
 }
 
-func (e *Engine) failPendingVerificationAttempt(is *issueState, cause error) {
+func (e *Engine) failPendingVerificationAttempt(ctx context.Context, is *issueState, cause error) (bool, error) {
 	if cause == nil || e.cfg.Store == nil {
-		return
+		return false, nil
 	}
 	attempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
-	if err != nil || !found || attempt.Status != store.VerificationAttemptPending {
-		return
+	if err != nil {
+		return true, fmt.Errorf("read pending verification attempt: %w", err)
+	}
+	if !found || attempt.Status != store.VerificationAttemptPending {
+		return false, nil
 	}
 	if _, err := e.cfg.Store.FinishVerificationAttempt(
 		is.id, attempt.ID, store.VerificationAttemptFailed, nil, verificationAttemptFailedReason,
 	); err != nil {
-		return
+		return true, fmt.Errorf("finish pending verification attempt: %w", err)
 	}
 	integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
-	if err != nil || !ok || integration.State != store.IntegrationPendingReverification {
-		return
+	if err != nil {
+		return true, fmt.Errorf("read pending reverification integration: %w", err)
+	}
+	if !ok {
+		return true, fmt.Errorf("pending reverification integration is missing")
+	}
+	if integration.State != store.IntegrationPendingReverification {
+		return true, fmt.Errorf("pending reverification integration has state %q", integration.State)
 	}
 	integration.State = store.IntegrationReverificationFailed
 	integration.LastError = cause.Error()
-	_ = e.cfg.Store.SetIssueIntegration(integration)
+	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		return true, fmt.Errorf("persist failed reverification integration: %w", err)
+	}
+	return true, e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), integration.State)
 }
 
 func (e *Engine) retryStaleVerification(
@@ -4946,6 +5051,9 @@ func (e *Engine) retryStaleVerification(
 	})
 	if beginErr != nil {
 		return true, e.recordFinalizationFailure(is, beginErr)
+	}
+	if boundaryErr := e.notifyFinalizationBoundary(ctx, is.id, stage, store.IntegrationPendingReverification); boundaryErr != nil {
+		return true, boundaryErr
 	}
 	_, stageIdx, ok := e.cfg.Flows[is.flowName].IntegrationStage()
 	if !ok {
@@ -5447,7 +5555,10 @@ func (e *Engine) finishLandingCleanup(
 	integration.State = store.IntegrationMerged
 	integration.Cleanup = nil
 	integration.LastError = ""
-	return e.cfg.Store.SetIssueIntegration(integration)
+	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
+		return err
+	}
+	return e.notifyFinalizationBoundary(context.Background(), issueID, "", integration.State)
 }
 
 func (e *Engine) retryCleanup(
@@ -5496,6 +5607,9 @@ func (e *Engine) retryCleanup(
 			failure.StateStore, err)
 		return err
 	}
+	if boundaryErr := e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), integration.State); boundaryErr != nil {
+		return boundaryErr
+	}
 	e.emit(core.EvCleanupCompleted, is.id, map[string]string{
 		"commit": integration.LandedSHA})
 	return nil
@@ -5515,6 +5629,9 @@ func (e *Engine) recordCleanupNeeded(
 			failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange,
 			failure.StateStore, err)
 		return fmt.Errorf("%v (persist cleanup: %w)", cleanupErr, err)
+	}
+	if boundaryErr := e.notifyFinalizationBoundary(context.Background(), integration.IssueID, "", integration.State); boundaryErr != nil {
+		return boundaryErr
 	}
 	e.emit(core.EvCleanupNeeded, integration.IssueID, map[string]any{
 		"operations": operations, "error": cleanupErr.Error(),

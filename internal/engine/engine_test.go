@@ -66,6 +66,211 @@ func mustIssues(t *testing.T, s *store.Store) []store.IssueRow {
 	return rows
 }
 
+func TestEngineUsesConfiguredClock(t *testing.T) {
+	fixed := time.Date(2001, 2, 3, 4, 5, 6, 789, time.UTC)
+	assertTimestamp := func(t *testing.T, label string, got time.Time) {
+		t.Helper()
+		if !got.Equal(fixed) || got.Location() != time.UTC {
+			t.Errorf("%s = %v (%v), want %v (UTC)", label, got, got.Location(), fixed)
+		}
+	}
+	decisionRow := func(t *testing.T, s *store.Store, id int64) store.DecisionRow {
+		t.Helper()
+		row, found, err := s.DecisionByID(id)
+		if err != nil || !found {
+			t.Fatalf("decision %d found=%v err=%v", id, found, err)
+		}
+		return row
+	}
+
+	t.Run("emitted event", func(t *testing.T) {
+		s, err := store.Open(filepath.Join(t.TempDir(), "clock.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		var observed core.Event
+		e := New(Config{
+			Store: s,
+			Clock: core.ClockFunc(func() time.Time { return fixed }),
+			Observers: []func(core.Event){func(event core.Event) {
+				observed = event
+			}},
+		})
+
+		e.emit(core.EvIssueCreated, "GH-69", map[string]string{"title": "deterministic"})
+		assertTimestamp(t, "observed event At", observed.At)
+	})
+
+	t.Run("stored attachment", func(t *testing.T) {
+		storeTime := fixed.Add(24 * time.Hour)
+		s, err := store.OpenWithClock(filepath.Join(t.TempDir(), "clock.db"), core.ClockFunc(func() time.Time {
+			return storeTime
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		f := flow.Flow{Name: "clock-attachment"}
+		e := New(Config{
+			Store: s, Clock: core.ClockFunc(func() time.Time { return fixed }),
+			Flows: map[string]flow.Flow{f.Name: f}, DataDir: t.TempDir(),
+		})
+		id, err := e.DraftIssue("attachment clock", "", f.Name, "regular", levers.Matrix{}, 0,
+			[]string{tempAttachment(t, "clock.log", 3)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.Attachments(id)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("attachments = %+v, err=%v", rows, err)
+		}
+		assertTimestamp(t, "attachment AddedAt", rows[0].AddedAt)
+		if rows[0].AddedAt.Equal(storeTime) {
+			t.Fatal("attachment used the store clock instead of Config.Clock")
+		}
+	})
+
+	t.Run("planner budget elapsed", func(t *testing.T) {
+		var elapsedMillis atomic.Int64
+		clock := core.ClockFunc(func() time.Time {
+			return fixed.Add(time.Duration(elapsedMillis.Load()) * time.Millisecond)
+		})
+		f := plannerTestFlow()
+		r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"plan/planner": {
+				Tools:           []runner.ToolCall{{Name: "read", SourceID: "ISSUE.md", Fingerprint: "v1", Reservation: 1}},
+				PlannerRequests: plannerArtifactRequests(), Tokens: 1, TokensKnown: true,
+			},
+		}}
+		r.OnStart = func(_, stage, _, _ string) error {
+			if stage == "plan" {
+				elapsedMillis.Store(3_000)
+			}
+			return nil
+		}
+		e, s := newEngineCfg(t, r, func(cfg *Config) {
+			cfg.Clock = clock
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+			cfg.PlannerBudget = plannerbudget.Profile{
+				Calls:   stageusage.DimensionLimit{Warning: 2, Hard: 10},
+				Tokens:  stageusage.DimensionLimit{Warning: 2, Hard: 10},
+				Elapsed: stageusage.ElapsedLimit{Warning: time.Second, Hard: 10 * time.Second},
+			}
+			cfg.PlanReview = planReviewSettings("clock-policy", "1", true)
+		})
+		id, err := e.CreateIssue("planner clock", "", f.Name, levers.Preset(f, flow.LeverRegular), 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.StartIssue(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+		var elapsedSnapshots []int64
+		for _, event := range mustEvents(t, s, id) {
+			if event.Type != core.EvPlannerBudgetUpdated {
+				continue
+			}
+			var payload struct {
+				Snapshot stageusage.Snapshot `json:"snapshot"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			elapsedSnapshots = append(elapsedSnapshots, payload.Snapshot.ElapsedMillis)
+		}
+		if len(elapsedSnapshots) < 2 || elapsedSnapshots[0] != 0 || elapsedSnapshots[len(elapsedSnapshots)-1] != 3_000 {
+			t.Fatalf("planner elapsed snapshots = %v, want initial 0 and final 3000", elapsedSnapshots)
+		}
+	})
+
+	t.Run("ordinary human decision", func(t *testing.T) {
+		f := flow.Flow{Name: "clock-decision", Stages: []flow.Stage{{
+			Name: "ask", Agents: []flow.AgentRef{{Package: "agent"}},
+			Workspace: "none", Completion: flow.CompletionAll, Gate: flow.GateAuto,
+		}}}
+		r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+			"ask/agent": {Asks: []levers.Decision{{
+				Kind: levers.DecisionChoice, Question: "Continue?", Options: []string{"yes", "no"},
+				Recommended: 0, Importance: 1,
+			}}},
+		}}
+		e, s := newEngineCfg(t, r, func(cfg *Config) {
+			cfg.Clock = core.ClockFunc(func() time.Time { return fixed })
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+		})
+		id, err := e.CreateIssue("engine decision clock", "", f.Name, levers.Matrix{"ask": flow.LeverYolo}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- e.StartIssue(context.Background(), id) }()
+		pending := waitForPendingStage(t, e, "ask")
+		created := decisionRow(t, s, pending.ID)
+		if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		answered := decisionRow(t, s, pending.ID)
+		assertTimestamp(t, "ordinary CreatedAt", created.CreatedAt)
+		assertTimestamp(t, "ordinary AnsweredAt", answered.AnsweredAt)
+	})
+
+	t.Run("human plan review", func(t *testing.T) {
+		f := planReviewFlow()
+		e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+			cfg.Clock = core.ClockFunc(func() time.Time { return fixed })
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+			cfg.PlanReview = planReviewSettings("manual-clock", "1", false)
+		})
+		id, err := e.CreateIssue("human review clock", "", f.Name, levers.Matrix{
+			"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+		}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- e.StartIssue(context.Background(), id) }()
+		pending := waitForPendingStage(t, e, "plan")
+		created := decisionRow(t, s, pending.ID)
+		if err := e.Answer(pending.ID, levers.ChoiceResponse(0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		answered := decisionRow(t, s, pending.ID)
+		assertTimestamp(t, "human review CreatedAt", created.CreatedAt)
+		assertTimestamp(t, "human review AnsweredAt", answered.AnsweredAt)
+	})
+
+	t.Run("policy plan review", func(t *testing.T) {
+		f := planReviewFlow()
+		e, s := newEngineCfg(t, planReviewRunner(), func(cfg *Config) {
+			cfg.Clock = core.ClockFunc(func() time.Time { return fixed })
+			cfg.Flows = map[string]flow.Flow{f.Name: f}
+			cfg.PlanReview = planReviewSettings("policy-clock", "1", true)
+		})
+		id, err := e.CreateIssue("policy review clock", "", f.Name, levers.Matrix{
+			"plan": flow.LeverRegular, "execute": flow.LeverYolo,
+		}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.StartIssue(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.ArtifactReviewRows(id)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("policy review rows = %+v, err=%v", rows, err)
+		}
+		assertTimestamp(t, "policy review CreatedAt", rows[0].CreatedAt)
+		assertTimestamp(t, "policy review AnsweredAt", rows[0].AnsweredAt)
+	})
+}
+
 func TestPauseBeforeStagePersistsBoundaryAndResumeUsesIt(t *testing.T) {
 	f := flow.Flow{Name: "paused", Stages: []flow.Stage{
 		{Name: "plan", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},

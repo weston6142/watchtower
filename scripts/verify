@@ -6,7 +6,34 @@ export GOCACHE="${GOCACHE:-/tmp/guildhall-go-build}"
 export GOMODCACHE="${GOMODCACHE:-/tmp/guildhall-go-modcache}"
 export GOSUMDB="${GOSUMDB:-off}"
 
-go test ./... -race
+revision="$(git rev-parse HEAD)"
+initial_tree="$(git status --porcelain --untracked-files=all)"
+if [[ -n "$initial_tree" ]]; then
+  echo "repository worktree must be clean before verification" >&2
+  exit 1
+fi
+
+ordinary_packages=()
+while IFS= read -r package; do
+  [[ -z "$package" || "$package" == */internal/engineharness ]] && continue
+  ordinary_packages+=("$package")
+done < <(go list ./...)
+if ((${#ordinary_packages[@]} == 0)); then
+  echo "ordinary package discovery returned no packages" >&2
+  exit 1
+fi
+
+go test "${ordinary_packages[@]}"
+go test ./internal/engineharness -run 'TestEffectObservationRetainsDuplicateAdmissions|TestDeterministicEnvironmentDrivesShippedEngine|TestDeterministicEnvironmentIsOfflineAndSynthetic'
 go vet ./...
 go build ./...
 git diff --check
+
+if [[ "$(git rev-parse HEAD)" != "$revision" ]]; then
+  echo "repository HEAD changed during verification" >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  echo "repository worktree changed during verification" >&2
+  exit 1
+fi

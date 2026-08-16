@@ -54,6 +54,9 @@ func (e *Engine) recordStageFailure(ctx context.Context, is *issueState, stage f
 	if primary == nil || errors.Is(primary, errDependenciesDiscovered) {
 		return primary
 	}
+	if isCommittedInterruption(primary) {
+		return primary
+	}
 	var runnerErr *runnerStageError
 	if errors.As(primary, &runnerErr) {
 		// Each runner result is recorded at its result boundary. The stage
@@ -302,6 +305,9 @@ func fileDigest(path string) string {
 func (e *Engine) recordBoundaryFailure(ctx context.Context, issueID, stage string, attempt int,
 	site failure.Site, class failure.Class, disposition failure.RetryDisposition,
 	stateChange failure.StateChange, primary error) error {
+	if isCommittedInterruption(primary) {
+		return primary
+	}
 	if primary == nil {
 		return nil
 	}
@@ -350,6 +356,9 @@ func (e *Engine) boundaryStageFingerprintInputs(
 }
 
 func (e *Engine) recordClassifiedBoundaryFailure(ctx context.Context, issueID, stage string, primary error) error {
+	if isCommittedInterruption(primary) {
+		return primary
+	}
 	if primary == nil {
 		return nil
 	}
@@ -366,6 +375,27 @@ func digestFailureIdentity(value string) string {
 }
 
 func classifyFailure(err error) (failure.Site, failure.Class, failure.RetryDisposition, failure.StateChange) {
+	var injected *injectedSubsystemFailure
+	if errors.As(err, &injected) {
+		switch injected.site {
+		case failure.SiteWorkspace:
+			return injected.site, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateWorkspace
+		case failure.SiteArtifact:
+			return injected.site, failure.ClassValidation, failure.RetryAfterStateChange, failure.StateArtifact
+		case failure.SitePlanner:
+			return injected.site, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StatePlannerInput
+		case failure.SiteGit:
+			return injected.site, failure.ClassIntegrity, failure.RetryAfterStateChange, failure.StateGit
+		case failure.SiteVerification:
+			return injected.site, failure.ClassValidation, failure.RetryAfterStateChange, failure.StateVerification
+		case failure.SiteCache:
+			return injected.site, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateCache
+		case failure.SiteStore:
+			return injected.site, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateStore
+		case failure.SiteFinalization:
+			return injected.site, failure.ClassStateMismatch, failure.RetryAfterStateChange, failure.StateOperator
+		}
+	}
 	var policyErr *capability.PolicyError
 	if errors.As(err, &policyErr) {
 		switch policyErr.Reason {

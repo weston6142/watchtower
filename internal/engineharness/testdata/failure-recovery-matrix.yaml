@@ -1,0 +1,1947 @@
+schema_version: 1
+stages:
+  - brainstorm
+  - spec
+  - plan
+  - execute
+  - correctness-review
+  - clean-code-review
+  - librarian
+  - merge-verification
+failure_families:
+  - runner
+  - workspace
+  - artifact
+  - planner
+  - git
+  - verification
+  - cache
+  - store
+  - finalization
+  - lifecycle
+  - capability
+durable_boundaries:
+  - runner_succeeded
+  - artifacts_validated
+  - artifacts_archived
+  - gate_resolved
+  - verification_passed
+  - finalization_ready
+finalization_boundaries:
+  - verification_ready
+  - pending_reverification
+  - reverification_failed
+  - publish_pending
+  - cleanup_needed
+  - merged
+applicability:
+  - stage: brainstorm
+    failure_family: runner
+    applicable: true
+  - stage: brainstorm
+    failure_family: workspace
+    applicable: true
+  - stage: brainstorm
+    failure_family: artifact
+    applicable: true
+  - stage: brainstorm
+    failure_family: planner
+    applicable: false
+    rationale: Production planner failures occur only while the plan stage invokes the planner.
+  - stage: brainstorm
+    failure_family: git
+    applicable: true
+  - stage: brainstorm
+    failure_family: verification
+    applicable: false
+    rationale: Production repository verification is owned by the merge-verification stage.
+  - stage: brainstorm
+    failure_family: cache
+    applicable: false
+    rationale: Production verification cache decisions are owned by the merge-verification stage.
+  - stage: brainstorm
+    failure_family: store
+    applicable: true
+  - stage: brainstorm
+    failure_family: finalization
+    applicable: false
+    rationale: Production finalization transitions are owned by the merge-verification stage.
+  - stage: brainstorm
+    failure_family: lifecycle
+    applicable: true
+  - stage: brainstorm
+    failure_family: capability
+    applicable: true
+  - stage: spec
+    failure_family: runner
+    applicable: true
+  - stage: spec
+    failure_family: workspace
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
+  - stage: spec
+    failure_family: artifact
+    applicable: true
+  - stage: spec
+    failure_family: planner
+    applicable: false
+    rationale: Production planner failures occur only while the plan stage invokes the planner.
+  - stage: spec
+    failure_family: git
+    applicable: true
+  - stage: spec
+    failure_family: verification
+    applicable: false
+    rationale: Production repository verification is owned by the merge-verification stage.
+  - stage: spec
+    failure_family: cache
+    applicable: false
+    rationale: Production verification cache decisions are owned by the merge-verification stage.
+  - stage: spec
+    failure_family: store
+    applicable: true
+  - stage: spec
+    failure_family: finalization
+    applicable: false
+    rationale: Production finalization transitions are owned by the merge-verification stage.
+  - stage: spec
+    failure_family: lifecycle
+    applicable: true
+  - stage: spec
+    failure_family: capability
+    applicable: true
+  - stage: plan
+    failure_family: runner
+    applicable: true
+  - stage: plan
+    failure_family: workspace
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
+  - stage: plan
+    failure_family: artifact
+    applicable: true
+  - stage: plan
+    failure_family: planner
+    applicable: true
+  - stage: plan
+    failure_family: git
+    applicable: true
+  - stage: plan
+    failure_family: verification
+    applicable: false
+    rationale: Production repository verification is owned by the merge-verification stage.
+  - stage: plan
+    failure_family: cache
+    applicable: false
+    rationale: Production verification cache decisions are owned by the merge-verification stage.
+  - stage: plan
+    failure_family: store
+    applicable: true
+  - stage: plan
+    failure_family: finalization
+    applicable: false
+    rationale: Production finalization transitions are owned by the merge-verification stage.
+  - stage: plan
+    failure_family: lifecycle
+    applicable: true
+  - stage: plan
+    failure_family: capability
+    applicable: true
+  - stage: execute
+    failure_family: runner
+    applicable: true
+  - stage: execute
+    failure_family: workspace
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
+  - stage: execute
+    failure_family: artifact
+    applicable: true
+  - stage: execute
+    failure_family: planner
+    applicable: false
+    rationale: Production planner failures occur only while the plan stage invokes the planner.
+  - stage: execute
+    failure_family: git
+    applicable: true
+  - stage: execute
+    failure_family: verification
+    applicable: false
+    rationale: Production repository verification is owned by the merge-verification stage.
+  - stage: execute
+    failure_family: cache
+    applicable: false
+    rationale: Production verification cache decisions are owned by the merge-verification stage.
+  - stage: execute
+    failure_family: store
+    applicable: true
+  - stage: execute
+    failure_family: finalization
+    applicable: false
+    rationale: Production finalization transitions are owned by the merge-verification stage.
+  - stage: execute
+    failure_family: lifecycle
+    applicable: true
+  - stage: execute
+    failure_family: capability
+    applicable: true
+  - stage: correctness-review
+    failure_family: runner
+    applicable: true
+  - stage: correctness-review
+    failure_family: workspace
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
+  - stage: correctness-review
+    failure_family: artifact
+    applicable: true
+  - stage: correctness-review
+    failure_family: planner
+    applicable: false
+    rationale: Production planner failures occur only while the plan stage invokes the planner.
+  - stage: correctness-review
+    failure_family: git
+    applicable: true
+  - stage: correctness-review
+    failure_family: verification
+    applicable: false
+    rationale: Production repository verification is owned by the merge-verification stage.
+  - stage: correctness-review
+    failure_family: cache
+    applicable: false
+    rationale: Production verification cache decisions are owned by the merge-verification stage.
+  - stage: correctness-review
+    failure_family: store
+    applicable: true
+  - stage: correctness-review
+    failure_family: finalization
+    applicable: false
+    rationale: Production finalization transitions are owned by the merge-verification stage.
+  - stage: correctness-review
+    failure_family: lifecycle
+    applicable: true
+  - stage: correctness-review
+    failure_family: capability
+    applicable: true
+  - stage: clean-code-review
+    failure_family: runner
+    applicable: true
+  - stage: clean-code-review
+    failure_family: workspace
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
+  - stage: clean-code-review
+    failure_family: artifact
+    applicable: true
+  - stage: clean-code-review
+    failure_family: planner
+    applicable: false
+    rationale: Production planner failures occur only while the plan stage invokes the planner.
+  - stage: clean-code-review
+    failure_family: git
+    applicable: true
+  - stage: clean-code-review
+    failure_family: verification
+    applicable: false
+    rationale: Production repository verification is owned by the merge-verification stage.
+  - stage: clean-code-review
+    failure_family: cache
+    applicable: false
+    rationale: Production verification cache decisions are owned by the merge-verification stage.
+  - stage: clean-code-review
+    failure_family: store
+    applicable: true
+  - stage: clean-code-review
+    failure_family: finalization
+    applicable: false
+    rationale: Production finalization transitions are owned by the merge-verification stage.
+  - stage: clean-code-review
+    failure_family: lifecycle
+    applicable: true
+  - stage: clean-code-review
+    failure_family: capability
+    applicable: true
+  - stage: librarian
+    failure_family: runner
+    applicable: true
+  - stage: librarian
+    failure_family: workspace
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
+  - stage: librarian
+    failure_family: artifact
+    applicable: true
+  - stage: librarian
+    failure_family: planner
+    applicable: false
+    rationale: Production planner failures occur only while the plan stage invokes the planner.
+  - stage: librarian
+    failure_family: git
+    applicable: true
+  - stage: librarian
+    failure_family: verification
+    applicable: false
+    rationale: Production repository verification is owned by the merge-verification stage.
+  - stage: librarian
+    failure_family: cache
+    applicable: false
+    rationale: Production verification cache decisions are owned by the merge-verification stage.
+  - stage: librarian
+    failure_family: store
+    applicable: true
+  - stage: librarian
+    failure_family: finalization
+    applicable: false
+    rationale: Production finalization transitions are owned by the merge-verification stage.
+  - stage: librarian
+    failure_family: lifecycle
+    applicable: true
+  - stage: librarian
+    failure_family: capability
+    applicable: true
+  - stage: merge-verification
+    failure_family: runner
+    applicable: true
+  - stage: merge-verification
+    failure_family: workspace
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
+  - stage: merge-verification
+    failure_family: artifact
+    applicable: true
+  - stage: merge-verification
+    failure_family: planner
+    applicable: false
+    rationale: Production planner failures occur only while the plan stage invokes the planner.
+  - stage: merge-verification
+    failure_family: git
+    applicable: true
+  - stage: merge-verification
+    failure_family: verification
+    applicable: true
+  - stage: merge-verification
+    failure_family: cache
+    applicable: true
+  - stage: merge-verification
+    failure_family: store
+    applicable: true
+  - stage: merge-verification
+    failure_family: finalization
+    applicable: true
+  - stage: merge-verification
+    failure_family: lifecycle
+    applicable: true
+  - stage: merge-verification
+    failure_family: capability
+    applicable: true
+scenarios:
+  - id: failure/brainstorm/runner
+    kind: failure
+    references: {stage: brainstorm, failure_family: runner}
+    driver_id: deterministic/runner
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
+      recovery_behavior: declared-contract
+  - id: failure/brainstorm/workspace
+    kind: failure
+    references: {stage: brainstorm, failure_family: workspace}
+    driver_id: deterministic/workspace
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: workspace
+      artifact_identities: [failure-site:workspace]
+      recovery_behavior: declared-contract
+  - id: failure/brainstorm/artifact
+    kind: failure
+    references: {stage: brainstorm, failure_family: artifact}
+    driver_id: deterministic/artifact
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
+      recovery_behavior: declared-contract
+  - id: failure/brainstorm/git
+    kind: failure
+    references: {stage: brainstorm, failure_family: git}
+    driver_id: deterministic/git
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
+      recovery_behavior: declared-contract
+  - id: failure/brainstorm/store
+    kind: failure
+    references: {stage: brainstorm, failure_family: store}
+    driver_id: deterministic/store
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
+      recovery_behavior: declared-contract
+  - id: failure/brainstorm/lifecycle
+    kind: failure
+    references: {stage: brainstorm, failure_family: lifecycle}
+    driver_id: deterministic/lifecycle
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
+      recovery_behavior: declared-contract
+  - id: failure/brainstorm/capability
+    kind: failure
+    references: {stage: brainstorm, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
+      recovery_behavior: declared-contract
+  - id: failure/spec/runner
+    kind: failure
+    references: {stage: spec, failure_family: runner}
+    driver_id: deterministic/runner
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
+      recovery_behavior: declared-contract
+  - id: failure/spec/artifact
+    kind: failure
+    references: {stage: spec, failure_family: artifact}
+    driver_id: deterministic/artifact
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
+      recovery_behavior: declared-contract
+  - id: failure/spec/git
+    kind: failure
+    references: {stage: spec, failure_family: git}
+    driver_id: deterministic/git
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
+      recovery_behavior: declared-contract
+  - id: failure/spec/store
+    kind: failure
+    references: {stage: spec, failure_family: store}
+    driver_id: deterministic/store
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
+      recovery_behavior: declared-contract
+  - id: failure/spec/lifecycle
+    kind: failure
+    references: {stage: spec, failure_family: lifecycle}
+    driver_id: deterministic/lifecycle
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
+      recovery_behavior: declared-contract
+  - id: failure/spec/capability
+    kind: failure
+    references: {stage: spec, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
+      recovery_behavior: declared-contract
+  - id: failure/plan/runner
+    kind: failure
+    references: {stage: plan, failure_family: runner}
+    driver_id: deterministic/runner
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
+      recovery_behavior: declared-contract
+  - id: failure/plan/artifact
+    kind: failure
+    references: {stage: plan, failure_family: artifact}
+    driver_id: deterministic/artifact
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
+      recovery_behavior: declared-contract
+  - id: failure/plan/planner
+    kind: failure
+    references: {stage: plan, failure_family: planner}
+    driver_id: deterministic/planner
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: planner
+      artifact_identities: [failure-site:planner]
+      recovery_behavior: declared-contract
+  - id: failure/plan/git
+    kind: failure
+    references: {stage: plan, failure_family: git}
+    driver_id: deterministic/git
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
+      recovery_behavior: declared-contract
+  - id: failure/plan/store
+    kind: failure
+    references: {stage: plan, failure_family: store}
+    driver_id: deterministic/store
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
+      recovery_behavior: declared-contract
+  - id: failure/plan/lifecycle
+    kind: failure
+    references: {stage: plan, failure_family: lifecycle}
+    driver_id: deterministic/lifecycle
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
+      recovery_behavior: declared-contract
+  - id: failure/plan/capability
+    kind: failure
+    references: {stage: plan, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
+      recovery_behavior: declared-contract
+  - id: failure/execute/runner
+    kind: failure
+    references: {stage: execute, failure_family: runner}
+    driver_id: deterministic/runner
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
+      recovery_behavior: declared-contract
+  - id: failure/execute/artifact
+    kind: failure
+    references: {stage: execute, failure_family: artifact}
+    driver_id: deterministic/artifact
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
+      recovery_behavior: declared-contract
+  - id: failure/execute/git
+    kind: failure
+    references: {stage: execute, failure_family: git}
+    driver_id: deterministic/git
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
+      recovery_behavior: declared-contract
+  - id: failure/execute/store
+    kind: failure
+    references: {stage: execute, failure_family: store}
+    driver_id: deterministic/store
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
+      recovery_behavior: declared-contract
+  - id: failure/execute/lifecycle
+    kind: failure
+    references: {stage: execute, failure_family: lifecycle}
+    driver_id: deterministic/lifecycle
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
+      recovery_behavior: declared-contract
+  - id: failure/execute/capability
+    kind: failure
+    references: {stage: execute, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
+      recovery_behavior: declared-contract
+  - id: failure/correctness-review/runner
+    kind: failure
+    references: {stage: correctness-review, failure_family: runner}
+    driver_id: deterministic/runner
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
+      recovery_behavior: declared-contract
+  - id: failure/correctness-review/artifact
+    kind: failure
+    references: {stage: correctness-review, failure_family: artifact}
+    driver_id: deterministic/artifact
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
+      recovery_behavior: declared-contract
+  - id: failure/correctness-review/git
+    kind: failure
+    references: {stage: correctness-review, failure_family: git}
+    driver_id: deterministic/git
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
+      recovery_behavior: declared-contract
+  - id: failure/correctness-review/store
+    kind: failure
+    references: {stage: correctness-review, failure_family: store}
+    driver_id: deterministic/store
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
+      recovery_behavior: declared-contract
+  - id: failure/correctness-review/lifecycle
+    kind: failure
+    references: {stage: correctness-review, failure_family: lifecycle}
+    driver_id: deterministic/lifecycle
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
+      recovery_behavior: declared-contract
+  - id: failure/correctness-review/capability
+    kind: failure
+    references: {stage: correctness-review, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
+      recovery_behavior: declared-contract
+  - id: failure/clean-code-review/runner
+    kind: failure
+    references: {stage: clean-code-review, failure_family: runner}
+    driver_id: deterministic/runner
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
+      recovery_behavior: declared-contract
+  - id: failure/clean-code-review/artifact
+    kind: failure
+    references: {stage: clean-code-review, failure_family: artifact}
+    driver_id: deterministic/artifact
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
+      recovery_behavior: declared-contract
+  - id: failure/clean-code-review/git
+    kind: failure
+    references: {stage: clean-code-review, failure_family: git}
+    driver_id: deterministic/git
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
+      recovery_behavior: declared-contract
+  - id: failure/clean-code-review/store
+    kind: failure
+    references: {stage: clean-code-review, failure_family: store}
+    driver_id: deterministic/store
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
+      recovery_behavior: declared-contract
+  - id: failure/clean-code-review/lifecycle
+    kind: failure
+    references: {stage: clean-code-review, failure_family: lifecycle}
+    driver_id: deterministic/lifecycle
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
+      recovery_behavior: declared-contract
+  - id: failure/clean-code-review/capability
+    kind: failure
+    references: {stage: clean-code-review, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
+      recovery_behavior: declared-contract
+  - id: failure/librarian/runner
+    kind: failure
+    references: {stage: librarian, failure_family: runner}
+    driver_id: deterministic/runner
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
+      recovery_behavior: declared-contract
+  - id: failure/librarian/artifact
+    kind: failure
+    references: {stage: librarian, failure_family: artifact}
+    driver_id: deterministic/artifact
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
+      recovery_behavior: declared-contract
+  - id: failure/librarian/git
+    kind: failure
+    references: {stage: librarian, failure_family: git}
+    driver_id: deterministic/git
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
+      recovery_behavior: declared-contract
+  - id: failure/librarian/store
+    kind: failure
+    references: {stage: librarian, failure_family: store}
+    driver_id: deterministic/store
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
+      recovery_behavior: declared-contract
+  - id: failure/librarian/lifecycle
+    kind: failure
+    references: {stage: librarian, failure_family: lifecycle}
+    driver_id: deterministic/lifecycle
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
+      recovery_behavior: declared-contract
+  - id: failure/librarian/capability
+    kind: failure
+    references: {stage: librarian, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
+      recovery_behavior: declared-contract
+  - id: failure/merge-verification/runner
+    kind: failure
+    references: {stage: merge-verification, failure_family: runner}
+    driver_id: deterministic/runner
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: runner
+      artifact_identities: [failure-site:runner]
+      recovery_behavior: declared-contract
+  - id: failure/merge-verification/artifact
+    kind: failure
+    references: {stage: merge-verification, failure_family: artifact}
+    driver_id: deterministic/artifact
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: artifact
+      artifact_identities: [failure-site:artifact]
+      recovery_behavior: declared-contract
+  - id: failure/merge-verification/git
+    kind: failure
+    references: {stage: merge-verification, failure_family: git}
+    driver_id: deterministic/git
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: git
+      artifact_identities: [failure-site:git]
+      recovery_behavior: declared-contract
+  - id: failure/merge-verification/verification
+    kind: failure
+    references: {stage: merge-verification, failure_family: verification}
+    driver_id: deterministic/verification
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: verification
+      artifact_identities: [failure-site:verification]
+      recovery_behavior: declared-contract
+  - id: failure/merge-verification/cache
+    kind: failure
+    references: {stage: merge-verification, failure_family: cache}
+    driver_id: deterministic/cache
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: cache
+      artifact_identities: [failure-site:cache]
+      recovery_behavior: declared-contract
+  - id: failure/merge-verification/store
+    kind: failure
+    references: {stage: merge-verification, failure_family: store}
+    driver_id: deterministic/store
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: store
+      artifact_identities: [failure-site:store]
+      recovery_behavior: declared-contract
+  - id: failure/merge-verification/finalization
+    kind: failure
+    references: {stage: merge-verification, failure_family: finalization}
+    driver_id: deterministic/finalization
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: finalization
+      artifact_identities: [failure-site:finalization]
+      recovery_behavior: declared-contract
+  - id: failure/merge-verification/lifecycle
+    kind: failure
+    references: {stage: merge-verification, failure_family: lifecycle}
+    driver_id: deterministic/lifecycle
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: lifecycle
+      artifact_identities: [failure-site:lifecycle]
+      recovery_behavior: declared-contract
+  - id: failure/merge-verification/capability
+    kind: failure
+    references: {stage: merge-verification, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: []
+    expected:
+      public_outcome: running
+      durable_state: running
+      normalized_classification: capability
+      artifact_identities: [failure-site:capability]
+      recovery_behavior: declared-contract
+  - id: restart/brainstorm/runner_succeeded
+    kind: restart
+    references: {stage: brainstorm, durable_boundary: runner_succeeded}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/brainstorm/artifacts_validated
+    kind: restart
+    references: {stage: brainstorm, durable_boundary: artifacts_validated}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/brainstorm/artifacts_archived
+    kind: restart
+    references: {stage: brainstorm, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/brainstorm/gate_resolved
+    kind: restart
+    references: {stage: brainstorm, durable_boundary: gate_resolved}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/brainstorm/verification_passed
+    kind: restart
+    references: {stage: brainstorm, durable_boundary: verification_passed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/brainstorm/finalization_ready
+    kind: restart
+    references: {stage: brainstorm, durable_boundary: finalization_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/spec/runner_succeeded
+    kind: restart
+    references: {stage: spec, durable_boundary: runner_succeeded}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/spec/artifacts_validated
+    kind: restart
+    references: {stage: spec, durable_boundary: artifacts_validated}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/spec/artifacts_archived
+    kind: restart
+    references: {stage: spec, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/spec/gate_resolved
+    kind: restart
+    references: {stage: spec, durable_boundary: gate_resolved}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/spec/verification_passed
+    kind: restart
+    references: {stage: spec, durable_boundary: verification_passed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/spec/finalization_ready
+    kind: restart
+    references: {stage: spec, durable_boundary: finalization_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/plan/runner_succeeded
+    kind: restart
+    references: {stage: plan, durable_boundary: runner_succeeded}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/plan/artifacts_validated
+    kind: restart
+    references: {stage: plan, durable_boundary: artifacts_validated}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/plan/artifacts_archived
+    kind: restart
+    references: {stage: plan, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/plan/gate_resolved
+    kind: restart
+    references: {stage: plan, durable_boundary: gate_resolved}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/plan/verification_passed
+    kind: restart
+    references: {stage: plan, durable_boundary: verification_passed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/plan/finalization_ready
+    kind: restart
+    references: {stage: plan, durable_boundary: finalization_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/execute/runner_succeeded
+    kind: restart
+    references: {stage: execute, durable_boundary: runner_succeeded}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/execute/artifacts_validated
+    kind: restart
+    references: {stage: execute, durable_boundary: artifacts_validated}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/execute/artifacts_archived
+    kind: restart
+    references: {stage: execute, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/execute/gate_resolved
+    kind: restart
+    references: {stage: execute, durable_boundary: gate_resolved}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/execute/verification_passed
+    kind: restart
+    references: {stage: execute, durable_boundary: verification_passed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/execute/finalization_ready
+    kind: restart
+    references: {stage: execute, durable_boundary: finalization_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/correctness-review/runner_succeeded
+    kind: restart
+    references: {stage: correctness-review, durable_boundary: runner_succeeded}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/correctness-review/artifacts_validated
+    kind: restart
+    references: {stage: correctness-review, durable_boundary: artifacts_validated}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/correctness-review/artifacts_archived
+    kind: restart
+    references: {stage: correctness-review, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/correctness-review/gate_resolved
+    kind: restart
+    references: {stage: correctness-review, durable_boundary: gate_resolved}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/correctness-review/verification_passed
+    kind: restart
+    references: {stage: correctness-review, durable_boundary: verification_passed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/correctness-review/finalization_ready
+    kind: restart
+    references: {stage: correctness-review, durable_boundary: finalization_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/clean-code-review/runner_succeeded
+    kind: restart
+    references: {stage: clean-code-review, durable_boundary: runner_succeeded}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/clean-code-review/artifacts_validated
+    kind: restart
+    references: {stage: clean-code-review, durable_boundary: artifacts_validated}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/clean-code-review/artifacts_archived
+    kind: restart
+    references: {stage: clean-code-review, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/clean-code-review/gate_resolved
+    kind: restart
+    references: {stage: clean-code-review, durable_boundary: gate_resolved}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/clean-code-review/verification_passed
+    kind: restart
+    references: {stage: clean-code-review, durable_boundary: verification_passed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/clean-code-review/finalization_ready
+    kind: restart
+    references: {stage: clean-code-review, durable_boundary: finalization_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/librarian/runner_succeeded
+    kind: restart
+    references: {stage: librarian, durable_boundary: runner_succeeded}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/librarian/artifacts_validated
+    kind: restart
+    references: {stage: librarian, durable_boundary: artifacts_validated}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/librarian/artifacts_archived
+    kind: restart
+    references: {stage: librarian, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/librarian/gate_resolved
+    kind: restart
+    references: {stage: librarian, durable_boundary: gate_resolved}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/librarian/verification_passed
+    kind: restart
+    references: {stage: librarian, durable_boundary: verification_passed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/librarian/finalization_ready
+    kind: restart
+    references: {stage: librarian, durable_boundary: finalization_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/merge-verification/runner_succeeded
+    kind: restart
+    references: {stage: merge-verification, durable_boundary: runner_succeeded}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/merge-verification/artifacts_validated
+    kind: restart
+    references: {stage: merge-verification, durable_boundary: artifacts_validated}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/merge-verification/artifacts_archived
+    kind: restart
+    references: {stage: merge-verification, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/merge-verification/gate_resolved
+    kind: restart
+    references: {stage: merge-verification, durable_boundary: gate_resolved}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/merge-verification/verification_passed
+    kind: restart
+    references: {stage: merge-verification, durable_boundary: verification_passed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: restart/merge-verification/finalization_ready
+    kind: restart
+    references: {stage: merge-verification, durable_boundary: finalization_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: finalization/verification_ready
+    kind: finalization
+    references: {finalization_boundary: verification_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: finalization/pending_reverification
+    kind: finalization
+    references: {finalization_boundary: pending_reverification}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: finalization/reverification_failed
+    kind: finalization
+    references: {finalization_boundary: reverification_failed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: finalization/publish_pending
+    kind: finalization
+    references: {finalization_boundary: publish_pending}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land, publish]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: finalization/cleanup_needed
+    kind: finalization
+    references: {finalization_boundary: cleanup_needed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: finalization/merged
+    kind: finalization
+    references: {finalization_boundary: merged}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: synthetic-initial}
+    recovery_inputs: {state: synthetic-recovery}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: cross-cutting/unchanged-retry-refusal
+    kind: unchanged-retry-refusal
+    references: {stage: merge-verification, failure_family: verification, durable_boundary: verification_passed, finalization_boundary: verification_ready}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: unchanged-verification-state}
+    recovery_inputs: {state: changed-verification-state}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: cross-cutting/changed-state-recovery
+    kind: changed-state-recovery
+    references: {stage: execute, failure_family: store, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: failing-store-state}
+    recovery_inputs: {state: repaired-configuration-state}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: cross-cutting/planner-capability-loss
+    kind: planner-capability-loss
+    references: {stage: plan, failure_family: planner}
+    driver_id: deterministic/planner
+    seed: 690003
+    initial_inputs: {state: planner-authority-lost}
+    recovery_inputs: {state: planner-authority-restored}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: cross-cutting/configuration-drift
+    kind: configuration-drift
+    references: {stage: execute, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: unsupported-provider-config}
+    recovery_inputs: {state: supported-provider-config}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: cross-cutting/capability-violation
+    kind: capability-violation
+    references: {stage: execute, failure_family: capability}
+    driver_id: deterministic/capability
+    seed: 690003
+    initial_inputs: {state: denied-capability-contract}
+    recovery_inputs: {state: corrected-capability-contract}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: cross-cutting/decision-escalation
+    kind: decision-escalation
+    references: {stage: spec, failure_family: artifact, durable_boundary: gate_resolved}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: pending-artifact-decision}
+    recovery_inputs: {state: approved-artifact-decision}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract
+  - id: cross-cutting/artifact-identity
+    kind: artifact-identity
+    references: {stage: execute, failure_family: artifact, durable_boundary: artifacts_archived}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: artifact-v1}
+    recovery_inputs: {state: artifact-v2}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [sha256:b7ee9d3f0df825a24123850165fc646c3e155c6df07df8506526874122e80ac0]
+      recovery_behavior: declared-contract
+  - id: cross-cutting/finalization-recovery
+    kind: finalization-recovery
+    references: {stage: merge-verification, failure_family: finalization, finalization_boundary: cleanup_needed}
+    driver_id: synthetic/deterministic
+    seed: 690003
+    initial_inputs: {state: cleanup-effect-rejected}
+    recovery_inputs: {state: cleanup-effect-admitted}
+    allowed_effects: [delete-branch, land]
+    expected:
+      public_outcome: merged
+      durable_state: merged
+      normalized_classification: success
+      artifact_identities: [synthetic/artifact]
+      recovery_behavior: declared-contract

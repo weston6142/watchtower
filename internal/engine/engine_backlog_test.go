@@ -87,6 +87,18 @@ func waitForEvent(t *testing.T, st *store.Store, issueID string, typ core.EventT
 	t.Fatalf("event %s for %s did not arrive", typ, issueID)
 }
 
+func waitForIssueState(t *testing.T, st *store.Store, issueID, state string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if issueRow(t, st, issueID).State == state {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("issue %s did not reach state %q: %+v", issueID, state, issueRow(t, st, issueID))
+}
+
 func useAutoLaunchFlow(e *Engine) {
 	e.cfg.Flows = map[string]flow.Flow{
 		"default": {
@@ -992,9 +1004,7 @@ func TestFinishClaimRunsOnlyMergeVerificationAndCompletes(t *testing.T) {
 	if len(stages) != 1 || stages[0] != "merge-verification" {
 		t.Fatalf("started stages = %v", stages)
 	}
-	if row := issueRow(t, st, claim.IssueID); row.State != "done" {
-		t.Fatalf("finished row = %+v", row)
-	}
+	waitForIssueState(t, st, claim.IssueID, "done")
 }
 
 func TestFinishClaimVerifierFailurePreservesWorkspaceForRetry(t *testing.T) {

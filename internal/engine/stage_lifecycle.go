@@ -249,7 +249,20 @@ func (e *Engine) lifecycleAttemptFor(is *issueState, st flow.Stage, checkpointID
 		return store.StageLifecycleAttempt{}, nil, err
 	}
 	attemptID := fmt.Sprintf("checkpoint-%d", checkpointID)
-	if !(is.retryUnmerged && st.MergeBarrier) {
+	revisionRequired := false
+	checkpoints, err := e.cfg.Store.StageCheckpoints(is.id)
+	if err != nil {
+		return store.StageLifecycleAttempt{}, nil, err
+	}
+	for index := len(checkpoints) - 1; index >= 0; index-- {
+		checkpoint := checkpoints[index]
+		if checkpoint.ID == checkpointID || checkpoint.Stage != st.Name {
+			continue
+		}
+		revisionRequired = checkpoint.Status == "revision_required"
+		break
+	}
+	if !revisionRequired && !(is.retryUnmerged && st.MergeBarrier) {
 		var latestAttempt *store.StageLifecycleAttempt
 		for _, candidate := range attempts {
 			if candidate.ResultPath != "" &&
@@ -472,7 +485,9 @@ func (e *Engine) commitLifecycleSubstate(
 	if err := e.cfg.Store.CommitPreparedStageLifecycle(record); err != nil {
 		return err
 	}
-	return nil
+	return e.notifyBoundary(context.Background(), DurableBoundary{
+		Kind: BoundaryStageLifecycle, ID: string(substate), IssueID: attempt.IssueID, Stage: attempt.Stage,
+	})
 }
 
 func (e *Engine) commitRehydratedArtifactReviewGate(issueID, stage string, checkpointID int64) error {
@@ -625,13 +640,36 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 	if !ok {
 		return nil, false, nil
 	}
+	committedStages, err := e.cfg.Store.CommittedStageLifecycleStages(row.ID)
+	if err != nil {
+		return nil, false, err
+	}
+	rejectGap := func(index int) error {
+		prefix := make(map[string]struct{}, index)
+		for _, earlier := range configured.Stages[:index] {
+			prefix[earlier.Name] = struct{}{}
+		}
+		for _, committed := range committedStages {
+			if _, ok := prefix[committed]; !ok {
+				return &stagelifecycle.DiagnosticError{
+					Code:    stagelifecycle.CodeInvalidState,
+					Message: fmt.Sprintf("stage %q has committed lifecycle state outside the valid prefix ending before %q", committed, configured.Stages[index].Name),
+				}
+			}
+		}
+		return nil
+	}
+	completedThrough := -1
 	for index, stage := range configured.Stages {
 		records, err := e.cfg.Store.StageLifecycleRecords(row.ID, stage.Name, "")
 		if err != nil {
 			return nil, false, err
 		}
 		if len(records) == 0 {
-			continue
+			if err := rejectGap(index); err != nil {
+				return nil, true, err
+			}
+			break
 		}
 		attemptID := ""
 		for _, record := range records {
@@ -640,7 +678,10 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			}
 		}
 		if attemptID == "" {
-			continue
+			if err := rejectGap(index); err != nil {
+				return nil, true, err
+			}
+			break
 		}
 		var latest stagelifecycle.Record
 		var predecessor *stagelifecycle.Record
@@ -658,7 +699,14 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			predecessor = &copy
 			latest = record
 		}
-		if latest.Substate == "" || lifecycleReached(latest.Substate, stagelifecycle.FinalizationReady) {
+		if latest.Substate == "" {
+			if err := rejectGap(index); err != nil {
+				return nil, true, err
+			}
+			break
+		}
+		if lifecycleReached(latest.Substate, stagelifecycle.FinalizationReady) {
+			completedThrough = index
 			continue
 		}
 		if _, err := validateDurableLifecycleRecord(e.issueDir(row.ID), latest); err != nil {
@@ -668,6 +716,14 @@ func (e *Engine) lifecycleRecoveryState(row store.IssueRow) (*issueState, bool, 
 			id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
 			matrix: matrixFromStrings(row.Levers), priority: row.Priority,
 			dependsOn: append([]string(nil), row.DependsOn...), stageIdx: index,
+			terminal: true, planReview: row.PlanReviewPolicy,
+		}, true, nil
+	}
+	if next := completedThrough + 1; completedThrough >= 0 && next < len(configured.Stages) {
+		return &issueState{
+			id: row.ID, title: row.Title, body: row.Body, flowName: row.Flow,
+			matrix: matrixFromStrings(row.Levers), priority: row.Priority,
+			dependsOn: append([]string(nil), row.DependsOn...), stageIdx: next,
 			terminal: true, planReview: row.PlanReviewPolicy,
 		}, true, nil
 	}

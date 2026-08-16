@@ -10,6 +10,19 @@ import (
 	"github.com/weston6142/watchtower/internal/failure"
 )
 
+func TestNewEventAtUsesInjectedClock(t *testing.T) {
+	fixed := time.Date(2026, 8, 13, 14, 15, 16, 123456789, time.UTC)
+	clock := ClockFunc(func() time.Time { return fixed })
+
+	event, err := NewEventAt(EvIssueCreated, "GH-69", map[string]string{"title": "deterministic"}, clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !event.At.Equal(fixed) || event.At.Location() != time.UTC {
+		t.Fatalf("event At = %v (%v), want %v (UTC)", event.At, event.At.Location(), fixed)
+	}
+}
+
 func TestNewEventMarshalsPayloadSnakeCase(t *testing.T) {
 	ev, err := NewEvent(EvIssueCreated, "GH-1", map[string]string{"title": "hello"})
 	if err != nil {

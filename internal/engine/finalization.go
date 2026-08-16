@@ -158,15 +158,21 @@ func (e *Engine) materializeIntegrationArtifacts(is *issueState, stageName, work
 	if err != nil {
 		return err
 	}
-	for index := len(records) - 1; index >= 0; index-- {
-		record := records[index]
+	var selected *stagelifecycle.Record
+	for index := range records {
+		record := &records[index]
 		if !record.Committed || !lifecycleReached(record.Substate, stagelifecycle.ArtifactsArchived) || len(record.Artifacts) == 0 {
 			continue
 		}
-		refs := attemptArtifactRefs(record.Artifacts)
-		return contextpack.MaterializeAttemptArtifacts(e.issueDir(is.id), workdir, refs)
+		if selected == nil || lifecycleAttemptAfter(record.AttemptID, selected.AttemptID) ||
+			(record.AttemptID == selected.AttemptID && record.Version > selected.Version) {
+			selected = record
+		}
 	}
-	return nil
+	if selected == nil {
+		return nil
+	}
+	return contextpack.MaterializeAttemptArtifacts(e.issueDir(is.id), workdir, attemptArtifactRefs(selected.Artifacts))
 }
 
 func (e *Engine) validateFinalIdentity(
@@ -203,12 +209,14 @@ func (e *Engine) validateFinalIdentityForAttempt(
 				receipt.TreeSHA, treeSHA))
 	}
 	if decision.BranchCommit != "" && decision.BranchCommit != branchSHA {
-		return fmt.Errorf("merge decision branch %s does not match current branch %s",
-			decision.BranchCommit, branchSHA)
+		return staleVerificationIdentity(StaleVerificationBranch, attemptID,
+			fmt.Errorf("merge decision branch %s does not match current branch %s",
+				decision.BranchCommit, branchSHA))
 	}
 	if decision.BaseCommit != "" && decision.BaseCommit != is.baseRef {
-		return fmt.Errorf("merge decision base %s does not match issue base %s",
-			decision.BaseCommit, is.baseRef)
+		return staleVerificationIdentity(StaleVerificationBranch, attemptID,
+			fmt.Errorf("merge decision base %s does not match issue base %s",
+				decision.BaseCommit, is.baseRef))
 	}
 	if e.cfg.Train != nil && len(e.cfg.Train.TestCmd) > 0 &&
 		!receipt.Includes(e.cfg.Train.TestCmd) {
@@ -295,11 +303,14 @@ func loadVerificationBytes(data []byte) (marshal.Verification, error) {
 	return verification, nil
 }
 
-func (e *Engine) checkpointVerificationReady(is *issueState) error {
-	return e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
+func (e *Engine) checkpointVerificationReady(ctx context.Context, is *issueState) error {
+	if err := e.cfg.Store.SetIssueIntegration(store.IssueIntegration{
 		IssueID: is.id, State: store.IntegrationVerificationReady, PreSHA: is.baseRef,
 		Worktree: is.wsPath, Branch: is.branch,
-	})
+	}); err != nil {
+		return err
+	}
+	return e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), store.IntegrationVerificationReady)
 }
 
 func (e *Engine) integrationStageName(is *issueState) string {
@@ -349,6 +360,9 @@ func (e *Engine) finalizeIntegration(
 					_ = e.recordBoundaryFailure(ctx, is.id, e.integrationStageName(is), 0,
 						failure.SiteStore, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateStore, storeErr)
 					return false, true, fmt.Errorf("%v (persist publish pending: %w)", landErr, storeErr)
+				}
+				if boundaryErr := e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), integration.State); boundaryErr != nil {
+					return false, true, boundaryErr
 				}
 				e.emit(core.EvPublishPending, is.id, map[string]string{
 					"branch": result.BaseBranch, "commit": result.LandedSHA,

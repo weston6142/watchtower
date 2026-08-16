@@ -36,6 +36,7 @@ type Script struct {
 	TokensKnown       bool
 	Tools             []ToolCall
 	Fail              bool
+	FailureClass      FailureClass
 	PlannerRequests   []plannerartifact.WriteRequest
 	PlannerFailureAt  int
 	PlannerFailure    error
@@ -168,7 +169,7 @@ func (f *FakeRunner) Run(ctx context.Context, request StageRequest, asks chan<- 
 			runtimeAudit = append(runtimeAudit, audit)
 		}
 		if sc.Fail {
-			done <- Result{Err: fmt.Errorf("scripted failure %s/%s", stage, agentPkg)}
+			done <- Result{FailureClass: sc.FailureClass, Err: fmt.Errorf("scripted failure %s/%s", stage, agentPkg)}
 			return
 		}
 		out := map[string]string{}
@@ -333,7 +334,7 @@ func (f *FakeRunner) RunPlanner(ctx context.Context, request StageRequest, _asks
 			}
 		}
 		if sc.Fail {
-			done <- Result{SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown,
+			done <- Result{SessionID: sc.SessionID, Tokens: sc.Tokens, TokensKnown: sc.TokensKnown, FailureClass: sc.FailureClass,
 				Err: fmt.Errorf("scripted failure %s/%s", stage, agentPkg)}
 			return
 		}

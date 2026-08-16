@@ -6,6 +6,26 @@ import (
 	"testing"
 )
 
+func TestCanonicalStageNames(t *testing.T) {
+	f, err := Load("../scaffold/defaults/flows/default.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"brainstorm", "spec", "plan", "execute", "correctness-review",
+		"clean-code-review", "librarian", "merge-verification",
+	}
+
+	got := f.StageNames()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stage names = %v, want %v", got, want)
+	}
+	got[0] = "mutated"
+	if again := f.StageNames(); !reflect.DeepEqual(again, want) {
+		t.Fatalf("stage names after caller mutation = %v, want %v", again, want)
+	}
+}
+
 func TestLoadRequiresCapabilityProfile(t *testing.T) {
 	_, err := loadBytes([]byte("name: x\nstages:\n  - name: build\n    agents: [{package: p}]\n    gate: auto\n"))
 	if err == nil || !strings.Contains(err.Error(), `stage "build" capability_profile`) {

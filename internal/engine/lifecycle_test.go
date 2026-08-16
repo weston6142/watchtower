@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -469,6 +471,159 @@ func TestRehydrateRecoversDurableLifecycleBeforeLegacyFallback(t *testing.T) {
 	}
 	if starts.Load() != 1 {
 		t.Fatalf("runner starts after restart recovery = %d, want one", starts.Load())
+	}
+}
+
+func TestRehydrateFinalizationReadyMakesNextStageRetryable(t *testing.T) {
+	var starts atomic.Int32
+	f := flow.Flow{Name: "lifecycle-next-stage", Stages: []flow.Stage{
+		{Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+		{Name: "verify", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+	}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/agent": {},
+		"verify/agent":  {},
+	}, OnStart: func(_, _, _, _ string) error {
+		starts.Add(1)
+		return nil
+	}}
+	e1, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	interrupted := errors.New("restart after completed stage")
+	e1.cfg.BoundaryObserver = boundaryObserverFunc(func(_ context.Context, boundary DurableBoundary) error {
+		if boundary.Kind == BoundaryStageLifecycle && boundary.Stage == "execute" && boundary.ID == string(stagelifecycle.FinalizationReady) {
+			return InterruptAfterCommit(interrupted)
+		}
+		return nil
+	})
+	id, err := e1.CreateIssue("completed stage restart", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e1.StartIssue(context.Background(), id); !errors.Is(err, interrupted) {
+		t.Fatalf("StartIssue error = %v, want interruption", err)
+	}
+	e2 := newEngineOnFileWithFlow(t, s, r, e1.cfg.DataDir, f)
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.RetryStage(context.Background(), id); err != nil {
+		t.Fatalf("retry next stage after restart: %v", err)
+	}
+	if starts.Load() != 2 {
+		t.Fatalf("runner starts after next-stage recovery = %d, want two", starts.Load())
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRecovery := false
+	for _, event := range events {
+		if event.IssueID != id || event.Type != core.EvStageFailed {
+			continue
+		}
+		var payload struct {
+			Stage string `json:"stage"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Stage == "verify" && payload.Error == "lifecycle checkpoint recovered — press R to retry" {
+			foundRecovery = true
+		}
+	}
+	if !foundRecovery {
+		t.Fatal("rehydration emitted no actionable next-stage recovery event")
+	}
+}
+
+func TestLifecycleRecoveryRejectsMissingLeadingStage(t *testing.T) {
+	var starts atomic.Int32
+	e1, s := lifecycleTestEngine(t, lifecycleTestRunner(&starts))
+	f := lifecycleTestFlow()
+	id, err := e1.CreateIssue("lifecycle prefix", "", f.Name, levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e1.StartIssue(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	changed := f
+	changed.Stages = []flow.Stage{
+		{Name: "leading", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+		f.Stages[0],
+		{Name: "trailing", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+	}
+	e2 := newEngineOnFileWithFlow(t, s, lifecycleTestRunner(new(atomic.Int32)), e1.cfg.DataDir, changed)
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row store.IssueRow
+	for _, candidate := range rows {
+		if candidate.ID == id {
+			row = candidate
+		}
+	}
+	recovered, found, err := e2.lifecycleRecoveryState(row)
+	var diagnostic *stagelifecycle.DiagnosticError
+	if recovered != nil || !found || !errors.As(err, &diagnostic) || diagnostic.Code != stagelifecycle.CodeInvalidState {
+		t.Fatalf("lifecycle gap recovery = %+v, %t, %v", recovered, found, err)
+	}
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), "unknown issue") {
+		t.Fatalf("rehydration restored legacy state across lifecycle gap: %v", err)
+	}
+}
+
+func TestLifecycleRecoveryRejectsRenamedCommittedPrefix(t *testing.T) {
+	var starts atomic.Int32
+	e1, s := lifecycleTestEngine(t, lifecycleTestRunner(&starts))
+	interrupted := errors.New("simulated interruption")
+	e1.cfg.BoundaryObserver = boundaryObserverFunc(func(_ context.Context, boundary DurableBoundary) error {
+		if boundary.Kind == BoundaryStageLifecycle && boundary.ID == string(stagelifecycle.RunnerSucceeded) {
+			return InterruptAfterCommit(interrupted)
+		}
+		return nil
+	})
+	f := lifecycleTestFlow()
+	id, err := e1.CreateIssue("renamed lifecycle prefix", "", f.Name, levers.Matrix{"execute": flow.LeverYolo}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e1.StartIssue(context.Background(), id); !errors.Is(err, interrupted) {
+		t.Fatalf("StartIssue error = %v, want interruption", err)
+	}
+	changed := f
+	changed.Stages = []flow.Stage{
+		{Name: "renamed-leading", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+		{Name: "renamed-trailing", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+	}
+	e2 := newEngineOnFileWithFlow(t, s, lifecycleTestRunner(new(atomic.Int32)), e1.cfg.DataDir, changed)
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row store.IssueRow
+	for _, candidate := range rows {
+		if candidate.ID == id {
+			row = candidate
+		}
+	}
+	recovered, found, err := e2.lifecycleRecoveryState(row)
+	var diagnostic *stagelifecycle.DiagnosticError
+	if recovered != nil || !found || !errors.As(err, &diagnostic) || diagnostic.Code != stagelifecycle.CodeInvalidState {
+		t.Fatalf("renamed lifecycle recovery = %+v, %t, %v", recovered, found, err)
+	}
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.RetryStage(context.Background(), id); err == nil || !strings.Contains(err.Error(), "unknown issue") {
+		t.Fatalf("rehydration restored legacy state across renamed lifecycle gap: %v", err)
 	}
 }
 

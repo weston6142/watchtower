@@ -94,9 +94,13 @@ func RetryRejectedPayload(rejection retry.Rejection) retry.Rejection {
 }
 
 func NewEvent(t EventType, issueID string, payload any) (Event, error) {
+	return NewEventAt(t, issueID, payload, SystemClock.Now())
+}
+
+func NewEventAt(t EventType, issueID string, payload any, at time.Time) (Event, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return Event{}, err
 	}
-	return Event{Type: t, IssueID: issueID, Payload: raw, At: time.Now().UTC()}, nil
+	return Event{Type: t, IssueID: issueID, Payload: raw, At: at.UTC()}, nil
 }

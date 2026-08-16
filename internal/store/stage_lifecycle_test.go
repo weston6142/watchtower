@@ -53,6 +53,41 @@ func TestStageResultAttemptsPreservePredecessorsAndExactReplay(t *testing.T) {
 	}
 }
 
+func TestStageResultAttemptsUseNumericCheckpointOrderWithFixedClock(t *testing.T) {
+	s := openLifecycleStore(t)
+	createdAt := time.Unix(1, 0).UTC()
+	attempts := []StageLifecycleAttempt{
+		BeginAttempt("GH-67", "execute", "checkpoint-9"),
+		BeginAttempt("GH-67", "execute", "checkpoint-10"),
+		BeginAttempt("GH-67", "execute", "checkpoint-11"),
+	}
+	for i := range attempts {
+		attempts[i].CreatedAt = createdAt
+		if err := createValidatedLifecycleAttempt(t, s, attempts[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	predecessor := ""
+	for i, attempt := range attempts {
+		if err := putValidatedLifecycleResult(t, s, attempt,
+			structuredResultRef(t, attempt, predecessor, stageresult.OutcomeRetryable, string(rune('a'+i)))); err != nil {
+			t.Fatal(err)
+		}
+		predecessor = attempt.AttemptID
+	}
+	got, err := s.StageResultAttempts("GH-67", "execute", stageresult.KindExecute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].AttemptID != "checkpoint-9" || got[1].AttemptID != "checkpoint-10" || got[2].AttemptID != "checkpoint-11" {
+		t.Fatalf("attempt order = %+v", got)
+	}
+	latest, found, err := s.LatestValidStageResultAttempt("GH-67", "execute", stageresult.KindExecute)
+	if err != nil || !found || latest.AttemptID != "checkpoint-11" {
+		t.Fatalf("latest = %+v, %v, %v", latest, found, err)
+	}
+}
+
 func TestStageResultExactReplayRemainsIdempotentAfterNewerAttempt(t *testing.T) {
 	s := openLifecycleStore(t)
 	first := BeginAttempt("GH-67", "execute", "checkpoint-1")
