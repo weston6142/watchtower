@@ -1,7 +1,9 @@
 package engineharness
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,5 +123,61 @@ func TestScenarioTimeoutKillsWorkerBeforeCleanup(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("scenario isolation roots remain after timeout: %v", entries)
+	}
+}
+
+func TestRunWorkerRejectsStdinRootWithoutDeletingIt(t *testing.T) {
+	root := t.TempDir()
+	sentinel := filepath.Join(root, "keep")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(struct {
+		ProductionFlow flow.Flow
+		Scenario       recoverymatrix.Scenario
+		Root           string
+	}{
+		ProductionFlow: shippedHarnessFlow(t),
+		Scenario:       recoverymatrix.Scenario{ID: "crafted", DriverID: "synthetic/deterministic", Seed: 690010},
+		Root:           root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RunWorker(bytes.NewReader(payload), &bytes.Buffer{}); err == nil {
+		t.Fatal("worker accepted a stdin-supplied root without a parent capability")
+	}
+	if body, err := os.ReadFile(sentinel); err != nil || string(body) != "keep" {
+		t.Fatalf("sentinel after rejected worker request = %q, %v", body, err)
+	}
+}
+
+func TestScenarioRootRemainsUntilParentCleanup(t *testing.T) {
+	temporaryRoot := t.TempDir()
+	t.Setenv("TMPDIR", temporaryRoot)
+	scenario := recoverymatrix.Scenario{ID: "owned-root", DriverID: "synthetic/deterministic", Seed: 690011}
+	executor, cleanup, err := NewFactory(shippedHarnessFlow(t)).New(context.Background(), scenario)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Execute(context.Background(), scenario); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(temporaryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("scenario roots before parent cleanup = %v", entries)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = os.ReadDir(temporaryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("scenario roots after parent cleanup = %v", entries)
 	}
 }

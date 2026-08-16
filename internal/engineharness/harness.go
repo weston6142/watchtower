@@ -200,6 +200,7 @@ func (f *EnvironmentFactory) newInProcess(ctx context.Context, scenario recovery
 	if err := validateCrossCutInputs(scenario); err != nil {
 		return nil, nil, err
 	}
+	ownsRoot := root == ""
 	var err error
 	if root == "" {
 		root, err = os.MkdirTemp("", "watchtower-matrix-")
@@ -209,7 +210,12 @@ func (f *EnvironmentFactory) newInProcess(ctx context.Context, scenario recovery
 	} else if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create scenario root: %w", err)
 	}
-	cleanup := func() error { return os.RemoveAll(root) }
+	cleanup := func() error {
+		if !ownsRoot {
+			return nil
+		}
+		return os.RemoveAll(root)
+	}
 	fail := func(err error) (*executor, func() error, error) {
 		_ = cleanup()
 		return nil, nil, err

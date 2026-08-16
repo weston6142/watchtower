@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/weston6142/watchtower/internal/flow"
@@ -17,10 +19,15 @@ import (
 
 const workerEnvironment = "WATCHTOWER_ENGINE_HARNESS_WORKER"
 
+const (
+	workerCapabilityDescriptor = 3
+	workerRootEnvironment      = "WATCHTOWER_ENGINE_HARNESS_ROOT"
+	workerCapabilityMarker     = ".watchtower-worker-capability"
+)
+
 type workerRequest struct {
 	ProductionFlow flow.Flow
 	Scenario       recoverymatrix.Scenario
-	Root           string
 }
 
 type workerResponse struct {
@@ -37,6 +44,7 @@ type processExecutor struct {
 
 	mu       sync.Mutex
 	tree     *runner.ProcessTree
+	root     *os.File
 	started  chan struct{}
 	response workerResponse
 }
@@ -58,19 +66,26 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	if err != nil {
 		return nil, nil, fmt.Errorf("create scenario isolation: %w", err)
 	}
+	rootCapability, err := os.Open(root)
+	if err != nil {
+		_ = os.RemoveAll(root)
+		return nil, nil, fmt.Errorf("open scenario isolation capability: %w", err)
+	}
 	executor := &processExecutor{
-		request: workerRequest{ProductionFlow: cloneFlow(f.ProductionFlow), Scenario: scenario, Root: root},
+		request: workerRequest{ProductionFlow: cloneFlow(f.ProductionFlow), Scenario: scenario},
+		root:    rootCapability,
 		started: make(chan struct{}),
 	}
 	cleanup := func() error {
 		executor.mu.Lock()
 		workerCleanup := executor.response.CleanupError
 		executor.mu.Unlock()
+		closeErr := rootCapability.Close()
 		removeErr := os.RemoveAll(root)
 		if workerCleanup != "" {
-			return errors.Join(errors.New(workerCleanup), removeErr)
+			return errors.Join(errors.New(workerCleanup), closeErr, removeErr)
 		}
-		return removeErr
+		return errors.Join(closeErr, removeErr)
 	}
 	return executor, cleanup, nil
 }
@@ -87,11 +102,17 @@ func (e *processExecutor) Execute(ctx context.Context, _ recoverymatrix.Scenario
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	tree, err := runner.StartProcessTree(context.Background(), runner.ProcessSpec{
-		Path:   executable,
-		Env:    append(os.Environ(), workerEnvironment+"=1"),
+		Path: executable,
+		Env: append(os.Environ(),
+			fmt.Sprintf("%s=%d", workerEnvironment, workerCapabilityDescriptor),
+			workerRootEnvironment+"="+e.root.Name(),
+		),
 		Stdin:  bytes.NewReader(request),
 		Stdout: &stdout,
 		Stderr: &stderr,
+		ExtraFiles: []*os.File{
+			e.root,
+		},
 	})
 	if err != nil {
 		e.mu.Lock()
@@ -177,23 +198,65 @@ func (e *processExecutor) Terminate(ctx context.Context) error {
 }
 
 func WorkerRequested() bool {
-	return os.Getenv(workerEnvironment) == "1"
+	return os.Getenv(workerEnvironment) == fmt.Sprint(workerCapabilityDescriptor)
 }
 
 func RunWorker(input io.Reader, output io.Writer) error {
+	root, err := consumeWorkerRootCapability()
+	if err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(input)
 	decoder.DisallowUnknownFields()
 	var request workerRequest
 	if err := decoder.Decode(&request); err != nil {
 		return fmt.Errorf("decode worker request: %w", err)
 	}
-	response := executeWorker(request)
+	response := executeWorker(request, root)
 	return json.NewEncoder(output).Encode(response)
 }
 
-func executeWorker(request workerRequest) (response workerResponse) {
+func consumeWorkerRootCapability() (string, error) {
+	root := os.Getenv(workerRootEnvironment)
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return "", fmt.Errorf("scenario worker root capability is invalid")
+	}
+	if filepath.Dir(root) != filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(root), "watchtower-matrix-") {
+		return "", fmt.Errorf("scenario worker root is outside the matrix temporary directory")
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 || rootInfo.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("scenario worker root is not a private directory")
+	}
+	capability := os.NewFile(workerCapabilityDescriptor, "watchtower-worker-root")
+	if capability == nil {
+		return "", fmt.Errorf("scenario worker root capability is unavailable")
+	}
+	defer capability.Close()
+	capabilityInfo, err := capability.Stat()
+	if err != nil || !capabilityInfo.IsDir() || !os.SameFile(rootInfo, capabilityInfo) {
+		return "", fmt.Errorf("scenario worker root capability does not match the requested directory")
+	}
+	entries, err := capability.ReadDir(1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("inspect scenario worker root: %w", err)
+	}
+	if len(entries) != 0 {
+		return "", fmt.Errorf("scenario worker root is not fresh")
+	}
+	marker, err := os.OpenFile(filepath.Join(root, workerCapabilityMarker), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("consume scenario worker root capability: %w", err)
+	}
+	if err := marker.Close(); err != nil {
+		return "", fmt.Errorf("consume scenario worker root capability: %w", err)
+	}
+	return root, nil
+}
+
+func executeWorker(request workerRequest, root string) (response workerResponse) {
 	factory := &EnvironmentFactory{ProductionFlow: request.ProductionFlow}
-	executor, cleanup, err := factory.newInProcess(context.Background(), request.Scenario, request.Root)
+	executor, cleanup, err := factory.newInProcess(context.Background(), request.Scenario, root)
 	if err != nil {
 		response.ExecuteError = err.Error()
 		response.InfrastructureKind = recoverymatrix.InfrastructureFixture

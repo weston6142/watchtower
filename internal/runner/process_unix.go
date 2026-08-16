@@ -17,6 +17,7 @@ func startProcessTree(spec ProcessSpec) (*ProcessTree, error) {
 	cmd := exec.Command(spec.Path, spec.Args...)
 	cmd.Dir, cmd.Env = spec.Dir, append([]string(nil), spec.Env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = spec.Stdin, spec.Stdout, spec.Stderr
+	cmd.ExtraFiles = append([]*os.File(nil), spec.ExtraFiles...)
 	var stdin io.WriteCloser
 	var stdout io.ReadCloser
 	var stdoutWriter *os.File

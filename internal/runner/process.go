@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ type ProcessSpec struct {
 	Stdin      io.Reader
 	Stdout     io.Writer
 	Stderr     io.Writer
+	ExtraFiles []*os.File
 	PipeStdin  bool
 	PipeStdout bool
 }
