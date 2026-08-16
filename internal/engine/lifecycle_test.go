@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -470,6 +471,71 @@ func TestRehydrateRecoversDurableLifecycleBeforeLegacyFallback(t *testing.T) {
 	}
 	if starts.Load() != 1 {
 		t.Fatalf("runner starts after restart recovery = %d, want one", starts.Load())
+	}
+}
+
+func TestRehydrateFinalizationReadyMakesNextStageRetryable(t *testing.T) {
+	var starts atomic.Int32
+	f := flow.Flow{Name: "lifecycle-next-stage", Stages: []flow.Stage{
+		{Name: "execute", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+		{Name: "verify", Agents: []flow.AgentRef{{Package: "agent"}}, Workspace: "none", Gate: flow.GateAuto, Completion: flow.CompletionAll},
+	}}
+	r := &runner.FakeRunner{Scripts: map[string]runner.Script{
+		"execute/agent": {},
+		"verify/agent":  {},
+	}, OnStart: func(_, _, _, _ string) error {
+		starts.Add(1)
+		return nil
+	}}
+	e1, s := newEngineCfg(t, r, func(cfg *Config) {
+		cfg.Flows = map[string]flow.Flow{f.Name: f}
+	})
+	interrupted := errors.New("restart after completed stage")
+	e1.cfg.BoundaryObserver = boundaryObserverFunc(func(_ context.Context, boundary DurableBoundary) error {
+		if boundary.Kind == BoundaryStageLifecycle && boundary.Stage == "execute" && boundary.ID == string(stagelifecycle.FinalizationReady) {
+			return InterruptAfterCommit(interrupted)
+		}
+		return nil
+	})
+	id, err := e1.CreateIssue("completed stage restart", "", f.Name, levers.Preset(f, flow.LeverYolo), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e1.StartIssue(context.Background(), id); !errors.Is(err, interrupted) {
+		t.Fatalf("StartIssue error = %v, want interruption", err)
+	}
+	e2 := newEngineOnFileWithFlow(t, s, r, e1.cfg.DataDir, f)
+	if err := e2.Rehydrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.RetryStage(context.Background(), id); err != nil {
+		t.Fatalf("retry next stage after restart: %v", err)
+	}
+	if starts.Load() != 2 {
+		t.Fatalf("runner starts after next-stage recovery = %d, want two", starts.Load())
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRecovery := false
+	for _, event := range events {
+		if event.IssueID != id || event.Type != core.EvStageFailed {
+			continue
+		}
+		var payload struct {
+			Stage string `json:"stage"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Stage == "verify" && payload.Error == "lifecycle checkpoint recovered — press R to retry" {
+			foundRecovery = true
+		}
+	}
+	if !foundRecovery {
+		t.Fatal("rehydration emitted no actionable next-stage recovery event")
 	}
 }
 

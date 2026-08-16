@@ -459,5 +459,22 @@ func TestGH79VerificationRetryMatrix(t *testing.T) {
 		if gh79EventCount(t, fixture.s, fixture.id, core.EvIssueMerged) != 0 {
 			t.Fatal("failed reverification merged the issue")
 		}
+		if _, err := os.Stat(fixture.worktree); err != nil {
+			t.Fatalf("failed reverification worktree was not preserved: %v", err)
+		}
+		if err := os.Remove(marker); err != nil {
+			t.Fatal(err)
+		}
+		restarted := New(fixture.e.cfg)
+		if err := restarted.Rehydrate(); err != nil {
+			t.Fatal(err)
+		}
+		if err := restarted.RetryStage(context.Background(), fixture.id); err != nil {
+			t.Fatalf("retry failed reverification after restart: %v", err)
+		}
+		integration, ok, err = fixture.s.IssueIntegration(fixture.id)
+		if err != nil || !ok || integration.State != store.IntegrationMerged {
+			t.Fatalf("recovered reverification integration = %+v ok=%v err=%v", integration, ok, err)
+		}
 	})
 }

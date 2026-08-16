@@ -360,8 +360,8 @@ func newHarnessEngine(
 	}
 	adapter := &stageBoundRunner{FakeRunner: r, stage: scenario.References.Stage, preflightErr: preflightErr}
 	workspaceProvider := workspace.Provider(workspace.GitWorktree{Repo: repo})
-	if scenario.Kind == recoverymatrix.ScenarioArtifactIdentity || driver.get() == scenario.RecoveryInputs["state"] || scenario.References.FinalizationBoundary == store.IntegrationPendingReverification ||
-		scenario.References.FinalizationBoundary == store.IntegrationReverificationFailed {
+	recoveryState := scenario.RecoveryInputs["state"]
+	if scenario.Kind == recoverymatrix.ScenarioArtifactIdentity || (recoveryState != "" && driver.get() == recoveryState) {
 		workspaceProvider = reusableWorkspace{GitWorktree: workspace.GitWorktree{Repo: repo}}
 	} else if scenario.References.FinalizationBoundary == store.IntegrationCleanupNeeded {
 		workspaceProvider = &recoverableWorkspace{GitWorktree: workspace.GitWorktree{Repo: repo}, failRelease: true}
@@ -691,9 +691,6 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 	if e.scenario.Kind == recoverymatrix.ScenarioFinalization && e.scenario.References.FinalizationBoundary == string(store.IntegrationMerged) {
 		return e.rehydrateOnly()
 	}
-	if err := e.ensurePersistedWorktree(); err != nil {
-		return err
-	}
 	if err := e.store.Close(); err != nil {
 		return fmt.Errorf("close first runtime store: %w", err)
 	}
@@ -713,10 +710,7 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 		e.scenario.References.DurableBoundary == string(store.FinalizationReady) &&
 		e.scenario.References.Stage != "merge-verification"
 	if completedStageRestart {
-		if err := e.engine.Resume(e.issueID); err != nil && !strings.Contains(err.Error(), "unknown issue") {
-			return err
-		}
-		return e.waitForCompletion(ctx)
+		return e.retryWithSyntheticApprovals(ctx)
 	}
 	if e.scenario.Kind == recoverymatrix.ScenarioRestart &&
 		(e.scenario.References.DurableBoundary == string(store.GateResolved) ||
@@ -775,9 +769,6 @@ func (e *executor) recoverFailedReverification(ctx context.Context) error {
 		return fmt.Errorf("reverification failure state was not persisted")
 	}
 	e.driver.set(e.scenario.RecoveryInputs["state"])
-	if err := e.ensurePersistedWorktree(); err != nil {
-		return err
-	}
 	if err := e.engine.SetLever(e.issueID, "merge-verification", flow.LeverRegular); err != nil {
 		return err
 	}
@@ -1053,9 +1044,6 @@ func (e *executor) rehydrateOnly() error {
 		return fmt.Errorf("reopen terminal store: %w", err)
 	}
 	e.store = database
-	if err := e.ensurePersistedWorktree(); err != nil {
-		return err
-	}
 	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.failureInjector, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate terminal state: %w", err)

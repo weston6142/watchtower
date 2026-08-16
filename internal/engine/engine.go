@@ -727,13 +727,17 @@ func (e *Engine) Rehydrate() error {
 			if recordsErr != nil {
 				return recordsErr
 			}
+			e.restoreInterruptedWorkspace(recovered)
 			e.mu.Lock()
 			_, known := e.issues[row.ID]
 			if !known {
 				e.issues[row.ID] = recovered
 			}
 			e.mu.Unlock()
-			if !known && len(recoveredRecords) > 0 {
+			if !known {
+				if len(recoveredRecords) == 0 {
+					e.recordInterruptedRetryFailure(recovered, e.cfg.Flows[row.Flow].Stages[recovered.stageIdx], 0, failure.ClassCancellation)
+				}
 				e.emit(core.EvStageFailed, row.ID, map[string]any{
 					"stage": recoveredStage,
 					"error": "lifecycle checkpoint recovered — press R to retry", "final": true})
@@ -4806,17 +4810,17 @@ func (e *Engine) runFromWithOwnership(
 			return nil
 		} else if err != nil {
 			if st.MergeBarrier {
-				if boundaryErr := e.failPendingVerificationAttempt(ctx, is, err); boundaryErr != nil {
-					return boundaryErr
-				}
-				// A finalization boundary is written by the merge-verification
-				// stage immediately before its observer is called. If that
-				// observer interrupts the run, retain the verified worktree so a
-				// fresh engine can resume from the durable checkpoint.
-				var boundaryErr *committedBoundaryError
-				if errors.As(err, &boundaryErr) && boundaryErr.boundary.Kind == BoundaryFinalization {
+				failedReverification, boundaryErr := e.failPendingVerificationAttempt(ctx, is, err)
+				if failedReverification {
 					preserveWorkspace = true
 				}
+				if boundaryErr != nil {
+					return boundaryErr
+				}
+			}
+			var committed *committedBoundaryError
+			if errors.As(err, &committed) {
+				preserveWorkspace = true
 			}
 			return err
 		}
@@ -4959,7 +4963,7 @@ func (e *Engine) resumePendingVerification(
 	ctx context.Context, is *issueState, integration store.IssueIntegration, stageIdx int,
 ) error {
 	if err := e.restoreVerifiedWorkspace(is, integration); err != nil {
-		if boundaryErr := e.failPendingVerificationAttempt(ctx, is, err); boundaryErr != nil {
+		if _, boundaryErr := e.failPendingVerificationAttempt(ctx, is, err); boundaryErr != nil {
 			return boundaryErr
 		}
 		return err
@@ -4967,29 +4971,29 @@ func (e *Engine) resumePendingVerification(
 	return e.runFromOwned(ctx, is, stageIdx, nil)
 }
 
-func (e *Engine) failPendingVerificationAttempt(ctx context.Context, is *issueState, cause error) error {
+func (e *Engine) failPendingVerificationAttempt(ctx context.Context, is *issueState, cause error) (bool, error) {
 	if cause == nil || e.cfg.Store == nil {
-		return nil
+		return false, nil
 	}
 	attempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
 	if err != nil || !found || attempt.Status != store.VerificationAttemptPending {
-		return nil
+		return false, nil
 	}
 	if _, err := e.cfg.Store.FinishVerificationAttempt(
 		is.id, attempt.ID, store.VerificationAttemptFailed, nil, verificationAttemptFailedReason,
 	); err != nil {
-		return nil
+		return false, nil
 	}
 	integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
 	if err != nil || !ok || integration.State != store.IntegrationPendingReverification {
-		return nil
+		return false, nil
 	}
 	integration.State = store.IntegrationReverificationFailed
 	integration.LastError = cause.Error()
 	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
-		return nil
+		return false, nil
 	}
-	return e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), integration.State)
+	return true, e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), integration.State)
 }
 
 func (e *Engine) retryStaleVerification(
