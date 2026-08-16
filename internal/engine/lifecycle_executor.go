@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/weston6142/watchtower/internal/contextpack"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/store"
 	"github.com/weston6142/watchtower/internal/verificationcache"
@@ -23,6 +24,9 @@ func (x lifecycleExecutor) verify(
 ) (runErr error) {
 	if x.engine.cfg.Train == nil || len(x.engine.cfg.Train.TestCmd) == 0 {
 		return fmt.Errorf("integrating stage %s requires engine test_cmd", stage)
+	}
+	if err := x.engine.injectFailure(ctx, failure.SiteVerification, is.id, stage); err != nil {
+		return err
 	}
 	record, found, err := x.engine.cfg.Store.CapabilityAttempt(is.id, stage, capabilityAttemptID)
 	if err != nil {
@@ -58,6 +62,9 @@ func (x lifecycleExecutor) verify(
 	cacheRoot := x.engine.cfg.CacheRoot
 	if cacheRoot == "" {
 		cacheRoot = x.engine.cfg.DataDir
+	}
+	if err := x.engine.injectFailure(ctx, failure.SiteCache, is.id, stage); err != nil {
+		return err
 	}
 	runtime, err := verificationcache.New(verificationcache.Config{
 		CacheRoot: cacheRoot, RepoDir: x.engine.cfg.Train.Repo,

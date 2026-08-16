@@ -22,6 +22,7 @@ import (
 	"github.com/weston6142/watchtower/internal/core"
 	"github.com/weston6142/watchtower/internal/decision"
 	"github.com/weston6142/watchtower/internal/engine"
+	"github.com/weston6142/watchtower/internal/failure"
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/levers"
 	"github.com/weston6142/watchtower/internal/marshal"
@@ -61,6 +62,64 @@ type boundaryInterruptObserver struct {
 type scenarioDriver struct {
 	mu    sync.Mutex
 	state string
+}
+
+type failureDriver struct {
+	mu     sync.Mutex
+	family failure.Site
+	stage  string
+	fired  bool
+}
+
+func newFailureDriver(scenario recoverymatrix.Scenario) *failureDriver {
+	if scenario.Kind != recoverymatrix.ScenarioFailure || !isInjectedFailureFamily(scenario.References.FailureFamily) {
+		return nil
+	}
+	return &failureDriver{family: failure.Site(scenario.References.FailureFamily), stage: scenario.References.Stage}
+}
+
+func (d *failureDriver) inject(site failure.Site, stage string) error {
+	if d == nil || d.family != site || d.stage != stage {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.fired = true
+	return errors.New("deterministic subsystem boundary failure")
+}
+
+func (d *failureDriver) BeforeWorkspace(_ context.Context, _, stage string) error {
+	return d.inject(failure.SiteWorkspace, stage)
+}
+func (d *failureDriver) BeforeArtifact(_ context.Context, _, stage string) error {
+	return d.inject(failure.SiteArtifact, stage)
+}
+func (d *failureDriver) BeforePlanner(_ context.Context, _, stage string) error {
+	return d.inject(failure.SitePlanner, stage)
+}
+func (d *failureDriver) BeforeGit(_ context.Context, _, stage string) error {
+	return d.inject(failure.SiteGit, stage)
+}
+func (d *failureDriver) BeforeVerification(_ context.Context, _, stage string) error {
+	return d.inject(failure.SiteVerification, stage)
+}
+func (d *failureDriver) BeforeCache(_ context.Context, _, stage string) error {
+	return d.inject(failure.SiteCache, stage)
+}
+func (d *failureDriver) BeforeStore(_ context.Context, _, stage string) error {
+	return d.inject(failure.SiteStore, stage)
+}
+func (d *failureDriver) BeforeFinalization(_ context.Context, _, stage string) error {
+	return d.inject(failure.SiteFinalization, stage)
+}
+
+func (d *failureDriver) wasFired() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.fired
 }
 
 func (d *scenarioDriver) get() string {
@@ -178,8 +237,9 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	var startsMu sync.Mutex
 	storePath := filepath.Join(dataDir, "watchtower.db")
 	observer := observerForScenario(scenario, repo)
+	failureInjector := newFailureDriver(scenario)
 	driver := &scenarioDriver{state: scenario.InitialInputs["state"]}
-	configured, fakeRunner := newHarnessEngine(database, dataDir, repo, scenarioFlow, scenario, &starts, &startsMu, effects, observer, driver)
+	configured, fakeRunner := newHarnessEngine(database, dataDir, repo, scenarioFlow, scenario, &starts, &startsMu, effects, observer, failureInjector, driver)
 	matrix := levers.Preset(scenarioFlow, flow.LeverYolo)
 	if _, hasPlan := matrix["plan"]; hasPlan {
 		matrix["plan"] = flow.LeverRegular
@@ -197,7 +257,8 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 		dataDir: dataDir, storePath: storePath,
 		flow: cloneFlow(scenarioFlow), scenario: scenario, starts: &starts, startsMu: &startsMu,
 		expectedStarts: expectedScriptKeys(scenarioFlow, scenario),
-		effects:        effects, observer: observer, driver: driver, runner: fakeRunner,
+		effects:        effects, observer: observer, failureInjector: failureInjector,
+		driver: driver, runner: fakeRunner,
 	}
 	return executor, func() error {
 		if executor.store != nil {
@@ -227,7 +288,7 @@ func observerForScenario(scenario recoverymatrix.Scenario, repo string) *boundar
 			scenario: scenario, repo: repo,
 		}
 	case recoverymatrix.ScenarioFailure:
-		if scenario.References.FailureFamily == "runner" {
+		if scenario.References.FailureFamily != "lifecycle" {
 			return nil
 		}
 		return &boundaryInterruptObserver{
@@ -248,6 +309,7 @@ func newHarnessEngine(
 	startsMu *sync.Mutex,
 	effects *effectRecorder,
 	observer *boundaryInterruptObserver,
+	failureInjector engine.FailureInjector,
 	driver *scenarioDriver,
 ) (*engine.Engine, *runner.FakeRunner) {
 	runtimeFlow := flowForDriverState(production, scenario, driver.get())
@@ -300,6 +362,7 @@ func newHarnessEngine(
 		Clock:            deterministicClock(scenario.Seed),
 		Runner:           adapter,
 		BoundaryObserver: configuredObserver,
+		FailureInjector:  failureInjector,
 		Pool:             slots.NewPool(1),
 		Flows:            map[string]flow.Flow{runtimeFlow.Name: runtimeFlow},
 		DataDir:          dataDir,
@@ -318,22 +381,23 @@ func newHarnessEngine(
 }
 
 type executor struct {
-	engine         *engine.Engine
-	store          *store.Store
-	issueID        string
-	repo           string
-	dataDir        string
-	storePath      string
-	flow           flow.Flow
-	scenario       recoverymatrix.Scenario
-	starts         *[]string
-	startsMu       *sync.Mutex
-	expectedStarts []string
-	effects        *effectRecorder
-	observer       *boundaryInterruptObserver
-	driver         *scenarioDriver
-	runner         *runner.FakeRunner
-	decisionID     int64
+	engine          *engine.Engine
+	store           *store.Store
+	issueID         string
+	repo            string
+	dataDir         string
+	storePath       string
+	flow            flow.Flow
+	scenario        recoverymatrix.Scenario
+	starts          *[]string
+	startsMu        *sync.Mutex
+	expectedStarts  []string
+	effects         *effectRecorder
+	observer        *boundaryInterruptObserver
+	failureInjector *failureDriver
+	driver          *scenarioDriver
+	runner          *runner.FakeRunner
+	decisionID      int64
 }
 
 func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
@@ -628,7 +692,7 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 	}
 	e.store = database
 	e.driver.set(e.scenario.RecoveryInputs["state"])
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, e.observer, e.driver)
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, e.observer, e.failureInjector, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate retained state: %w", err)
 	}
@@ -722,7 +786,7 @@ func (e *executor) resumeAfterSelectedBoundary(ctx context.Context) error {
 	}
 	e.store = database
 	e.driver.set(e.scenario.RecoveryInputs["state"])
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.driver)
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.failureInjector, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate interrupted recovery state: %w", err)
 	}
@@ -926,7 +990,7 @@ func (e *executor) rebuildForCrossCutRecovery(ctx context.Context) error {
 		}
 		e.driver.set(recovery)
 	}
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.driver)
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.failureInjector, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate cross-cutting state: %w", err)
 	}
@@ -981,7 +1045,7 @@ func (e *executor) rehydrateOnly() error {
 	if err := e.ensurePersistedWorktree(); err != nil {
 		return err
 	}
-	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.driver)
+	e.engine, _ = newHarnessEngine(database, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, nil, e.failureInjector, e.driver)
 	if err := e.engine.Rehydrate(); err != nil {
 		return fmt.Errorf("rehydrate terminal state: %w", err)
 	}
@@ -1162,6 +1226,10 @@ func (e *executor) VerifyConsumed() error {
 		}
 	}
 	if e.scenario.Kind == recoverymatrix.ScenarioFailure {
+		if isInjectedFailureFamily(e.scenario.References.FailureFamily) && !e.failureInjector.wasFired() {
+			return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnconsumed,
+				Err: fmt.Errorf("failure driver did not reach %s boundary for stage %q", e.scenario.References.FailureFamily, e.scenario.References.Stage)}
+		}
 		return verifyFailureScriptsConsumed(started, e.flow, e.scenario)
 	}
 	sort.Strings(started)
@@ -1182,7 +1250,7 @@ func (e *executor) VerifyConsumed() error {
 
 func verifyFailureScriptsConsumed(started []string, production flow.Flow, scenario recoverymatrix.Scenario) error {
 	if len(started) == 0 {
-		if scenario.References.FailureFamily == "capability" {
+		if scenario.References.FailureFamily == "capability" || isInjectedFailureFamily(scenario.References.FailureFamily) {
 			// Capability preflight is intentionally before provider start; the
 			// durable failure is the consumed target boundary.
 			return nil
@@ -1222,13 +1290,23 @@ func verifyFailureScriptsConsumed(started []string, production flow.Flow, scenar
 		}
 	}
 	if !targetReached {
-		if scenario.References.FailureFamily == "capability" {
+		if scenario.References.FailureFamily == "capability" || isInjectedFailureFamily(scenario.References.FailureFamily) {
 			return nil
 		}
 		return recoverymatrix.InfrastructureError{Kind: recoverymatrix.InfrastructureUnconsumed,
 			Err: fmt.Errorf("failure driver did not reach stage %q", scenario.References.Stage)}
 	}
 	return nil
+}
+
+func isInjectedFailureFamily(family string) bool {
+	switch failure.Site(family) {
+	case failure.SiteWorkspace, failure.SiteArtifact, failure.SitePlanner, failure.SiteGit,
+		failure.SiteVerification, failure.SiteCache, failure.SiteStore, failure.SiteFinalization:
+		return true
+	default:
+		return false
+	}
 }
 
 type effectRecorder struct {

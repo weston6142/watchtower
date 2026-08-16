@@ -56,6 +56,7 @@ type Config struct {
 	Store                    *store.Store
 	Clock                    core.Clock
 	BoundaryObserver         BoundaryObserver
+	FailureInjector          FailureInjector
 	FailureRecorder          failure.Recorder
 	Runner                   runner.Runner
 	Marshal                  Sequencer
@@ -3251,6 +3252,9 @@ func (e *Engine) runStageOnce(
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return err
 	}
+	if err := e.injectFailure(ctx, failure.SiteStore, is.id, st.Name); err != nil {
+		return err
+	}
 	// Attachment state is not cached in issueState: querying it here is what
 	// lets Rehydrate stay untouched.
 	rows, err := e.cfg.Store.Attachments(is.id)
@@ -3279,6 +3283,9 @@ func (e *Engine) runStageOnce(
 	if err != nil {
 		return err
 	}
+	if err := e.injectFailure(ctx, failure.SiteArtifact, is.id, st.Name); err != nil {
+		return err
+	}
 	if err := e.materializeStageContext(is.id, workdir, requiredInputs); err != nil {
 		return fmt.Errorf("materialize stage context: %w", err)
 	}
@@ -3290,6 +3297,9 @@ func (e *Engine) runStageOnce(
 		return err
 	}
 	contextPaths := append(append([]string(nil), requiredInputs...), st.Artifacts...)
+	if err := e.injectFailure(ctx, failure.SiteGit, is.id, st.Name); err != nil {
+		return err
+	}
 	startCommit, branch, dirty := repositoryState(workdir, contextPaths)
 	lastEventStage, _, _, lastFailure, err := e.cfg.Store.LastStageEvents(is.id)
 	if err != nil {
@@ -3483,6 +3493,9 @@ func (e *Engine) runStageOnce(
 	var plannerRunner runner.PlannerRunner
 	var emitPlannerSnapshot func(plannerbudget.Outcome, stageusage.Snapshot)
 	if st.Name == "plan" {
+		if err := e.injectFailure(ctx, failure.SitePlanner, is.id, st.Name); err != nil {
+			return err
+		}
 		emitPlannerSnapshot = func(outcome plannerbudget.Outcome, snapshot stageusage.Snapshot) {
 			e.emit(core.EvPlannerBudgetUpdated, is.id, map[string]any{
 				"stage": st.Name, "attempt": attempt,
@@ -4005,6 +4018,9 @@ func (e *Engine) runStageOnce(
 		return errDependenciesDiscovered
 	}
 	if st.MergeBarrier {
+		if err := e.injectFailure(ctx, failure.SiteFinalization, is.id, st.Name); err != nil {
+			return err
+		}
 		prepared, err := e.prepareFinalization(is, nil)
 		if err != nil {
 			return err
@@ -4721,6 +4737,13 @@ func (e *Engine) runFromWithOwnership(
 		e.mu.Lock()
 		needsWorkspace := st.Workspace != "none" && e.cfg.Workspace != nil && is.wsPath == ""
 		e.mu.Unlock()
+		if st.Workspace != "none" {
+			if err := e.injectFailure(ctx, failure.SiteWorkspace, is.id, st.Name); err != nil {
+				_ = e.recordBoundaryFailure(ctx, is.id, st.Name, 0,
+					failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateWorkspace, err)
+				return err
+			}
+		}
 		if needsWorkspace {
 			acquired, err := e.acquireStageWorkspace(is.id)
 			if err != nil {

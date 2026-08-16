@@ -134,7 +134,7 @@ func runScenario(parent context.Context, scenario Scenario, factory EnvironmentF
 		return result, counters
 	}
 
-	observation, executeErr, panicValue := executeSafely(ctx, executor, scenario)
+	observation, executeErr, panicValue, executionDone := executeWithinDeadline(ctx, executor, scenario)
 	result.Observation = normalizeObservation(observation)
 	if panicValue != nil {
 		counters.panics++
@@ -159,6 +159,13 @@ func runScenario(parent context.Context, scenario Scenario, factory EnvironmentF
 		result.FailureClass = ""
 	}
 
+	if executionDone != nil {
+		go func() {
+			<-executionDone
+			_ = cleanup()
+		}()
+		return result, counters
+	}
 	if err := cleanup(); err != nil {
 		if result.Status == ResultPassed {
 			result.Status = ResultFailed
@@ -169,6 +176,31 @@ func runScenario(parent context.Context, scenario Scenario, factory EnvironmentF
 		}
 	}
 	return result, counters
+}
+
+type executionOutcome struct {
+	observation Observation
+	err         error
+	panicValue  any
+}
+
+func executeWithinDeadline(ctx context.Context, executor ScenarioExecutor, scenario Scenario) (Observation, error, any, <-chan struct{}) {
+	outcomes := make(chan executionOutcome, 1)
+	done := make(chan struct{})
+	go func() {
+		observation, err, panicValue := executeSafely(ctx, executor, scenario)
+		outcomes <- executionOutcome{observation: observation, err: err, panicValue: panicValue}
+		close(done)
+	}()
+	select {
+	case outcome := <-outcomes:
+		if err := ctx.Err(); err != nil {
+			return Observation{}, err, nil, nil
+		}
+		return outcome.observation, outcome.err, outcome.panicValue, nil
+	case <-ctx.Done():
+		return Observation{}, ctx.Err(), nil, done
+	}
 }
 
 func executeSafely(ctx context.Context, executor ScenarioExecutor, scenario Scenario) (observation Observation, err error, panicValue any) {

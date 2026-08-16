@@ -17,12 +17,17 @@ import (
 type fakeMatrixFactory struct {
 	executors []*fakeMatrixExecutor
 	build     func(recoverymatrix.Scenario) *fakeMatrixExecutor
+	cleanup   func() error
 }
 
 func (f *fakeMatrixFactory) New(_ context.Context, scenario recoverymatrix.Scenario) (recoverymatrix.ScenarioExecutor, func() error, error) {
 	executor := f.build(scenario)
 	f.executors = append(f.executors, executor)
-	return executor, func() error { return nil }, nil
+	cleanup := f.cleanup
+	if cleanup == nil {
+		cleanup = func() error { return nil }
+	}
+	return executor, cleanup, nil
 }
 
 type fakeMatrixExecutor struct {
@@ -32,6 +37,7 @@ type fakeMatrixExecutor struct {
 	verifyErr   error
 	panicValue  any
 	wait        bool
+	block       <-chan struct{}
 }
 
 func (e *fakeMatrixExecutor) Execute(ctx context.Context, scenario recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
@@ -42,6 +48,9 @@ func (e *fakeMatrixExecutor) Execute(ctx context.Context, scenario recoverymatri
 	if e.wait {
 		<-ctx.Done()
 		return recoverymatrix.Observation{}, ctx.Err()
+	}
+	if e.block != nil {
+		<-e.block
 	}
 	return e.observation, e.err
 }
@@ -106,6 +115,42 @@ func TestRunnerRejectsPartialAndInfrastructureFailures(t *testing.T) {
 				t.Fatalf("infrastructure summary = %+v", summary)
 			}
 		})
+	}
+}
+
+func TestRunnerEnforcesDeadlineAroundUncooperativeExecutor(t *testing.T) {
+	release := make(chan struct{})
+	cleaned := make(chan struct{})
+	scenario := matrixScenario("failure/brainstorm/runner", 101)
+	factory := &fakeMatrixFactory{
+		build: func(scenario recoverymatrix.Scenario) *fakeMatrixExecutor {
+			return &fakeMatrixExecutor{observation: expectedObservation(scenario), block: release}
+		},
+		cleanup: func() error {
+			close(cleaned)
+			return nil
+		},
+	}
+	started := time.Now()
+	summary := recoverymatrix.Run(context.Background(), []recoverymatrix.Scenario{scenario}, factory, recoverymatrix.RunOptions{
+		ScenarioTimeout: 10 * time.Millisecond,
+	})
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("runner exceeded enforced deadline: %v", elapsed)
+	}
+	if summary.Timeouts != 1 || summary.Failed != 1 || summary.Passed != 0 {
+		t.Fatalf("timeout summary = %+v", summary)
+	}
+	select {
+	case <-cleaned:
+		t.Fatal("cleanup ran while executor was still active")
+	default:
+	}
+	close(release)
+	select {
+	case <-cleaned:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not run after executor stopped")
 	}
 }
 
