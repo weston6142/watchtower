@@ -187,7 +187,7 @@ func NewEnvironmentFactory(productionFlow flow.Flow) *EnvironmentFactory {
 	return NewFactory(productionFlow)
 }
 
-func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Scenario) (recoverymatrix.ScenarioExecutor, func() error, error) {
+func (f *EnvironmentFactory) newInProcess(ctx context.Context, scenario recoverymatrix.Scenario, root string) (*executor, func() error, error) {
 	if f == nil || len(f.ProductionFlow.Stages) == 0 {
 		return nil, nil, fmt.Errorf("production flow is empty")
 	}
@@ -200,12 +200,17 @@ func (f *EnvironmentFactory) New(ctx context.Context, scenario recoverymatrix.Sc
 	if err := validateCrossCutInputs(scenario); err != nil {
 		return nil, nil, err
 	}
-	root, err := os.MkdirTemp("", "watchtower-matrix-")
-	if err != nil {
+	var err error
+	if root == "" {
+		root, err = os.MkdirTemp("", "watchtower-matrix-")
+		if err != nil {
+			return nil, nil, fmt.Errorf("create scenario root: %w", err)
+		}
+	} else if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create scenario root: %w", err)
 	}
 	cleanup := func() error { return os.RemoveAll(root) }
-	fail := func(err error) (recoverymatrix.ScenarioExecutor, func() error, error) {
+	fail := func(err error) (*executor, func() error, error) {
 		_ = cleanup()
 		return nil, nil, err
 	}
@@ -398,7 +403,6 @@ type executor struct {
 	driver          *scenarioDriver
 	runner          *runner.FakeRunner
 	decisionID      int64
-	active          sync.WaitGroup
 }
 
 func (e *executor) Execute(ctx context.Context, _ recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
@@ -1155,11 +1159,7 @@ func (e *executor) retryWithSyntheticApprovals(ctx context.Context) error {
 		return err
 	}
 	done := make(chan error, 1)
-	e.active.Add(1)
-	go func() {
-		defer e.active.Done()
-		done <- e.engine.RetryStage(ctx, e.issueID)
-	}()
+	go func() { done <- e.engine.RetryStage(ctx, e.issueID) }()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -1183,11 +1183,7 @@ func (e *executor) startWithSyntheticApprovals(ctx context.Context) error {
 		return err
 	}
 	done := make(chan error, 1)
-	e.active.Add(1)
-	go func() {
-		defer e.active.Done()
-		done <- e.engine.StartIssue(ctx, e.issueID)
-	}()
+	go func() { done <- e.engine.StartIssue(ctx, e.issueID) }()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -1261,24 +1257,6 @@ func (e *executor) VerifyConsumed() error {
 		}
 	}
 	return nil
-}
-
-func (e *executor) Terminate(ctx context.Context) error {
-	err := e.engine.KillStage(e.issueID)
-	if err != nil && !strings.Contains(err.Error(), "has no running stage") && !strings.Contains(err.Error(), "unknown issue") {
-		return err
-	}
-	done := make(chan struct{})
-	go func() {
-		e.active.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 func verifyFailureScriptsConsumed(started []string, production flow.Flow, scenario recoverymatrix.Scenario) error {
@@ -1773,7 +1751,6 @@ func cloneFlow(production flow.Flow) flow.Flow {
 }
 
 var _ recoverymatrix.EnvironmentFactory = (*EnvironmentFactory)(nil)
-var _ recoverymatrix.ScenarioExecutor = (*executor)(nil)
 var _ marshal.EffectSink = (*effectRecorder)(nil)
 
 func deterministicDecisionIdentities(production flow.Flow) map[string]decision.AgentIdentity {

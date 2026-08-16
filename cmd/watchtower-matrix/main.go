@@ -26,6 +26,12 @@ type matrixEvidence struct {
 }
 
 func main() {
+	if engineharness.WorkerRequested() {
+		if err := engineharness.RunWorker(os.Stdin, os.Stdout); err != nil {
+			fatalf("%v", err)
+		}
+		return
+	}
 	if len(os.Args) < 2 {
 		fatalf("usage: watchtower-matrix <run|complete> [flags]")
 	}

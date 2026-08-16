@@ -166,6 +166,11 @@ func runScenario(parent context.Context, scenario Scenario, factory EnvironmentF
 	if executionDone != nil {
 		if err := terminateExecution(parent, executor, executionDone); err != nil {
 			result.Failure += "; " + InfrastructureError{Kind: InfrastructureCleanup, Err: err}.Error()
+			go func() {
+				<-executionDone
+				_ = cleanup()
+			}()
+			return result, counters
 		}
 	}
 	if err := cleanup(); err != nil {

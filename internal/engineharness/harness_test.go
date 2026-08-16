@@ -2,14 +2,27 @@ package engineharness
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/weston6142/watchtower/internal/flow"
 	"github.com/weston6142/watchtower/internal/marshal"
 	"github.com/weston6142/watchtower/internal/recoverymatrix"
 )
+
+func TestMain(m *testing.M) {
+	if WorkerRequested() {
+		if err := RunWorker(os.Stdin, os.Stdout); err != nil {
+			_, _ = os.Stderr.WriteString(err.Error())
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func shippedHarnessFlow(t *testing.T) flow.Flow {
 	t.Helper()
@@ -88,5 +101,25 @@ func TestDeterministicEnvironmentIsOfflineAndSynthetic(t *testing.T) {
 	}
 	if err := executor.VerifyConsumed(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestScenarioTimeoutKillsWorkerBeforeCleanup(t *testing.T) {
+	temporaryRoot := t.TempDir()
+	t.Setenv("TMPDIR", temporaryRoot)
+	productionFlow := shippedHarnessFlow(t)
+	scenario := recoverymatrix.Scenario{ID: "timeout/default", DriverID: "synthetic/deterministic", Seed: 690009}
+	summary := recoverymatrix.Run(context.Background(), []recoverymatrix.Scenario{scenario}, NewFactory(productionFlow), recoverymatrix.RunOptions{
+		ScenarioTimeout: 5 * time.Millisecond,
+	})
+	if summary.Timeouts != 1 || summary.Failed != 1 || summary.Passed != 0 {
+		t.Fatalf("timeout summary = %+v", summary)
+	}
+	entries, err := os.ReadDir(temporaryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("scenario isolation roots remain after timeout: %v", entries)
 	}
 }

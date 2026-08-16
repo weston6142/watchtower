@@ -38,7 +38,7 @@ type fakeMatrixExecutor struct {
 	panicValue  any
 	wait        bool
 	block       <-chan struct{}
-	terminate   func()
+	terminate   func() error
 }
 
 func (e *fakeMatrixExecutor) Execute(ctx context.Context, scenario recoverymatrix.Scenario) (recoverymatrix.Observation, error) {
@@ -60,7 +60,7 @@ func (e *fakeMatrixExecutor) VerifyConsumed() error { return e.verifyErr }
 
 func (e *fakeMatrixExecutor) Terminate(context.Context) error {
 	if e.terminate != nil {
-		e.terminate()
+		return e.terminate()
 	}
 	return nil
 }
@@ -135,9 +135,10 @@ func TestRunnerEnforcesDeadlineAroundUncooperativeExecutor(t *testing.T) {
 		build: func(scenario recoverymatrix.Scenario) *fakeMatrixExecutor {
 			return &fakeMatrixExecutor{
 				observation: expectedObservation(scenario), block: release,
-				terminate: func() {
+				terminate: func() error {
 					close(release)
 					close(terminated)
+					return nil
 				},
 			}
 		},
@@ -165,6 +166,41 @@ func TestRunnerEnforcesDeadlineAroundUncooperativeExecutor(t *testing.T) {
 	case <-cleaned:
 	default:
 		t.Fatal("cleanup did not run before the timed-out scenario returned")
+	}
+}
+
+func TestRunnerDefersCleanupUntilFailedTerminationExecutorExits(t *testing.T) {
+	release := make(chan struct{})
+	cleaned := make(chan struct{})
+	scenario := matrixScenario("failure/brainstorm/runner", 101)
+	factory := &fakeMatrixFactory{
+		build: func(scenario recoverymatrix.Scenario) *fakeMatrixExecutor {
+			return &fakeMatrixExecutor{
+				observation: expectedObservation(scenario), block: release,
+				terminate: func() error { return errors.New("termination failed") },
+			}
+		},
+		cleanup: func() error {
+			close(cleaned)
+			return nil
+		},
+	}
+	summary := recoverymatrix.Run(context.Background(), []recoverymatrix.Scenario{scenario}, factory, recoverymatrix.RunOptions{
+		ScenarioTimeout: 10 * time.Millisecond,
+	})
+	if summary.Timeouts != 1 || summary.Failed != 1 || !strings.Contains(summary.Results[0].Failure, "termination failed") {
+		t.Fatalf("failed termination summary = %+v", summary)
+	}
+	select {
+	case <-cleaned:
+		t.Fatal("cleanup ran before failed-termination executor exited")
+	default:
+	}
+	close(release)
+	select {
+	case <-cleaned:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not run after executor exit")
 	}
 }
 

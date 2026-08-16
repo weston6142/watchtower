@@ -9,8 +9,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/weston6142/watchtower/internal/engineharness"
 	"github.com/weston6142/watchtower/internal/recoverymatrix"
 )
+
+func TestMain(m *testing.M) {
+	if engineharness.WorkerRequested() {
+		if err := engineharness.RunWorker(os.Stdin, os.Stdout); err != nil {
+			_, _ = os.Stderr.WriteString(err.Error())
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestMatrixCLI(t *testing.T) {
 	err := runCommand([]string{

@@ -70,7 +70,7 @@ func TestArtifactIdentityRecoveryPersistsRejectedAndReplacementArtifacts(t *test
 			break
 		}
 	}
-	configured, cleanup, err := NewFactory(production).New(context.Background(), scenario)
+	executor, cleanup, err := NewFactory(production).newInProcess(context.Background(), scenario, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,13 +79,12 @@ func TestArtifactIdentityRecoveryPersistsRejectedAndReplacementArtifacts(t *test
 			t.Error(err)
 		}
 	}()
-	if _, err := configured.Execute(context.Background(), scenario); err != nil {
+	if _, err := executor.Execute(context.Background(), scenario); err != nil {
 		t.Fatal(err)
 	}
-	if err := configured.VerifyConsumed(); err != nil {
+	if err := executor.VerifyConsumed(); err != nil {
 		t.Fatal(err)
 	}
-	executor := configured.(*executor)
 	records, err := executor.store.StageLifecycleRecords(executor.issueID, scenario.References.Stage, "")
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +139,7 @@ func TestDecisionEscalationRecoveryRehydratesPendingDecision(t *testing.T) {
 			break
 		}
 	}
-	configured, cleanup, err := NewFactory(production).New(context.Background(), scenario)
+	executor, cleanup, err := NewFactory(production).newInProcess(context.Background(), scenario, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +148,6 @@ func TestDecisionEscalationRecoveryRehydratesPendingDecision(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	executor := configured.(*executor)
 	initialEngine := executor.engine
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
