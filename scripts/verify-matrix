@@ -21,7 +21,9 @@ go run ./cmd/watchtower-matrix run \
   --revision "$revision" \
   --evidence "$matrix_tmp/matrix-evidence.json" >/dev/null
 
-go test ./... -race
+# The full harness race suite includes both matrix runs and can exceed Go's
+# ten-minute default package timeout on hosted macOS runners.
+go test -race -timeout 30m ./...
 go vet ./...
 go build ./...
 git diff --check
