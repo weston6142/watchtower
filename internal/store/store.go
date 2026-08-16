@@ -254,26 +254,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS verification_attempts_retry_key
 `
 
 type Store struct {
-	db                               *sql.DB
-	clock                            core.Clock
-	mu                               sync.Mutex
-	seq                              int64
-	failNextAppendType               core.EventType
-	failNextFailureAppend            bool
-	failNextFailureHistory           bool
-	failNextRetryAuthorizations      int
-	failNextArtifactReviewResolution bool
-	failNextDecisionPageSnapshot     bool
-	failNextPausePersistence         bool
-	failNextPlannerArtifactRead      bool
-	failNextPlannerArtifactWrite     bool
-	failNextStageLifecyclePrepare    bool
-	failNextStageLifecycleCommit     bool
-	failNextStageArchiveManifest     bool
-	failNextStageCheckpointFinish    bool
-	failNextStageResultPut           bool
-	failIssueIntegrationWriteAfter   int
-	failNextVerificationRetry        bool
+	db                                *sql.DB
+	clock                             core.Clock
+	mu                                sync.Mutex
+	seq                               int64
+	failNextAppendType                core.EventType
+	failNextFailureAppend             bool
+	failNextFailureHistory            bool
+	failNextRetryAuthorizations       int
+	failNextArtifactReviewResolution  bool
+	failNextDecisionPageSnapshot      bool
+	failNextPausePersistence          bool
+	failNextPlannerArtifactRead       bool
+	failNextPlannerArtifactWrite      bool
+	failNextStageLifecyclePrepare     bool
+	failNextStageLifecycleCommit      bool
+	failNextStageArchiveManifest      bool
+	failNextStageCheckpointFinish     bool
+	failNextStageResultPut            bool
+	failIssueIntegrationWriteAfter    int
+	failNextIssueIntegrationRead      bool
+	failNextVerificationAttemptFinish bool
+	failNextVerificationRetry         bool
 }
 
 type StageRun struct {
@@ -845,6 +847,12 @@ func (s *Store) FailIssueIntegrationWriteAfterForTest(successfulWrites int) {
 	s.failIssueIntegrationWriteAfter = successfulWrites
 }
 
+func (s *Store) FailNextIssueIntegrationReadForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextIssueIntegrationRead = true
+}
+
 func (s *Store) SetIssueIntegration(integration IssueIntegration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -887,6 +895,10 @@ func (s *Store) SetIssueIntegration(integration IssueIntegration) error {
 func (s *Store) IssueIntegration(issueID string) (IssueIntegration, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failNextIssueIntegrationRead {
+		s.failNextIssueIntegrationRead = false
+		return IssueIntegration{}, false, errors.New("injected integration read failure")
+	}
 	var integration IssueIntegration
 	var cleanup, updatedAt string
 	err := s.db.QueryRow(

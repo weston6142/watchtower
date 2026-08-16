@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -477,4 +478,38 @@ func TestGH79VerificationRetryMatrix(t *testing.T) {
 			t.Fatalf("recovered reverification integration = %+v ok=%v err=%v", integration, ok, err)
 		}
 	})
+}
+
+func TestFailedReverificationPreservesWorkspaceOnStoreErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		inject func(*store.Store)
+		want   string
+	}{
+		{name: "finish attempt", inject: func(s *store.Store) { s.FailNextVerificationAttemptFinishForTest() }, want: "finish pending verification attempt"},
+		{name: "read integration", inject: func(s *store.Store) { s.FailNextIssueIntegrationReadForTest() }, want: "read pending reverification integration"},
+		{name: "write integration", inject: func(s *store.Store) { s.FailIssueIntegrationWriteAfterForTest(0) }, want: "persist failed reverification integration"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGH79Fixture(t, [][]string{{"true"}}, true, false)
+			if _, err := fixture.s.BeginVerificationRetry(context.Background(), store.VerificationRetry{
+				IssueID: fixture.id, ParentID: fixture.parentID, RetryKey: "store-error",
+				Reason: "stale tree identity", Failure: gh79FailureInput(fixture.id, fixture.parentID),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			fixture.e.mu.Lock()
+			is := fixture.e.issues[fixture.id]
+			fixture.e.mu.Unlock()
+			test.inject(fixture.s)
+			preserve, err := fixture.e.failPendingVerificationAttempt(context.Background(), is, errors.New("reverification failed"))
+			if !preserve || err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("failed transition preserve=%t err=%v, want %q", preserve, err, test.want)
+			}
+			if _, err := os.Stat(fixture.worktree); err != nil {
+				t.Fatalf("worktree after store failure: %v", err)
+			}
+		})
+	}
 }

@@ -61,6 +61,12 @@ func (s *Store) FailNextVerificationRetryForTest() {
 	s.failNextVerificationRetry = true
 }
 
+func (s *Store) FailNextVerificationAttemptFinishForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextVerificationAttemptFinish = true
+}
+
 // RecordVerificationAttempt journals a new root verification attempt.
 func (s *Store) RecordVerificationAttempt(attempt VerificationAttempt) (VerificationAttempt, error) {
 	if err := validateVerificationAttempt(attempt, true); err != nil {
@@ -275,6 +281,10 @@ func (s *Store) FinishVerificationAttempt(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failNextVerificationAttemptFinish {
+		s.failNextVerificationAttemptFinish = false
+		return VerificationAttempt{}, fmt.Errorf("injected verification attempt finish failure")
+	}
 	now := s.now().Format(time.RFC3339Nano)
 	result, err := s.db.Exec(`
 		UPDATE verification_attempts SET status=?,reason=?,receipt_json=?,updated_at=?

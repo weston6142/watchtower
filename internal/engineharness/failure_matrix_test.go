@@ -74,3 +74,22 @@ func TestFailureMatrixNegativeSelfTests(t *testing.T) {
 	}
 	_ = factory
 }
+
+func TestWorkspaceFailureCoverageUsesRealAcquireBoundary(t *testing.T) {
+	productionFlow, _, failures := loadFailureMatrix(t)
+	var workspaceScenarios []recoverymatrix.Scenario
+	for _, scenario := range failures {
+		if scenario.References.FailureFamily == "workspace" {
+			workspaceScenarios = append(workspaceScenarios, scenario)
+		}
+	}
+	if len(workspaceScenarios) != 1 || workspaceScenarios[0].References.Stage != productionFlow.Stages[0].Name {
+		t.Fatalf("workspace acquire scenarios = %+v", workspaceScenarios)
+	}
+	summary := recoverymatrix.Run(context.Background(), workspaceScenarios, NewFactory(productionFlow), recoverymatrix.RunOptions{
+		ManifestIdentity: "test/workspace-acquire", Revision: "test-revision", ScenarioTimeout: 15 * time.Second,
+	})
+	if summary.Executed != 1 || summary.Passed != 1 || summary.Failed != 0 || summary.UnexpectedCalls != 0 {
+		t.Fatalf("workspace acquire summary = %+v", summary)
+	}
+}

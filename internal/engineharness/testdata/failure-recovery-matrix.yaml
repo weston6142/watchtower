@@ -77,7 +77,8 @@ applicability:
     applicable: true
   - stage: spec
     failure_family: workspace
-    applicable: true
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
   - stage: spec
     failure_family: artifact
     applicable: true
@@ -114,7 +115,8 @@ applicability:
     applicable: true
   - stage: plan
     failure_family: workspace
-    applicable: true
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
   - stage: plan
     failure_family: artifact
     applicable: true
@@ -150,7 +152,8 @@ applicability:
     applicable: true
   - stage: execute
     failure_family: workspace
-    applicable: true
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
   - stage: execute
     failure_family: artifact
     applicable: true
@@ -187,7 +190,8 @@ applicability:
     applicable: true
   - stage: correctness-review
     failure_family: workspace
-    applicable: true
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
   - stage: correctness-review
     failure_family: artifact
     applicable: true
@@ -224,7 +228,8 @@ applicability:
     applicable: true
   - stage: clean-code-review
     failure_family: workspace
-    applicable: true
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
   - stage: clean-code-review
     failure_family: artifact
     applicable: true
@@ -261,7 +266,8 @@ applicability:
     applicable: true
   - stage: librarian
     failure_family: workspace
-    applicable: true
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
   - stage: librarian
     failure_family: artifact
     applicable: true
@@ -298,7 +304,8 @@ applicability:
     applicable: true
   - stage: merge-verification
     failure_family: workspace
-    applicable: true
+    applicable: false
+    rationale: The production flow retains the workspace acquired by brainstorm, so this stage performs no workspace acquire or reconnect operation.
   - stage: merge-verification
     failure_family: artifact
     applicable: true
@@ -440,20 +447,6 @@ scenarios:
       normalized_classification: runner
       artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
-  - id: failure/spec/workspace
-    kind: failure
-    references: {stage: spec, failure_family: workspace}
-    driver_id: deterministic/workspace
-    seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: []
-    expected:
-      public_outcome: running
-      durable_state: running
-      normalized_classification: workspace
-      artifact_identities: [failure-site:workspace]
-      recovery_behavior: declared-contract
   - id: failure/spec/artifact
     kind: failure
     references: {stage: spec, failure_family: artifact}
@@ -537,20 +530,6 @@ scenarios:
       durable_state: running
       normalized_classification: runner
       artifact_identities: [failure-site:runner]
-      recovery_behavior: declared-contract
-  - id: failure/plan/workspace
-    kind: failure
-    references: {stage: plan, failure_family: workspace}
-    driver_id: deterministic/workspace
-    seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: []
-    expected:
-      public_outcome: running
-      durable_state: running
-      normalized_classification: workspace
-      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/plan/artifact
     kind: failure
@@ -650,20 +629,6 @@ scenarios:
       normalized_classification: runner
       artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
-  - id: failure/execute/workspace
-    kind: failure
-    references: {stage: execute, failure_family: workspace}
-    driver_id: deterministic/workspace
-    seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: []
-    expected:
-      public_outcome: running
-      durable_state: running
-      normalized_classification: workspace
-      artifact_identities: [failure-site:workspace]
-      recovery_behavior: declared-contract
   - id: failure/execute/artifact
     kind: failure
     references: {stage: execute, failure_family: artifact}
@@ -747,20 +712,6 @@ scenarios:
       durable_state: running
       normalized_classification: runner
       artifact_identities: [failure-site:runner]
-      recovery_behavior: declared-contract
-  - id: failure/correctness-review/workspace
-    kind: failure
-    references: {stage: correctness-review, failure_family: workspace}
-    driver_id: deterministic/workspace
-    seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: []
-    expected:
-      public_outcome: running
-      durable_state: running
-      normalized_classification: workspace
-      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/correctness-review/artifact
     kind: failure
@@ -846,20 +797,6 @@ scenarios:
       normalized_classification: runner
       artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
-  - id: failure/clean-code-review/workspace
-    kind: failure
-    references: {stage: clean-code-review, failure_family: workspace}
-    driver_id: deterministic/workspace
-    seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: []
-    expected:
-      public_outcome: running
-      durable_state: running
-      normalized_classification: workspace
-      artifact_identities: [failure-site:workspace]
-      recovery_behavior: declared-contract
   - id: failure/clean-code-review/artifact
     kind: failure
     references: {stage: clean-code-review, failure_family: artifact}
@@ -944,20 +881,6 @@ scenarios:
       normalized_classification: runner
       artifact_identities: [failure-site:runner]
       recovery_behavior: declared-contract
-  - id: failure/librarian/workspace
-    kind: failure
-    references: {stage: librarian, failure_family: workspace}
-    driver_id: deterministic/workspace
-    seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: []
-    expected:
-      public_outcome: running
-      durable_state: running
-      normalized_classification: workspace
-      artifact_identities: [failure-site:workspace]
-      recovery_behavior: declared-contract
   - id: failure/librarian/artifact
     kind: failure
     references: {stage: librarian, failure_family: artifact}
@@ -1041,20 +964,6 @@ scenarios:
       durable_state: running
       normalized_classification: runner
       artifact_identities: [failure-site:runner]
-      recovery_behavior: declared-contract
-  - id: failure/merge-verification/workspace
-    kind: failure
-    references: {stage: merge-verification, failure_family: workspace}
-    driver_id: deterministic/workspace
-    seed: 690003
-    initial_inputs: {state: synthetic-initial}
-    recovery_inputs: {state: synthetic-recovery}
-    allowed_effects: []
-    expected:
-      public_outcome: running
-      durable_state: running
-      normalized_classification: workspace
-      artifact_identities: [failure-site:workspace]
       recovery_behavior: declared-contract
   - id: failure/merge-verification/artifact
     kind: failure

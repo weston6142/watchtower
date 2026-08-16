@@ -4741,14 +4741,12 @@ func (e *Engine) runFromWithOwnership(
 		e.mu.Lock()
 		needsWorkspace := st.Workspace != "none" && e.cfg.Workspace != nil && is.wsPath == ""
 		e.mu.Unlock()
-		if st.Workspace != "none" {
+		if needsWorkspace {
 			if err := e.injectFailure(ctx, failure.SiteWorkspace, is.id, st.Name); err != nil {
 				_ = e.recordBoundaryFailure(ctx, is.id, st.Name, 0,
 					failure.SiteWorkspace, failure.ClassUnavailable, failure.RetryAfterStateChange, failure.StateWorkspace, err)
 				return err
 			}
-		}
-		if needsWorkspace {
 			acquired, err := e.acquireStageWorkspace(is.id)
 			if err != nil {
 				_ = e.recordBoundaryFailure(ctx, is.id, st.Name, 0,
@@ -4976,22 +4974,31 @@ func (e *Engine) failPendingVerificationAttempt(ctx context.Context, is *issueSt
 		return false, nil
 	}
 	attempt, found, err := e.cfg.Store.CurrentVerificationAttempt(is.id)
-	if err != nil || !found || attempt.Status != store.VerificationAttemptPending {
+	if err != nil {
+		return true, fmt.Errorf("read pending verification attempt: %w", err)
+	}
+	if !found || attempt.Status != store.VerificationAttemptPending {
 		return false, nil
 	}
 	if _, err := e.cfg.Store.FinishVerificationAttempt(
 		is.id, attempt.ID, store.VerificationAttemptFailed, nil, verificationAttemptFailedReason,
 	); err != nil {
-		return false, nil
+		return true, fmt.Errorf("finish pending verification attempt: %w", err)
 	}
 	integration, ok, err := e.cfg.Store.IssueIntegration(is.id)
-	if err != nil || !ok || integration.State != store.IntegrationPendingReverification {
-		return false, nil
+	if err != nil {
+		return true, fmt.Errorf("read pending reverification integration: %w", err)
+	}
+	if !ok {
+		return true, fmt.Errorf("pending reverification integration is missing")
+	}
+	if integration.State != store.IntegrationPendingReverification {
+		return true, fmt.Errorf("pending reverification integration has state %q", integration.State)
 	}
 	integration.State = store.IntegrationReverificationFailed
 	integration.LastError = cause.Error()
 	if err := e.cfg.Store.SetIssueIntegration(integration); err != nil {
-		return false, nil
+		return true, fmt.Errorf("persist failed reverification integration: %w", err)
 	}
 	return true, e.notifyFinalizationBoundary(ctx, is.id, e.integrationStageName(is), integration.State)
 }
