@@ -160,12 +160,13 @@ func canonicalConflictPaths(paths []string) ([]string, error) {
 }
 
 func rebaseActive(worktree string) (bool, error) {
+	gitDir, err := conflictGit(worktree, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return false, err
+	}
 	for _, name := range []string{"rebase-merge", "rebase-apply"} {
-		path, err := conflictGit(worktree, "rev-parse", "--git-path", name)
-		if err != nil {
-			return false, err
-		}
-		if info, err := os.Stat(strings.TrimSpace(path)); err == nil && info.IsDir() {
+		path := filepath.Join(strings.TrimSpace(gitDir), name)
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
 			return true, nil
 		} else if err != nil && !os.IsNotExist(err) {
 			return false, err

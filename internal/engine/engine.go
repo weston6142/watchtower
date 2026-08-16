@@ -49,7 +49,8 @@ var errDependenciesDiscovered = errors.New("new dependencies discovered")
 var errConflictHeld = errors.New("merge conflict held")
 
 const (
-	verificationAttemptFailedReason = "merge verification attempt failed"
+	verificationAttemptFailedReason   = "merge verification attempt failed"
+	lifecycleCheckpointRecoveryReason = "lifecycle checkpoint recovered — press R to retry"
 )
 
 type Config struct {
@@ -739,8 +740,7 @@ func (e *Engine) Rehydrate() error {
 					e.recordInterruptedRetryFailure(recovered, e.cfg.Flows[row.Flow].Stages[recovered.stageIdx], 0, failure.ClassCancellation)
 				}
 				e.emit(core.EvStageFailed, row.ID, map[string]any{
-					"stage": recoveredStage,
-					"error": "lifecycle checkpoint recovered — press R to retry", "final": true})
+					"stage": recoveredStage, "error": lifecycleCheckpointRecoveryReason, "final": true})
 			}
 			continue
 		}
@@ -3310,6 +3310,12 @@ func (e *Engine) runStageOnce(
 		return err
 	}
 	if lastEventStage != st.Name {
+		lastFailure = ""
+	}
+	// The plan stage is the first stage that creates durable planner authority.
+	// A lifecycle recovery notice for a next-stage retry is not a prior plan
+	// attempt, so it must not force RequireDurableRecovery before initialization.
+	if st.Name == "plan" && lastFailure == lifecycleCheckpointRecoveryReason {
 		lastFailure = ""
 	}
 	expectedResultKind, resultProducer, producesResult, err := resultProducerForStage(st)

@@ -729,6 +729,10 @@ func (e *executor) rebuildAndResume(ctx context.Context) error {
 		if err := e.prepareFreshRestartWorkspace(); err != nil {
 			return err
 		}
+		e.engine, _ = newHarnessEngine(e.store, e.dataDir, e.repo, e.flow, e.scenario, e.starts, e.startsMu, e.effects, e.observer, e.failureInjector, e.driver)
+		if err := e.engine.Rehydrate(); err != nil {
+			return fmt.Errorf("rehydrate after fresh restart workspace: %w", err)
+		}
 	}
 	if autoFinalization {
 		return e.waitForCompletion(ctx)
