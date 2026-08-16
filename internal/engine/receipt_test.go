@@ -390,8 +390,8 @@ func TestFinalizationIdentityClassification(t *testing.T) {
 	decisionMismatch.BranchCommit = "stale-decision"
 	if err := e.validateFinalIdentity(is, decisionMismatch, receipt, nil); err == nil {
 		t.Fatal("merge decision mismatch was accepted")
-	} else if _, _, stale := StaleVerificationIdentity(err); stale {
-		t.Fatalf("merge decision mismatch was classified as stale identity: %v", err)
+	} else if kind, _, stale := StaleVerificationIdentity(err); !stale || kind != StaleVerificationBranch {
+		t.Fatalf("merge decision mismatch result = kind=%q stale=%v err=%v, want stale branch identity", kind, stale, err)
 	}
 }
 
