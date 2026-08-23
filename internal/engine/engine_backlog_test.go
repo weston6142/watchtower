@@ -140,6 +140,99 @@ func TestDraftIssueStaysInBacklog(t *testing.T) {
 	}
 }
 
+func TestLedgerCloseCompletesIdleBacklogAndIsIdempotent(t *testing.T) {
+	e, st := newTestEngine(t)
+	id, err := e.DraftIssue("ledger", "close me", "default", "regular", levers.Matrix{}, 2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(mustEvents(t, st, id))
+	result, err := e.CloseLedgerIssue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed {
+		t.Fatal("first close reported no change")
+	}
+	if row := issueRow(t, st, id); row.State != "done" {
+		t.Fatalf("state = %q, want done", row.State)
+	}
+	integration, found, err := st.IssueIntegration(id)
+	if err != nil || !found || integration.State != store.IntegrationLedgerClosed {
+		t.Fatalf("integration = %+v, found=%v, err=%v", integration, found, err)
+	}
+	events := mustEvents(t, st, id)
+	if len(events) != before+1 || events[len(events)-1].Type != core.EvIssueCompleted ||
+		!strings.Contains(string(events[len(events)-1].Payload), `"completion":"ledger"`) {
+		t.Fatalf("events = %+v", events)
+	}
+	result, err = e.CloseLedgerIssue(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatal("repeat close changed a normal done issue")
+	}
+	if after := len(mustEvents(t, st, id)); after != len(events) {
+		t.Fatalf("repeat close appended event: before=%d after=%d", len(events), after)
+	}
+}
+
+func TestLedgerCloseRefusesIncompatibleStateAndDurableClaim(t *testing.T) {
+	states := []string{"claimed", "running", "paused", "failed", "verifying", "integrating", "waiting_decision", "done (unmerged)", "merged", "cleanup_needed", "abandoned"}
+	for _, state := range states {
+		t.Run(state, func(t *testing.T) {
+			e, st := newTestEngine(t)
+			id, err := e.DraftIssue("ledger", "", "default", "regular", levers.Matrix{}, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.UpsertIssue(store.IssueRow{ID: id, State: state, Flow: "default"}); err != nil {
+				t.Fatal(err)
+			}
+			before := len(mustEvents(t, st, id))
+			if _, err := e.CloseLedgerIssue(id); err == nil {
+				t.Fatalf("close %s succeeded", state)
+			}
+			if after := len(mustEvents(t, st, id)); after != before {
+				t.Fatalf("close %s appended event: before=%d after=%d", state, before, after)
+			}
+		})
+	}
+
+	e, st := newTestEngine(t)
+	id, err := e.DraftIssue("claimed", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetIssueIntegration(store.IssueIntegration{IssueID: id, State: store.IntegrationClaimed}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.CloseLedgerIssue(id); err == nil {
+		t.Fatal("close succeeded with durable claim")
+	}
+}
+
+func TestLedgerCloseRefusesPendingDecision(t *testing.T) {
+	e, st := newTestEngine(t)
+	id, err := e.DraftIssue("decision", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.InsertDecision(store.DecisionRow{
+		IssueID: id, Stage: "review", Kind: levers.DecisionChoice,
+		Question: "Continue?", Options: []string{"yes", "no"}, Recommended: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.CloseLedgerIssue(id); err == nil {
+		t.Fatal("close succeeded with pending decision")
+	}
+	if row := issueRow(t, st, id); row.State != "backlog" {
+		t.Fatalf("pending decision changed state to %q", row.State)
+	}
+}
+
 func TestLaunchWaitsForUnmergedDependencyWithoutRunningStages(t *testing.T) {
 	e, st := newTestEngine(t)
 	useAutoLaunchFlow(e)
@@ -170,6 +263,7 @@ func TestDurableDependencyReadinessMatrix(t *testing.T) {
 		{name: "done with merged proof", checkpoint: store.IntegrationMerged, parentEvent: core.EvIssueCompleted, ready: true},
 		{name: "done without proof", parentEvent: core.EvIssueCompleted},
 		{name: "cleanup needed", checkpoint: store.IntegrationCleanupNeeded, parentEvent: core.EvCleanupNeeded, ready: true},
+		{name: "ledger closed", checkpoint: store.IntegrationLedgerClosed, parentEvent: core.EvIssueCompleted, ready: true},
 		{name: "preserved", checkpoint: store.IntegrationPreserved, parentEvent: core.EvIssueCompleted},
 		{name: "verification ready", checkpoint: store.IntegrationVerificationReady, parentEvent: core.EvIssueCompleted},
 		{name: "unknown", checkpoint: "unknown", parentEvent: core.EvIssueCompleted},

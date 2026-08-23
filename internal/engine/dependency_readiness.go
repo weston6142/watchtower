@@ -24,5 +24,6 @@ func (r durableDependencyReadiness) Ready(parentID string) (bool, error) {
 		return false, fmt.Errorf("read integration checkpoint for dependency %s: %w", parentID, err)
 	}
 	return found && (integration.State == store.IntegrationMerged ||
-		integration.State == store.IntegrationCleanupNeeded), nil
+		integration.State == store.IntegrationCleanupNeeded ||
+		integration.State == store.IntegrationLedgerClosed), nil
 }

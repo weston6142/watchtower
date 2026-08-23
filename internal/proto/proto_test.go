@@ -61,6 +61,35 @@ func TestPendingDecisionJSONContext(t *testing.T) {
 	}
 }
 
+func TestCloseIssueProtocolUsesEngineEligibility(t *testing.T) {
+	st, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	eng := engine.New(engine.Config{
+		Store: st, Runner: &runner.FakeRunner{}, Pool: slots.NewPool(1),
+		Flows: map[string]flow.Flow{"default": {Name: "default"}}, DataDir: t.TempDir(),
+		Observers: []func(core.Event){(&steward.Steward{Store: st}).Observe},
+	})
+	id, err := eng.DraftIssue("ledger", "", "default", "regular", levers.Matrix{}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(eng, st)
+	response := srv.exec(Command{Op: "close_issue", IssueID: id})
+	if !response.OK || response.IssueID != id || response.Changed == nil || !*response.Changed {
+		t.Fatalf("close response = %+v", response)
+	}
+	second := srv.exec(Command{Op: "close_issue", IssueID: id})
+	if !second.OK || second.Changed == nil || *second.Changed {
+		t.Fatalf("idempotent close response = %+v", second)
+	}
+	if refused := srv.exec(Command{Op: "close_issue", IssueID: "GH-999"}); refused.OK || refused.Error != "unknown issue GH-999" {
+		t.Fatalf("unknown close response = %+v", refused)
+	}
+}
+
 func TestPendingDecisionJSONExposesRequiredResponseCapability(t *testing.T) {
 	pending := engine.PendingDecision{
 		ID: 32, IssueID: "GH-32", Stage: "spec",

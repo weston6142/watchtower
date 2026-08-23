@@ -146,7 +146,7 @@ func main() {
 		fatal(err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|stop|init|reset|migrate|repos|tower|new|backlog|claim|release|finish|launch|requeue|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail|planner-artifact> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: watchtower <daemon|stop|init|reset|migrate|repos|tower|new|backlog|claim|release|close|finish|launch|requeue|decisions|answer|proposals|accept-proposal|reject-proposal|issues|status|pause|resume|kill|retry|abandon|lever|transcript|tail|planner-artifact> [flags]")
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -466,6 +466,36 @@ func main() {
 			fmt.Printf("claimed %s  %s  %s\n", issueID, r.Claim.Branch, r.Claim.Worktree)
 		} else {
 			fmt.Println("released", issueID)
+		}
+	case "close":
+		filtered, jsonOut := removeFlag(args, "--json")
+		fs := flag.NewFlagSet("close", flag.ExitOnError)
+		data := fs.String("data", defaultData(), "data dir")
+		repoF := fs.String("repo", "", "target repo (default: walk up from CWD)")
+		fs.Parse(filtered)
+		if len(fs.Args()) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: watchtower close <issue-id> [--repo <repository>] [--data <data-dir>] [--json]")
+			os.Exit(2)
+		}
+		c := mustDial(*data, *repoF)
+		defer c.Close()
+		issueID := fs.Args()[0]
+		r := mustDo(c, proto.Command{Op: "close_issue", IssueID: issueID})
+		changed := r.Changed != nil && *r.Changed
+		if jsonOut {
+			printJSON(struct {
+				OK         bool   `json:"ok"`
+				IssueID    string `json:"issue_id"`
+				State      string `json:"state"`
+				Changed    bool   `json:"changed"`
+				Completion string `json:"completion"`
+			}{OK: true, IssueID: issueID, State: "done", Changed: changed, Completion: "ledger"})
+			break
+		}
+		if changed {
+			fmt.Println("closed", issueID)
+		} else {
+			fmt.Println("already closed", issueID)
 		}
 	case "finish":
 		filtered, jsonOut := removeFlag(args, "--json")

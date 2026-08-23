@@ -462,6 +462,43 @@ func TestBacklogClaimReleaseJSON(t *testing.T) {
 	run(t, bin, repo, "release", "--data", base, id, "--json")
 }
 
+func TestLedgerCloseHumanAndJSONIsIdempotent(t *testing.T) {
+	bin, base, repo := newRepo(t)
+	run(t, "git", repo, "init", "-q", "-b", "develop")
+	run(t, "git", repo, "config", "user.email", "test@example.com")
+	run(t, "git", repo, "config", "user.name", "Test")
+	run(t, "git", repo, "add", "-A")
+	run(t, "git", repo, "commit", "-qm", "base")
+	id := strings.TrimSpace(lastLine(run(t, bin, repo, "new", "--data", base,
+		"--draft", "--title", "ledger close")))
+	if got := strings.TrimSpace(run(t, bin, repo, "close", "--data", base, id)); got != "closed "+id {
+		t.Fatalf("first close output = %q", got)
+	}
+	if got := strings.TrimSpace(run(t, bin, repo, "close", "--data", base, id)); got != "already closed "+id {
+		t.Fatalf("repeat close output = %q", got)
+	}
+	var response struct {
+		OK         bool   `json:"ok"`
+		IssueID    string `json:"issue_id"`
+		State      string `json:"state"`
+		Changed    bool   `json:"changed"`
+		Completion string `json:"completion"`
+	}
+	if out := run(t, bin, repo, "close", "--data", base, id, "--json"); json.Unmarshal([]byte(out), &response) != nil {
+		t.Fatalf("close --json = %q", out)
+	}
+	if !response.OK || response.IssueID != id || response.State != "done" || response.Changed || response.Completion != "ledger" {
+		t.Fatalf("close JSON = %+v", response)
+	}
+	var issues []store.IssueRow
+	if out := run(t, bin, repo, "issues", "--data", base, "--json"); json.Unmarshal([]byte(out), &issues) != nil {
+		t.Fatalf("issues --json = %q", out)
+	}
+	if len(issues) != 1 || issues[0].State != "done" {
+		t.Fatalf("issues after ledger close = %+v", issues)
+	}
+}
+
 func TestVerificationCacheDaemonUsesRepositoryDataRoot(t *testing.T) {
 	t.Setenv("TMPDIR", "/tmp")
 	bin, base, repo := newRepo(t)

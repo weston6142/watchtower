@@ -282,6 +282,15 @@ func (sv *Server) exec(cmd Command) Response {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true, IssueID: cmd.IssueID}
+	case "close_issue":
+		result, err := sv.eng.CloseLedgerIssue(cmd.IssueID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{
+			OK: true, IssueID: cmd.IssueID, State: "done", Changed: &result.Changed,
+			Completion: "ledger",
+		}
 	case "start_issue":
 		if err := sv.resolvePlannerOverride(cmd.PlannerBudget); err != nil {
 			return Response{Error: err.Error()}
