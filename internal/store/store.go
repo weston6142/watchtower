@@ -393,6 +393,7 @@ const (
 	IntegrationPublishPending           = "publish_pending"
 	IntegrationCleanupNeeded            = "cleanup_needed"
 	IntegrationMerged                   = "merged"
+	IntegrationLedgerClosed             = "ledger_closed"
 	IntegrationPreserved                = "preserved"
 	IntegrationCapabilityRecoveryNeeded = "capability_recovery_needed"
 )
@@ -890,6 +891,72 @@ func (s *Store) SetIssueIntegration(integration IssueIntegration) error {
 		integration.Worktree, integration.Branch, string(cleanup),
 		updatedAt.Format(time.RFC3339Nano))
 	return err
+}
+
+// CommitLedgerClose atomically records administrative ledger completion. It
+// deliberately stores no workspace or Git identity and commits the lifecycle
+// event together with the integration evidence so a successful response can
+// never expose only half of the transition.
+func (s *Store) CommitLedgerClose(integration IssueIntegration, event core.Event) (core.Event, error) {
+	if integration.State != IntegrationLedgerClosed {
+		return core.Event{}, fmt.Errorf("invalid ledger integration state %q", integration.State)
+	}
+	if event.Type != core.EvIssueCompleted || event.IssueID != integration.IssueID {
+		return core.Event{}, fmt.Errorf("ledger close event does not match issue %s", integration.IssueID)
+	}
+	cleanup, err := json.Marshal([]string(nil))
+	if err != nil {
+		return core.Event{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failNextAppendType == event.Type {
+		s.failNextAppendType = ""
+		return core.Event{}, fmt.Errorf("injected %s append failure", event.Type)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return core.Event{}, err
+	}
+	defer tx.Rollback()
+	updatedAt := integration.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = s.now()
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO issue_integration(
+		   issue_id,state,base_branch,pre_sha,landed_sha,last_error,worktree,branch,cleanup,updated_at
+		 ) VALUES(?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(issue_id) DO UPDATE SET
+		   state=excluded.state, base_branch=excluded.base_branch,
+		   pre_sha=excluded.pre_sha, landed_sha=excluded.landed_sha,
+		   last_error=excluded.last_error, worktree=excluded.worktree,
+		   branch=excluded.branch, cleanup=excluded.cleanup,
+		   updated_at=excluded.updated_at`,
+		integration.IssueID, IntegrationLedgerClosed, "", "", "", "", "", "", string(cleanup),
+		updatedAt.Format(time.RFC3339Nano)); err != nil {
+		return core.Event{}, err
+	}
+	result, err := tx.Exec(`UPDATE issues SET state='done' WHERE id=?`, integration.IssueID)
+	if err != nil {
+		return core.Event{}, err
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return core.Event{}, err
+	} else if count != 1 {
+		return core.Event{}, fmt.Errorf("unknown issue %s", integration.IssueID)
+	}
+	event.Seq = s.seq + 1
+	if _, err := tx.Exec(
+		`INSERT INTO events(seq,type,issue_id,payload,at) VALUES(?,?,?,?,?)`,
+		event.Seq, string(event.Type), event.IssueID, string(event.Payload), event.At.Format(time.RFC3339Nano)); err != nil {
+		return core.Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.Event{}, err
+	}
+	s.seq = event.Seq
+	return event, nil
 }
 
 func (s *Store) IssueIntegration(issueID string) (IssueIntegration, bool, error) {

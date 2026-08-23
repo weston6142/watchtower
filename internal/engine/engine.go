@@ -1966,6 +1966,95 @@ func (e *Engine) ClaimBlockers(issueID string) ([]string, error) {
 	return e.unmetDependencies(issueID)
 }
 
+type LedgerCloseResult struct {
+	Changed bool
+}
+
+// CloseLedgerIssue completes an idle backlog item administratively. It never
+// claims or touches a workspace and keeps all eligibility checks in the
+// engine so protocol clients cannot bypass the safety boundary.
+func (e *Engine) CloseLedgerIssue(issueID string) (LedgerCloseResult, error) {
+	rows, err := e.cfg.Store.Issues()
+	if err != nil {
+		return LedgerCloseResult{}, err
+	}
+	var row *store.IssueRow
+	for i := range rows {
+		if rows[i].ID == issueID {
+			row = &rows[i]
+			break
+		}
+	}
+	if row == nil {
+		return LedgerCloseResult{}, fmt.Errorf("unknown issue %s", issueID)
+	}
+	if row.State == "done" {
+		return LedgerCloseResult{}, nil
+	}
+	if row.State != "backlog" {
+		return LedgerCloseResult{}, fmt.Errorf("issue %s is not an idle backlog item", issueID)
+	}
+
+	e.mu.Lock()
+	is, ok := e.issues[issueID]
+	if !ok {
+		e.mu.Unlock()
+		return LedgerCloseResult{}, fmt.Errorf("unknown issue %s", issueID)
+	}
+	if !is.draft || is.claiming || is.claimed || is.running || is.paused ||
+		is.waitingDependencies || is.stageCancel != nil {
+		e.mu.Unlock()
+		return LedgerCloseResult{}, fmt.Errorf("issue %s is not an idle backlog item", issueID)
+	}
+	pendingRows, err := e.cfg.Store.PendingDecisionRows()
+	if err != nil {
+		e.mu.Unlock()
+		return LedgerCloseResult{}, err
+	}
+	for _, pending := range pendingRows {
+		if pending.IssueID == issueID {
+			e.mu.Unlock()
+			return LedgerCloseResult{}, fmt.Errorf("issue %s has a pending decision", issueID)
+		}
+	}
+	for _, pending := range e.pend {
+		if pending.IssueID == issueID {
+			e.mu.Unlock()
+			return LedgerCloseResult{}, fmt.Errorf("issue %s has a pending decision", issueID)
+		}
+	}
+	integration, found, err := e.cfg.Store.IssueIntegration(issueID)
+	if err != nil {
+		e.mu.Unlock()
+		return LedgerCloseResult{}, err
+	}
+	if found {
+		e.mu.Unlock()
+		return LedgerCloseResult{}, fmt.Errorf("issue %s has durable integration state %q", issueID, integration.State)
+	}
+	event, err := core.NewEventAt(core.EvIssueCompleted, issueID,
+		map[string]string{"completion": "ledger"}, e.now())
+	if err != nil {
+		e.mu.Unlock()
+		return LedgerCloseResult{}, err
+	}
+	committed, err := e.cfg.Store.CommitLedgerClose(store.IssueIntegration{
+		IssueID: issueID, State: store.IntegrationLedgerClosed,
+	}, event)
+	if err != nil {
+		e.mu.Unlock()
+		return LedgerCloseResult{}, err
+	}
+	is.terminal = true
+	is.draft = false
+	e.mu.Unlock()
+	e.notifyObservers(committed)
+	if err := e.wakeDependents(context.Background(), issueID); err != nil {
+		return LedgerCloseResult{Changed: true}, err
+	}
+	return LedgerCloseResult{Changed: true}, nil
+}
+
 func (e *Engine) ReleaseClaim(id string) (retErr error) {
 	defer func() {
 		if retErr != nil {

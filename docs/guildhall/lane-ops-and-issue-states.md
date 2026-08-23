@@ -78,15 +78,32 @@ Externally worked tasks have a deliberately small lifecycle:
 backlog -> claimed -> verifying -> integrating -> merged -> done
 ```
 
+Ledger-only completion is a separate administrative branch:
+
+```text
+backlog -> done
+```
+
+`watchtower close <issue-id>` is daemon-mediated and eligible only for a
+known, idle backlog/draft issue with no active claim, pending decision, or
+durable claim/integration record. It does not claim or inspect a worktree, run
+stages or providers, verify code, merge, push, publish, or clean up. The daemon
+persists an explicit `ledger_closed` integration checkpoint with no branch,
+commit, or landed SHA and emits `issue_completed` with `completion: ledger`.
+That checkpoint satisfies dependencies and wakes waiting dependents, but it
+does not imply verification, merge, publication, or cleanup. A normal `done`
+issue is an idempotent no-op; `done (unmerged)`, `merged`, `cleanup_needed`,
+`abandoned`, and all active states remain refusals.
+
 Backlog dependency visibility is a read-time projection, not relationship
 cleanup. Stored dependency relationships remain available in the raw issue
 data, while backlog CLI, structured, and TUI views render `depends on` and
 claimability from active blockers. A referenced issue in
-`IntegrationMerged` or `IntegrationCleanupNeeded` satisfies its dependency
-and is omitted from active blockers; preserved or unmerged work, missing
-integration evidence, and unknown states remain visible so the system fails
-closed. A later status change is reflected on the next backlog read without
-recreating the relationship.
+`IntegrationMerged`, `IntegrationCleanupNeeded`, or `IntegrationLedgerClosed`
+satisfies its dependency and is omitted from active blockers; preserved or
+unmerged work, missing integration evidence, and unknown states remain visible
+so the system fails closed. A later status change is reflected on the next
+backlog read without recreating the relationship.
 
 Legacy completed issues may be reconciled during daemon rehydrate when durable
 `issue_merged` and `issue_completed` evidence identifies one landed commit, or

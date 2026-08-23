@@ -66,6 +66,9 @@ type Response struct {
 	OK            bool                     `json:"ok"`
 	Error         string                   `json:"error,omitempty"`
 	IssueID       string                   `json:"issue_id,omitempty"`
+	State         string                   `json:"state,omitempty"`
+	Changed       *bool                    `json:"changed,omitempty"`
+	Completion    string                   `json:"completion,omitempty"`
 	Decisions     []engine.PendingDecision `json:"decisions,omitempty"`
 	Proposals     []store.ProposalRow      `json:"proposals,omitempty"`
 	Issues        []store.IssueRow         `json:"issues,omitempty"`

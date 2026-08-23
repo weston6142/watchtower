@@ -23,6 +23,80 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestCommitLedgerClosePersistsEvidenceAndCompletionAtomically(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "ledger-close.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	issue := IssueRow{ID: "GH-123", Title: "ledger", Body: "close", State: "backlog", Flow: "default"}
+	if err := s.UpsertIssue(issue); err != nil {
+		t.Fatal(err)
+	}
+	event, err := core.NewEvent(core.EvIssueCompleted, issue.ID, map[string]string{"completion": "ledger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	integration := IssueIntegration{IssueID: issue.ID, State: IntegrationLedgerClosed}
+	if _, err := s.CommitLedgerClose(integration, event); err != nil {
+		t.Fatal(err)
+	}
+	row, found := issueByID(t, s, issue.ID)
+	if !found || row.State != "done" {
+		t.Fatalf("issue row = %+v, found=%v", row, found)
+	}
+	got, found, err := s.IssueIntegration(issue.ID)
+	if err != nil || !found {
+		t.Fatalf("integration = %+v, found=%v, err=%v", got, found, err)
+	}
+	if got.State != IntegrationLedgerClosed || got.BaseBranch != "" || got.PreSHA != "" ||
+		got.LandedSHA != "" || got.Worktree != "" || got.Branch != "" {
+		t.Fatalf("ledger integration fabricated identity: %+v", got)
+	}
+	events, err := s.EventsSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != core.EvIssueCompleted ||
+		!strings.Contains(string(events[0].Payload), `"completion":"ledger"`) {
+		t.Fatalf("events = %+v", events)
+	}
+
+	issue.ID = "GH-124"
+	if err := s.UpsertIssue(issue); err != nil {
+		t.Fatal(err)
+	}
+	failingEvent, err := core.NewEvent(core.EvIssueCompleted, issue.ID, map[string]string{"completion": "ledger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.FailNextAppendForTest(core.EvIssueCompleted)
+	if _, err := s.CommitLedgerClose(IssueIntegration{IssueID: issue.ID, State: IntegrationLedgerClosed}, failingEvent); err == nil {
+		t.Fatal("CommitLedgerClose succeeded after injected event failure")
+	}
+	row, found = issueByID(t, s, issue.ID)
+	if !found || row.State != "backlog" {
+		t.Fatalf("failed close changed issue row: %+v, found=%v", row, found)
+	}
+	if _, found, err := s.IssueIntegration(issue.ID); err != nil || found {
+		t.Fatalf("failed close left integration: found=%v err=%v", found, err)
+	}
+}
+
+func issueByID(t *testing.T, s *Store, id string) (IssueRow, bool) {
+	t.Helper()
+	rows, err := s.Issues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID == id {
+			return row, true
+		}
+	}
+	return IssueRow{}, false
+}
+
 func TestStoreUsesInjectedClockForDurableTimestamps(t *testing.T) {
 	fixed := time.Date(2026, 8, 13, 14, 15, 16, 123456789, time.UTC)
 	clock := core.ClockFunc(func() time.Time { return fixed })
